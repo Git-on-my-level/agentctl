@@ -23,6 +23,10 @@ The design optimizes for:
 - event streams and callbacks even when a backend only supports polling;
 - portable, deterministic context for Hermes, Codex, Claude, Cursor, OMP, and
   Multica runtimes;
+- independent structured, loose, or hybrid knowledge repositories hosted on
+  GitHub, Forgejo, or generic Git servers;
+- compact agent-oriented text by default, with JSON when a strict machine
+  contract is needed (streaming JSON uses NDJSON framing);
 - no syncing of credentials, raw sessions, or harness databases.
 
 ## Proposed experience
@@ -45,7 +49,7 @@ Subscribe through one interface:
 
 ```bash
 agentctl subscribe exec-purple-monkey-dragon-river-candle-meadow --on attention,terminal,artifact --to parent
-agentctl await exec-purple-monkey-dragon-river-candle-meadow --output json
+agentctl await exec-purple-monkey-dragon-river-candle-meadow
 agentctl events --after cursor-quiet-forest-copper-raven-signal-harbor --output json
 ```
 
@@ -63,7 +67,7 @@ agentctl promote exec-purple-monkey-dragon-river-candle-meadow --to multica --pr
 | Durable issues, runs, ownership, review lifecycle | Multica |
 | Network identity and shared resource resolution | Tailscale + `tailnetctl` |
 | Per-host desired state | Host manager such as `macctl` |
-| Shared policy, knowledge, and portable skills | Private Git, compiled into a verified bundle |
+| Shared policy, knowledge, and portable skills | Independent private Git sources, compiled into a verified bundle |
 | Normalized observation, subscriptions, and callbacks | `agentctl` |
 | Credentials, raw sessions, worktrees, caches | Local harness/machine |
 

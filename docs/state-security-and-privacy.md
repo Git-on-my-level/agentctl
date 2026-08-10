@@ -5,6 +5,7 @@
 ### Shared and versioned
 
 - schemas and adapter manifests;
+- knowledge-source registry entries and pinned source revisions;
 - fleet roles and capability policy;
 - reviewed model/executor routing policy;
 - portable skills and runbooks;
@@ -40,6 +41,12 @@ the origin host explicit.
 - worktrees and uncommitted source;
 - platform chat routing databases;
 - arbitrary logs or product data.
+
+Loose knowledge ingestion does not weaken these exclusions. Repository-level
+ACL and sensitivity boundaries are checked before compilation; include globs
+cannot override a source's exclusions or import credential-local/raw-data
+paths. Every emitted unit retains source repository, commit, path, and content
+digest provenance so removal or quarantine can target the actual authority.
 
 ## Filesystem policy
 

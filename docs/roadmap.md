@@ -6,7 +6,11 @@
 - Freeze the six-word identifier encoding, exact ordered word list, and digest.
 - Version execution/event/error JSON schemas.
 - Define stable exit codes.
+- Freeze the compact text grammar and golden output/error fixtures; JSON remains
+  the normative machine contract.
 - Freeze adapter capability/constraint manifest and probe fixtures.
+- Freeze the knowledge-source registry schema and loose-ingestion provenance
+  fixtures for GitHub, Forgejo, and generic Git remotes.
 - Create fixture corpus for IDs, state transitions, malformed streams, and
   callback deduplication.
 
@@ -21,7 +25,7 @@ written contract without consulting implementation code.
 - Generic process adapter.
 - Owner-only local journal with automatic TTL cleanup.
 - Six-word IDs, explicit context-file references, and source bindings.
-- JSON output/error/next-action contract.
+- Compact text plus JSON output/error/next-action contracts.
 - Fixture-driven self-test and `doctor --json`.
 
 Exit criterion: while its process remains alive, a parent can launch or attach
@@ -43,6 +47,9 @@ issue, and both modes produce the same normalized terminal callback.
 ## Phase 3 — Shared context
 
 - Git schema and validation pipeline.
+- GitHub, Forgejo, and generic-Git knowledge source registry.
+- Structured, loose, and hybrid repository ingestion without requiring source
+  repository migration.
 - Compiled knowledge/policy bundle and lexical index.
 - Atomic verified distribution via the shared Tailnet bootstrap path.
 - Deterministic context matcher and renderer.

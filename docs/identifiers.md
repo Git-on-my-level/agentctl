@@ -2,7 +2,7 @@
 
 ## Goals and limits
 
-Every identifier emitted for ordinary human or agent use is a typed word ID. It
+Every identifier emitted for ordinary agent use is a typed word ID. It
 must be easy to copy, pronounce, validate, and distinguish from a display name.
 Opaque UUIDs, database integers, native session IDs, and Multica short IDs remain
 available to adapters as source bindings, but normal commands do not require or
@@ -42,6 +42,8 @@ Initial prefixes are a registry, not an open string:
 | `context` | Rendered context snapshot |
 | `route` | Routing decision or explanation |
 | `host` | Stable fleet host alias |
+| `repo` | Registered knowledge-source repository |
+| `knowledge` | Indexed knowledge record or deterministic loose-document unit |
 | `source` | Redacted alias for an opaque native source |
 | `project` | Imported project/workspace binding |
 | `issue` | Imported durable issue binding |

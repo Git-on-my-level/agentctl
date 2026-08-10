@@ -11,17 +11,18 @@ contracts, validation, and safe defaults.
 Every command that returns a document supports:
 
 ```text
---output human|json
+--output text|json
 --profile <name>
 --context-file <path>
 --explain
---no-color
 ```
 
-Streaming commands additionally support `--output ndjson`. Commands that may
-wait or perform I/O support `--timeout <duration>`. `--no-color` affects human
-output only. Unsupported flag/command combinations are usage errors rather than
-accepted no-ops.
+`text` is the default. Commands that may wait or perform I/O support `--timeout
+<duration>`. A streaming command in JSON mode uses NDJSON framing while the
+stream is open; this is a transport property, not a third output mode. The CLI
+never emits ANSI color or cursor-control sequences; its output is for agents
+and automation, not terminal decoration. Unsupported flag/command combinations
+are usage errors rather than accepted no-ops.
 
 Mutating commands additionally support:
 
@@ -39,9 +40,33 @@ create local mutation records, or write remote state.
 Flag names do not vary between subcommands for the same concept. JSON field
 names are stable snake_case. Times are UTC RFC 3339 plus explicit freshness.
 
-## Output contract
+## Text output contract
 
-Human output is concise and leads with the typed word ID. JSON output contains:
+Text output is a compact, line-oriented agent interface. It leads with the typed
+word ID, uses stable lowercase field names, omits null/default fields, and puts
+one fact or next action on each line:
+
+```text
+exec-purple-monkey-dragon-river-candle-meadow state=running authority=native adapter=codex liveness=alive fresh=10s
+next agentctl await exec-purple-monkey-dragon-river-candle-meadow --output text
+```
+
+Text is designed to minimize tokens and transcription mistakes, but JSON is the
+normative programmatic contract. Text never uses tables, banners, box drawing,
+color, localized labels, or explanatory prose unless `--explain` is requested.
+Values requiring escaping use JSON string syntax. Repeated records use one line
+per record; multiline native output is never inlined.
+
+Errors follow the same compact grammar:
+
+```text
+error code=ambiguous_reference exit=4 retryable=false ref="purple-monkey"
+next agentctl status exec-purple-monkey-dragon-river-candle-meadow --output text
+```
+
+## JSON output contract
+
+JSON output contains:
 
 ```json
 {
@@ -64,11 +89,11 @@ Human output is concise and leads with the typed word ID. JSON output contains:
 `next_actions` uses argv arrays, not prose commands requiring shell parsing.
 Actions include required preconditions and whether they mutate state.
 
-Normal success emits no decorative banners. JSON mode writes exactly one JSON
-document to stdout; NDJSON writes one document per line and no terminal summary
-outside the stream. Diagnostics never mix with stdout. Human diagnostics go to
-stderr by default; `--diagnostics json` makes each stderr diagnostic one JSON
-line using a separate diagnostic schema.
+Normal success emits no decorative banners. Bounded JSON mode writes exactly
+one JSON document to stdout. An explicitly streaming JSON command writes one
+document per line and no terminal summary outside the stream. Diagnostics never
+mix with stdout. Text diagnostics go to stderr by default; `--diagnostics json`
+makes each stderr diagnostic one JSON line using a separate diagnostic schema.
 
 ## Error contract
 
@@ -246,7 +271,7 @@ name mixes these responsibilities.
 
 ## Progress hygiene
 
-Default output is quiet:
+Default text output is quiet:
 
 - no unchanged polling ticks;
 - no token-level reasoning;

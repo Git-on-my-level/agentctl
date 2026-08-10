@@ -1,0 +1,252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentctl.dev/schemas/knowledge-source.schema.json",
+  "x-agentctl-docs": "../docs/context-and-knowledge.md#git-hosting-and-source-registry",
+  "title": "agentctl knowledge source v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "id",
+    "slug",
+    "mode",
+    "remote",
+    "ref",
+    "subpath",
+    "sensitivity"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^repo-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._-]{1,63}$"
+    },
+    "mode": {
+      "enum": [
+        "structured",
+        "loose",
+        "hybrid"
+      ]
+    },
+    "remote": {
+      "$ref": "#/$defs/remote"
+    },
+    "ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "subpath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "sensitivity": {
+      "enum": [
+        "public",
+        "fleet-internal",
+        "operator-private",
+        "project-confidential"
+      ]
+    },
+    "structured_manifest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "ingest": {
+      "$ref": "#/$defs/ingest"
+    },
+    "overlay": {
+      "$ref": "#/$defs/overlay"
+    },
+    "default_scope": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "uniqueItems": true
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "structured"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "structured_manifest"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "enum": [
+              "loose",
+              "hybrid"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "ingest"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "hybrid"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "overlay"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "remote": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "provider",
+        "url",
+        "credential_mode"
+      ],
+      "properties": {
+        "provider": {
+          "enum": [
+            "github",
+            "forgejo",
+            "generic"
+          ]
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "web_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2048
+        },
+        "credential_mode": {
+          "const": "native_git"
+        }
+      }
+    },
+    "ingest": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "include",
+        "exclude",
+        "max_file_bytes"
+      ],
+      "properties": {
+        "include": {
+          "$ref": "#/$defs/globs"
+        },
+        "exclude": {
+          "$ref": "#/$defs/globs"
+        },
+        "max_file_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        },
+        "encoding": {
+          "const": "utf-8"
+        },
+        "chunking": {
+          "enum": [
+            "document",
+            "headings_and_bytes"
+          ]
+        },
+        "index": {
+          "enum": [
+            "lexical",
+            "metadata_only"
+          ]
+        }
+      }
+    },
+    "globs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "overlay": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "kind",
+        "path"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "in_repo",
+            "external"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "source_repo_id": {
+          "type": "string",
+          "pattern": "^repo-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "external"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "source_repo_id"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

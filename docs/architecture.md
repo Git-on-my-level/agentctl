@@ -78,9 +78,10 @@ absence of a local receipt is never evidence that no issue was created. See
 
 ### CLI
 
-The CLI is the stable interface for humans and agents. Every command supports
-structured output and reports source authority, observation time, and
-freshness.
+The CLI is the stable interface for agents and automation. Every command
+supports compact text and structured JSON, and reports source authority,
+observation time, and freshness. Text is token-efficient and line-oriented;
+JSON is the normative machine contract.
 
 ### Adapter library
 
@@ -127,10 +128,13 @@ manager when one exists.
 
 ### Shared context bundle
 
-Private Git is the authoring source. CI validates and compiles policy, knowledge,
-portable skills, and routing data into a content-addressed bundle with a
-machine-readable index. A client installs a verified local cache and continues
-to work from the last valid revision when the publisher is unavailable.
+One or more private Git repositories are the authoring sources. They remain
+independently owned and may be structured, loose, or hybrid corpora hosted on
+GitHub, Forgejo, or another Git server. A publisher validates and compiles their
+pinned revisions with policy, portable skills, and routing data into a
+content-addressed bundle with a machine-readable index. A client installs a
+verified local cache and continues to work from the last valid revision when
+the publisher is unavailable.
 
 ## Routing policy
 
