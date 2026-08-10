@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentctl.dev/schemas/execution.schema.json",
+  "title": "agentctl execution envelope",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "id",
+    "authority",
+    "adapter",
+    "mode",
+    "host",
+    "state",
+    "capabilities",
+    "created_at",
+    "updated_at",
+    "observation"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {
+      "type": "string",
+      "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){4}$"
+    },
+    "authority": {"enum": ["native", "multica"]},
+    "adapter": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,31}$"
+    },
+    "mode": {"enum": ["direct", "multica", "attach"]},
+    "host": {"type": "string", "minLength": 1},
+    "state": {
+      "enum": [
+        "created",
+        "starting",
+        "running",
+        "waiting",
+        "attention",
+        "completed",
+        "failed",
+        "cancelled",
+        "orphaned",
+        "unknown"
+      ]
+    },
+    "source_state": {"type": ["string", "null"]},
+    "source_ref": {
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "properties": {
+        "kind": {"type": "string"},
+        "id": {"type": "string"}
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "stream",
+          "poll",
+          "resume",
+          "cancel",
+          "artifacts",
+          "history"
+        ]
+      }
+    },
+    "cwd": {"type": ["string", "null"]},
+    "repository": {"type": ["string", "null"]},
+    "parent_execution_id": {
+      "type": ["string", "null"],
+      "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){4}$"
+    },
+    "supersedes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){4}$"
+      }
+    },
+    "created_at": {"type": "string", "format": "date-time"},
+    "started_at": {"type": ["string", "null"], "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "terminal_at": {"type": ["string", "null"], "format": "date-time"},
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "observed_at"],
+      "properties": {
+        "source": {
+          "enum": [
+            "durable_outbox",
+            "native_stream",
+            "status_api",
+            "state_file",
+            "poll",
+            "process",
+            "unknown"
+          ]
+        },
+        "observed_at": {"type": "string", "format": "date-time"},
+        "fresh_for_seconds": {"type": ["integer", "null"], "minimum": 0},
+        "degraded": {"type": "boolean"}
+      }
+    }
+  }
+}
+

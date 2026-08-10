@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentctl.dev/schemas/error.schema.json",
+  "title": "agentctl structured error",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["ok", "schema_version", "error"],
+  "properties": {
+    "ok": {"const": false},
+    "schema_version": {"const": 1},
+    "error": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["code", "message", "retryable", "next_actions"],
+      "properties": {
+        "code": {
+          "enum": [
+            "usage",
+            "not_found",
+            "ambiguous_reference",
+            "capability_unavailable",
+            "dependency_unavailable",
+            "authentication_required",
+            "authorization_denied",
+            "conflict",
+            "timeout",
+            "attention_required",
+            "remote_failure",
+            "invalid_state",
+            "unknown_state",
+            "internal"
+          ]
+        },
+        "message": {"type": "string", "minLength": 1},
+        "retryable": {"type": "boolean"},
+        "details": {"type": "object"},
+        "next_actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["label", "argv", "mutates"],
+            "properties": {
+              "label": {"type": "string"},
+              "argv": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1
+              },
+              "mutates": {"type": "boolean"}
+            }
+          }
+        }
+      }
+    }
+  }
+}
+

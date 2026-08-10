@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentctl.dev/schemas/event.schema.json",
+  "title": "agentctl normalized event",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "id",
+    "execution_id",
+    "sequence",
+    "kind",
+    "authority",
+    "adapter",
+    "occurred_at",
+    "observed_at",
+    "dedupe_key",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {
+      "type": "string",
+      "pattern": "^event-[a-z]{3,10}(?:-[a-z]{3,10}){4}$"
+    },
+    "execution_id": {
+      "type": "string",
+      "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){4}$"
+    },
+    "sequence": {"type": "integer", "minimum": 0},
+    "kind": {
+      "enum": [
+        "started",
+        "progress",
+        "attention",
+        "artifact",
+        "health",
+        "terminal",
+        "promoted",
+        "superseded"
+      ]
+    },
+    "state": {
+      "type": ["string", "null"]
+    },
+    "source_state": {"type": ["string", "null"]},
+    "authority": {"enum": ["native", "multica"]},
+    "adapter": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,31}$"
+    },
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "dedupe_key": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "payload": {"type": "object"}
+  }
+}
+

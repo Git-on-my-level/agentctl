@@ -1,0 +1,8 @@
+.DS_Store
+dist/
+build/
+coverage/
+*.log
+*.tmp
+.agentctl/
+
