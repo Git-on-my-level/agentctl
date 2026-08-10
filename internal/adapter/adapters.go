@@ -53,6 +53,11 @@ type MulticaConfig struct {
 	EventPageLimit int
 }
 
+// MulticaDefaultProfile is an explicit request to use Multica's root/default
+// profile. It is distinct from an empty profile (invalid) and never copies or
+// discovers credentials into an agentctl profile.
+const MulticaDefaultProfile = "@default"
+
 // MulticaArgv constructs one of the currently verified read-only Multica event
 // commands. The fork's grammar uses global --profile/--workspace-id flags and
 // nested `event list|watch` commands. Unverified issue/run operations return
@@ -71,7 +76,11 @@ func MulticaArgv(config MulticaConfig, operation string, extra ...string) []stri
 	default:
 		return nil
 	}
-	argv := []string{binary, "--profile", config.Profile, "--workspace-id", config.Workspace}
+	argv := []string{binary}
+	if config.Profile != MulticaDefaultProfile {
+		argv = append(argv, "--profile", config.Profile)
+	}
+	argv = append(argv, "--workspace-id", config.Workspace)
 	if config.Endpoint != "" {
 		argv = append(argv, "--server-url", config.Endpoint)
 	}

@@ -165,6 +165,19 @@ printf '%s\n' '{"events":[],"next_cursor":"0","has_more":false}'
 	}
 }
 
+func TestMulticaExplicitDefaultProfileNeverInventsNamedProfile(t *testing.T) {
+	argv := MulticaArgv(MulticaConfig{Binary: "/bin/multica", Profile: MulticaDefaultProfile, Workspace: "workspace-test", Endpoint: "https://multica.example.test"}, "event list", "--cursor", "0", "--limit", "1")
+	got := strings.Join(argv, " ")
+	if strings.Contains(got, "--profile") {
+		t.Fatalf("explicit native default emitted a named profile: %q", got)
+	}
+	for _, required := range []string{"--workspace-id workspace-test", "--server-url https://multica.example.test", "event list", "--cursor 0", "--limit 1"} {
+		if !strings.Contains(got, required) {
+			t.Fatalf("default-profile argv %q missing %q", got, required)
+		}
+	}
+}
+
 func TestOneShotWaitsForCompletionBeyondDiscoveryWindow(t *testing.T) {
 	path := fixtureExecutable(t, `sleep 1; printf '%s\n' '{"type":"result","result":"status complete"}'`)
 	a := newNativeAdapter(nativeConfig{Manifest: ompManifest(), Binary: path, Parser: ompParser{}, LaunchKind: "omp_status"})

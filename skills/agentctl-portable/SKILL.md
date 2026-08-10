@@ -105,6 +105,9 @@ agentctl promote <exec-id> \
 Remove `--plan` only after inspecting exact profile, workspace, server, app URL,
 client key, and argv. Exact retries recover one issue. Changed semantics
 conflict. Keep using Multica's native CLI for issue/run interaction and review.
+Hosts that intentionally authenticate through Multica's root profile configure
+the exact selector `--multica-profile @default`; this omits a named profile
+without copying credentials or falling back from a missing name.
 
 ## Shared knowledge and context
 
