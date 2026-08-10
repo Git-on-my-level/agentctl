@@ -83,9 +83,11 @@ agentctl await "$EXEC_ID" --timeout 10m
 ```
 
 The runner opens the journal only for bounded transactions, so a separate
-supervisor can deliver callbacks while work is active. Native cross-process
-cancel remains unavailable unless that adapter advertises a reviewed durable
-cancel mechanism; agentctl never guesses from a PID.
+supervisor can deliver callbacks while work is active. A short-lived runner
+lease prevents that supervisor from misclassifying a process-owned session as
+unreachable; after a crash the lease expires and ordinary recovery resumes.
+Native cross-process cancel remains unavailable unless that adapter advertises
+a reviewed durable cancel mechanism; agentctl never guesses from a PID.
 
 Configure an exact Multica authority and promote only when durable lifecycle
 tracking is worth the review overhead:

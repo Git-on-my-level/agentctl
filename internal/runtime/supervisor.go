@@ -47,6 +47,9 @@ func (b SupervisorExecutions) Reprobe(ctx context.Context, minimal supervisor.Ex
 		return supervisor.ProbeResult{}, err
 	}
 	now := b.Engine.now()
+	if activeNativeRunnerLease(execution, now) {
+		return supervisor.ProbeResult{State: string(execution.State), Liveness: string(execution.Liveness), Revision: execution.Revision, ObservedAt: execution.Observation.ObservedAt, Source: string(execution.Observation.Source)}, nil
+	}
 	if !capabilityUsable(execution.Capabilities, adapter.CapabilitySnapshot) {
 		if result, ok, eventsErr := b.reprobeFromEvents(ctx, execution, value, ref); ok {
 			if eventsErr == nil {
@@ -192,6 +195,14 @@ func unreachableProbe(execution model.Execution, now time.Time) supervisor.Probe
 	return supervisor.ProbeResult{State: string(execution.State), Liveness: string(model.LivenessUnreachable), Revision: execution.Revision, ObservedAt: now, Source: string(model.ObservationUnknown)}
 }
 
+func activeNativeRunnerLease(execution model.Execution, now time.Time) bool {
+	if execution.Authority != model.AuthorityNative || execution.State.Terminal() || execution.Liveness != model.LivenessAlive || execution.Observation.Source != model.ObservationNativeStream || execution.Observation.Integrity != model.IntegrityVerified || execution.Observation.FreshForSeconds == nil || *execution.Observation.FreshForSeconds <= 0 {
+		return false
+	}
+	expiresAt := execution.Observation.ObservedAt.Add(time.Duration(*execution.Observation.FreshForSeconds) * time.Second)
+	return !now.After(expiresAt)
+}
+
 func (b SupervisorExecutions) ApplyProbe(ctx context.Context, id string, result supervisor.ProbeResult) error {
 	if b.Engine == nil {
 		return errors.New("runtime engine is required")
@@ -203,6 +214,12 @@ func (b SupervisorExecutions) ApplyProbe(ctx context.Context, id string, result 
 	execution, err := b.Engine.journal.GetExecution(ctx, executionID)
 	if err != nil {
 		return wrapError("get_execution", "", err)
+	}
+	if result.Source == string(model.ObservationNativeStream) && result.Liveness == string(model.LivenessAlive) && activeNativeRunnerLease(execution, b.Engine.now()) {
+		// The runner is the live native authority and refreshes this bounded
+		// lease itself. Applying the supervisor's echo would erase the lease and
+		// make the next cycle falsely classify the child as unreachable.
+		return nil
 	}
 	state := execution.State
 	if result.State != "" {

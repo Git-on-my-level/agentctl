@@ -28,6 +28,11 @@ type runOptions struct {
 	argv                                     []string
 }
 
+const (
+	nativeRunnerLeaseSeconds   = 5
+	nativeRunnerHeartbeatEvery = time.Second
+)
+
 func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	opts, problem := parseRun(args)
 	if problem != nil {
@@ -117,9 +122,22 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	}
 	writeJournal.Close()
 	cursor := ""
+	nextRunnerHeartbeat := a.now().Add(nativeRunnerHeartbeatEvery)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		if !a.now().Before(nextRunnerHeartbeat) {
+			writeJournal, current, openProblem = a.openExecutionWrite(ctx, c, execution.ID)
+			if openProblem != nil {
+				return openProblem
+			}
+			execution, err = refreshRunnerLease(writeJournal, current, a.now().UTC())
+			writeJournal.Close()
+			if err != nil {
+				return mapStoreError("refresh native runner lease", err)
+			}
+			nextRunnerHeartbeat = a.now().Add(nativeRunnerHeartbeatEvery)
+		}
 		nativeEvents, eventErr := runtime.Events(launchCtx, adapter.EventsRequest{Ref: launch.Session.Ref, Cursor: cursor})
 		if eventErr == nil && len(nativeEvents) != 0 {
 			writeJournal, current, openProblem = a.openExecutionWrite(ctx, c, execution.ID)
@@ -451,7 +469,12 @@ func applySession(journal *store.Journal, execution model.Execution, session ada
 	if execution.State.Terminal() {
 		execution.TerminalAt = &now
 	}
-	execution.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: session.Observation.ObservedAt}
+	observedAt := session.Observation.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = now
+	}
+	leaseSeconds := nativeRunnerLeaseSeconds
+	execution.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: observedAt, FreshForSeconds: &leaseSeconds}
 	started := session.StartedAt
 	if !started.IsZero() {
 		execution.StartedAt = &started
@@ -465,6 +488,17 @@ func applySession(journal *store.Journal, execution model.Execution, session ada
 		opaque := binding.OpaqueID
 		execution.SourceBindings = []model.SourceBinding{{Kind: binding.Kind, AliasID: alias, Fingerprint: binding.Fingerprint, OpaqueID: &opaque}}
 	}
+	return journal.UpdateExecution(context.Background(), execution, execution.Revision)
+}
+
+func refreshRunnerLease(journal *store.Journal, execution model.Execution, now time.Time) (model.Execution, error) {
+	if execution.State.Terminal() {
+		return execution, nil
+	}
+	leaseSeconds := nativeRunnerLeaseSeconds
+	execution.Liveness = model.LivenessAlive
+	execution.UpdatedAt = now
+	execution.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: now, FreshForSeconds: &leaseSeconds}
 	return journal.UpdateExecution(context.Background(), execution, execution.Revision)
 }
 func finalizeLaunchFailure(journal *store.Journal, execution model.Execution, now time.Time) model.Execution {

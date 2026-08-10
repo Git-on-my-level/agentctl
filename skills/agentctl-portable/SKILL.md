@@ -85,8 +85,10 @@ agentctl subscribe create --execution "$EXEC_ID" --kind terminal,attention \
 agentctl run --execution-id "$EXEC_ID" --adapter codex -- codex exec --json "<task>"
 ```
 
-The runner uses bounded journal transactions. Cross-process native cancel is
-only available when the adapter explicitly advertises it.
+The runner uses bounded journal transactions and refreshes an expiring owner
+lease so a separate callback supervisor does not falsely mark it unreachable.
+Cross-process native cancel is only available when the adapter explicitly
+advertises it.
 
 ## Promote to Multica
 

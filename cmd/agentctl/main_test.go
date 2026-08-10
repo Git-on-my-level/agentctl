@@ -148,11 +148,15 @@ func TestNativeRunWithPreallocatedIDReleasesJournalWhileRunning(t *testing.T) {
 	root := t.TempDir()
 	journalPath := filepath.Join(root, "state", "journal.db")
 	script := filepath.Join(root, "slow-agent")
-	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"status\",\"status\":\"running\"}'\nsleep 1\nprintf '%s\\n' '{\"type\":\"result\",\"status\":\"completed\"}'\n"
+	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"status\",\"status\":\"running\"}'\nsleep 2\nprintf '%s\\n' '{\"type\":\"result\",\"status\":\"completed\"}'\n"
 	if err := os.WriteFile(script, []byte(contents), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	executionID, err := ids.New(ids.TypeExecution)
+	rawExecutionID, err := ids.New(ids.TypeExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionID, err := ids.ParseExecutionID(rawExecutionID.String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +172,12 @@ func TestNativeRunWithPreallocatedIDReleasesJournalWhileRunning(t *testing.T) {
 		var statusOut, statusErr bytes.Buffer
 		observer := testApp(&statusOut, &statusErr)
 		if code := observer.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "status", executionID.String()}); code == 0 {
-			break
+			var statusDoc struct {
+				Result model.Execution `json:"result"`
+			}
+			if json.Unmarshal(statusOut.Bytes(), &statusDoc) == nil && statusDoc.Result.State == model.StateRunning && statusDoc.Result.Liveness == model.LivenessAlive && statusDoc.Result.Observation.FreshForSeconds != nil {
+				break
+			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("execution was not observable while running; run_output=%s", runOut.String())
@@ -187,12 +196,30 @@ func TestNativeRunWithPreallocatedIDReleasesJournalWhileRunning(t *testing.T) {
 		t.Fatalf("subscribe blocked on run journal lock for %s", elapsed)
 	}
 
+	var supervisorOut, supervisorErr bytes.Buffer
+	supervisorApp := testApp(&supervisorOut, &supervisorErr)
+	if code := supervisorApp.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "supervisor", "run", "--once", "--state-dir", filepath.Join(root, "supervisor")}); code != 0 {
+		t.Fatalf("supervisor cycle exit=%d output=%s stderr=%s", code, supervisorOut.String(), supervisorErr.String())
+	}
+	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := journal.GetExecution(context.Background(), executionID)
+	journal.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.State != model.StateRunning || live.Liveness != model.LivenessAlive || live.Observation.Source != model.ObservationNativeStream || live.Observation.Integrity != model.IntegrityVerified || live.Observation.FreshForSeconds == nil {
+		t.Fatalf("supervisor corrupted active runner lease: %#v", live)
+	}
+
 	select {
 	case code := <-done:
 		if code != 0 {
 			t.Fatalf("run exit=%d output=%s stderr=%s", code, runOut.String(), runErr.String())
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(4 * time.Second):
 		t.Fatal("run did not terminate")
 	}
 }
