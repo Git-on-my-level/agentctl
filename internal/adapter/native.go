@@ -411,8 +411,11 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	go a.readPipe(record, stdout, false)
 	go a.readPipe(record, stderr, true)
 	go func() {
-		err := cmd.Wait()
+		// StdoutPipe/StderrPipe require all reads to complete before Wait. Calling
+		// Wait concurrently may close a pipe while the final structured document
+		// is still being drained, producing a false malformed/no-page result.
 		record.pipes.Wait()
+		err := cmd.Wait()
 		if runCtx.Err() != nil {
 			record.mu.Lock()
 			record.cancelled = true
