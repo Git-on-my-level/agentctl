@@ -63,6 +63,26 @@ func TestCursorFailureUsesStructuredErrorEvenWithZeroExit(t *testing.T) {
 	}
 }
 
+func TestOMPLiveJSONAgentEndIsTerminalSuccess(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s\n' '{"type":"session","version":3,"id":"omp-fixture"}' '{"type":"agent_start"}' '{"type":"turn_end"}' '{"type":"agent_end","messages":[]}'`)
+	a := NewOMP()
+	got, err := a.Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || !got.Result.Success || got.Result.State != StateCompleted {
+		t.Fatalf("OMP agent_end result = %#v", got.Result)
+	}
+	events, err := a.Events(context.Background(), EventsRequest{Ref: got.Session.Ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := events[len(events)-1]
+	if terminal.Kind != "terminal" || terminal.State != StateCompleted || terminal.SourceState != "agent_end" {
+		t.Fatalf("OMP terminal event = %#v", terminal)
+	}
+}
+
 func TestStructuredErrorFieldFailsWithoutSeparateErrorFlag(t *testing.T) {
 	path := fixtureExecutable(t, `printf '%s\n' '{"type":"result","error":"native failure"}'`)
 	got, err := NewGenericProcess().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})

@@ -32,7 +32,7 @@ type ompParser struct{}
 
 func (ompParser) Name() string { return "omp-acp-json" }
 func (ompParser) Parse(line []byte, stderr bool) parsedObservation {
-	return parseAgentJSON(line, stderr, "omp", []string{"session_id", "session", "id"}, []string{"completed", "failed", "result", "error"})
+	return parseAgentJSON(line, stderr, "omp", []string{"session_id", "session", "id"}, []string{"agent_end", "completed", "failed", "result", "error"})
 }
 
 type multicaParser struct{}
