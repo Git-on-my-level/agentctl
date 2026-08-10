@@ -64,6 +64,9 @@ func (a *app) subscribeCommand(ctx context.Context, renderer output.Renderer, c 
 		if len(args) != 2 {
 			return output.NewError(output.CodeUsage, "usage: agentctl subscribe cancel <subscription-id>", false)
 		}
+		if _, err := ids.ParseSubscriptionID(args[1]); err != nil {
+			return output.Wrap(output.CodeUsage, "invalid subscription ID", false, err)
+		}
 		journal, problem := a.openWrite(c)
 		if problem != nil {
 			return problem

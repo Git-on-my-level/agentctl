@@ -12,16 +12,16 @@ BIN := $(BUILD_DIR)/$(BINARY_NAME)
 # These flags keep paths, VCS stamping, and linker symbol tables out of a
 # release binary.  A caller may add flags through GOFLAGS/LDFLAGS.
 GOFLAGS ?= -trimpath -buildvcs=false
-LDFLAGS ?= -s -w
+LDFLAGS ?= -s -w -X main.version=$(VERSION)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || printf '%s' dev)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || printf '%s' unknown)
 
-.PHONY: all ci fmt fmt-check vet test build check-ids check-schemas check-links check-scripts release \
+.PHONY: all ci fmt fmt-check vet test build check-ids check-schemas check-links check-scripts check-distribution release \
 	install uninstall clean
 
 all: ci
 
-ci: fmt-check vet test check-ids check-schemas check-links check-scripts build
+ci: fmt-check vet test check-ids check-schemas check-links check-scripts check-distribution build
 
 fmt:
 	@files="$$(find . -type f -name '*.go' -not -path './vendor/*' -not -path './.git/*')"; \
@@ -58,6 +58,11 @@ check-links:
 
 check-scripts:
 	@if command -v shellcheck >/dev/null 2>&1; then shellcheck $(SCRIPTS_DIR)/*.sh; else bash -n $(SCRIPTS_DIR)/*.sh; fi
+
+check-distribution:
+	tests/validators/test_distributions.sh
+	tests/validators/test_install_scripts.sh
+	@if [ -x tests/validators/test_supervisor_scripts.sh ]; then tests/validators/test_supervisor_scripts.sh; fi
 
 release:
 	VERSION='$(VERSION)' COMMIT='$(COMMIT)' MAIN_PKG='$(MAIN_PKG)' \

@@ -252,3 +252,86 @@ func TestSubscriptionFanoutUsesNormalizedEnvelopeAndExactFilters(t *testing.T) {
 		t.Fatalf("dedupe fanout pending=%#v err=%v", pending, err)
 	}
 }
+
+func TestSubscriptionAutoExpiresOnlyAfterTerminalAcknowledgement(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	execution, _, err := j.CreateExecution(ctx, sampleExecution(now), contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	autoID := durableTestID(ids.TypeSubscription, 820)
+	auto := durableTestSubscription(autoID)
+	auto.Filter.ExecutionIDs = []string{execution.ID.String()}
+	auto.Filter.Kinds = []string{string(model.EventTerminal)}
+	auto.AutoExpireOnTerminal = true
+	if _, _, err := j.PutSubscription(ctx, auto); err != nil {
+		t.Fatal(err)
+	}
+	keepID := durableTestID(ids.TypeSubscription, 821)
+	keep := durableTestSubscription(keepID)
+	keep.Filter.ExecutionIDs = []string{execution.ID.String()}
+	keep.Filter.Kinds = []string{string(model.EventTerminal)}
+	keep.AutoExpireOnTerminal = false
+	if _, _, err := j.PutSubscription(ctx, keep); err != nil {
+		t.Fatal(err)
+	}
+	terminalState := model.StateCompleted
+	event := model.Event{SchemaVersion: model.SchemaVersion, ID: ids.EventID(durableTestID(ids.TypeEvent, 822)), OriginHostID: execution.OriginHostID, ExecutionID: execution.ID, Sequence: 1, Ordering: model.OrderingObservation, Kind: model.EventTerminal, State: &terminalState, Authority: execution.Authority, Adapter: execution.Adapter, ObservedAt: now, DedupeKey: hash('f'), DedupeVersion: 1, Payload: map[string]any{"status": "completed"}}
+	if err := j.db.Update(func(tx *bbolt.Tx) error {
+		return enqueueMatchingSubscriptionsTx(tx, &event, []byte(`{"terminal":true}`), now, j.generator)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	autoBeforeAck, err := j.GetSubscription(ctx, autoID)
+	if err != nil || autoBeforeAck.State != subscription.StateActive {
+		t.Fatalf("subscription stopped before acknowledgement=%#v err=%v", autoBeforeAck, err)
+	}
+	keepAfter, err := j.GetSubscription(ctx, keepID)
+	if err != nil || keepAfter.State != subscription.StateActive {
+		t.Fatalf("kept subscription=%#v err=%v", keepAfter, err)
+	}
+	pending, err := j.ListPendingDeliveries(ctx)
+	if err != nil || len(pending) != 2 {
+		t.Fatalf("terminal deliveries=%#v err=%v", pending, err)
+	}
+	var autoDelivery string
+	for _, delivery := range pending {
+		if delivery.SubscriptionID == autoID {
+			autoDelivery = delivery.ID
+		}
+	}
+	if autoDelivery == "" {
+		t.Fatal("auto-expiring subscription has no terminal delivery")
+	}
+	if err := j.AckDelivery(ctx, autoDelivery, DeliveryReceipt{}); err != nil {
+		t.Fatal(err)
+	}
+	autoAfterAck, err := j.GetSubscription(ctx, autoID)
+	if err != nil || autoAfterAck.State != subscription.StateStopped {
+		t.Fatalf("acknowledged subscription=%#v err=%v", autoAfterAck, err)
+	}
+	keepAfter, err = j.GetSubscription(ctx, keepID)
+	if err != nil || keepAfter.State != subscription.StateActive {
+		t.Fatalf("kept subscription changed after another ack=%#v err=%v", keepAfter, err)
+	}
+}
+
+func TestSubscriptionReadsExposeEffectiveExpiredState(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	value := durableTestSubscription(durableTestID(ids.TypeSubscription, 823))
+	value.ExpiresAt = now.Add(time.Minute)
+	if _, _, err := j.PutSubscription(ctx, value); err != nil {
+		t.Fatal(err)
+	}
+	j.clock = func() time.Time { return now.Add(2 * time.Minute) }
+	shown, err := j.GetSubscription(ctx, value.ID)
+	if err != nil || shown.State != subscription.StateExpired {
+		t.Fatalf("expired subscription=%#v err=%v", shown, err)
+	}
+	listed, err := j.ListSubscriptions(ctx)
+	if err != nil || len(listed) != 1 || listed[0].State != subscription.StateExpired {
+		t.Fatalf("expired subscription list=%#v err=%v", listed, err)
+	}
+}

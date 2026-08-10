@@ -26,7 +26,7 @@ for harness in hermes codex claude cursor omp; do
   printf '%s\n' "keep-managed-$harness" >"$target/agentctl-portable/unmanaged.txt"
   "$DIST/doctor.sh" --harness "$harness" --target-dir "$target" --output=json >/dev/null
   "$DIST/install.sh" --harness "$harness" --target-dir "$target" --output=json >/dev/null
-  "$DIST/status.sh" --harness "$harness" --target-dir "$target" --output=json | grep -q '"state":"installed"'
+  "$DIST/status.sh" --harness "$harness" --target-dir "$target" --output=json | grep -q '"ok":true,"state":"installed"'
   [ "$(cat "$target/unmanaged.txt")" = "keep-$harness" ] || fail "unmanaged file changed for $harness"
   [ "$(cat "$target/agentctl-portable/unmanaged.txt")" = "keep-managed-$harness" ] || fail "managed-directory unmanaged file changed for $harness"
 
@@ -56,8 +56,29 @@ fi
 [ "$(cat "$conflict/agentctl-portable/SKILL.md")" = caller-owned ] || fail "conflict content changed"
 
 missing="$HOME/targets/missing"
-if "$DIST/status.sh" --harness codex --target-dir "$missing" >/dev/null 2>&1; then
+missing_status="$tmp/missing-status.json"
+if "$DIST/status.sh" --harness codex --target-dir "$missing" --output=json >"$missing_status" 2>/dev/null; then
   fail "status reported a missing target as installed"
+fi
+grep -q '"ok":false,"state":"missing"' "$missing_status" || fail "missing status JSON claimed success"
+
+drifted="$HOME/targets/drifted"
+mkdir -p "$drifted"
+"$DIST/install.sh" --harness codex --target-dir "$drifted" --output=json >/dev/null
+printf '%s\n' modified >>"$drifted/agentctl-portable/SKILL.md"
+drifted_status="$tmp/drifted-status.json"
+if "$DIST/status.sh" --harness codex --target-dir "$drifted" --output=json >"$drifted_status" 2>/dev/null; then
+  fail "status reported a drifted target as installed"
+fi
+grep -q '"ok":false,"state":"drifted"' "$drifted_status" || fail "drifted status JSON claimed success"
+
+symlink_target="$HOME/targets/symlink-target"
+symlink_external="$HOME/targets/symlink-external"
+mkdir -p "$symlink_target" "$symlink_external"
+"$DIST/install.sh" --harness codex --target-dir "$symlink_external" --output=json >/dev/null
+ln -s "$symlink_external/agentctl-portable" "$symlink_target/agentctl-portable"
+if "$DIST/status.sh" --harness codex --target-dir "$symlink_target" >/dev/null 2>&1; then
+  fail "status followed a symlinked managed directory"
 fi
 
 forbidden="$HOME/targets/auth"

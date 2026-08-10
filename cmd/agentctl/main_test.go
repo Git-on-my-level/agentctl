@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Git-on-my-level/agentctl/internal/adapter"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
@@ -20,6 +21,76 @@ import (
 
 func testApp(stdout, stderr *bytes.Buffer) *app {
 	return &app{stdout: stdout, stderr: stderr, getenv: func(string) string { return "" }, now: time.Now}
+}
+
+func TestAdapterProbeErrorsPreserveStableClassification(t *testing.T) {
+	tests := []struct {
+		adapterCode adapter.ErrorCode
+		want        output.Code
+	}{
+		{adapter.ErrDependencyUnavailable, output.CodeDependencyUnavailable},
+		{adapter.ErrAuthenticationRequired, output.CodeAuthenticationRequired},
+		{adapter.ErrCapabilityUnavailable, output.CodeCapabilityUnavailable},
+		{adapter.ErrTimeout, output.CodeTimeout},
+		{adapter.ErrUsage, output.CodeUsage},
+	}
+	for _, test := range tests {
+		err := &adapter.AdapterError{Code: test.adapterCode, Message: "probe fixture"}
+		if got := mapAdapterError("adapter probe failed", err).Code; got != test.want {
+			t.Fatalf("adapter code %s mapped to %s; want %s", test.adapterCode, got, test.want)
+		}
+	}
+}
+
+func TestSubscribeCancelRejectsInvalidIDBeforeCreatingJournal(t *testing.T) {
+	journal := filepath.Join(t.TempDir(), "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "subscribe", "cancel", "not-a-subscription-id"}); code != 2 {
+		t.Fatalf("cancel exit=%d output=%s", code, stdout.String())
+	}
+	if _, err := os.Stat(journal); !os.IsNotExist(err) {
+		t.Fatalf("invalid mutation created journal: %v", err)
+	}
+}
+
+func TestDoctorRequiresProfileSelectionWhenConfigHasNoDefault(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"schema_version":1,"profiles":{"local":{"adapters":{"generic":{"executable":"/bin/echo"}}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--output", "json", "--config", configPath, "doctor"}); code != 3 || !strings.Contains(stdout.String(), `"code":"not_found"`) {
+		t.Fatalf("doctor exit=%d output=%s", code, stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--config", configPath, "--profile", "local", "doctor"}); code != 0 {
+		t.Fatalf("explicit doctor exit=%d output=%s", code, stdout.String())
+	}
+}
+
+func TestHelpSideEffectClassesReflectOptionalWrites(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--output", "json", "help"}); code != 0 {
+		t.Fatalf("help exit=%d output=%s", code, stdout.String())
+	}
+	var doc struct {
+		Result struct {
+			Commands []map[string]any `json:"commands"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	classes := map[string]string{}
+	for _, command := range doc.Result.Commands {
+		classes[command["name"].(string)] = command["side_effect_class"].(string)
+	}
+	if classes["attach"] != "read_only" || classes["context"] != "local_operational_write" {
+		t.Fatalf("unexpected side-effect classes: %#v", classes)
+	}
 }
 
 func TestParseCommonPreservesEveryArgumentAfterDelimiter(t *testing.T) {
@@ -325,6 +396,24 @@ func TestPromotionExecuteReplayReturnsPersistedAliasAndOneLifecycle(t *testing.T
 	}
 	if first.Result.Reused || !second.Result.Reused {
 		t.Fatalf("unexpected replay flags: first=%v second=%v", first.Result.Reused, second.Result.Reused)
+	}
+	foundDurableEvents := false
+	for _, capability := range first.Result.Execution.Capabilities.Items {
+		if capability.Name == "events" {
+			foundDurableEvents = capability.Constraints["cross_restart"] == true && capability.Constraints["scope"] == "workspace_events"
+		}
+	}
+	if !foundDurableEvents {
+		t.Fatalf("promotion omitted cross-restart durable event capability: %#v", first.Result.Execution.Capabilities)
+	}
+	if err := os.WriteFile(fakeMultica, []byte("#!/bin/sh\nprintf '%s\\n' 'The request conflicts with the current state of the resource.' >&2\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	changedArgs := append([]string(nil), args...)
+	changedArgs[len(changedArgs)-1] = "Changed durable work"
+	if code := a.run(context.Background(), changedArgs); code != 8 || !strings.Contains(stdout.String(), `"code":"conflict"`) {
+		t.Fatalf("changed promotion exit=%d output=%s", code, stdout.String())
 	}
 	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
 	if err != nil {

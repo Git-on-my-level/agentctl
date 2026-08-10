@@ -10,6 +10,7 @@ parse_common_args "$@"
 validate_sources
 
 managed=$(managed_dir)
+[ ! -L "$managed" ] || die "managed directory must not be a symlink: $managed"
 skill_dest="$managed/SKILL.md"
 manifest_dest="$managed/revision-manifest.json"
 bundle_dest="$managed/agentctl-portable.bundle.json"
@@ -55,8 +56,10 @@ if [ "$HARNESS" = multica ]; then
 fi
 
 revision=$(sed -n 's/.*"revision": "\([^"]*\)".*/\1/p' "$MANIFEST" | head -n 1)
+ok=false
+if [ "$state" = installed ]; then ok=true; fi
 if [ "$JSON" -eq 1 ]; then
-  printf '%s\n' "{\"ok\":true,\"state\":\"$state\",\"harness\":\"$HARNESS\",\"target_dir\":\"$TARGET_DIR\",\"managed_dir\":\"$managed\",\"revision\":\"$revision\"}"
+  printf '%s\n' "{\"ok\":$ok,\"state\":\"$state\",\"harness\":\"$HARNESS\",\"target_dir\":\"$TARGET_DIR\",\"managed_dir\":\"$managed\",\"revision\":\"$revision\"}"
 else
   printf '%s\n' "state=$state harness=$HARNESS target_dir=$TARGET_DIR revision=$revision$detail"
 fi

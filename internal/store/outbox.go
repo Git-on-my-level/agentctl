@@ -22,6 +22,8 @@ import (
 
 	"github.com/Git-on-my-level/agentctl/internal/callback"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
+	"github.com/Git-on-my-level/agentctl/internal/model"
+	"github.com/Git-on-my-level/agentctl/internal/subscription"
 )
 
 var (
@@ -351,7 +353,7 @@ func (j *Journal) AckDelivery(ctx context.Context, id string, receipt DeliveryRe
 		if item.State == callback.DeliveryAcked {
 			item.AttemptInFlight = false
 			if receipt == (DeliveryReceipt{}) {
-				return nil
+				return stopSubscriptionAfterTerminalAckTx(tx, item, j.clock().UTC())
 			}
 			ackNow := j.clock().UTC()
 			if item.Receipt != nil && receipt.AcknowledgedAt.IsZero() {
@@ -362,7 +364,7 @@ func (j *Journal) AckDelivery(ctx context.Context, id string, receipt DeliveryRe
 				if *item.Receipt != *normalized {
 					return fmt.Errorf("%w: acknowledgement metadata differs", ErrDeliveryConflict)
 				}
-				return nil
+				return stopSubscriptionAfterTerminalAckTx(tx, item, ackNow)
 			}
 			if item.Receipt == nil {
 				item.Receipt = normalized
@@ -377,7 +379,10 @@ func (j *Journal) AckDelivery(ctx context.Context, id string, receipt DeliveryRe
 				if err != nil {
 					return err
 				}
-				return tx.Bucket(bOutbox).Put([]byte(item.ID), encoded)
+				if err := tx.Bucket(bOutbox).Put([]byte(item.ID), encoded); err != nil {
+					return err
+				}
+				return stopSubscriptionAfterTerminalAckTx(tx, item, ackNow)
 			}
 			return nil
 		}
@@ -401,8 +406,57 @@ func (j *Journal) AckDelivery(ctx context.Context, id string, receipt DeliveryRe
 		if err != nil {
 			return err
 		}
-		return tx.Bucket(bOutbox).Put([]byte(item.ID), encoded)
+		if err := tx.Bucket(bOutbox).Put([]byte(item.ID), encoded); err != nil {
+			return err
+		}
+		return stopSubscriptionAfterTerminalAckTx(tx, item, receipt.AcknowledgedAt)
 	})
+}
+
+func stopSubscriptionAfterTerminalAckTx(tx *bbolt.Tx, item DeliveryRecord, acknowledgedAt time.Time) error {
+	var envelope callback.Envelope
+	if err := json.Unmarshal(item.Payload, &envelope); err != nil {
+		return nil
+	}
+	// EnqueueDelivery is a public low-level API and permits bounded generic JSON.
+	// Only subscription fan-out creates the callback envelope that can drive the
+	// automatic terminal transition.
+	if envelope.SchemaVersion != 1 || envelope.SubscriptionID != item.SubscriptionID || len(envelope.Event) == 0 {
+		return nil
+	}
+	var event model.Event
+	if err := json.Unmarshal(envelope.Event, &event); err != nil {
+		return corrupt(fmt.Errorf("decode acknowledged event: %w", err))
+	}
+	if event.Kind != model.EventTerminal {
+		return nil
+	}
+	bucket := tx.Bucket(bSubscriptions)
+	if bucket == nil {
+		return fmt.Errorf("%w: acknowledged subscription bucket is missing", ErrCorrupt)
+	}
+	raw := bucket.Get([]byte(item.SubscriptionID))
+	if raw == nil {
+		return fmt.Errorf("%w: acknowledged subscription is missing", ErrCorrupt)
+	}
+	var record SubscriptionRecord
+	if err := json.Unmarshal(raw, &record); err != nil {
+		return corrupt(err)
+	}
+	if !record.Subscription.AutoExpireOnTerminal || record.Subscription.State != subscription.StateActive {
+		return nil
+	}
+	record.Subscription.State = subscription.StateStopped
+	record.Revision++
+	if acknowledgedAt.IsZero() {
+		acknowledgedAt = time.Now().UTC()
+	}
+	record.UpdatedAt = acknowledgedAt.UTC()
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	return bucket.Put([]byte(item.SubscriptionID), encoded)
 }
 
 // Ack is the supervisor-friendly no-metadata form.

@@ -40,6 +40,26 @@ canonical_file() {
   printf '%s/%s' "$(CDPATH= cd -- "$directory" && pwd -P)" "$basename"
 }
 
+reject_symlink_components() {
+  path=$1
+  case "$path" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$path" in
+    *//*|*'/./'*|*'/../'*|*'/.'|*'/..') return 1 ;;
+  esac
+  current=/
+  remainder=${path#/}
+  while [ -n "$remainder" ]; do
+    component=${remainder%%/*}
+    if [ "$remainder" = "$component" ]; then remainder=; else remainder=${remainder#*/}; fi
+    [ -n "$component" ] || continue
+    current=${current%/}/$component
+    [ ! -L "$current" ] || return 1
+  done
+}
+
 is_harness() {
   case "$1" in
     hermes|codex|claude|cursor|omp|multica) return 0 ;;
@@ -95,6 +115,7 @@ parse_common_args() {
   [ -n "$HARNESS" ] || die "--harness is required"
   is_harness "$HARNESS" || die "unsupported harness: $HARNESS"
   [ -n "$TARGET_DIR" ] || die "--target-dir is required; no home directory is inferred"
+  reject_symlink_components "$TARGET_DIR" || die "target directory must be an absolute clean path without symlink components: $TARGET_DIR"
   case "$MODE" in copy|link) ;; *) die "--mode must be copy or link" ;; esac
 
   # Do not follow a symlink supplied as the target root. It could escape the
@@ -147,6 +168,21 @@ source_hashes_match_manifest() {
   grep -q "\"sha256\": \"$allowlist_hash\"" "$MANIFEST" || return 1
 }
 
+manifest_revision() {
+  sed -n 's/.*"revision": "\([^"]*\)".*/\1/p' "$1" | head -n 1
+}
+
+distribution_metadata_matches() {
+  allowlist_revision=$(manifest_revision "$ALLOWLIST")
+  manifest_revision_value=$(manifest_revision "$MANIFEST")
+  bundle_revision=$(manifest_revision "$BUNDLE_SOURCE")
+  [ -n "$allowlist_revision" ] || return 1
+  [ "$allowlist_revision" = "$manifest_revision_value" ] || return 1
+  [ "$allowlist_revision" = "$bundle_revision" ] || return 1
+  skill_hash=$(sha256_file "$SKILL_SOURCE")
+  grep -q "\"sha256\": \"$skill_hash\"" "$BUNDLE_SOURCE" || return 1
+}
+
 validate_sources() {
   [ -f "$SKILL_SOURCE" ] || die "allowlisted skill source is missing"
   [ -f "$BUNDLE_SOURCE" ] || die "allowlisted Multica bundle is missing"
@@ -156,6 +192,7 @@ validate_sources() {
   grep -q '"distributions/multica/agentctl-portable.bundle.json"' "$ALLOWLIST" || die "Multica bundle is not allowlisted"
   grep -q '"distributions/revision-manifest.json"' "$ALLOWLIST" || die "revision manifest is not allowlisted"
   source_hashes_match_manifest || die "source hash does not match revision manifest"
+  distribution_metadata_matches || die "distribution revision or embedded skill hash does not match"
 }
 
 copy_or_link() {

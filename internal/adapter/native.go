@@ -78,6 +78,7 @@ type processRecord struct {
 	pipes         sync.WaitGroup
 	resultPath    string
 	page          *parsedPage
+	wholeStdout   bool
 }
 
 func (p *processRecord) ingest(line []byte, stderr bool) {
@@ -216,6 +217,10 @@ type nativeConfig struct {
 	OutputLimit   int
 	LaunchKind    string
 	TransformArgv func([]string) []string
+	// WholeStdout asks the adapter to parse stdout as one bounded JSON
+	// document after EOF. Use this for finite CLIs that pretty-print a page
+	// across several lines rather than emitting JSONL observations.
+	WholeStdout bool
 }
 
 // NativeAdapter implements the common process/session behavior. Constructors
@@ -397,7 +402,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	}
 	started = true
 	ref := SourceRef{Adapter: a.Name(), Kind: a.config.LaunchKind, OpaqueID: strconv.Itoa(cmd.Process.Pid), PID: cmd.Process.Pid}
-	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: time.Now().UTC(), updatedAt: time.Now().UTC(), done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath}
+	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: time.Now().UTC(), updatedAt: time.Now().UTC(), done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, wholeStdout: a.config.WholeStdout}
 	a.mu.Lock()
 	a.byPID[cmd.Process.Pid] = record
 	a.byKey[record.binding.Fingerprint] = record
@@ -445,6 +450,21 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 
 func (a *NativeAdapter) readPipe(record *processRecord, r io.Reader, stderr bool) {
 	defer record.pipes.Done()
+	if record.wholeStdout && !stderr {
+		limit := record.maxOutput
+		if limit <= 0 {
+			limit = defaultOutputLimit
+		}
+		document, err := io.ReadAll(io.LimitReader(r, int64(limit)+1))
+		if err != nil {
+			record.mu.Lock()
+			record.parseWarnings = append(record.parseWarnings, "structured output stream was truncated: "+err.Error())
+			record.mu.Unlock()
+			return
+		}
+		record.ingest(document, false)
+		return
+	}
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
 	for scanner.Scan() {

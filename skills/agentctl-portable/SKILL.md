@@ -33,7 +33,7 @@ code changes, PRs, long-running work, ownership, or review. Ask agentctl for a
 deterministic explanation when uncertain:
 
 ```bash
-agentctl route explain --model-family gpt --task-kind investigation
+agentctl route explain --model-family gpt
 agentctl route explain --model-family glm --needs-pr
 ```
 

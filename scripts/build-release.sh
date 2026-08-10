@@ -99,10 +99,19 @@ for target in $TARGETS; do
   package_dir="$staging/$package_name"
   mkdir -p "$package_dir"
   GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
-    go build -C "$ROOT" -trimpath -buildvcs=false -ldflags '-s -w' \
+    go build -C "$ROOT" -trimpath -buildvcs=false -ldflags "-s -w -X main.version=$VERSION" \
       -o "$package_dir/$binary_name" "$MAIN_PKG"
 
   cp "$ROOT/README.md" "$package_dir/README.md"
+  mkdir -p "$package_dir/scripts" "$package_dir/skills/agentctl-portable" "$package_dir/distributions"
+  cp "$ROOT/scripts/install.sh" "$ROOT/scripts/uninstall.sh" "$package_dir/scripts/"
+  if [ -f "$ROOT/scripts/install-supervisor.sh" ]; then cp "$ROOT/scripts/install-supervisor.sh" "$package_dir/scripts/"; fi
+  if [ -f "$ROOT/scripts/uninstall-supervisor.sh" ]; then cp "$ROOT/scripts/uninstall-supervisor.sh" "$package_dir/scripts/"; fi
+  cp "$ROOT/skills/agentctl-portable/SKILL.md" "$package_dir/skills/agentctl-portable/SKILL.md"
+  cp "$ROOT/distributions/allowlist.json" "$ROOT/distributions/revision-manifest.json" \
+    "$ROOT/distributions/install.sh" "$ROOT/distributions/status.sh" "$ROOT/distributions/doctor.sh" \
+    "$ROOT/distributions/lib.sh" "$package_dir/distributions/"
+  if [ -d "$ROOT/distributions/multica" ]; then cp -R "$ROOT/distributions/multica" "$package_dir/distributions/multica"; fi
   if [ -d "$ROOT/docs" ]; then cp -R "$ROOT/docs" "$package_dir/docs"; fi
   if [ -d "$ROOT/schemas" ]; then cp -R "$ROOT/schemas" "$package_dir/schemas"; fi
   for metadata in LICENSE NOTICE; do

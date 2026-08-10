@@ -168,6 +168,7 @@ const (
 	StatePaused    State = "paused"
 	StateCancelled State = "cancelled"
 	StateStopped   State = "stopped"
+	StateExpired   State = "expired"
 )
 
 func (s Subscription) Validate(now time.Time) error {

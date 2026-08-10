@@ -40,7 +40,7 @@ func (a *app) capabilitiesCommand(ctx context.Context, renderer output.Renderer,
 	if probe {
 		observation, err := value.Probe(ctx, adapter.ProbeRequest{Executable: executable, Profile: c.profile, Fresh: true})
 		if err != nil {
-			return output.Wrap(output.CodeDependencyUnavailable, "adapter probe failed", true, err).WithDetail("adapter", name)
+			return mapAdapterError("adapter probe failed", err).WithDetail("adapter", name)
 		}
 		result["probe"] = observation
 		lines = append(lines, output.Line{Lead: "probe", Fields: []output.Field{{Name: "adapter", Value: manifest.Adapter}, {Name: "version", Value: observation.AdapterVersion}, {Name: "capabilities", Value: len(observation.Capabilities)}}})

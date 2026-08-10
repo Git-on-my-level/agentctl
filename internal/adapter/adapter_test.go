@@ -136,6 +136,35 @@ func TestGenericProbeDoesNotExecuteArbitraryExecutable(t *testing.T) {
 	}
 }
 
+func TestMulticaProbeVerifiesBoundedWorkspaceEventGrammar(t *testing.T) {
+	argsPath := filepath.Join(t.TempDir(), "args")
+	path := fixtureExecutable(t, `
+if [ "${1:-}" = "--version" ]; then printf '%s\n' 'multica 0.4.17'; exit 0; fi
+printf '%s\n' "$*" > "`+argsPath+`"
+printf '%s\n' '{"events":[],"next_cursor":"0","has_more":false}'
+`)
+	a := NewMultica(MulticaConfig{Binary: path, Profile: "desktop", Endpoint: "https://multica.example.test", Workspace: "workspace-test"})
+	result, err := a.Probe(context.Background(), ProbeRequest{Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(argv)
+	for _, required := range []string{"--profile desktop", "--workspace-id workspace-test", "--server-url https://multica.example.test", "event list", "--cursor 0", "--limit 1"} {
+		if !strings.Contains(got, required) {
+			t.Fatalf("probe argv %q missing %q", got, required)
+		}
+	}
+	for _, capability := range result.Capabilities {
+		if capability.Name == CapabilityEvents && (capability.Status != CapabilitySupported || capability.Source != "live_probe") {
+			t.Fatalf("event capability was not verified: %#v", capability)
+		}
+	}
+}
+
 func TestOneShotWaitsForCompletionBeyondDiscoveryWindow(t *testing.T) {
 	path := fixtureExecutable(t, `sleep 1; printf '%s\n' '{"type":"result","result":"status complete"}'`)
 	a := newNativeAdapter(nativeConfig{Manifest: ompManifest(), Binary: path, Parser: ompParser{}, LaunchKind: "omp_status"})
@@ -319,6 +348,23 @@ func TestMulticaIssueBindingMatchesNestedTaskAndUsesAuthorityCursors(t *testing.
 	checkpoint := observed[len(observed)-1]
 	if checkpoint.Kind != "health" || checkpoint.Cursor != "evt-next" || checkpoint.Payload["page_checkpoint"] != true {
 		t.Fatalf("missing page checkpoint: %#v", checkpoint)
+	}
+}
+
+func TestMulticaEventPageAcceptsPrettyPrintedJSON(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s\n' '{' '  "events": [' '    {' '      "type": "issue:updated",' '      "aggregate_kind": "issue",' '      "aggregate_id": "issue-fixture",' '      "sequence": 2,' '      "payload": {"status": "done"}' '    }' '  ],' '  "next_cursor": "2",' '  "has_more": false' '}'`)
+	config := MulticaConfig{Binary: path, Profile: "profile-fixture", Workspace: "workspace-fixture", Issue: "issue-fixture"}
+	paged := NewMultica(config).(PagedEvents)
+	page, err := paged.EventsPage(context.Background(), EventsRequest{Ref: SourceRef{Adapter: "multica", Kind: "multica_issue", Profile: config.Profile, Workspace: config.Workspace, Issue: config.Issue}, Cursor: "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.NextCursor != "2" || page.Scanned != 1 || len(page.Events) != 1 {
+		t.Fatalf("pretty page = %#v", page)
+	}
+	event := page.Events[0]
+	if event.Kind != "terminal" || event.State != StateCompleted || event.Payload["aggregate_id"] != config.Issue {
+		t.Fatalf("pretty terminal event = %#v", event)
 	}
 }
 

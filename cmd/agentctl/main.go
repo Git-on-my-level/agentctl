@@ -22,7 +22,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
-const version = "0.1.0-dev"
+var version = "0.1.0-dev"
 
 type app struct {
 	stdout, stderr io.Writer
@@ -191,7 +191,7 @@ func (a *app) parseCommon(args []string) (common, []string, error) {
 func (a *app) help(renderer output.Renderer, topic string) int {
 	commands := []map[string]any{
 		{"name": "run", "side_effect_class": "external_side_effect", "status": "available"},
-		{"name": "attach", "side_effect_class": "local_operational_write", "status": "available_for_local_bindings"},
+		{"name": "attach", "side_effect_class": "read_only", "status": "available_for_local_bindings"},
 		{"name": "status", "side_effect_class": "read_only", "status": "available"},
 		{"name": "events", "side_effect_class": "read_only", "status": "available"},
 		{"name": "subscribe", "side_effect_class": "local_operational_write", "status": "available"},
@@ -199,7 +199,7 @@ func (a *app) help(renderer output.Renderer, topic string) int {
 		{"name": "result", "side_effect_class": "read_only", "status": "available"},
 		{"name": "promote", "side_effect_class": "remote_coordination_write", "status": "available_with_multica_client_key"},
 		{"name": "cancel", "side_effect_class": "external_side_effect", "status": "adapter_dependent"},
-		{"name": "context", "side_effect_class": "read_only", "status": "available"},
+		{"name": "context", "side_effect_class": "local_operational_write", "status": "read_only_without_render"},
 		{"name": "knowledge", "side_effect_class": "local_operational_write", "status": "available"},
 		{"name": "config", "side_effect_class": "local_operational_write", "status": "available"},
 		{"name": "supervisor", "side_effect_class": "local_operational_write", "status": "available"},
@@ -357,8 +357,8 @@ func (a *app) doctor(ctx context.Context, renderer output.Renderer, c common, ar
 			result["config_status"] = "ready"
 			result["profile"] = name
 			lines = append(lines, output.Line{Lead: "profile", Fields: []output.Field{{Name: "name", Value: name}, {Name: "status", Value: "ready"}}})
-		} else if c.profile != "" {
-			return output.Wrap(output.CodeNotFound, "profile is unavailable", false, resolveErr)
+		} else {
+			return mapConfigError("profile is unavailable", resolveErr)
 		}
 	} else if !errors.Is(cErr, config.ErrNotFound) {
 		return output.Wrap(output.CodeUsage, "invalid config", false, cErr)
