@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentctl.dev/schemas/error.schema.json",
-  "title": "agentctl structured error",
+  "x-agentctl-docs": "../docs/agent-ergonomics.md#error-contract",
+  "title": "agentctl structured error v1",
   "type": "object",
   "additionalProperties": true,
   "required": ["ok", "schema_version", "error"],
@@ -11,47 +12,92 @@
     "error": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["code", "message", "retryable", "next_actions"],
+      "required": [
+        "code",
+        "message",
+        "retryable",
+        "exit_code",
+        "details",
+        "next_actions"
+      ],
       "properties": {
         "code": {
           "enum": [
             "usage",
+            "unsupported_schema",
             "not_found",
+            "cursor_expired",
             "ambiguous_reference",
             "capability_unavailable",
             "dependency_unavailable",
             "authentication_required",
             "authorization_denied",
             "conflict",
+            "invalid_state",
             "timeout",
             "attention_required",
+            "execution_failed",
             "remote_failure",
-            "invalid_state",
+            "execution_cancelled",
+            "execution_unknown",
             "unknown_state",
             "internal"
           ]
         },
         "message": {"type": "string", "minLength": 1},
         "retryable": {"type": "boolean"},
+        "exit_code": {
+          "enum": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 70]
+        },
         "details": {"type": "object"},
         "next_actions": {
           "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["label", "argv", "mutates"],
-            "properties": {
-              "label": {"type": "string"},
-              "argv": {
-                "type": "array",
-                "items": {"type": "string"},
-                "minItems": 1
-              },
-              "mutates": {"type": "boolean"}
-            }
-          }
+          "items": {"$ref": "#/$defs/next_action"}
+        }
+      },
+      "allOf": [
+        {"if": {"properties": {"code": {"enum": ["usage", "unsupported_schema"]}}}, "then": {"properties": {"exit_code": {"const": 2}}}},
+        {"if": {"properties": {"code": {"enum": ["not_found", "cursor_expired"]}}}, "then": {"properties": {"exit_code": {"const": 3}}}},
+        {"if": {"properties": {"code": {"const": "ambiguous_reference"}}}, "then": {"properties": {"exit_code": {"const": 4}}}},
+        {"if": {"properties": {"code": {"const": "capability_unavailable"}}}, "then": {"properties": {"exit_code": {"const": 5}}}},
+        {"if": {"properties": {"code": {"const": "dependency_unavailable"}}}, "then": {"properties": {"exit_code": {"const": 6}}}},
+        {"if": {"properties": {"code": {"enum": ["authentication_required", "authorization_denied"]}}}, "then": {"properties": {"exit_code": {"const": 7}}}},
+        {"if": {"properties": {"code": {"enum": ["conflict", "invalid_state"]}}}, "then": {"properties": {"exit_code": {"const": 8}}}},
+        {"if": {"properties": {"code": {"const": "timeout"}}}, "then": {"properties": {"exit_code": {"const": 9}}}},
+        {"if": {"properties": {"code": {"const": "attention_required"}}}, "then": {"properties": {"exit_code": {"const": 10}}}},
+        {"if": {"properties": {"code": {"enum": ["execution_failed", "remote_failure"]}}}, "then": {"properties": {"exit_code": {"const": 11}}}},
+        {"if": {"properties": {"code": {"const": "execution_cancelled"}}}, "then": {"properties": {"exit_code": {"const": 12}}}},
+        {"if": {"properties": {"code": {"enum": ["execution_unknown", "unknown_state"]}}}, "then": {"properties": {"exit_code": {"const": 13}}}},
+        {"if": {"properties": {"code": {"const": "internal"}}}, "then": {"properties": {"exit_code": {"const": 70}}}}
+      ]
+    }
+  },
+  "$defs": {
+    "next_action": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["label", "argv", "mutates", "side_effect_class", "preconditions"],
+      "properties": {
+        "label": {"type": "string", "minLength": 1},
+        "argv": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1
+        },
+        "mutates": {"type": "boolean"},
+        "side_effect_class": {
+          "enum": [
+            "read_only",
+            "local_operational_write",
+            "remote_coordination_write",
+            "external_side_effect"
+          ]
+        },
+        "preconditions": {
+          "type": "array",
+          "items": {"type": "string"}
         }
       }
     }
   }
 }
-

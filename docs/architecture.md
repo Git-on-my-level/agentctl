@@ -15,6 +15,12 @@ The system separates four concerns that are often accidentally coupled:
 This allows direct investigative work to remain lightweight while durable work
 can opt into Multica without changing how parents observe completion.
 
+Three rules constrain every component:
+
+1. An observation can cite an authority but cannot become that authority.
+2. A local alias or cache entry cannot silently become fleet-shared state.
+3. A capability is negotiated from evidence, not inferred from a product name.
+
 ## Planes and owners
 
 | Plane | Owner | `agentctl` responsibility |
@@ -62,7 +68,11 @@ does not move or copy the native session. It writes a distilled handoff with
 verified findings, evidence, remaining acceptance criteria, artifact refs, and
 the original execution reference.
 
-Promotion is explicit and idempotent. Repeating it returns the existing issue.
+Promotion is explicit and idempotent only when the Multica adapter can persist
+and query an exact authority-owned promotion key. It is a recoverable saga, not
+an atomic cross-system transaction. Repeating it returns the existing issue;
+absence of a local receipt is never evidence that no issue was created. See
+[Execution envelope and lifecycle](execution-envelope.md#promotion-as-a-recoverable-saga).
 
 ## Components
 
@@ -81,8 +91,10 @@ as an argv array after `--`.
 ### Local journal
 
 The local journal contains operational metadata only. It is owner-only,
-append-oriented, bounded by retention, and safe to rebuild from native sources
-where possible. It is not a transcript store.
+append-oriented, bounded by retention, and partially rebuildable from native
+sources where adapters support exact history. Word aliases, delivery receipts,
+and observation-order events may not be reconstructable, so rebuildability is
+reported per record rather than promised globally. It is not a transcript store.
 
 ### Optional local supervisor
 
@@ -93,6 +105,25 @@ remote callbacks, or retrying a delivery while no parent process is alive.
 The supervisor must remain host-local. It exposes a Unix socket by default;
 Tailnet HTTP exposure is explicit, authenticated, and read-only unless a
 separate mutation capability is granted.
+
+### Daemonless boundary
+
+The CLI-only design and the optional supervisor have intentionally different
+guarantees:
+
+| Behavior | Daemonless process | Managed supervisor |
+| --- | --- | --- |
+| Wrap and observe a foreground child | While the process lives | Yes |
+| Attach/poll durable backend state | While a command lives | Continuously |
+| Persist journal/outbox before exit | Yes | Yes |
+| Retry automatically after command exit or logout | No | Yes |
+| Wake a remote parent after reboot | No | Yes, after recovery |
+| Recover queued work on the next manual invocation | Yes | Yes |
+
+Backgrounding `agentctl await` is still process-scoped supervision. The MVP
+must not describe it as reboot-, logout-, or crash-surviving delivery. Installing
+or enabling the supervisor is an explicit host-state mutation owned by a host
+manager when one exists.
 
 ### Shared context bundle
 
@@ -139,6 +170,41 @@ An `agentctl` ID is a stable handle for observation. It does not replace the
 native or Multica ID at the source. Debug output may expose opaque source IDs;
 normal output uses word IDs and resolvable typed URIs.
 
+Host-local IDs are globally qualified by their origin host ID. Imported source
+objects bind a word alias to a full authority/source fingerprint. Bare IDs are
+resolved only in the current explicit origin context; cross-host references use
+the URI rules in [Identifiers](identifiers.md). Display labels never authorize a
+mutation.
+
+## Local and shared convergence
+
+The local journal is the authority only for `agentctl` observations, cursor
+checkpoints, and delivery attempts created on that host. It is not replicated as
+a database. Cross-host consumers exchange bounded event/callback documents and
+converge on full semantic dedupe keys.
+
+State becomes shared only through an existing owner:
+
+- promotion/idempotency bindings are stored as Multica metadata when Multica
+  owns the durable lifecycle;
+- host and resource aliases come from the fleet/resource authority;
+- context revisions come from the verified Git bundle;
+- native session/run outcome remains at the native CLI or Multica.
+
+Conflicting local aliases are preserved with provenance and re-aliased; they
+never use last-write-wins. Promotion and supersession are append-only relations,
+not in-place authority changes.
+
+## Portability boundary
+
+Core contracts use process, file, Unix socket, and signed HTTP primitives. They
+do not depend on Hermes APIs or a particular agent's memory layout. Backend
+adapters declare whether they can inject a context path, environment handle,
+native instruction reference, or Multica artifact/reference. If no reviewed
+mechanism exists, `context_injection` is unavailable and required injection
+fails before launch. A generic process adapter never edits prompts to simulate
+support.
+
 ## Failure boundaries
 
 - Multica unavailable during requested Multica dispatch: fail closed; do not
@@ -147,5 +213,9 @@ normal output uses word IDs and resolvable typed URIs.
 - Context publisher unavailable: use the last verified bundle and mark it stale.
 - Native event stream unavailable: fall back through adapter capability order.
 - Parent unavailable: execution may continue; terminal delivery remains queued.
-- Adapter cannot prove terminal state: report `unknown`, never infer success.
-
+- Adapter cannot prove terminal state: report unknown liveness/integrity while
+  retaining the last known state; never infer success.
+- Local crash during promotion: reconcile the authority-owned promotion key;
+  never create from local absence alone.
+- Contradictory terminal evidence: preserve both claims, mark integrity
+  conflicted, and fail outcome-dependent commands closed.

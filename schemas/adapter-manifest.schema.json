@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentctl.dev/schemas/adapter-manifest.schema.json",
+  "x-agentctl-docs": "../docs/adapters.md#adapter-manifests",
+  "title": "agentctl adapter manifest v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "adapter",
+    "adapter_version",
+    "core_compatibility",
+    "document_schema_versions",
+    "executable_discovery",
+    "backend_compatibility",
+    "capabilities",
+    "probe_actions",
+    "sensitivity"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "adapter": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,31}$"
+    },
+    "adapter_version": {"$ref": "#/$defs/version"},
+    "core_compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimum", "maximum_exclusive"],
+      "properties": {
+        "minimum": {"$ref": "#/$defs/version"},
+        "maximum_exclusive": {"$ref": "#/$defs/version"}
+      }
+    },
+    "document_schema_versions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {"type": "integer", "minimum": 1},
+        "minItems": 1,
+        "uniqueItems": true
+      }
+    },
+    "executable_discovery": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["kind", "value"],
+        "properties": {
+          "kind": {"enum": ["path", "path_lookup", "configured", "remote"]},
+          "value": {"type": "string", "minLength": 1},
+          "required": {"type": "boolean"}
+        }
+      },
+      "minItems": 1
+    },
+    "backend_compatibility": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["range", "status"],
+        "properties": {
+          "range": {"type": "string", "minLength": 1},
+          "status": {"enum": ["supported", "degraded", "unsupported"]},
+          "reason": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/capability_declaration"}
+    },
+    "probe_actions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/probe_action"}
+    },
+    "known_failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["classifier", "error_code"],
+        "properties": {
+          "classifier": {"type": "string", "minLength": 1},
+          "error_code": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "sensitivity": {
+      "type": "object",
+      "additionalProperties": {
+        "enum": [
+          "public",
+          "fleet-internal",
+          "operator-private",
+          "project-confidential",
+          "credential-local"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"
+    },
+    "capability_declaration": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "semantics_version", "implementation", "constraints"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,63}$"},
+        "semantics_version": {"type": "integer", "minimum": 1},
+        "implementation": {"enum": ["supported", "conditional", "unavailable"]},
+        "constraints": {"type": "object"}
+      }
+    },
+    "probe_action": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "argv", "side_effect_class", "writes_cache"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,63}$"},
+        "argv": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1
+        },
+        "side_effect_class": {
+          "enum": ["read_only", "local_operational_write"]
+        },
+        "writes_cache": {"type": "boolean"},
+        "timeout_seconds": {"type": "integer", "minimum": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"writes_cache": {"const": true}}},
+          "then": {"properties": {"side_effect_class": {"const": "local_operational_write"}}}
+        }
+      ]
+    }
+  }
+}

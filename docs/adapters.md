@@ -26,6 +26,55 @@ artifacts   optional; enumerate references without copying content
 Unsupported capabilities return a stable `capability_unavailable` error. They
 never silently degrade into a different mutating action.
 
+The interface is transport-neutral. An in-process adapter, subprocess plugin,
+Multica runtime adapter, and remote read-only observer must expose the same
+manifest/probe shapes; core code does not assume Hermes, a shared home
+directory, or access to a harness session database.
+
+## Capability negotiation
+
+The static manifest declares what an adapter implementation knows how to do.
+`probe` produces an instance-specific result for the exact executable, backend
+version, profile, host, and authority endpoint. Dispatch uses the intersection
+of requested semantics, manifest support, successful probe evidence, and caller
+policy. It never infers support from adapter name alone.
+
+Registered version-1 capability names are:
+
+```text
+launch attach snapshot events result resume cancel artifacts history
+context_injection promotion durable_idempotency durable_events remote_callback
+```
+
+Each capability reports:
+
+```json
+{
+  "name": "events",
+  "status": "degraded",
+  "source": "bounded_poll",
+  "semantics_version": 1,
+  "constraints": {
+    "history": false,
+    "ordering": "observation",
+    "minimum_poll_seconds": 15
+  },
+  "reason": "Backend has exact status lookup but no durable event stream"
+}
+```
+
+`supported` means all versioned semantics are available under the stated
+constraints. `degraded` is usable only when the caller explicitly permits the
+reported weaker semantics. `unavailable` is not silently converted to another
+operation. Unknown capability names are preserved by readers; unknown semantics
+fail closed for mutations.
+
+Probe results include adapter/backend versions, executable digest/path
+sensitivity, profile/endpoint fingerprint, probe time, freshness, and whether
+each probe action was read-only. A change to any of those inputs invalidates the
+cached result. Critical dispatch and promotion require a fresh probe; ordinary
+status may show a stale snapshot explicitly.
+
 ## Capability order
 
 Observation uses the strongest available source in this order:
@@ -39,6 +88,10 @@ Observation uses the strongest available source in this order:
 
 The selected source is reported in every snapshot. Fallback is observable and
 may emit a `degraded` health event.
+
+Fallback never upgrades guarantees. Polling cannot advertise durable history,
+source ordering, or cross-restart wakeup merely because it reconstructs current
+state. The event contract records `observation` or `reconciled` ordering.
 
 ## Native pass-through
 
@@ -54,6 +107,14 @@ output.
 
 If an existing native flag conflicts with supervision, launch fails with a
 structured explanation instead of overriding the caller silently.
+
+Context injection is separately negotiated. An adapter declares one or more
+reviewed mechanisms (`environment_path`, `native_argument`,
+`native_instruction_file`, `authority_artifact_ref`) and whether the harness
+actually guarantees delivery to the worker. If required context cannot be
+delivered, launch fails before starting the native command. The generic process
+adapter may provide `AGENTCTL_CONTEXT` and `AGENTCTL_EXECUTION` environment
+handles but cannot claim the child model read them.
 
 ## Initial adapters
 
@@ -93,6 +154,10 @@ structured explanation instead of overriding the caller silently.
 - Re-fetch authoritative state before emitting a terminal success package.
 - Never create a Multica issue unless the caller explicitly selects Multica or
   invokes promotion.
+- Advertise promotion/durable idempotency only if an exact promotion key can be
+  stored and queried in Multica-owned metadata after local-state loss.
+- Report separately whether context can be passed as a runtime file, artifact,
+  or structured reference; do not assume a Hermes profile exists in the worker.
 
 ### Generic process
 
@@ -113,6 +178,11 @@ Each adapter publishes a machine-readable manifest containing:
 - known failure classifications;
 - sensitivity of source references and artifacts.
 
+The draft machine contract is
+[`schemas/adapter-manifest.schema.json`](../schemas/adapter-manifest.schema.json).
+Manifests include their semantics/schema versions and a compatibility policy;
+they do not use a single unqualified boolean `capabilities` list.
+
 `agentctl doctor` validates the installed adapter/backend pair. Version skew is
 a first-class warning rather than an unstructured runtime surprise.
 
@@ -127,9 +197,12 @@ Every adapter requires fixture tests for:
 - reconnect/poll fallback;
 - cancellation;
 - event deduplication across reconnect;
+- source reset, out-of-order, and duplicate event handling;
+- capability downgrade and stale probe invalidation;
+- context-injection failure before child launch;
+- promotion crash recovery and authority-key lookup;
 - secret redaction;
 - unsupported-version behavior.
 
 Live smoke tests are optional and separately gated because they may consume
 provider resources or mutate session caches.
-

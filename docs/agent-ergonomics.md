@@ -8,16 +8,20 @@ contracts, validation, and safe defaults.
 
 ## Consistency
 
-Every command supports:
+Every command that returns a document supports:
 
 ```text
---output human|json|ndjson
+--output human|json
 --profile <name>
---context <context-word-id>
+--context-file <path>
 --explain
 --no-color
---timeout <duration>
 ```
+
+Streaming commands additionally support `--output ndjson`. Commands that may
+wait or perform I/O support `--timeout <duration>`. `--no-color` affects human
+output only. Unsupported flag/command combinations are usage errors rather than
+accepted no-ops.
 
 Mutating commands additionally support:
 
@@ -27,6 +31,10 @@ Mutating commands additionally support:
 --input-file <path>
 --input-stdin
 ```
+
+`--input-file` and `--input-stdin` are mutually exclusive. `--plan` performs
+target resolution and read-only capability probes but does not reserve names,
+create local mutation records, or write remote state.
 
 Flag names do not vary between subcommands for the same concept. JSON field
 names are stable snake_case. Times are UTC RFC 3339 plus explicit freshness.
@@ -44,7 +52,10 @@ Human output is concise and leads with the typed word ID. JSON output contains:
   "next_actions": [
     {
       "label": "Wait for terminal state",
-      "argv": ["agentctl", "await", "@last", "--output", "json"]
+      "argv": ["agentctl", "await", "exec-purple-monkey-dragon-river-candle-meadow", "--output", "json"],
+      "mutates": false,
+      "side_effect_class": "read_only",
+      "preconditions": []
     }
   ]
 }
@@ -53,8 +64,11 @@ Human output is concise and leads with the typed word ID. JSON output contains:
 `next_actions` uses argv arrays, not prose commands requiring shell parsing.
 Actions include required preconditions and whether they mutate state.
 
-Normal success emits no decorative banners. JSON mode never mixes logs with
-stdout; diagnostics go to stderr as structured JSON when requested.
+Normal success emits no decorative banners. JSON mode writes exactly one JSON
+document to stdout; NDJSON writes one document per line and no terminal summary
+outside the stream. Diagnostics never mix with stdout. Human diagnostics go to
+stderr by default; `--diagnostics json` makes each stderr diagnostic one JSON
+line using a separate diagnostic schema.
 
 ## Error contract
 
@@ -63,10 +77,12 @@ Errors include:
 ```json
 {
   "ok": false,
+  "schema_version": 1,
   "error": {
     "code": "ambiguous_reference",
     "message": "Reference 'purple-monkey' matches two executions.",
     "retryable": false,
+    "exit_code": 4,
     "details": {},
     "next_actions": []
   }
@@ -77,19 +93,56 @@ Stable error classes and exit codes distinguish usage, unavailable dependency,
 auth required, conflict, timeout, attention, remote failure, and unknown state.
 Error messages never recommend pasting credentials into a prompt.
 
+## Exit semantics
+
+`ok` describes the requested command, not merely whether parsing succeeded, and
+matches exit status zero. Observation commands such as `status`, `events`, and
+`result` exit 0 when the query succeeds even if the observed execution is
+failed. Their `result.state` carries subject outcome.
+
+`await` is intentionally outcome-sensitive: completed returns success; failed,
+cancelled, orphaned, attention (when requested as a stop condition), timeout,
+or conflicted/unknown outcome returns an error document with the last bounded
+execution/event reference in `details`.
+
+| Exit | Error code(s) | Meaning |
+| ---: | --- | --- |
+| 0 | none | Command completed successfully |
+| 2 | `usage`, `unsupported_schema` | Invalid request or unsupported contract |
+| 3 | `not_found`, `cursor_expired` | Exact object/checkpoint unavailable |
+| 4 | `ambiguous_reference` | Reference has multiple exact candidates |
+| 5 | `capability_unavailable` | Requested semantics are unsupported |
+| 6 | `dependency_unavailable` | Required executable/service unavailable |
+| 7 | `authentication_required`, `authorization_denied` | Identity/permission failure |
+| 8 | `conflict`, `invalid_state` | Concurrent or lifecycle conflict |
+| 9 | `timeout` | Command deadline elapsed |
+| 10 | `attention_required` | Await stopped for actionable attention |
+| 11 | `execution_failed`, `remote_failure` | Observed work or remote operation failed |
+| 12 | `execution_cancelled` | Awaited execution was cancelled |
+| 13 | `execution_unknown`, `unknown_state` | Outcome cannot be proven or is conflicted |
+| 70 | `internal` | `agentctl` invariant or implementation failure |
+
+The process emits at most one primary error document. Warnings do not change the
+exit code. Termination by an operating-system signal follows platform shell
+convention and may not produce a complete document.
+
 ## Contextual references
 
 Agents should rarely copy a full ID twice. Supported references include:
 
 ```text
-@last       last object produced by this invocation context
+@last       last object recorded in this explicit invocation context
 @current    execution bound to the current environment/context file
 @parent     parent execution
 @mine       current caller's active execution, when unique
 ```
 
-Resolution comes from an explicit context file or environment handle created by
-`agentctl`, not global recency guesswork. In scripts, full IDs remain preferred.
+Resolution comes only from `--context-file` or an `AGENTCTL_CONTEXT_FILE` handle
+created for a launched execution. The context document is owner-only, contains
+its origin host and generation, and is updated with compare-and-swap. A plain
+new shell has no `@last`; the CLI returns `not_found` and never consults global
+recency. Machine-readable `next_actions` use full typed IDs unless the output is
+explicitly bound to a context file.
 
 ## No dangerous fuzzy matching
 
@@ -108,6 +161,12 @@ object and sets `reused: true`.
 The CLI can derive an idempotency key from parent execution + bounded semantic
 operation, but always reports it. Observation timestamps never enter semantic
 dedupe keys.
+
+Automatic keys include the authority scope and exact source fingerprints. A
+derived key is allowed only when all semantic inputs are canonical and bounded;
+otherwise the CLI requires the caller's key. Reusing a key with different
+canonical inputs returns `conflict` with both input digests, never the existing
+object as if it matched.
 
 ## Plans and side effects
 
@@ -135,8 +194,10 @@ The class appears in plan and JSON output.
 what can be streamed, polled, resumed, cancelled, or inspected. Agents never
 need to infer support from backend names or versions.
 
-When a requested capability is absent, the error offers supported alternatives
-without silently changing behavior.
+The result distinguishes manifest support from the fresh instance probe and
+reports `supported`, `degraded`, or `unavailable` plus constraints and
+freshness. A degraded alternative requires explicit caller acceptance. The
+contract is detailed in [Adapters](adapters.md#capability-negotiation).
 
 ## Input ergonomics
 
@@ -155,9 +216,11 @@ Every launched execution receives a small context document automatically. It
 contains authority, execution ID, parent callback, relevant resource and
 knowledge references, and exact completion expectations.
 
-Models are not expected to remember that `agentctl` exists. Native launch
-adapters inject the context path through the safest backend-supported mechanism.
-A portable skill explains optional deeper commands.
+Models are not expected to remember that `agentctl` exists. A native or Multica
+adapter injects the context only through a negotiated, reviewed mechanism. If
+required injection is unavailable, launch fails before the child starts. A
+portable skill explains optional deeper commands, but correctness does not
+depend on Hermes or on any model reading a global profile.
 
 ## Lifecycle UX
 
@@ -202,3 +265,16 @@ Every JSON schema and adapter manifest includes a version and canonical docs
 reference. Unknown fields are tolerated on read; unknown required semantics fail
 closed on mutation.
 
+## Contract evolution
+
+`schema_version` is the major version of one named document schema, not the CLI
+release. Adding optional fields is compatible within a version. Changing field
+meaning, required fields, canonicalization, enum meaning, ID encoding, or
+security semantics requires a new major schema/semantics version and fixtures.
+
+Readers preserve unknown fields when proxying or journaling. A reader may show
+a newer document only as opaque/unverified data; it returns
+`unsupported_schema` before normalization or mutation. Adapter manifests state
+their minimum and maximum schema and semantics versions. `agentctl schema` and
+`agentctl capabilities` expose the negotiated intersection so callers do not
+infer compatibility from CLI versions.

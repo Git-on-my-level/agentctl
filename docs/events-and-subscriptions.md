@@ -2,28 +2,38 @@
 
 ## Delivery contract
 
-Events are delivered at least once. Every consumer must deduplicate using the
-stable event ID. `agentctl` never promises exactly-once external delivery.
+The local journal and every external destination are at-least-once. There is no
+exactly-once claim. Consumers deduplicate on the full `dedupe_key`; event word
+IDs are stable local handles but may differ when the same authority event is
+independently imported on another host.
 
-The system does promise:
+`agentctl` guarantees within one origin journal:
 
-- deterministic semantic event IDs;
-- atomic local journal append before delivery;
-- ordered delivery per execution when the backend supplies order;
-- bounded retries with visible backoff;
-- delivery receipts;
-- dead-letter retention;
-- one terminal semantic event per execution;
-- explicit supersession when observation moves to a new execution.
+- append before attempted delivery;
+- a contiguous journal sequence per execution;
+- replay from an explicit cursor while retained;
+- no new sequence allocation for a known semantic dedupe key;
+- bounded, visible delivery retry and dead-letter state;
+- at most one accepted terminal event per execution;
+- explicit promotion and supersession instead of silent retargeting.
+
+It does not claim source ordering when a backend does not provide it, and never
+sorts semantic events by wall-clock timestamps.
 
 ## Event shape
 
 ```json
 {
   "schema_version": 1,
-  "id": "event-silver-otter-canyon-lantern-drift",
-  "execution_id": "exec-purple-monkey-dragon-river-candle",
+  "id": "event-silver-otter-canyon-lantern-drift-velvet",
+  "origin_host_id": "host-amber-willow-orbit-tiger-harbor-gentle",
+  "execution_id": "exec-purple-monkey-dragon-river-candle-meadow",
   "sequence": 42,
+  "ordering": "source",
+  "source_position": {
+    "kind": "native_sequence",
+    "value": "875"
+  },
   "kind": "terminal",
   "state": "completed",
   "source_state": "turn.completed",
@@ -31,7 +41,8 @@ The system does promise:
   "adapter": "codex",
   "occurred_at": "2026-08-10T18:05:00Z",
   "observed_at": "2026-08-10T18:05:01Z",
-  "dedupe_key": "sha256:...",
+  "dedupe_key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "dedupe_version": 1,
   "payload": {
     "result_available": true,
     "artifact_ids": []
@@ -39,114 +50,205 @@ The system does promise:
 }
 ```
 
-Semantic dedupe keys exclude observation time and delivery-attempt data.
+`occurred_at` is nullable when the authority did not supply it. `observed_at`
+is always the local journal time. Neither participates in journal ordering.
+Payloads are bounded, kind-specific metadata and references, not native output.
 
-## Event kinds
+## Ordering
+
+For each execution, the journal assigns `sequence` starting at 1 in the same
+transaction that appends the event. Re-observation of an existing dedupe key
+returns its prior event ID and sequence. Gaps therefore indicate corruption or
+retention, not routine concurrency.
+
+`ordering` reports what can be asserted:
+
+- `source`: the backend supplies a monotonic position scoped to the exact
+  source execution;
+- `observation`: the journal knows only first-observed order;
+- `reconciled`: an adapter deterministically merged more than one authoritative
+  source, such as exact Multica run state plus issue workflow state.
+
+`source_position` is an opaque string plus a namespaced kind. It is never parsed
+as an integer by core code. Adapters reject backward positions from one source
+generation unless they explicitly detect a source reset and emit a health
+event. Events from different executions are only partially ordered; consumers
+must not compare their sequence numbers.
+
+## Semantic deduplication
+
+Each adapter owns a versioned, documented semantic projection. The key is:
+
+```text
+sha256("agentctl-event-v1\0" || adapter_name || 0x00 ||
+       dedupe_version_u32_be || canonical_projection_json)
+```
+
+The projection uses RFC 8785 canonical JSON and includes the authority scope,
+full source fingerprint, event kind, and the strongest stable source event ID
+or revision available. It excludes observation time, retry count, delivery
+destination, and local word IDs.
+
+When polling provides only snapshots, the projection describes a transition,
+not a poll: prior normalized state/revision plus new normalized state/revision
+and any authority-supplied generation. Unchanged snapshots emit no event.
+Repeated occurrences such as two separate approval requests require a stable
+source discriminator; without one the adapter exposes the latest snapshot but
+must not invent distinct semantic events.
+
+A full-hash collision with unequal projections is quarantined as journal
+corruption. It is never resolved by overwriting. The word-ID collision rules
+are separately defined in [Identifiers](identifiers.md).
+
+## Event kinds and terminal conflicts
 
 | Kind | Purpose |
 | --- | --- |
-| `started` | Execution accepted/started |
+| `started` | Execution accepted or started |
 | `progress` | Bounded coarse progress, optional |
-| `attention` | Parent decision or intervention needed |
+| `attention` | Parent/coordinator decision or intervention needed |
 | `artifact` | New or changed artifact reference |
-| `health` | Observation degradation, recovery, stale heartbeat |
+| `health` | Degradation, recovery, stale observation, or integrity conflict |
 | `terminal` | Completed, failed, cancelled, or orphaned |
-| `promoted` | Direct execution promoted to durable authority |
-| `superseded` | Observation moved to a replacement execution |
+| `promoted` | Direct execution linked to a new durable execution |
+| `superseded` | A replacement execution became the continuation target |
 
-Raw token deltas, chain-of-thought, tool chatter, and every stdout line are not
-normalized events.
+Before journaling `terminal`, an adapter re-fetches the strongest authoritative
+state its negotiated capability allows. A later contradictory terminal claim
+does not rewrite the terminal event or emit a second one. It emits a
+`health` event with reason `terminal_conflict`, marks observation integrity
+`conflicted`, and makes `await`/`result` return `unknown_state` until explicit
+reconciliation. This preserves auditability without pretending the first claim
+is still trustworthy.
+
+Raw token deltas, chain-of-thought, tool chatter, every stdout line, prompts,
+and transcripts are not normalized events.
+
+## Cursors and replay
+
+A cursor word ID names a local immutable checkpoint containing:
+
+- origin journal and stream scope;
+- last delivered execution sequence or journal position;
+- hash of the event at that position;
+- query/filter digest;
+- creation and expiry times.
+
+The cursor value is not the checkpoint itself and cannot be fabricated by a
+client. A cursor is valid only for the same origin and exact filter digest.
+`agentctl events --after <cursor-id>` resumes strictly after the checkpoint.
+`--after <event-id>` is shorthand only when that event is retained and belongs
+to the requested stream.
+
+Retention that removes the checkpoint returns `cursor_expired` and the earliest
+available cursor; it never silently resumes at the current tail. Pagination
+returns events plus `next_cursor` in one read transaction. A subscriber advances
+its delivery cursor only after destination acknowledgement.
 
 ## Subscriptions
 
-A subscription binds:
+A subscription binds exact execution IDs or an explicit narrow authority query,
+event kinds, destination, expiry, retry policy, optional coordinator execution,
+and a delivery cursor. Query subscriptions record their resolved authority and
+scope; display labels are insufficient.
 
-- one or more execution IDs or a narrow authority query;
-- event kinds;
-- callback destination;
-- expiry/TTL;
-- retry policy;
-- optional parent execution ID;
-- delivery cursor.
+Task subscriptions expire after acknowledged terminal delivery by default.
+Broad subscriptions require an explicit scope and retention estimate in plan
+output. Creating, rotating, acknowledging, pausing, and cancelling a
+subscription are idempotent mutations.
 
-Task-specific subscriptions expire immediately after acknowledged terminal
-delivery unless explicitly configured otherwise.
-
-Broad subscriptions require an explicit scope and are read-only observers. The
-CLI must make their potential event volume visible before creation.
+Promotion does not mutate a subscription target in place. Rotation creates a
+new subscription for the promoted execution, links `replaces`/`replaced_by`,
+and stops the old subscription only after the new one is durable. Until then,
+duplicate delivery across both subscriptions is expected and converges by
+dedupe key.
 
 ## Callback destinations
 
-Initial destinations:
+Initial destinations are:
 
 ```text
-parent          Foreground/background process completion contract
-stdout          NDJSON or one terminal JSON document
-file            Atomic append to owner-only NDJSON
+parent          Process-scoped completion contract
+stdout          NDJSON stream or one terminal JSON document
+file            Owner-only NDJSON append
 unix            Local Unix socket
-webhook         Signed HTTP callback with retry/outbox
-command         Explicit argv template receiving an event file path
+webhook         Signed HTTP request with retry/outbox
+command         Explicit argv receiving an owner-only event file path
 ```
 
-Harness-specific callbacks should be small plugins built on these primitives,
-not embedded platform credentials in the core journal.
+Harness-specific callbacks are plugins over these primitives. The core journal
+contains credential references, never platform credentials. `command` does no
+shell interpolation, passes the event path as one argv element, uses a minimal
+documented environment, and rejects executable paths that change between plan
+and invocation.
 
-`command` callbacks never interpolate event fields into a shell string. The
-event is written to an owner-only temporary file and its path is passed as one
-argv value.
+## Webhook protocol and security
 
-## Await semantics
+Every request carries a bounded callback envelope, not a raw adapter payload:
 
-```bash
-agentctl await exec-purple-monkey-dragon-river-candle --output json
+```json
+{
+  "schema_version": 1,
+  "delivery_id": "delivery-gentle-comet-maple-badger-valley-sparrow",
+  "subscription_id": "sub-quiet-forest-copper-raven-signal-harbor",
+  "event_id": "event-silver-otter-canyon-lantern-drift-velvet",
+  "event_dedupe_key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "attempt": 3,
+  "sent_at": "2026-08-10T18:05:03Z",
+  "expires_at": "2026-08-10T18:10:03Z",
+  "nonce": "base64url-random-value",
+  "event": {}
+}
 ```
 
-`await`:
+The receiver verifies transport/Tailnet identity when available, an explicitly
+configured signing profile, destination and subscription scope, body digest,
+freshness, and replay state. Signing keys are referenced from owner-only local
+configuration or an OS credential store and never appear in argv, URLs, plans,
+or journals. Redirects are disabled. Destination planning rejects loopback,
+link-local, metadata-service, and non-allowlisted address changes unless the
+operator explicitly selected that local target.
 
-- emits exactly one terminal or timeout document;
-- exits 0 for observed `completed`;
-- exits a stable nonzero code for failed/cancelled/orphaned/timeout/unknown;
-- never treats callback receipt as proof of task success;
-- can be safely backgrounded by a parent harness that wakes on process exit.
+The signature covers the exact request method, normalized target path, content
+type, body digest, sent/expiry times, nonce, subscription ID, and delivery ID.
+The concrete algorithm and canonical byte fixtures must be frozen before
+webhooks ship; Tailnet reachability alone is not accepted as message
+authentication.
 
-## Polling fallback
+An acknowledgement is a bounded JSON object containing the delivery ID, event
+dedupe key, receiver ID, and acknowledgement time. A matching 2xx response or
+documented duplicate response acknowledges delivery. A generic 2xx body does
+not. `401`/`403` pauses delivery pending configuration repair; `404`/`410`
+dead-letters the destination; `408`/`429`/5xx and connection failure retry with
+bounded exponential backoff and jitter. Other 4xx responses dead-letter with
+the response body discarded or redacted.
 
-Polling is an adapter implementation detail with a public health contract:
+Receivers persist replay state at least through the sender's maximum retry and
+clock-skew window. Recovery replays unacknowledged outbox entries; it never
+generates a new event or delivery ID merely because the sender restarted.
 
-- bounded interval with jitter;
-- conditional/backoff requests when supported;
-- exact native execution reference;
-- atomic cursor/state writes;
-- no model calls on unchanged state;
-- no output on quiet ticks unless requested in debug mode;
-- freshness threshold and stale alert;
-- deterministic fixture/self-test independent of credentials.
+## Await and daemonless limits
 
-Polling stops after terminal delivery and acknowledgement. Persistent fleet
-subscriptions use a managed supervisor and explicit retention policy instead of
-per-task cron proliferation.
+`agentctl await` emits exactly one terminal, attention, timeout, or integrity
+document and follows the exit contract in
+[Agent-first CLI ergonomics](agent-ergonomics.md). Callback receipt proves only
+delivery, never task success.
 
-## Remote delivery
-
-Cross-host callbacks use Tailnet identities and signed requests. The originating
-host retains an outbox until the receiver acknowledges the event or the bounded
-policy moves it to dead letter.
-
-The callback URL contains no reusable credential. Authentication material stays
-in owner-only local configuration. A receiver authorizes the sending host and
-subscription, not merely possession of a word ID.
+Without a managed supervisor, retry and polling continue only while the
+foreground `run`, `await`, or an explicitly backgrounded process remains alive.
+Later CLI invocations can recover durable local journal/outbox entries, but no
+component wakes itself after logout or reboot. Cross-restart automatic delivery
+therefore requires the optional supervisor; the daemonless MVP must not claim
+otherwise.
 
 ## Multica integration
 
-The preferred long-term Multica adapter consumes a server-side durable event
-outbox with sequence IDs. WebSocket events provide low latency but are not, by
-themselves, a durable delivery record.
+The preferred Multica adapter consumes a server-side durable outbox with source
+positions. A WebSocket may reduce latency but is not a durable record.
 
-Until that exists, the adapter polls both:
-
-1. exact run state for liveness/terminal outcome;
-2. issue state for workflow/attention state.
-
-It emits a terminal event if the exact run terminates even when the issue does
-not transition. This prevents board-state lag from swallowing completion.
-
+Until such an outbox exists, the adapter polls the exact run for liveness and
+terminal outcome and the exact issue for workflow/attention state. It uses
+`reconciled` ordering, exposes both source revisions, and emits terminal from
+the run even if board state lags. If stable revisions or exact-run lookup are
+unavailable, capability negotiation reports the weaker guarantee instead of
+claiming reliable history.

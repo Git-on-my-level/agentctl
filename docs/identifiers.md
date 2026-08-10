@@ -1,130 +1,182 @@
 # LLM-friendly identifiers
 
-## Goals
+## Goals and limits
 
-User-facing identifiers must be:
+Every identifier emitted for ordinary human or agent use is a typed word ID. It
+must be easy to copy, pronounce, validate, and distinguish from a display name.
+Opaque UUIDs, database integers, native session IDs, and Multica short IDs remain
+available to adapters as source bindings, but normal commands do not require or
+lead with them.
 
-- easy for models and humans to read, copy, pronounce, and remember;
-- type-scoped so a reference reveals what it names;
-- collision-resistant across a multi-machine fleet;
-- typo-detecting;
-- stable for the object's lifetime;
-- exact by default, without dangerous fuzzy mutation.
-
-UUIDs and database integers may exist internally at a source authority, but
-normal `agentctl` commands neither require nor prominently emit them.
+A word ID is a locator, not a credential and not, by itself, a globally unique
+database key. The globally unambiguous key is `(origin_host_id, word_id)` for
+host-local objects or `(authority, source_fingerprint)` for imported authority
+objects. Portable references therefore include the origin host.
 
 ## Canonical format
 
 ```text
-<type>-<word>-<word>-<word>-<word>-<word>
+<type>-<word>-<word>-<word>-<word>-<word>-<word>
 ```
 
 Examples:
 
 ```text
-exec-purple-monkey-dragon-river-candle
-event-silver-otter-canyon-lantern-drift
-sub-quiet-forest-copper-raven-signal
-cursor-amber-willow-orbit-tiger-harbor
-artifact-gentle-comet-maple-badger-valley
+exec-purple-monkey-dragon-river-candle-meadow
+event-silver-otter-canyon-lantern-drift-velvet
+sub-quiet-forest-copper-raven-signal-harbor
+cursor-amber-willow-orbit-tiger-harbor-gentle
+artifact-gentle-comet-maple-badger-valley-sparrow
 ```
 
-Initial type prefixes:
+Initial prefixes are a registry, not an open string:
 
 | Prefix | Object |
 | --- | --- |
 | `exec` | Normalized execution |
 | `event` | Normalized event |
 | `sub` | Subscription |
-| `cursor` | Event-stream cursor |
-| `delivery` | Callback delivery attempt/receipt |
+| `cursor` | Local event-stream checkpoint |
+| `delivery` | Callback delivery attempt or receipt |
 | `artifact` | Artifact reference |
 | `context` | Rendered context snapshot |
-| `route` | Routing decision/explanation |
+| `route` | Routing decision or explanation |
+| `host` | Stable fleet host alias |
+| `source` | Redacted alias for an opaque native source |
+| `project` | Imported project/workspace binding |
+| `issue` | Imported durable issue binding |
+| `run` | Imported durable run binding |
 
-Prefixes are singular, lowercase, ASCII, and versioned as part of the CLI
-contract.
+Display labels such as `m5-mbp`, `omi`, or `SCA-293` may be shown alongside a
+word ID, but are never accepted as the sole target of a mutation.
 
-## Encoding
+## Version 1 encoding
 
-The five words encode 50 random bits plus a 5-bit checksum using a curated
-2,048-word list. Generation uses a cryptographically secure random source.
+The six words are six unsigned 11-bit indices into the version-1 2,048-word
+list. Together they encode this 66-bit big-endian codeword:
 
-Properties:
+```text
+payload[60] || checksum[6]
+```
 
-- approximately 1.12 quadrillion possible random payloads;
-- approximately 0.044% birthday-collision probability at one million generated
-  IDs before database collision retries;
-- one-in-32 chance that an arbitrary mistyped five-word payload passes checksum;
-- authoritative stores still enforce uniqueness and regenerate on conflict.
+For randomly allocated objects, `payload` is 60 bits from the operating
+system's cryptographically secure random source. The checksum is the first six
+bits of:
 
-This is an ergonomic identifier, not an authentication token. It must never be
-treated as secret or as proof of authorization.
+```text
+SHA-256("agentctl-word-id-v1\0" || type_utf8 || 0x00 || payload_u64_be)
+```
 
-The exact bit packing and checksum algorithm will be frozen before the first
-implementation release and covered by cross-language fixtures.
+`payload_u64_be` is eight bytes, big-endian, with its high four bits zero. The
+type prefix participates in the checksum, so changing `exec` to `event` is
+detected. The codeword is split from most-significant to least-significant bit
+into six word-list indices. Parsers reject noncanonical case, word count, type,
+or checksum before consulting storage.
+
+The 60-bit payload gives an approximate birthday-collision probability of
+4.3e-7 at one million IDs (about 1 in 2.3 million), before uniqueness checks.
+An arbitrary altered codeword has a 1-in-64 checksum pass rate. The checksum is
+for transcription errors; authorization must never depend on it.
+
+Each allocating store enforces uniqueness within `(object_type, origin_host)`
+and retries with fresh randomness. Offline hosts can still generate the same
+word ID. Import never merges on word ID alone: it compares origin and the full
+source fingerprint, keeps both objects, and allocates a replacement alias for
+the incoming binding if necessary.
+
+## Deterministic derivation
+
+Stable event identity and object allocation are deliberately separate:
+
+- ordinary object word IDs are random and immutable after allocation;
+- semantic event deduplication uses a full 256-bit `dedupe_key` defined in
+  [Events, subscriptions, and callbacks](events-and-subscriptions.md);
+- re-observing a semantic event returns the already journaled event ID;
+- independent hosts may allocate different event IDs for the same semantic
+  event and still converge by `dedupe_key` when records are imported.
+
+This avoids presenting a truncated word ID as a collision-proof content hash.
+Where a source binding must be recreated deterministically after local state
+loss, its authoritative fingerprint is:
+
+```text
+sha256(canonical_json({authority, authority_scope, source_kind, source_id}))
+```
+
+The fingerprint is retained locally (and may be redacted in output). A word ID
+is allocated for it on first import. An authority that needs the same alias on
+multiple hosts must persist that alias as authority-owned metadata and expose
+an exact lookup capability; otherwise each host uses its own alias and portable
+URIs retain the origin host. `agentctl` never guesses or recomputes a shared
+alias from a truncated hash.
 
 ## Word-list requirements
 
-The list is repository-owned and versioned. Words must be:
+The exact ordered list is repository-owned, immutable for encoding version 1,
+and identified by a SHA-256 digest in fixtures and manifests. Words are:
 
-- common, concrete, and 3–10 ASCII letters;
-- unambiguous in spelling and pronunciation;
-- free of hyphens, spaces, diacritics, and inflection variants;
+- common, concrete, and 3-10 lowercase ASCII letters;
+- distinct under case folding and free of hyphens, spaces, and diacritics;
 - screened for offensive, sensitive, or culturally risky combinations;
-- distinct under case folding;
-- not common CLI flags, reserved contextual references, or type prefixes;
-- preferably single tokens in major target model tokenizers.
+- free of homophones, near-homographs, and common inflection pairs;
+- not CLI flags, contextual references, or registered type prefixes;
+- scored for tokenization across the supported model families.
 
-Avoid homophones and near-homographs such as `pair`/`pear`, `desert`/`dessert`,
-or `angle`/`angel`.
+Changing order or membership requires a new encoding version. Readers retain
+old lists while referenced IDs remain within retention.
 
-## Resolution rules
+## Resolution and aliases
 
-Accepted references:
+Accepted references, in decreasing safety, are:
 
-1. Full typed word ID — always accepted.
-2. Full untyped five-word payload — accepted when exactly one type matches in
-   the requested command's domain.
-3. Reserved contextual reference — such as `@last`, `@current`, `@parent`, or
-   `@mine`.
-4. Word-prefix reference — read-only commands only, and only when unique.
+1. a full typed word ID;
+2. a portable typed URI;
+3. an exact contextual reference such as `@current`;
+4. a full untyped six-word payload, only when the command expects one type;
+5. a unique leading-word prefix, only for read-only commands.
 
-Mutation commands reject fuzzy matching. A contextual reference is safe for a
-mutation only when it resolves from explicit local invocation context; the CLI
-must echo the resolved full ID before performing the operation.
+Mutation commands require a full typed ID, portable URI, or contextual
+reference resolved from an explicit invocation context. They reject display
+labels, source IDs, untyped payloads, and prefixes. Noninteractive ambiguity
+returns `ambiguous_reference` with typed candidates and exact retry argv.
 
-Examples:
+Aliases are typed bindings with provenance, scope, and status:
 
-```bash
-agentctl status purple-monkey-dragon-river-candle
-agentctl await @last
-agentctl cancel exec-purple-monkey-dragon-river-candle
+```json
+{
+  "alias": "issue-quiet-forest-copper-raven-signal-harbor",
+  "origin_host_id": "host-amber-willow-orbit-tiger-harbor-gentle",
+  "authority": "multica",
+  "source_fingerprint": "sha256:...",
+  "status": "active",
+  "superseded_by": null
+}
 ```
 
-Ambiguity is an error, never a prompt in noninteractive mode.
+One active alias maps to exactly one source fingerprint within its origin. A
+source fingerprint may have historical superseded aliases. Alias conflicts
+never use last-write-wins and never rewrite a source authority ID.
 
-## URIs and cross-host references
+## Portable URIs
 
-Portable references use typed URIs while retaining the word ID:
+Portable references contain only typed word IDs:
 
 ```text
-agentctl://m5-mbp/exec-purple-monkey-dragon-river-candle
-codex://m5-mbp/thread-amber-willow-orbit-tiger-harbor
-multica://scaling-forever/SCA-293/run-silver-otter-canyon-lantern-drift
+agentctl://host-amber-willow-orbit-tiger-harbor-gentle/exec-purple-monkey-dragon-river-candle-meadow
+codex://host-amber-willow-orbit-tiger-harbor-gentle/source-velvet-comet-maple-badger-valley-sparrow
+multica://host-amber-willow-orbit-tiger-harbor-gentle/project-silver-otter-canyon-lantern-drift-velvet/issue-quiet-forest-copper-raven-signal-harbor/run-purple-monkey-dragon-river-candle-meadow
 ```
 
-Host aliases come from the shared fleet/resource contract. The URI does not
-embed IP addresses, usernames, tokens, or filesystem paths.
+The scheme determines the adapter; each path segment has a fixed expected
+type. URIs never contain credentials, IP addresses, usernames, filesystem
+paths, or raw authority IDs. Resolution may require the named host or authority
+to be reachable; an unavailable resolver returns `dependency_unavailable`, not
+`not_found`.
 
-## Source IDs
+## Fixtures required before implementation
 
-Opaque backend identifiers are retained in the execution envelope for exact
-API calls and reconciliation. They appear under `source_ref` in JSON and may be
-redacted according to sensitivity. Human output leads with the word ID.
-
-An importer that encounters a word-ID collision keeps both source objects and
-assigns one a new word ID, recording the old conflicting alias in an audit
-event. Source authority IDs are never rewritten.
-
+Phase 0 must publish the ordered word-list digest plus fixtures for zero,
+maximum, and random payloads; every type prefix; one-bit and one-word errors;
+wrong-type checksums; invalid casing; URI parsing; local collision retry; and
+cross-host alias conflict. Two independent implementations must produce the
+same codeword and rejection result for every fixture.

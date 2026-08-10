@@ -1,33 +1,42 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentctl.dev/schemas/event.schema.json",
-  "title": "agentctl normalized event",
+  "x-agentctl-docs": "../docs/events-and-subscriptions.md#event-shape",
+  "title": "agentctl normalized event v1",
   "type": "object",
   "additionalProperties": true,
   "required": [
     "schema_version",
     "id",
+    "origin_host_id",
     "execution_id",
     "sequence",
+    "ordering",
     "kind",
     "authority",
     "adapter",
     "occurred_at",
     "observed_at",
     "dedupe_key",
+    "dedupe_version",
     "payload"
   ],
   "properties": {
     "schema_version": {"const": 1},
-    "id": {
-      "type": "string",
-      "pattern": "^event-[a-z]{3,10}(?:-[a-z]{3,10}){4}$"
+    "id": {"$ref": "#/$defs/event_id"},
+    "origin_host_id": {"$ref": "#/$defs/host_id"},
+    "execution_id": {"$ref": "#/$defs/execution_id"},
+    "sequence": {"type": "integer", "minimum": 1},
+    "ordering": {"enum": ["source", "observation", "reconciled"]},
+    "source_position": {
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,63}$"},
+        "value": {"type": "string", "minLength": 1, "maxLength": 512}
+      }
     },
-    "execution_id": {
-      "type": "string",
-      "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){4}$"
-    },
-    "sequence": {"type": "integer", "minimum": 0},
     "kind": {
       "enum": [
         "started",
@@ -41,21 +50,67 @@
       ]
     },
     "state": {
-      "type": ["string", "null"]
+      "type": ["string", "null"],
+      "enum": [
+        "created",
+        "starting",
+        "running",
+        "waiting",
+        "attention",
+        "completed",
+        "failed",
+        "cancelled",
+        "orphaned",
+        null
+      ]
     },
-    "source_state": {"type": ["string", "null"]},
+    "source_state": {"type": ["string", "null"], "maxLength": 512},
     "authority": {"enum": ["native", "multica"]},
     "adapter": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9_-]{1,31}$"
     },
-    "occurred_at": {"type": "string", "format": "date-time"},
+    "occurred_at": {"type": ["string", "null"], "format": "date-time"},
     "observed_at": {"type": "string", "format": "date-time"},
-    "dedupe_key": {
+    "dedupe_key": {"$ref": "#/$defs/sha256"},
+    "dedupe_version": {"type": "integer", "minimum": 1},
+    "payload": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"kind": {"const": "terminal"}}},
+      "then": {
+        "required": ["state"],
+        "properties": {
+          "state": {"enum": ["completed", "failed", "cancelled", "orphaned"]}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"ordering": {"enum": ["source", "reconciled"]}}},
+      "then": {"required": ["source_position"]}
+    }
+  ],
+  "$defs": {
+    "word_payload": {
+      "type": "string",
+      "pattern": "[a-z]{3,10}(?:-[a-z]{3,10}){5}"
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^event-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "execution_id": {
+      "type": "string",
+      "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "host_id": {
+      "type": "string",
+      "pattern": "^host-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "sha256": {
       "type": "string",
       "pattern": "^sha256:[a-f0-9]{64}$"
-    },
-    "payload": {"type": "object"}
+    }
   }
 }
-

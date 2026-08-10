@@ -55,6 +55,11 @@ The publisher produces:
 The local cache is installed atomically after full hash validation. Failed
 updates preserve the previous valid revision.
 
+The manifest declares a bundle schema version, minimum reader semantics,
+ordered word-list digest, and the exact canonicalization used for asset hashes.
+Unknown required feature names make the bundle incompatible; clients keep the
+last compatible verified revision rather than partially loading a new one.
+
 ## Context selection
 
 `agentctl context` deterministically matches records using observable inputs:
@@ -73,7 +78,7 @@ The output explains why each record matched and identifies its revision:
 
 ```json
 {
-  "id": "context-gentle-comet-maple-badger-valley",
+  "id": "context-gentle-comet-maple-badger-valley-sparrow",
   "bundle_revision": "git:...",
   "matches": [
     {
@@ -87,13 +92,23 @@ The output explains why each record matched and identifies its revision:
 
 ## Launch injection
 
-Adapters automatically provide the rendered context file and execution handle
-to the native harness through a reviewed backend-specific mechanism. The
-context contains no credentials and is bounded in size.
+Adapters provide the rendered context file and execution handle only through a
+negotiated backend-specific mechanism. Supported mechanism classes are an
+inherited environment path, a native argv option, a native instruction-file
+option, or an authority-owned artifact/reference. The adapter manifest states
+whether delivery to the worker is guaranteed or merely exposed to the process.
 
-One portable `agentctl` skill is distributed to Hermes, Codex, Claude, Cursor,
-OMP, and Multica runtimes. It explains deeper discovery and operational commands,
-but launch correctness does not depend on the model choosing to read it.
+If the task contract requires context and no reviewed mechanism is supported,
+dispatch fails before launch. It never pastes context into a prompt, edits a
+Hermes profile, or assumes a Multica worker shares the coordinator filesystem.
+The rendered document contains no credentials, uses portable references rather
+than local paths where crossing runtimes, and is bounded by declared byte and
+record limits.
+
+One portable `agentctl` skill may be distributed to Hermes, Codex, Claude,
+Cursor, OMP, and Multica runtimes. It explains deeper discovery and operational
+commands, but launch correctness does not depend on the skill being installed,
+on a model choosing to read it, or on a harness having a global memory system.
 
 ## Harness distribution
 
@@ -128,4 +143,3 @@ When the publisher is unavailable, clients use the last verified bundle and
 surface age, revision, and failed-refresh state. Service reachability and bundle
 freshness are separate health dimensions; a healthy service does not make stale
 policy current.
-

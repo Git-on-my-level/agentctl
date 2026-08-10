@@ -26,6 +26,11 @@
 - opaque native resume references;
 - last verified shared-context bundle.
 
+This state is namespaced by stable host word ID and local store generation. It
+is not database-replicated between machines. Cross-host callbacks exchange
+bounded documents and converge on full semantic dedupe keys; portable URIs keep
+the origin host explicit.
+
 ### Never synchronized by `agentctl`
 
 - raw prompts, reasoning, or transcripts;
@@ -38,8 +43,11 @@
 
 ## Filesystem policy
 
-All mutable local state lives below an XDG-compatible state root and defaults to
-owner-only permissions:
+All mutable local state lives below `AGENTCTL_STATE_HOME`, then
+`XDG_STATE_HOME/agentctl`, then the documented platform default. Cache data uses
+`XDG_CACHE_HOME` or its platform equivalent. Resolved roots are shown by
+`agentctl doctor` without exposing unrelated home contents. Unix defaults are
+owner-only:
 
 ```text
 ~/.local/state/agentctl/       0700
@@ -50,6 +58,17 @@ owner-only permissions:
 Temporary files use the same filesystem as their atomic destination when
 required and are created owner-only. Symlink traversal and path escape are
 rejected.
+
+State writes take an exclusive store lock, write a checksummed record, flush
+according to the command's durability class, and atomically advance the visible
+revision. A second process either observes the old or new complete revision.
+Read-only commands may take read locks and never repair state implicitly.
+
+Permissions are verified on startup. A group/world-accessible state root causes
+sensitive operations to fail closed with an exact remediation plan. File modes
+do not protect against another process running as the same OS user; adapters and
+callback commands are therefore treated as trusted code even though their
+parsed output is untrusted data.
 
 ## Authentication and authorization
 
@@ -66,6 +85,11 @@ Remote callbacks authorize:
 - allowed event scope;
 - request signature and freshness;
 - replay/idempotency key.
+
+The host word ID and Tailnet reachability are locators/evidence, not signatures.
+Webhook canonicalization, acknowledgement, retry classification, redirect, and
+destination-resolution rules are normative in
+[Events, subscriptions, and callbacks](events-and-subscriptions.md#webhook-protocol-and-security).
 
 A valid callback cannot mutate or cancel an execution unless it uses a separate
 explicit mutation capability.
@@ -120,13 +144,25 @@ Therefore all native output is parsed as untrusted data, external success claims
 are independently verifiable, callbacks are idempotent, and version skew is
 reported before critical dispatch.
 
+The initial threat model does not defend a journal from a malicious process
+already executing as the same user with unrestricted filesystem access. Stronger
+isolation requires OS sandboxing or a separate service identity and is not
+implied by owner-only modes.
+
 ## Recovery
 
-- Journal append and cursor updates are atomic and crash-safe.
+- Journal append and sequence allocation are one atomic transaction. Cursor
+  advancement is a separate atomic acknowledgement transaction, so a crash may
+  redeliver but cannot skip an unacknowledged event.
 - On restart, nonterminal executions are re-probed before events resume.
-- Unknown liveness yields `unknown`/`orphaned` according to explicit adapter
-  evidence, never automatic success.
+- Unavailable evidence sets liveness/integrity unknown while retaining the last
+  known state. `orphaned` requires proof that the exact attempt cannot continue
+  and no authoritative result can be recovered.
 - Delivery retries resume from durable receipts/outbox.
 - Corrupt local operational state can be quarantined and rebuilt without
   mutating native or Multica authority.
 
+Recovery never treats local absence as proof of remote absence. Promotion first
+queries the authority-owned idempotency key, callback recovery retains delivery
+and event IDs, and alias recovery compares full source fingerprints. Quarantine
+is an explicit local write; read-only commands report corruption and a plan.

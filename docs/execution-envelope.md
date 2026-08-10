@@ -2,141 +2,206 @@
 
 ## Purpose
 
-The execution envelope is the smallest common record needed to observe work
-across native agent CLIs and Multica. It deliberately excludes conversation
-content and project-management semantics.
+The execution envelope is the smallest common operational record needed to
+observe one bounded attempt across a native agent CLI or Multica. It is not a
+task, issue, conversation, or scheduling record. Native sessions remain
+authoritative in direct mode; the exact Multica issue and run remain
+authoritative in Multica mode.
 
 ## Core record
 
 ```json
 {
   "schema_version": 1,
-  "id": "exec-purple-monkey-dragon-river-candle",
+  "id": "exec-purple-monkey-dragon-river-candle-meadow",
+  "origin_host_id": "host-amber-willow-orbit-tiger-harbor-gentle",
+  "revision": 7,
   "authority": "native",
   "adapter": "codex",
   "mode": "direct",
-  "host": "m5-mbp",
+  "acquisition": "launched",
   "state": "running",
+  "liveness": "alive",
   "source_state": "turn.started",
-  "source_ref": {
-    "kind": "codex_thread",
-    "id": "opaque-source-id"
+  "source_bindings": [
+    {
+      "kind": "codex_thread",
+      "alias_id": "source-velvet-comet-maple-badger-valley-sparrow",
+      "fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "opaque_id": "redacted-in-normal-output"
+    }
+  ],
+  "capabilities": {
+    "negotiated_at": "2026-08-10T18:00:00Z",
+    "adapter_version": "0.1.0",
+    "backend_version": "verified-version-string",
+    "items": [
+      {"name": "events", "status": "supported", "source": "native_stream"},
+      {"name": "resume", "status": "supported", "source": "native_cli"},
+      {"name": "cancel", "status": "unavailable", "source": "manifest"}
+    ]
   },
-  "capabilities": ["stream", "poll", "resume", "cancel"],
   "cwd": null,
   "repository": null,
   "parent_execution_id": null,
+  "supersedes": [],
+  "superseded_by": null,
+  "promotion": null,
   "created_at": "2026-08-10T18:00:00Z",
   "started_at": "2026-08-10T18:00:01Z",
   "updated_at": "2026-08-10T18:00:10Z",
   "terminal_at": null,
   "observation": {
     "source": "native_stream",
+    "integrity": "verified",
     "observed_at": "2026-08-10T18:00:10Z",
     "fresh_for_seconds": 15
   }
 }
 ```
 
-Paths and opaque native IDs are sensitivity-controlled. Human output omits
-them by default.
+`mode` answers who owns the lifecycle (`direct` or `multica`). `acquisition`
+answers how this envelope was obtained (`launched`, `attached`, or `promoted`).
+They are independent; treating `attach` as a lifecycle mode would make an
+attached Multica run contradictory.
 
-## Normalized states
+`revision` is a host-local monotonically increasing optimistic-concurrency
+value. It is not a source-authority revision. Paths and opaque source IDs are
+operator-private and omitted or redacted in normal output. Alias IDs and source
+fingerprints follow [Identifiers](identifiers.md).
+
+## State and liveness
+
+Normalized state is authority outcome, while liveness is observation evidence:
 
 ```text
-created
-starting
-running
-waiting
-attention
-completed
-failed
-cancelled
-orphaned
-unknown
+state:     created starting running waiting attention completed failed cancelled orphaned
+liveness: unknown alive blocked exited unreachable
 ```
 
-`attention` means execution may continue but a parent decision or intervention
-is required. It is not a terminal state.
+Terminal states are `completed`, `failed`, `cancelled`, and `orphaned`.
+`orphaned` means the adapter proved that the bound attempt cannot continue and
+no authoritative terminal outcome can be recovered; temporary inability to
+observe is `liveness: unreachable`, not orphaning.
 
-`unknown` is an observation result, not a guess. Adapters use it when they
-cannot prove liveness or terminal state.
+`attention` means work may continue but an external decision or intervention is
+currently required. `waiting` is non-actionable waiting on an external event.
+Uncertainty does not overwrite the last known state: it changes liveness and
+observation integrity to `unknown`.
 
 ## State invariants
 
-- Terminal states never transition back to nonterminal states for the same
-  execution ID.
-- A retry or resumed native turn may remain the same execution only if the
-  source authority considers it the same session and task contract.
-- A reassignment to a different Multica run or native session creates a new
-  execution and records `supersedes`/`superseded_by` links.
-- Observation freshness is independent of execution state.
-- Source state is retained so callers can distinguish information lost during
-  normalization.
-- Completion is not success evidence by itself. Artifacts and acceptance must
-  be verified by the owning parent/coordinator.
+- State transitions use compare-and-swap on `revision`; concurrent stale writes
+  return `conflict`.
+- A terminal state never transitions to nonterminal for the same execution ID.
+- An adapter accepts terminal only after the strongest negotiated authoritative
+  recheck. Contradictory later evidence follows the terminal-conflict rule in
+  [Events](events-and-subscriptions.md), without rewriting history.
+- A resumed turn stays in one execution only if the authority, exact source
+  binding, and task contract all say it is the same attempt.
+- A different native session, Multica run, owner reassignment, or retry attempt
+  creates another execution. `supersedes` records directed continuation, while
+  promotion records authority transfer; those are distinct relationships.
+- Supersession links are acyclic. `superseded_by` is assigned once. A merge may
+  supersede several attempts, but one attempt has at most one continuation.
+- Observation freshness and liveness are independent of state.
+- Completion is not acceptance evidence. The parent/coordinator verifies
+  required artifacts and acceptance criteria through their actual authority.
+
+## Source bindings and authority
+
+`source_bindings` retain exact local adapter bindings. A direct execution
+normally has one native session binding. A Multica execution may have project,
+issue, run, and native-worker bindings, but run state is primary liveness and
+issue state is secondary workflow.
+
+Bindings have a full fingerprint for reconciliation, a user-facing word alias,
+and an optional opaque ID. Core code never dispatches by display label. Removing
+the local journal may lose host-local aliases but does not delete or mutate the
+native session or Multica records.
+
+## Negotiated capabilities
+
+Capabilities are an immutable snapshot for this envelope revision, not a guess
+from adapter name. Each item records `supported`, `degraded`, or `unavailable`,
+the evidence source, and optional constraints. A later probe writes a new
+execution revision. Critical mutations re-negotiate if the snapshot is stale;
+read-only commands may return the stale snapshot with freshness.
+
+The manifest/probe contract is defined in [Adapters](adapters.md). Unknown
+capability names are preserved by readers. A caller requesting a capability
+with unknown semantics must fail closed rather than assume support.
 
 ## Task contract metadata
 
-The envelope may reference, but does not own, a task contract:
+The envelope may contain a bounded summary or reference, not the full prompt:
 
 ```json
 {
-  "objective": "...",
+  "objective_summary": "Review the bounded design contract",
   "side_effect_boundary": "read_only",
-  "acceptance_ref": "context-gentle-comet-maple-badger-valley",
+  "acceptance_ref": "context-gentle-comet-maple-badger-valley-sparrow",
   "expected_artifact_kinds": ["report"],
-  "continuation": {
-    "same_session_required": true
-  }
+  "continuation": {"same_session_required": true}
 }
 ```
 
 For Multica, the issue is authoritative for this contract. For direct work, the
-parent may provide the contract at launch. `agentctl` stores a reference or
-small structured summary, not the full prompt.
+launching parent supplies it. The summary must be bounded and redacted; prompts,
+reasoning, transcripts, and native session databases are excluded.
 
-## Parent and child executions
+## Parent, child, and supersession
 
-Parent/child links express observation relationships, not automatic scheduling.
-The parent remains responsible for synthesis unless an external authority such
-as Multica explicitly owns orchestration.
+Parent/child links express observation and callback relationships, not
+automatic scheduling. A parent remains responsible for synthesis unless an
+external authority such as Multica explicitly owns orchestration. Children get
+a bounded objective, execution/context handles, callback destination, and
+artifact expectations; they do not inherit credentials or raw parent history.
 
-Fan-out should carry:
+Supersession changes the recommended continuation target but never retargets an
+old ID or cursor. Reads of a superseded execution return the record plus an
+exact `next_action` for its replacement. Mutations against it fail with
+`invalid_state` unless the command explicitly permits historical cleanup.
 
-- parent execution ID;
-- bounded child objective;
-- callback destination;
-- terminal and attention events;
-- artifact references.
+## Promotion as a recoverable saga
 
-Children do not inherit credentials or raw parent transcripts through the
-envelope.
+Promotion creates a new Multica execution envelope and links it to the direct
+source; it does not change the direct envelope's authority or move its native
+session. The promotion key derives from the source execution's origin, source
+fingerprint, destination authority scope, and caller idempotency key. It excludes
+timestamps and mutable summaries.
 
-## Promotion
+The recoverable states are:
 
-Promotion from direct work to Multica creates:
+```text
+planned -> authority_created -> bindings_recorded -> active
+                                      \-> recovery_required
+```
 
-1. one idempotent Multica issue;
-2. a distilled handoff document;
-3. a link from direct execution to issue and first run;
-4. a promotion event;
-5. a subscription rotation from the direct execution to the authoritative
-   Multica run when requested.
+The adapter must persist or query the exact promotion key in Multica-owned
+metadata before it may advertise `promote: supported`. After a crash, recovery
+queries that key and links the existing issue/run; it never creates a second
+issue because the local receipt is absent. If Multica cannot support exact key
+lookup, promotion fails with `capability_unavailable` rather than claiming
+cross-restart idempotency.
 
-The direct execution remains immutable historical evidence. Promotion never
-claims the native session itself became portable.
+The handoff contains only verified findings, bounded evidence references,
+remaining acceptance criteria, and source aliases. Partial failure leaves the
+created Multica issue authoritative and reports recovery actions. It is never
+rolled back by deleting authority-owned work.
+
+Promotion and continuation are separate choices. When requested, supersession
+links the new execution and subscription rotation follows the two-phase rule in
+[Events](events-and-subscriptions.md). Otherwise both executions remain active
+and independently observable.
 
 ## Retention
 
-Default proposal:
+Initial policy proposals are 14 days for terminal envelopes/events and 30 days
+for delivery receipts/dead letters. Nonterminal records remain until terminal
+or explicitly abandoned. Artifact content is never copied by default.
 
-- nonterminal executions: retain until terminal or explicitly abandoned;
-- terminal operational envelopes/events: 14 days locally;
-- delivery receipts and dead letters: 30 days;
-- artifact content: never copied by default;
-- word-ID aliases and promotion/supersession links: retain while referenced.
-
-Retention is configurable by policy but always bounded and visible through
-`agentctl doctor` and `agentctl storage plan`.
-
+Alias bindings, source fingerprints, promotion receipts, and supersession links
+must outlive every retained reference to them. Cleanup plans exact records,
+bytes, broken references, and rebuildability before mutation. Retention remains
+a measured roadmap decision, not a compatibility guarantee.

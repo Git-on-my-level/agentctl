@@ -18,7 +18,7 @@ The design optimizes for:
 - optional promotion into a durable Multica lifecycle;
 - native model/runtime ownership (Codex for GPT, Cursor for Cursor models,
   Claude Code for Claude, OMP for open-weight models such as GLM);
-- LLM-friendly typed word identifiers instead of user-facing UUIDs;
+- LLM-friendly typed six-word identifiers instead of user-facing UUIDs;
 - exact, machine-readable state and error contracts;
 - event streams and callbacks even when a backend only supports polling;
 - portable, deterministic context for Hermes, Codex, Claude, Cursor, OMP, and
@@ -37,22 +37,22 @@ agentctl run --adapter cursor -- cursor-agent --print --model cursor-grok-4.5-hi
 Attach to work created elsewhere:
 
 ```bash
-agentctl attach codex://m5-mbp/thread-purple-river-candle-orbit-maple
-agentctl attach multica://scaling-forever/SCA-293/run-silver-otter-canyon-lantern-drift
+agentctl attach codex://host-amber-willow-orbit-tiger-harbor-gentle/source-velvet-comet-maple-badger-valley-sparrow
+agentctl attach multica://host-amber-willow-orbit-tiger-harbor-gentle/project-silver-otter-canyon-lantern-drift-velvet/issue-quiet-forest-copper-raven-signal-harbor/run-purple-monkey-dragon-river-candle-meadow
 ```
 
 Subscribe through one interface:
 
 ```bash
-agentctl subscribe @last --on attention,terminal,artifact --to parent
-agentctl await @last --output json
-agentctl events --after cursor-quiet-forest-copper-raven-signal --output json
+agentctl subscribe exec-purple-monkey-dragon-river-candle-meadow --on attention,terminal,artifact --to parent
+agentctl await exec-purple-monkey-dragon-river-candle-meadow --output json
+agentctl events --after cursor-quiet-forest-copper-raven-signal-harbor --output json
 ```
 
 Promote only when durable coordination becomes valuable:
 
 ```bash
-agentctl promote @last --to multica --project omi --brief-file handoff.md
+agentctl promote exec-purple-monkey-dragon-river-candle-meadow --to multica --project project-silver-otter-canyon-lantern-drift-velvet --brief-file handoff.md
 ```
 
 ## Authority model
@@ -70,6 +70,12 @@ agentctl promote @last --to multica --project omi --brief-file handoff.md
 `agentctl` owns operational observation state, not the task's business
 lifecycle. Its caches and local journal must be rebuildable or TTL-bound.
 
+The daemonless CLI persists observation/outbox state but performs work only
+while a command process is alive. Automatic retry after logout/reboot requires
+the optional managed supervisor. IDs are stable locators, while full semantic
+hashes drive event deduplication and full authority fingerprints bind imported
+objects.
+
 ## Documents
 
 - [Architecture](docs/architecture.md)
@@ -83,4 +89,3 @@ lifecycle. Its caches and local journal must be rebuildable or TTL-bound.
 - [Roadmap](docs/roadmap.md)
 
 Machine-readable draft schemas live under [`schemas/`](schemas/).
-

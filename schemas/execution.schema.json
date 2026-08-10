@@ -1,35 +1,44 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentctl.dev/schemas/execution.schema.json",
-  "title": "agentctl execution envelope",
+  "x-agentctl-docs": "../docs/execution-envelope.md#core-record",
+  "title": "agentctl execution envelope v1",
   "type": "object",
   "additionalProperties": true,
   "required": [
     "schema_version",
     "id",
+    "origin_host_id",
+    "revision",
     "authority",
     "adapter",
     "mode",
-    "host",
+    "acquisition",
     "state",
+    "liveness",
+    "source_bindings",
     "capabilities",
+    "parent_execution_id",
+    "supersedes",
+    "superseded_by",
+    "promotion",
     "created_at",
     "updated_at",
+    "terminal_at",
     "observation"
   ],
   "properties": {
     "schema_version": {"const": 1},
-    "id": {
-      "type": "string",
-      "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){4}$"
-    },
+    "id": {"$ref": "#/$defs/execution_id"},
+    "origin_host_id": {"$ref": "#/$defs/host_id"},
+    "revision": {"type": "integer", "minimum": 1},
     "authority": {"enum": ["native", "multica"]},
     "adapter": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9_-]{1,31}$"
     },
-    "mode": {"enum": ["direct", "multica", "attach"]},
-    "host": {"type": "string", "minLength": 1},
+    "mode": {"enum": ["direct", "multica"]},
+    "acquisition": {"enum": ["launched", "attached", "promoted"]},
     "state": {
       "enum": [
         "created",
@@ -40,54 +49,144 @@
         "completed",
         "failed",
         "cancelled",
-        "orphaned",
-        "unknown"
+        "orphaned"
       ]
     },
-    "source_state": {"type": ["string", "null"]},
-    "source_ref": {
-      "type": ["object", "null"],
-      "additionalProperties": true,
-      "properties": {
-        "kind": {"type": "string"},
-        "id": {"type": "string"}
-      }
-    },
-    "capabilities": {
+    "liveness": {"enum": ["unknown", "alive", "blocked", "exited", "unreachable"]},
+    "source_state": {"type": ["string", "null"], "maxLength": 512},
+    "source_bindings": {
       "type": "array",
-      "uniqueItems": true,
-      "items": {
-        "enum": [
-          "stream",
-          "poll",
-          "resume",
-          "cancel",
-          "artifacts",
-          "history"
-        ]
-      }
+      "items": {"$ref": "#/$defs/source_binding"}
     },
+    "capabilities": {"$ref": "#/$defs/capability_snapshot"},
     "cwd": {"type": ["string", "null"]},
     "repository": {"type": ["string", "null"]},
     "parent_execution_id": {
-      "type": ["string", "null"],
-      "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){4}$"
+      "anyOf": [
+        {"$ref": "#/$defs/execution_id"},
+        {"type": "null"}
+      ]
     },
     "supersedes": {
       "type": "array",
-      "items": {
-        "type": "string",
-        "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){4}$"
-      }
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/execution_id"}
+    },
+    "superseded_by": {
+      "anyOf": [
+        {"$ref": "#/$defs/execution_id"},
+        {"type": "null"}
+      ]
+    },
+    "promotion": {
+      "anyOf": [
+        {"$ref": "#/$defs/promotion_link"},
+        {"type": "null"}
+      ]
     },
     "created_at": {"type": "string", "format": "date-time"},
     "started_at": {"type": ["string", "null"], "format": "date-time"},
     "updated_at": {"type": "string", "format": "date-time"},
     "terminal_at": {"type": ["string", "null"], "format": "date-time"},
+    "observation": {"$ref": "#/$defs/observation"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "state": {"enum": ["completed", "failed", "cancelled", "orphaned"]}
+        }
+      },
+      "then": {"properties": {"terminal_at": {"type": "string", "format": "date-time"}}},
+      "else": {"properties": {"terminal_at": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"mode": {"const": "multica"}}},
+      "then": {"properties": {"authority": {"const": "multica"}}}
+    },
+    {
+      "if": {"properties": {"mode": {"const": "direct"}}},
+      "then": {"properties": {"authority": {"const": "native"}}}
+    }
+  ],
+  "$defs": {
+    "execution_id": {
+      "type": "string",
+      "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "host_id": {
+      "type": "string",
+      "pattern": "^host-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "source_alias_id": {
+      "type": "string",
+      "pattern": "^(?:source|project|issue|run)-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "source_binding": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["kind", "alias_id", "fingerprint"],
+      "properties": {
+        "kind": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,63}$"},
+        "alias_id": {"$ref": "#/$defs/source_alias_id"},
+        "fingerprint": {"$ref": "#/$defs/sha256"},
+        "opaque_id": {"type": ["string", "null"], "minLength": 1}
+      }
+    },
+    "capability_item": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "status", "source"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,63}$"},
+        "status": {"enum": ["supported", "degraded", "unavailable"]},
+        "source": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,63}$"},
+        "semantics_version": {"type": "integer", "minimum": 1},
+        "constraints": {"type": "object"},
+        "reason": {"type": ["string", "null"]}
+      }
+    },
+    "capability_snapshot": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["negotiated_at", "adapter_version", "backend_version", "items"],
+      "properties": {
+        "negotiated_at": {"type": "string", "format": "date-time"},
+        "adapter_version": {"type": "string", "minLength": 1},
+        "backend_version": {"type": ["string", "null"]},
+        "items": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/capability_item"}
+        }
+      }
+    },
+    "promotion_link": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["role", "counterpart_execution_id", "promotion_key", "state"],
+      "properties": {
+        "role": {"enum": ["source", "target"]},
+        "counterpart_execution_id": {"$ref": "#/$defs/execution_id"},
+        "promotion_key": {"$ref": "#/$defs/sha256"},
+        "state": {
+          "enum": [
+            "planned",
+            "authority_created",
+            "bindings_recorded",
+            "active",
+            "recovery_required"
+          ]
+        }
+      }
+    },
     "observation": {
       "type": "object",
-      "additionalProperties": false,
-      "required": ["source", "observed_at"],
+      "additionalProperties": true,
+      "required": ["source", "integrity", "observed_at", "fresh_for_seconds"],
       "properties": {
         "source": {
           "enum": [
@@ -97,14 +196,14 @@
             "state_file",
             "poll",
             "process",
+            "reconciled",
             "unknown"
           ]
         },
+        "integrity": {"enum": ["verified", "degraded", "conflicted", "unknown"]},
         "observed_at": {"type": "string", "format": "date-time"},
-        "fresh_for_seconds": {"type": ["integer", "null"], "minimum": 0},
-        "degraded": {"type": "boolean"}
+        "fresh_for_seconds": {"type": ["integer", "null"], "minimum": 0}
       }
     }
   }
 }
-

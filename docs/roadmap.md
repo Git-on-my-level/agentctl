@@ -3,15 +3,16 @@
 ## Phase 0 — Freeze contracts
 
 - Review authority boundaries and non-goals.
-- Freeze identifier encoding and curated word-list requirements.
+- Freeze the six-word identifier encoding, exact ordered word list, and digest.
 - Version execution/event/error JSON schemas.
 - Define stable exit codes.
-- Define adapter capability manifest.
+- Freeze adapter capability/constraint manifest and probe fixtures.
 - Create fixture corpus for IDs, state transitions, malformed streams, and
   callback deduplication.
 
-Exit criterion: two independent implementations could produce compatible IDs,
-events, and errors from the written contract.
+Exit criterion: two independent implementations produce compatible IDs,
+dedupe keys, ordering/cursors, capability decisions, events, and errors from the
+written contract without consulting implementation code.
 
 ## Phase 1 — Daemonless local MVP
 
@@ -19,18 +20,19 @@ events, and errors from the written contract.
 - Codex and Cursor adapters, based on proven structured CLI streams.
 - Generic process adapter.
 - Owner-only local journal with automatic TTL cleanup.
-- Word IDs and contextual references.
+- Six-word IDs, explicit context-file references, and source bindings.
 - JSON output/error/next-action contract.
 - Fixture-driven self-test and `doctor --json`.
 
-Exit criterion: a parent can launch or attach to Codex/Cursor, background
-`await`, and receive one accurate terminal package without polling logic in the
-parent.
+Exit criterion: while its process remains alive, a parent can launch or attach
+to Codex/Cursor, background `await`, and receive one accurate terminal package
+without polling logic in the parent. Crash/reboot wakeup is explicitly absent.
 
 ## Phase 2 — Multica and promotion
 
 - Multica adapter with exact issue/run reconciliation.
 - Explicit direct-to-Multica promotion with idempotency.
+- Authority-owned promotion-key lookup and crash-recovery fixtures.
 - Subscription rotation/supersession.
 - Adapter-level bounded polling fallback.
 - Multica profile/app URL/binary provenance checks in doctor.
@@ -85,11 +87,15 @@ when issue status does not transition or WebSocket connectivity is interrupted.
 ## Early decisions still requiring prototypes
 
 1. Exact 2,048-word list and tokenizer/spoken-confusion scoring.
-2. Checksum bit layout and cross-language reference implementation.
-3. Whether daemonless attach can observe all target native sessions reliably.
-4. Minimal callback receiver interface supported by each parent harness.
+2. Whether daemonless attach can observe each target native session reliably;
+   this is expected to vary by adapter rather than have one global answer.
+3. Minimal callback receiver interface supported by each parent harness.
+4. Concrete webhook signing algorithm, canonical request fixtures, clock skew,
+   retry horizon, and credential-reference mechanism.
 5. Whether opaque native session IDs need sensitivity redaction by default.
-6. Retention defaults after measuring event volume.
-7. How Multica exposes stable user-facing word aliases without replacing its
+6. Retention defaults after measuring event volume and alias/reference reach.
+7. How Multica persists and queries promotion keys and stable user-facing word
+   aliases without replacing its
    internal UUIDs and existing short issue IDs.
-
+8. Which adapters can guarantee context delivery to the worker versus merely
+   expose a context handle to the launched process.
