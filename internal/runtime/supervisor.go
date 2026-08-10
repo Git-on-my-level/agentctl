@@ -215,10 +215,12 @@ func (b SupervisorExecutions) ApplyProbe(ctx context.Context, id string, result 
 	if err != nil {
 		return wrapError("get_execution", "", err)
 	}
-	if result.Source == string(model.ObservationNativeStream) && result.Liveness == string(model.LivenessAlive) && activeNativeRunnerLease(execution, b.Engine.now()) {
+	if result.Source == string(model.ObservationNativeStream) && result.Liveness == string(model.LivenessAlive) && (execution.State.Terminal() || activeNativeRunnerLease(execution, b.Engine.now())) {
 		// The runner is the live native authority and refreshes this bounded
 		// lease itself. Applying the supervisor's echo would erase the lease and
-		// make the next cycle falsely classify the child as unreachable.
+		// make the next cycle falsely classify the child as unreachable. If the
+		// runner terminalized between Reprobe and ApplyProbe, the echo is stale
+		// and must never mutate that terminal envelope.
 		return nil
 	}
 	state := execution.State

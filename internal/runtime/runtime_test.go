@@ -344,6 +344,49 @@ func TestRestartMarksUnreprobeableNativeSessionUnreachable(t *testing.T) {
 	}
 }
 
+func TestStaleNativeLeaseProbeCannotCorruptTerminalExecution(t *testing.T) {
+	session := fixtureSession("fixture", "fixture_session", "session-live", adapter.StateRunning)
+	fake := &fakeAdapter{name: "fixture", launch: adapter.LaunchResult{Session: session}}
+	registry := NewRegistry()
+	_ = registry.Register("fixture", func(AdapterSpec) (adapter.Adapter, error) { return fake, nil })
+	engine, journal, _ := testEngine(t, registry)
+	execution, err := engine.Launch(context.Background(), LaunchOptions{Adapter: AdapterSpec{Name: "fixture", Executable: "/opt/fixture"}, Request: adapter.LaunchRequest{Argv: []string{"/opt/fixture"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseSeconds := 5
+	execution.Liveness = model.LivenessAlive
+	execution.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: fixtureNow, FreshForSeconds: &leaseSeconds}
+	execution, err = journal.UpdateExecution(context.Background(), execution, execution.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge := SupervisorExecutions{Engine: engine}
+	probe, err := bridge.Reprobe(context.Background(), supervisor.Execution{ID: execution.ID.String()})
+	if err != nil || probe.State != string(model.StateRunning) || probe.Liveness != string(model.LivenessAlive) {
+		t.Fatalf("lease probe=%#v err=%v", probe, err)
+	}
+	terminalAt := fixtureNow.Add(time.Second)
+	execution.State = model.StateCompleted
+	execution.Liveness = model.LivenessExited
+	execution.TerminalAt = &terminalAt
+	execution.UpdatedAt = terminalAt
+	execution.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: terminalAt}
+	if _, err := journal.UpdateExecution(context.Background(), execution, execution.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := bridge.ApplyProbe(context.Background(), execution.ID.String(), probe); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := journal.GetExecution(context.Background(), execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != model.StateCompleted || stored.Liveness != model.LivenessExited || stored.Observation.Integrity != model.IntegrityVerified {
+		t.Fatalf("stale lease echo corrupted terminal execution: %#v", stored)
+	}
+}
+
 func createPromotedIssueExecution(t *testing.T, engine *Engine, journal *fakeJournal, spec AdapterSpec) model.Execution {
 	t.Helper()
 	bindings, err := engine.configBindings(model.AuthorityMultica, spec)
