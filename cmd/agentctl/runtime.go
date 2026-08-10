@@ -181,9 +181,14 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		case <-launchCtx.Done():
 			last, _ := runtime.Result(context.Background(), adapter.ResultRequest{Ref: launch.Session.Ref})
 			if terminalAdapterState(last.State) {
-				if writeJournal, current, openProblem = a.openExecutionWrite(context.Background(), c, execution.ID); openProblem == nil {
-					execution, _ = finalizeResult(context.Background(), writeJournal, current, last, a.now().UTC())
+				writeJournal, current, openProblem := a.openExecutionWrite(context.Background(), c, execution.ID)
+				if openProblem == nil {
+					var err error
+					execution, err = finalizeResult(context.Background(), writeJournal, current, last, a.now().UTC())
 					writeJournal.Close()
+					if err == nil {
+						return writeExecution(renderer, execution, "run")
+					}
 				}
 			}
 			return output.Wrap(output.CodeTimeout, "run deadline elapsed", true, launchCtx.Err()).WithDetail("execution_id", execution.ID.String())
