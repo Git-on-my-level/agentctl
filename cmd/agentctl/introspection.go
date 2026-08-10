@@ -1,0 +1,133 @@
+package main
+
+import (
+	"context"
+	"strings"
+
+	"github.com/Git-on-my-level/agentctl/internal/adapter"
+	"github.com/Git-on-my-level/agentctl/internal/config"
+	"github.com/Git-on-my-level/agentctl/internal/output"
+)
+
+func (a *app) capabilitiesCommand(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
+	if len(args) == 0 {
+		return output.NewError(output.CodeUsage, "usage: agentctl capabilities <adapter> [--probe] [--executable path]", false)
+	}
+	name := args[0]
+	probe := false
+	executable := ""
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--probe":
+			probe = true
+		case "--executable":
+			if i+1 >= len(args) {
+				return output.NewError(output.CodeUsage, "--executable requires a value", false)
+			}
+			i++
+			executable = args[i]
+		default:
+			return output.NewError(output.CodeUsage, "unknown capabilities flag", false).WithDetail("flag", args[i])
+		}
+	}
+	value, problem := a.adapterForIntrospection(name, c)
+	if problem != nil {
+		return problem
+	}
+	manifest := value.Manifest()
+	result := map[string]any{"manifest": manifest}
+	lines := []output.Line{{Lead: "adapter", Fields: []output.Field{{Name: "name", Value: manifest.Adapter}, {Name: "version", Value: manifest.AdapterVersion}, {Name: "capabilities", Value: len(manifest.Capabilities)}}}}
+	if probe {
+		observation, err := value.Probe(ctx, adapter.ProbeRequest{Executable: executable, Profile: c.profile, Fresh: true})
+		if err != nil {
+			return output.Wrap(output.CodeDependencyUnavailable, "adapter probe failed", true, err).WithDetail("adapter", name)
+		}
+		result["probe"] = observation
+		lines = append(lines, output.Line{Lead: "probe", Fields: []output.Field{{Name: "adapter", Value: manifest.Adapter}, {Name: "version", Value: observation.AdapterVersion}, {Name: "capabilities", Value: len(observation.Capabilities)}}})
+	}
+	if err := renderer.Success(output.Success{Result: result, Lines: lines}); err != nil {
+		return output.Wrap(output.CodeInternal, "write output", false, err)
+	}
+	return nil
+}
+
+func (a *app) adapterForIntrospection(name string, c common) (adapter.Adapter, *output.Error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "generic", "generic-process":
+		return adapter.NewGenericProcess(), nil
+	case "codex":
+		return adapter.NewCodex(), nil
+	case "cursor":
+		return adapter.NewCursor(), nil
+	case "claude", "claude-code":
+		return adapter.NewClaude(), nil
+	case "omp":
+		return adapter.NewOMP(), nil
+	case "multica":
+		path, err := configPath(c)
+		if err != nil {
+			return nil, output.Wrap(output.CodeInternal, "resolve config path", false, err)
+		}
+		cfg, err := config.Load(path)
+		if err != nil {
+			return nil, mapConfigError("read exact Multica authority", err)
+		}
+		_, profile, err := cfg.ResolveProfile(c.profile)
+		if err != nil {
+			return nil, mapConfigError("resolve exact Multica profile", err)
+		}
+		if profile.Multica == nil {
+			return nil, output.NewError(output.CodeCapabilityUnavailable, "selected profile has no Multica authority", false)
+		}
+		m := profile.Multica
+		return adapter.NewMultica(adapter.MulticaConfig{Binary: m.Executable, Profile: m.Profile, Endpoint: m.ServerURL, Workspace: m.WorkspaceID}), nil
+	default:
+		return nil, output.NewError(output.CodeUsage, "unknown adapter", false).WithDetail("adapter", name)
+	}
+}
+
+func (a *app) schemaCommand(renderer output.Renderer, args []string) *output.Error {
+	if len(args) != 1 || args[0] != "list" {
+		return output.NewError(output.CodeUsage, "usage: agentctl schema list", false)
+	}
+	schemas := []map[string]any{
+		{"name": "adapter-manifest", "version": 1, "file": "schemas/adapter-manifest.schema.json"},
+		{"name": "callback-envelope", "version": 1, "file": "schemas/callback-envelope.schema.json"},
+		{"name": "context-result", "version": 1, "file": "schemas/context-result.schema.json"},
+		{"name": "error", "version": 1, "file": "schemas/error.schema.json"},
+		{"name": "event", "version": 1, "file": "schemas/event.schema.json"},
+		{"name": "event-page", "version": 1, "file": "schemas/event-page.schema.json"},
+		{"name": "execution", "version": 1, "file": "schemas/execution.schema.json"},
+		{"name": "knowledge-source", "version": 1, "file": "schemas/knowledge-source.schema.json"},
+		{"name": "subscription", "version": 1, "file": "schemas/subscription.schema.json"},
+	}
+	lines := make([]output.Line, 0, len(schemas))
+	for _, item := range schemas {
+		lines = append(lines, output.Line{Lead: "schema", Fields: []output.Field{{Name: "name", Value: item["name"]}, {Name: "version", Value: item["version"]}, {Name: "file", Value: item["file"]}}})
+	}
+	if err := renderer.Success(output.Success{Result: map[string]any{"schemas": schemas}, Lines: lines}); err != nil {
+		return output.Wrap(output.CodeInternal, "write output", false, err)
+	}
+	return nil
+}
+
+func (a *app) examplesCommand(renderer output.Renderer, args []string) *output.Error {
+	if len(args) != 0 {
+		return output.NewError(output.CodeUsage, "examples takes no arguments", false)
+	}
+	examples := [][]string{
+		{"agentctl", "route", "explain", "--model-family", "gpt", "--needs-pr"},
+		{"agentctl", "run", "--adapter", "codex", "--", "codex", "exec", "..."},
+		{"agentctl", "subscribe", "create", "--execution", "exec-...", "--kind", "terminal,attention", "--destination", "file", "--target", "/absolute/events.ndjson"},
+		{"agentctl", "knowledge", "compile", "--source", "source.json=/checkout", "--output", "/bundle"},
+		{"agentctl", "context", "--bundle", "/bundle", "--query", "deployment", "--render", "/context.md"},
+	}
+	lines := make([]output.Line, 0, len(examples))
+	for _, argv := range examples {
+		lines = append(lines, output.Line{Lead: "example", Fields: []output.Field{{Name: "argv", Value: argv}}})
+	}
+	if err := renderer.Success(output.Success{Result: map[string]any{"examples": examples}, Lines: lines}); err != nil {
+		return output.Wrap(output.CodeInternal, "write output", false, err)
+	}
+	return nil
+}

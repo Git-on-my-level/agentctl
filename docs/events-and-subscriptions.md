@@ -84,7 +84,8 @@ sha256("agentctl-event-v1\0" || adapter_name || 0x00 ||
        dedupe_version_u32_be || canonical_projection_json)
 ```
 
-The projection uses RFC 8785 canonical JSON and includes the authority scope,
+The projection uses agentctl canonical JSON v1 (sorted object keys, compact
+UTF-8 strings and arrays, deterministic Go shortest-form finite numbers) and includes the authority scope,
 full source fingerprint, event kind, and the strongest stable source event ID
 or revision available. It excludes observation time, retry count, delivery
 destination, and local word IDs.
@@ -136,9 +137,10 @@ A cursor word ID names a local immutable checkpoint containing:
 
 The cursor value is not the checkpoint itself and cannot be fabricated by a
 client. A cursor is valid only for the same origin and exact filter digest.
-`agentctl events --after <cursor-id>` resumes strictly after the checkpoint.
-`--after <event-id>` is shorthand only when that event is retained and belongs
-to the requested stream.
+The local v0.1 CLI resumes with `--after-sequence <n>` on one exact execution.
+The Multica authority API separately returns filter-bound opaque cursors and
+rejects changed filters, ahead-of-stream positions, and expired retained
+prefixes. A universal cross-authority cursor is a future extension.
 
 Retention that removes the checkpoint returns `cursor_expired` and the earliest
 available cursor; it never silently resumes at the current tail. Pagination
@@ -165,11 +167,9 @@ dedupe key.
 
 ## Callback destinations
 
-Initial destinations are:
+Persistent v0.1 destinations are:
 
 ```text
-parent          Process-scoped completion contract
-stdout          NDJSON stream or one terminal JSON document
 file            Owner-only NDJSON append
 unix            Local Unix socket
 webhook         Signed HTTP request with retry/outbox
@@ -211,9 +211,8 @@ operator explicitly selected that local target.
 
 The signature covers the exact request method, normalized target path, content
 type, body digest, sent/expiry times, nonce, subscription ID, and delivery ID.
-The concrete algorithm and canonical byte fixtures must be frozen before
-webhooks ship; Tailnet reachability alone is not accepted as message
-authentication.
+Version 1 uses HMAC-SHA256 over the documented canonical request fields.
+Tailnet reachability alone is not accepted as message authentication.
 
 An acknowledgement is a bounded JSON object containing the delivery ID, event
 dedupe key, receiver ID, and acknowledgement time. A matching 2xx response or
@@ -226,6 +225,12 @@ the response body discarded or redacted.
 Receivers persist replay state at least through the sender's maximum retry and
 clock-skew window. Recovery replays unacknowledged outbox entries; it never
 generates a new event or delivery ID merely because the sender restarted.
+Before transport I/O, the sender durably records the current attempt envelope.
+A crash while that attempt is in flight resends the exact nonce/body and a
+receiver that already acknowledged it returns the cached acknowledgement. A
+scheduled later attempt keeps the delivery/event identity but receives a fresh
+attempt number, nonce, and freshness window. Reusing a nonce with different
+bytes is always rejected.
 
 ## Await and daemonless limits
 
@@ -243,12 +248,8 @@ otherwise.
 
 ## Multica integration
 
-The preferred Multica adapter consumes a server-side durable outbox with source
-positions. A WebSocket may reduce latency but is not a durable record.
-
-Until such an outbox exists, the adapter polls the exact run for liveness and
-terminal outcome and the exact issue for workflow/attention state. It uses
-`reconciled` ordering, exposes both source revisions, and emits terminal from
-the run even if board state lags. If stable revisions or exact-run lookup are
-unavailable, capability negotiation reports the weaker guarantee instead of
-claiming reliable history.
+The companion Multica fork exposes a server-side durable workspace event outbox
+with monotonic source positions and filter-bound cursors. The adapter uses its
+bounded `event list|watch` CLI. WebSocket delivery may reduce latency but is not
+treated as the durable record. Issue/run mutation and review remain native
+Multica operations rather than adapter-invented commands.

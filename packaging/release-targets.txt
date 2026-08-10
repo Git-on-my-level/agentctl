@@ -1,0 +1,6 @@
+# One GOOS/GOARCH target per line. Keep this list limited to platforms whose
+# runtime contract is supported by agentctl (Unix sockets in the v1 design).
+darwin/amd64
+darwin/arm64
+linux/amd64
+linux/arm64

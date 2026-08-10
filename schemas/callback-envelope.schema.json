@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentctl.dev/schemas/callback-envelope.schema.json",
+  "x-agentctl-docs": "../docs/events-and-subscriptions.md#webhook-protocol-and-security",
+  "title": "agentctl callback envelope v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "delivery_id",
+    "subscription_id",
+    "event_id",
+    "event_dedupe_key",
+    "attempt",
+    "sent_at",
+    "expires_at",
+    "nonce",
+    "event"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "delivery_id": {"$ref": "#/$defs/delivery_id"},
+    "subscription_id": {"$ref": "#/$defs/subscription_id"},
+    "event_id": {"$ref": "#/$defs/event_id"},
+    "event_dedupe_key": {"$ref": "#/$defs/sha256"},
+    "attempt": {"type": "integer", "minimum": 1},
+    "sent_at": {"type": "string", "format": "date-time"},
+    "expires_at": {"type": "string", "format": "date-time"},
+    "nonce": {"type": "string", "minLength": 1, "maxLength": 512},
+    "event": {"type": "object"}
+  },
+  "$defs": {
+    "event_id": {
+      "type": "string",
+      "pattern": "^event-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "subscription_id": {
+      "type": "string",
+      "pattern": "^sub-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "delivery_id": {
+      "type": "string",
+      "pattern": "^delivery-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  }
+}

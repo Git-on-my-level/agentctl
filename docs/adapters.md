@@ -148,7 +148,7 @@ handles but cannot claim the child model read them.
 ### Multica
 
 - Bind to exact workspace, issue, and run IDs.
-- Prefer a future durable Multica event outbox.
+- Prefer the companion fork's durable Multica workspace event outbox.
 - Until then, compare exact run state and issue state through bounded polling.
 - Treat run state as primary liveness and issue state as secondary workflow.
 - Re-fetch authoritative state before emitting a terminal success package.

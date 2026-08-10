@@ -86,9 +86,9 @@ frontmatter, a directory migration, or agentctl-specific files. The publisher:
 2. rejects symlink/path escape, oversized files, unsupported encodings, and
    secret-policy violations;
 3. chunks text deterministically by document headings and bounded byte ranges;
-4. assigns typed word aliases while retaining repository, commit, path, line
-   range, and content digest provenance;
-5. builds deterministic lexical/FTS indexes without invoking a model.
+4. assigns deterministic record IDs while retaining repository, commit, path,
+   line range, and content digest provenance;
+5. builds a deterministic lexical index without invoking a model.
 
 Loose records are advisory knowledge. They may be discovered by repository,
 path, explicit tags from the source registry, and lexical query, but they cannot
@@ -151,7 +151,8 @@ The publisher produces:
 - `sources.lock.json` pinning source revisions, ingestion rules, overlay
   revisions, and source-tree/content digests;
 - structured registries for fleet roles, resources, routes, and policies;
-- a deterministic SQLite FTS index spanning structured and loose knowledge;
+- a deterministic token-to-record lexical index spanning structured and loose
+  knowledge;
 - selected Markdown/runbook assets;
 - allowlisted portable skill packages;
 - schema files and cross-reference graph.

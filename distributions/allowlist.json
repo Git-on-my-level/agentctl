@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "distribution_id": "agentctl-portable",
+  "revision": "tree:v0.1.0-dev",
+  "assets": [
+    {
+      "id": "portable-skill",
+      "source": "skills/agentctl-portable/SKILL.md",
+      "install_name": "SKILL.md",
+      "kind": "skill"
+    },
+    {
+      "id": "multica-runtime-bundle",
+      "source": "distributions/multica/agentctl-portable.bundle.json",
+      "install_name": "agentctl-portable.bundle.json",
+      "kind": "runtime_bundle",
+      "harnesses": ["multica"]
+    },
+    {
+      "id": "revision-manifest",
+      "source": "distributions/revision-manifest.json",
+      "install_name": "revision-manifest.json",
+      "kind": "manifest"
+    }
+  ],
+  "harnesses": ["hermes", "codex", "claude", "cursor", "omp", "multica"],
+  "forbidden_asset_classes": [
+    "auth",
+    "sessions",
+    "memories",
+    "settings",
+    "plugins",
+    "caches",
+    "worktrees",
+    "raw_prompts",
+    "transcripts"
+  ]
+}

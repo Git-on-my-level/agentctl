@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentctl.dev/schemas/context-result.schema.json",
+  "x-agentctl-docs": "../docs/context-and-knowledge.md#context-selection",
+  "title": "agentctl context selection result v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["bundle_revision", "matches"],
+  "properties": {
+    "bundle_revision": {"$ref": "#/$defs/sha256"},
+    "matches": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/context_match"}
+    },
+    "render_path": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "render_bytes": {"type": "integer", "minimum": 0}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "repository_id": {
+      "type": "string",
+      "pattern": "^repo-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "context_match": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "source_repo_id",
+        "path",
+        "start_line",
+        "end_line",
+        "reason",
+        "source_commit",
+        "content_digest"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "source_repo_id": {"$ref": "#/$defs/repository_id"},
+        "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "start_line": {"type": "integer", "minimum": 1},
+        "end_line": {"type": "integer", "minimum": 1},
+        "reason": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1, "maxLength": 64},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "source_commit": {"type": "string", "minLength": 1, "maxLength": 128},
+        "content_digest": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}
