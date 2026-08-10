@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"bytes"
 	"encoding/xml"
 	"fmt"
 	"path/filepath"
@@ -115,7 +116,16 @@ func RenderLaunchdPlist(plan LaunchdPlan) ([]byte, error) {
 			KeepAlive:        plan.KeepAlive,
 		},
 	}
-	return xml.MarshalIndent(root, "", "  ")
+	rendered, err := xml.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	// encoding/xml expands empty elements to paired tags. plutil accepts that
+	// form for plist booleans, but launchd's bootstrap parser rejects it as an
+	// invalid property list. Emit the canonical empty boolean element that both
+	// parsers accept.
+	rendered = bytes.ReplaceAll(rendered, []byte("<true></true>"), []byte("<true/>"))
+	return rendered, nil
 }
 
 // RenderLaunchdUnit is an alias for callers that use “unit” terminology.

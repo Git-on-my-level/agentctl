@@ -2,13 +2,13 @@
   "schema_version": 1,
   "manifest_kind": "agentctl_distribution_revision",
   "distribution_id": "agentctl-portable",
-  "revision": "tree:v0.1.1",
+  "revision": "tree:v0.1.2",
   "canonicalization": "sha256(raw UTF-8 bytes, LF line endings)",
   "assets": [
     {
       "id": "distribution-allowlist",
       "path": "distributions/allowlist.json",
-      "sha256": "eecda254c05826c3236f1d76afd041ac08c721c20b3983b91d77ef076f04a4c1",
+      "sha256": "28e6b275bdb3e3a79970bd729669151d9e9ea41fd185b405f4fdc45b80f03e20",
       "kind": "control_manifest",
       "install": false
     },
@@ -22,7 +22,7 @@
     {
       "id": "multica-runtime-bundle",
       "path": "distributions/multica/agentctl-portable.bundle.json",
-      "sha256": "429e85bd1759b2632002ec109bae1935e8249d526566949c00baebd9ecec397b",
+      "sha256": "976c3032e695f3575e888ffe89f70ef2980f8415c044d4e509416f3a36e58ff7",
       "install_name": "agentctl-portable.bundle.json",
       "kind": "runtime_bundle",
       "harnesses": ["multica"]
