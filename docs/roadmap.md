@@ -1,108 +1,109 @@
-# Roadmap
+# Roadmap and phase status
 
-## Phase 0 — Freeze contracts
+This roadmap records what landed in v0.1 and what remains. A phase is not a
+claim that every backend has identical capabilities; adapter constraints are
+part of the contract.
 
-- Review authority boundaries and non-goals.
-- Freeze the six-word identifier encoding, exact ordered word list, and digest.
-- Version execution/event/error JSON schemas.
-- Define stable exit codes.
-- Freeze the compact text grammar and golden output/error fixtures; JSON remains
-  the normative machine contract.
-- Freeze adapter capability/constraint manifest and probe fixtures.
-- Freeze the knowledge-source registry schema and loose-ingestion provenance
-  fixtures for GitHub, Forgejo, and generic Git remotes.
-- Create fixture corpus for IDs, state transitions, malformed streams, and
-  callback deduplication.
+## Phase 0 — Contracts: implemented
 
-Exit criterion: two independent implementations produce compatible IDs,
-dedupe keys, ordering/cursors, capability decisions, events, and errors from the
-written contract without consulting implementation code.
+- Frozen v1 six-word codec, ordered 2,048-word list, digest, typed prefixes,
+  checksum, typed wrappers, URI parser, and golden fixtures.
+- Versioned execution, event, error, adapter-manifest, and knowledge-source
+  schemas.
+- Stable text/JSON envelopes and exit codes.
+- Versioned semantic event projection and store-side recomputation.
+- Capability manifests, probe actions, privacy bounds, and malformed-output
+  fixtures.
 
-## Phase 1 — Daemonless local MVP
+The v1 word list is the frozen English BIP-39 list. It is portable and audited
+by digest but is not a custom speech-confusion-optimized list. A future codec
+version may use a screened list; v1 order and membership will not change.
 
-- `agentctl run`, `attach`, `status`, `events`, `await`, and `result`.
-- Codex and Cursor adapters, based on proven structured CLI streams.
-- Generic process adapter.
-- Owner-only local journal with automatic TTL cleanup.
-- Six-word IDs, explicit context-file references, and source bindings.
-- Compact text plus JSON output/error/next-action contracts.
-- Fixture-driven self-test and `doctor --json`.
+## Phase 1 — Daemonless local execution: implemented with adapter constraints
 
-Exit criterion: while its process remains alive, a parent can launch or attach
-to Codex/Cursor, background `await`, and receive one accurate terminal package
-without polling logic in the parent. Crash/reboot wakeup is explicitly absent.
+- `run`, local `attach`, `status`, `events`, `await`, `result`, and `cancel`.
+- Codex, Cursor, Claude Code, OMP, generic-process, and Multica event adapters.
+- Owner-only journal, normalized source bindings, terminal conflict handling,
+  context handles, compact text, and JSON.
 
-## Phase 2 — Multica and promotion
+Native launch supervision is deliberately same-process in v0.1. A new process
+cannot claim it can attach to a native session unless that native CLI exposes a
+reviewed durable attach/status API.
 
-- Multica adapter with exact issue/run reconciliation.
-- Explicit direct-to-Multica promotion with idempotency.
-- Authority-owned promotion-key lookup and crash-recovery fixtures.
-- Subscription rotation/supersession.
-- Adapter-level bounded polling fallback.
-- Multica profile/app URL/binary provenance checks in doctor.
+## Phase 2 — Multica and promotion: implemented at the authority boundary
 
-Exit criterion: direct investigation can promote once into a single durable
-issue, and both modes produce the same normalized terminal callback.
+- Exact configured binary/profile/workspace/server; no ambient default profile.
+- Config provenance doctor and application URL support.
+- Explicit `promote --plan` and execute path.
+- Authority-owned `sha256:` client key, semantic conflict detection, exact
+  remote replay, one local target envelope, source/target promotion links, and
+  optional supersession.
+- Workspace event observation with bounded polling.
+- Issue-only promotion remains issue-authoritative: nested task/run terminal
+  events are evidence until an exact run binding exists.
 
-## Phase 3 — Shared context
+`agentctl` creates/reconciles the durable issue but does not reimplement
+Multica run dispatch, assignment, status mutation, or review.
 
-- Git schema and validation pipeline.
-- GitHub, Forgejo, and generic-Git knowledge source registry.
-- Structured, loose, and hybrid repository ingestion without requiring source
-  repository migration.
-- Compiled knowledge/policy bundle and lexical index.
-- Atomic verified distribution via the shared Tailnet bootstrap path.
-- Deterministic context matcher and renderer.
-- Portable allowlisted skill distribution for major harnesses.
-- Automatic context injection in adapters and Multica runtimes.
+## Phase 3 — Shared context: implemented locally and portably
 
-Exit criterion: Hermes, Codex, Claude, Cursor, OMP, and Multica receive the same
-revisioned task-relevant context without copying a Hermes profile.
+- GitHub, Forgejo, and generic Git source registrations.
+- Explicit noninteractive Git sync.
+- Loose, structured, and hybrid ingestion with path, size, UTF-8, secret, and
+  symlink controls.
+- Deterministic bundle, source lock, lexical index, provenance, verification,
+  atomic install, selection, and bounded rendering.
+- Allowlisted skill/runtime distribution for major harnesses and Multica.
 
-## Phase 4 — Reliable remote callbacks
+Publishing a verified bundle through the existing Tailnet bootstrap is an
+operator/deployment integration, not an implicit `context` side effect. The CLI
+does not modify `tailnetctl` or fetch during a read.
 
-- Optional managed local supervisor.
-- Unix socket and signed Tailnet webhook destinations.
-- Durable retry outbox, acknowledgements, dead letter, and recovery.
-- Remote execution URIs and host capability discovery.
-- Cross-restart subscription tests.
+## Phase 4 — Durable callbacks and supervisor: implemented
 
-Exit criterion: terminal delivery survives sender or receiver restart and does
-not duplicate user-visible completion.
+- Durable subscription/outbox/receipt/retry/pause/dead-letter state.
+- Atomic event-to-subscription fanout.
+- Owner-only file and acknowledged Unix delivery.
+- Explicit argv command delivery.
+- HMAC webhook envelopes, strict acknowledgements, replay/expiry validation,
+  HTTPS-by-default, DNS re-resolution, SSRF/rebinding defense, and redirect
+  refusal.
+- Restart recovery and an owner-only Unix supervisor control socket.
+- Read-only launchd/systemd plans.
 
-## Phase 5 — Multica durable events
+The supervisor is host-local. Remote callback receivers are separate trusted
+services; agentctl does not install them or infer credentials.
 
-- Contribute a durable server-side event outbox to the Multica fork.
-- Add sequence/cursor API and CLI event watch.
-- Add event-sink delivery health and receipts.
-- Prefer outbox over polling while preserving polling fallback.
+## Phase 5 — Multica durable events: implemented in the companion fork
 
-Exit criterion: Multica task terminal events are durable and observable even
-when issue status does not transition or WebSocket connectivity is interrupted.
+- Transactional workspace event outbox with monotonic sequence.
+- Authenticated workspace-isolated cursor API.
+- Filter-bound cursors, bounded pages, malformed/ahead conflict handling, and
+  explicit expired-cursor recovery.
+- `multica event list|watch` with quiet polling and JSONL output.
+- Issue-create client-key idempotency used by promotion.
+- Preview-first, bounded retention pruning with explicit retention and apply
+  gates; expired cursors recover through the documented `410` contract.
 
-## Deliberate non-goals
+Delivery sinks stay in agentctl. Multica exposes durable authority events; it
+does not duplicate agentctl callback destinations, receipts, or retry policy.
 
-- universal chat UI or conversation store;
-- another issue board;
-- a model gateway;
-- automatic model-performance self-modification;
-- credential synchronization;
-- raw transcript aggregation;
-- replacement for Multica, native CLIs, `tailnetctl`, or `macctl`;
-- automatic creation of Multica issues from prompt keywords.
+## Post-v0.1 work
 
-## Early decisions still requiring prototypes
+- remote host capability discovery and cross-host URI attach;
+- a publisher job integrating compiled bundles into the reviewed Tailnet
+  bootstrap/checksum chain;
+- measured journal retention and an explicit safe cleanup command;
+- native cross-restart attach where a backend gains a reviewed API;
+- service installation commands after the plan format has deployment mileage;
+- an optional speech-confusion-optimized ID codec v2;
+- delivery/receipt schemas and an independent canonical-event fixture reader.
 
-1. Exact 2,048-word list and tokenizer/spoken-confusion scoring.
-2. Whether daemonless attach can observe each target native session reliably;
-   this is expected to vary by adapter rather than have one global answer.
-3. Minimal callback receiver interface supported by each parent harness.
-4. Concrete webhook signing algorithm, canonical request fixtures, clock skew,
-   retry horizon, and credential-reference mechanism.
-5. Whether opaque native session IDs need sensitivity redaction by default.
-6. Retention defaults after measuring event volume and alias/reference reach.
-7. How Multica persists and queries promotion keys and stable user-facing word
-   aliases without replacing its
-   internal UUIDs and existing short issue IDs.
-8. Which adapters can guarantee context delivery to the worker versus merely
-   expose a context handle to the launched process.
+## Non-goals
+
+- universal chat or transcript store;
+- another issue board or model gateway;
+- model selection hidden inside agentctl;
+- credentials or session database synchronization;
+- automatic Multica issue creation from prompt keywords;
+- replacement for Multica, native CLIs, `tailnetctl`, or `macctl`.

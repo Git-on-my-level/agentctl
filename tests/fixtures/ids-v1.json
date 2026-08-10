@@ -1,0 +1,38 @@
+{
+  "encoding_version": 1,
+  "word_list_digest": "sha256:2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda",
+  "vectors": [
+    {
+      "type": "exec",
+      "payload": 0,
+      "id": "exec-abandon-abandon-abandon-abandon-abandon-aisle"
+    },
+    {
+      "type": "exec",
+      "payload": 1152921504606846975,
+      "id": "exec-zoo-zoo-zoo-zoo-zoo-wish"
+    },
+    {
+      "type": "event",
+      "payload": 81985529216486895,
+      "id": "event-banana-pencil-owner-cube-social-join"
+    },
+    {
+      "type": "host",
+      "payload": 1147797409030816545,
+      "id": "host-yard-total-plastic-uncover-drip-angry"
+    }
+  ],
+  "reject": {
+    "wrong_type": [
+      "exec-abandon-abandon-abandon-abandon-abandon-admit"
+    ],
+    "casing": [
+      "EXEC-ABANDON-ABANDON-ABANDON-ABANDON-ABANDON-AISLE"
+    ],
+    "checksum": [
+      "exec-abandon-abandon-abandon-abandon-abandon-able",
+      "exec-ability-abandon-abandon-abandon-abandon-aisle"
+    ]
+  }
+}

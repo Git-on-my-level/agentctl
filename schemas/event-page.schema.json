@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentctl.dev/schemas/event-page.schema.json",
+  "x-agentctl-docs": "../docs/events-and-subscriptions.md#cursors-and-replay",
+  "title": "agentctl bounded event page result v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["events", "scanned", "filtered", "page_limit"],
+  "properties": {
+    "events": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/adapter_event"}
+    },
+    "next_cursor": {"type": "string", "minLength": 1, "maxLength": 256},
+    "scanned": {"type": "integer", "minimum": 0},
+    "filtered": {"type": "integer", "minimum": 0},
+    "page_limit": {"type": "integer", "minimum": 1},
+    "count": {"type": "integer", "minimum": 0}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "adapter_event": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "sequence",
+        "kind",
+        "observed_at",
+        "ordering",
+        "dedupe_key"
+      ],
+      "properties": {
+        "sequence": {"type": "integer", "minimum": 1},
+        "cursor": {"type": "string", "minLength": 1, "maxLength": 256},
+        "source_position": {"type": "string", "minLength": 1, "maxLength": 256},
+        "kind": {"type": "string", "minLength": 1, "maxLength": 128},
+        "state": {
+          "enum": [
+            "created",
+            "starting",
+            "running",
+            "waiting",
+            "attention",
+            "completed",
+            "failed",
+            "cancelled",
+            "orphaned"
+          ]
+        },
+        "source_state": {"type": "string", "minLength": 1, "maxLength": 512},
+        "occurred_at": {"type": ["string", "null"], "format": "date-time"},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "ordering": {"enum": ["source", "observation", "reconciled"]},
+        "dedupe_key": {"$ref": "#/$defs/sha256"},
+        "payload": {"type": "object"}
+      }
+    }
+  }
+}

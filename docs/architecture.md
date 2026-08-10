@@ -13,7 +13,8 @@ The system separates four concerns that are often accidentally coupled:
 4. **Delivery** — waking a parent agent or sending a callback reliably.
 
 This allows direct investigative work to remain lightweight while durable work
-can opt into Multica without changing how parents observe completion.
+can opt into Multica without changing the normalized event and callback
+contract used to observe completion.
 
 Three rules constrain every component:
 
@@ -48,8 +49,10 @@ runtime alone does not require Multica.
 
 ### Multica
 
-The Multica issue and exact run are authoritative. `agentctl` observes the run
-as the primary liveness source and the issue as a secondary workflow source.
+The Multica issue is authoritative after issue-only promotion. Once Multica
+binds an exact run, that run becomes the primary execution/liveness source and
+the issue remains the workflow source. A nested task or unbound run event is
+evidence only and cannot terminalize an issue-only envelope.
 
 Multica is recommended when the work needs multiple owners, cross-machine
 handoffs, a parent that may disappear, review visibility, a long-lived PR fix

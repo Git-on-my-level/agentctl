@@ -1,95 +1,164 @@
 # agentctl
 
-`agentctl` is a portable, agent-friendly supervision and context layer for work
-executed by native agent CLIs or by Multica.
+`agentctl` is a portable, agent-oriented supervision, event, callback, and
+context layer for work executed by native agent CLIs or coordinated by Multica.
 
-It does **not** replace Codex, Claude Code, Cursor, OMP, Multica, `tailnetctl`,
-or host management such as `macctl`. It gives those systems a common execution
-envelope, deterministic context, normalized events, and reliable callbacks.
+It deliberately does not replace Codex, Claude Code, Cursor, OMP, Multica,
+`tailnetctl`, or host management such as `macctl`:
 
-## Design status
+- GPT work stays native to Codex;
+- Cursor models stay native to Cursor;
+- Claude stays native to Claude Code;
+- open-weight models such as GLM stay native to OMP;
+- Multica owns durable issues, runs, assignment, and review;
+- `agentctl` owns normalized observation, subscriptions, callbacks, and compiled
+  context handles.
 
-This repository currently contains the foundational design. No production CLI
-or daemon is implemented yet.
+## Current implementation
 
-The design optimizes for:
+The v0.1 implementation includes:
 
-- direct agent delegation without creating project-management noise;
-- optional promotion into a durable Multica lifecycle;
-- native model/runtime ownership (Codex for GPT, Cursor for Cursor models,
-  Claude Code for Claude, OMP for open-weight models such as GLM);
-- LLM-friendly typed six-word identifiers instead of user-facing UUIDs;
-- exact, machine-readable state and error contracts;
-- event streams and callbacks even when a backend only supports polling;
-- portable, deterministic context for Hermes, Codex, Claude, Cursor, OMP, and
-  Multica runtimes;
-- independent structured, loose, or hybrid knowledge repositories hosted on
-  GitHub, Forgejo, or generic Git servers;
-- compact agent-oriented text by default, with JSON when a strict machine
-  contract is needed (streaming JSON uses NDJSON framing);
-- no syncing of credentials, raw sessions, or harness databases.
+- typed, checksum-validated six-word IDs and portable URIs;
+- a hardened owner-only bbolt journal with CAS revisions, semantic event
+  deduplication, subscriptions, delivery outbox, receipts, retries, and dead
+  letters;
+- direct execution adapters for Codex, Cursor, Claude Code, OMP, and generic
+  structured processes;
+- explicit, idempotent promotion of a direct execution to one Multica issue;
+- compact `text` output and normative `json` output;
+- deterministic knowledge validation, explicit Git sync, loose/structured/
+  hybrid compilation, bundle verification/install, lexical selection, and
+  bounded context rendering;
+- owner-only file and Unix callbacks, explicit command callbacks, and signed
+  webhook delivery with SSRF and DNS-rebinding protections;
+- an optional restart-capable local supervisor plus launchd/systemd install
+  plans;
+- allowlisted portable skill distribution for Hermes, Codex, Claude, Cursor,
+  OMP, and Multica;
+- a companion Multica fork change adding durable workspace events and
+  authority-owned issue-create idempotency keys.
 
-## Proposed experience
+The CLI is usable now, but v0.1 retains explicit boundaries: native sessions
+are generally observable only by the process that launched them; remote host
+attach/discovery is not implemented; supervisor installation is plan-only; and
+Tailnet publishing of compiled bundles remains an external deployment step.
+See [Implementation status](docs/implementation-audit.md).
 
-Wrap a native command without changing its arguments:
+## Quick start
+
+Build and discover the live contract:
+
+```bash
+make ci
+go build -o build/agentctl ./cmd/agentctl
+build/agentctl help
+build/agentctl schema list --output json
+build/agentctl capabilities codex --probe --executable /path/to/codex
+```
+
+Wrap a native argv without reparsing anything after `--`:
 
 ```bash
 agentctl run --adapter codex -- codex exec --json -m gpt-5.6-sol "review this change"
-agentctl run --adapter cursor -- cursor-agent --print --model cursor-grok-4.5-high "scope the bug"
+agentctl run --adapter cursor -- cursor-agent --print "scope this bug"
+agentctl run --adapter omp -- omp "investigate the service"
 ```
 
-Attach to work created elsewhere:
+For synchronous work, `run` returns the terminal `exec-*` envelope. For live
+observation, preallocate the ID, create any subscriptions, and then start the
+foreground runner from the parent agent's native process manager:
 
 ```bash
-agentctl attach codex://host-amber-willow-orbit-tiger-harbor-gentle/source-velvet-comet-maple-badger-valley-sparrow
-agentctl attach multica://host-amber-willow-orbit-tiger-harbor-gentle/project-silver-otter-canyon-lantern-drift-velvet/issue-quiet-forest-copper-raven-signal-harbor/run-purple-monkey-dragon-river-candle-meadow
+EXEC_ID=$(agentctl id generate exec | cut -d' ' -f1)
+agentctl subscribe create \
+  --execution "$EXEC_ID" \
+  --kind terminal,attention \
+  --destination file \
+  --target /absolute/path/events.ndjson
+agentctl run --execution-id "$EXEC_ID" --adapter codex -- codex exec --json "review this change"
+
+agentctl status "$EXEC_ID"
+agentctl events "$EXEC_ID" --after-sequence 0 --output json
+agentctl await "$EXEC_ID" --timeout 10m
 ```
 
-Subscribe through one interface:
+The runner opens the journal only for bounded transactions, so a separate
+supervisor can deliver callbacks while work is active. A short-lived runner
+lease prevents that supervisor from misclassifying a process-owned session as
+unreachable; after a crash the lease expires and ordinary recovery resumes.
+Native cross-process cancel remains unavailable unless that adapter advertises
+a reviewed durable cancel mechanism; agentctl never guesses from a PID.
+
+Configure an exact Multica authority and promote only when durable lifecycle
+tracking is worth the review overhead:
 
 ```bash
-agentctl subscribe exec-purple-monkey-dragon-river-candle-meadow --on attention,terminal,artifact --to parent
-agentctl await exec-purple-monkey-dragon-river-candle-meadow
-agentctl events --after cursor-quiet-forest-copper-raven-signal-harbor --output json
+agentctl config set-profile \
+  --name fleet --default \
+  --multica-executable /absolute/path/to/multica \
+  --multica-profile desktop-multica-01 \
+  --workspace-id <workspace-id> \
+  --server-url https://multica-01.example \
+  --app-url https://multica-01.example
+
+agentctl promote exec-purple-monkey-dragon-river-candle-meadow \
+  --title "Implement the durable change" \
+  --handoff-file handoff.md \
+  --plan
 ```
 
-Promote only when durable coordination becomes valuable:
+Remove `--plan` to create or recover the one authority-owned issue. Repeating
+the same promotion returns the same Multica issue and the same stored agentctl
+execution alias. Changing its semantics conflicts instead of silently creating
+a second lifecycle.
+
+## Knowledge sources
+
+Knowledge remains in independently owned GitHub, Forgejo, or generic Git
+repositories. Existing loose stores do not need migration.
 
 ```bash
-agentctl promote exec-purple-monkey-dragon-river-candle-meadow --to multica --project project-silver-otter-canyon-lantern-drift-velvet --brief-file handoff.md
+agentctl knowledge validate --source source.json
+agentctl knowledge sync --source source.json --checkout /private/checkout --plan
+agentctl --output json knowledge compile \
+  --source source.json=/private/checkout \
+  --output /private/bundles/revision-1
+agentctl knowledge verify --bundle /private/bundles/revision-1
+agentctl context \
+  --bundle /private/bundles/revision-1 \
+  --repository /work/project \
+  --task-kind investigation \
+  --query multica \
+  --render /private/context.md
 ```
+
+Read-only context commands never fetch. Sync is explicit. Credentials, raw
+sessions, prompts, transcripts, worktrees, and harness databases are never
+compiled or distributed.
 
 ## Authority model
 
 | Concern | Authority |
 | --- | --- |
 | Direct conversation and execution | Native agent CLI/session |
-| Durable issues, runs, ownership, review lifecycle | Multica |
-| Network identity and shared resource resolution | Tailscale + `tailnetctl` |
-| Per-host desired state | Host manager such as `macctl` |
-| Shared policy, knowledge, and portable skills | Independent private Git sources, compiled into a verified bundle |
-| Normalized observation, subscriptions, and callbacks | `agentctl` |
-| Credentials, raw sessions, worktrees, caches | Local harness/machine |
-
-`agentctl` owns operational observation state, not the task's business
-lifecycle. Its caches and local journal must be rebuildable or TTL-bound.
-
-The daemonless CLI persists observation/outbox state but performs work only
-while a command process is alive. Automatic retry after logout/reboot requires
-the optional managed supervisor. IDs are stable locators, while full semantic
-hashes drive event deduplication and full authority fingerprints bind imported
-objects.
+| Durable issue/run/review lifecycle | Multica |
+| Network identity and shared resources | Tailscale + `tailnetctl` |
+| Per-host desired state | `macctl` or equivalent host manager |
+| Shared policy and knowledge | Independent private Git sources + verified bundle |
+| Observation, subscriptions, callbacks | `agentctl` |
+| Credentials, raw sessions, caches | Local harness/machine |
 
 ## Documents
 
 - [Architecture](docs/architecture.md)
 - [Identifiers](docs/identifiers.md)
-- [Execution envelope and lifecycle](docs/execution-envelope.md)
+- [Execution envelope](docs/execution-envelope.md)
 - [Adapters](docs/adapters.md)
-- [Events, subscriptions, and callbacks](docs/events-and-subscriptions.md)
+- [Events and callbacks](docs/events-and-subscriptions.md)
 - [Agent ergonomics](docs/agent-ergonomics.md)
-- [Shared context and knowledge](docs/context-and-knowledge.md)
-- [State, privacy, and security](docs/state-security-and-privacy.md)
+- [Context and knowledge](docs/context-and-knowledge.md)
+- [Security and privacy](docs/state-security-and-privacy.md)
+- [Implementation status](docs/implementation-audit.md)
 - [Roadmap](docs/roadmap.md)
 
-Machine-readable draft schemas live under [`schemas/`](schemas/).
+Machine-readable contracts live under [`schemas/`](schemas/).

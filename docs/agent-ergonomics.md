@@ -8,34 +8,34 @@ contracts, validation, and safe defaults.
 
 ## Consistency
 
-Every command that returns a document supports:
+Every command that returns a document supports `--output text|json`. Commands
+that use a configured authority, journal, or compiled context additionally
+consume the relevant global selector:
 
 ```text
---output text|json
 --profile <name>
 --context-file <path>
---explain
+--config <path>
+--journal <path>
 ```
 
-`text` is the default. Commands that may wait or perform I/O support `--timeout
-<duration>`. A streaming command in JSON mode uses NDJSON framing while the
-stream is open; this is a transport property, not a third output mode. The CLI
-never emits ANSI color or cursor-control sequences; its output is for agents
-and automation, not terminal decoration. Unsupported flag/command combinations
-are usage errors rather than accepted no-ops.
+The canonical spelling places these global flags before the command. This is
+required when a subcommand owns the same word for another purpose, notably
+`agentctl --output json knowledge compile ... --output /bundle`.
 
-Mutating commands additionally support:
+`text` is the default. Waiting commands expose a bounded timeout where their
+contract requires one. The CLI never emits ANSI color or cursor-control
+sequences; its output is for agents and automation, not terminal decoration.
+
+Commands that implement these concepts use the stable spellings:
 
 ```text
 --plan
 --idempotency-key <value>
---input-file <path>
---input-stdin
 ```
 
-`--input-file` and `--input-stdin` are mutually exclusive. `--plan` performs
-target resolution and read-only capability probes but does not reserve names,
-create local mutation records, or write remote state.
+`--plan` performs target resolution and read-only capability probes but does
+not reserve names, create local mutation records, or write remote state.
 
 Flag names do not vary between subcommands for the same concept. JSON field
 names are stable snake_case. Times are UTC RFC 3339 plus explicit freshness.
@@ -151,9 +151,9 @@ The process emits at most one primary error document. Warnings do not change the
 exit code. Termination by an operating-system signal follows platform shell
 convention and may not produce a complete document.
 
-## Contextual references
+## Reserved contextual references
 
-Agents should rarely copy a full ID twice. Supported references include:
+The grammar reserves these future explicit-context references:
 
 ```text
 @last       last object recorded in this explicit invocation context
@@ -162,12 +162,10 @@ Agents should rarely copy a full ID twice. Supported references include:
 @mine       current caller's active execution, when unique
 ```
 
-Resolution comes only from `--context-file` or an `AGENTCTL_CONTEXT_FILE` handle
-created for a launched execution. The context document is owner-only, contains
-its origin host and generation, and is updated with compare-and-swap. A plain
-new shell has no `@last`; the CLI returns `not_found` and never consults global
-recency. Machine-readable `next_actions` use full typed IDs unless the output is
-explicitly bound to a context file.
+They are not resolved by the v0.1 CLI. Current commands require a full typed ID
+or portable URI. When implemented, resolution will come only from an explicit
+owner-only `--context-file` or `AGENTCTL_CONTEXT_FILE`; it will never consult
+global recency. Machine-readable `next_actions` therefore use full typed IDs.
 
 ## No dangerous fuzzy matching
 
@@ -215,7 +213,7 @@ The class appears in plan and JSON output.
 
 ## Capability negotiation
 
-`agentctl capabilities --adapter <name> --output json` is authoritative for
+`agentctl capabilities <name> --output json` is authoritative for
 what can be streamed, polled, resumed, cancelled, or inspected. Agents never
 need to infer support from backend names or versions.
 

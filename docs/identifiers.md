@@ -112,17 +112,18 @@ an exact lookup capability; otherwise each host uses its own alias and portable
 URIs retain the origin host. `agentctl` never guesses or recomputes a shared
 alias from a truncated hash.
 
-## Word-list requirements
+## Frozen v1 word list
 
-The exact ordered list is repository-owned, immutable for encoding version 1,
-and identified by a SHA-256 digest in fixtures and manifests. Words are:
+Version 1 uses the repository-owned English BIP-39 2,048-word list. Its exact
+order is immutable and identified by a SHA-256 digest in fixtures and
+manifests. BIP-39 was selected because it is stable, independently available,
+and compact across model tokenizers.
 
-- common, concrete, and 3-10 lowercase ASCII letters;
-- distinct under case folding and free of hyphens, spaces, and diacritics;
-- screened for offensive, sensitive, or culturally risky combinations;
-- free of homophones, near-homographs, and common inflection pairs;
-- not CLI flags, contextual references, or registered type prefixes;
-- scored for tokenization across the supported model families.
+It is not a custom speech-confusion or cultural-sensitivity list. Some words
+are less pleasant or more confusable than an ideal agent-only list. The type
+prefix, fixed six-word length, and type-bound checksum provide deterministic
+validation, while a future encoding version may introduce a more strongly
+screened list. Readers must retain the v1 list while v1 IDs are referenced.
 
 Changing order or membership requires a new encoding version. Readers retain
 old lists while referenced IDs remain within retention.
@@ -133,12 +134,13 @@ Accepted references, in decreasing safety, are:
 
 1. a full typed word ID;
 2. a portable typed URI;
-3. an exact contextual reference such as `@current`;
+3. an exact contextual reference such as `@current` once a future CLI version
+   implements explicit context resolution;
 4. a full untyped six-word payload, only when the command expects one type;
 5. a unique leading-word prefix, only for read-only commands.
 
-Mutation commands require a full typed ID, portable URI, or contextual
-reference resolved from an explicit invocation context. They reject display
+Mutation commands in v0.1 require a full typed ID or portable URI. Future
+contextual references must resolve from an explicit invocation context. They reject display
 labels, source IDs, untyped payloads, and prefixes. Noninteractive ambiguity
 returns `ambiguous_reference` with typed candidates and exact retry argv.
 
@@ -175,10 +177,10 @@ paths, or raw authority IDs. Resolution may require the named host or authority
 to be reachable; an unavailable resolver returns `dependency_unavailable`, not
 `not_found`.
 
-## Fixtures required before implementation
+## Implemented fixtures
 
-Phase 0 must publish the ordered word-list digest plus fixtures for zero,
-maximum, and random payloads; every type prefix; one-bit and one-word errors;
-wrong-type checksums; invalid casing; URI parsing; local collision retry; and
-cross-host alias conflict. Two independent implementations must produce the
-same codeword and rejection result for every fixture.
+The repository publishes the ordered word-list digest and Go fixtures for
+zero, maximum, and random payloads; every type prefix; wrong-type checksums;
+invalid casing; URI parsing; and deterministic round trips. An independent
+fixture reader and broader spoken-confusion corpus remain a post-v0.1 release
+hardening item.

@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentctl.dev/schemas/subscription.schema.json",
+  "x-agentctl-docs": "../docs/events-and-subscriptions.md#subscriptions",
+  "title": "agentctl event subscription v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "id",
+    "origin_host_id",
+    "filter",
+    "destination",
+    "expires_at",
+    "cursor",
+    "state",
+    "auto_expire_on_terminal"
+  ],
+  "properties": {
+    "id": {"$ref": "#/$defs/subscription_id"},
+    "origin_host_id": {"$ref": "#/$defs/host_id"},
+    "filter": {"$ref": "#/$defs/event_filter"},
+    "destination": {"$ref": "#/$defs/destination"},
+    "expires_at": {"type": "string", "format": "date-time"},
+    "coordinator_execution_id": {"$ref": "#/$defs/execution_id"},
+    "cursor": {"$ref": "#/$defs/cursor"},
+    "replaces": {"$ref": "#/$defs/subscription_id"},
+    "replaced_by": {"$ref": "#/$defs/subscription_id"},
+    "state": {"enum": ["active", "paused", "cancelled", "stopped"]},
+    "auto_expire_on_terminal": {"type": "boolean"},
+    "resolved_authority": {"type": "string", "minLength": 1},
+    "resolved_scope": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 256}
+    }
+  },
+  "$defs": {
+    "word_id": {
+      "type": "string",
+      "pattern": "^[a-z]+-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "execution_id": {
+      "type": "string",
+      "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^event-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "host_id": {
+      "type": "string",
+      "pattern": "^host-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "subscription_id": {
+      "type": "string",
+      "pattern": "^sub-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "cursor_id": {
+      "type": "string",
+      "pattern": "^cursor-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "sha256_or_empty": {
+      "anyOf": [
+        {"const": ""},
+        {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+      ]
+    },
+    "event_id_or_empty": {
+      "anyOf": [
+        {"const": ""},
+        {"$ref": "#/$defs/event_id"}
+      ]
+    },
+    "host_id_or_empty": {
+      "anyOf": [
+        {"const": ""},
+        {"$ref": "#/$defs/host_id"}
+      ]
+    },
+    "cursor_id_or_empty": {
+      "anyOf": [
+        {"const": ""},
+        {"$ref": "#/$defs/cursor_id"}
+      ]
+    },
+    "event_filter": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "execution_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/execution_id"},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "authority": {
+          "enum": ["native", "multica"]
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 256}
+        },
+        "kinds": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "started",
+              "progress",
+              "attention",
+              "artifact",
+              "health",
+              "terminal",
+              "promoted",
+              "superseded"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "query": {"type": "string", "minLength": 1, "maxLength": 512}
+      },
+      "allOf": [
+        {
+          "anyOf": [
+            {"required": ["execution_ids"]},
+            {"required": ["authority"]},
+            {"required": ["query"]}
+          ]
+        },
+        {
+          "if": {"required": ["query"]},
+          "then": {"required": ["authority"]}
+        }
+      ]
+    },
+    "destination": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["parent", "stdout", "file", "unix", "webhook", "command"]},
+        "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "args": {
+          "type": "array",
+          "items": {"type": "string", "maxLength": 4096}
+        },
+        "credential_ref": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "allowed_hosts": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1, "maxLength": 253},
+          "uniqueItems": true
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"enum": ["file", "unix", "command", "webhook"]}}},
+          "then": {"required": ["path"]}
+        },
+        {
+          "if": {"properties": {"kind": {"enum": ["parent", "stdout"]}}},
+          "then": {
+            "properties": {
+              "path": {"maxLength": 0},
+              "args": {"maxItems": 0},
+              "credential_ref": {"maxLength": 0},
+              "allowed_hosts": {"maxItems": 0}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"kind": {"enum": ["file", "unix"]}}},
+          "then": {
+            "properties": {
+              "args": {"maxItems": 0},
+              "credential_ref": {"maxLength": 0}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"kind": {"const": "webhook"}}},
+          "then": {
+            "properties": {
+              "path": {"format": "uri"}
+            }
+          }
+        }
+      ]
+    },
+    "cursor": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "origin_host_id",
+        "stream_scope",
+        "sequence",
+        "event_id",
+        "event_hash",
+        "filter_digest",
+        "created_at",
+        "expires_at"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/cursor_id_or_empty"},
+        "origin_host_id": {"$ref": "#/$defs/host_id_or_empty"},
+        "stream_scope": {"type": "string", "maxLength": 512},
+        "sequence": {"type": "integer", "minimum": 0},
+        "event_id": {"$ref": "#/$defs/event_id_or_empty"},
+        "event_hash": {"$ref": "#/$defs/sha256_or_empty"},
+        "filter_digest": {"$ref": "#/$defs/sha256_or_empty"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}
