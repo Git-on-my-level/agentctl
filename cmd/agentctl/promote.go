@@ -99,6 +99,7 @@ func (a *app) promoteCommand(ctx context.Context, renderer output.Renderer, c co
 	if assignee != "" && assigneeID != "" {
 		return output.NewError(output.CodeUsage, "--assignee and --assignee-id are mutually exclusive", false)
 	}
+	var handoffData []byte
 	if handoffFile != "" {
 		absolute, err := filepath.Abs(handoffFile)
 		if err != nil {
@@ -116,7 +117,18 @@ func (a *app) promoteCommand(ctx context.Context, renderer output.Renderer, c co
 		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 			return output.NewError(output.CodeUsage, "handoff file must be a regular non-symlink file", false)
 		}
+		if info.Size() > maxPromotionInputBytes {
+			return output.NewError(output.CodeUsage, "handoff file exceeds 1 MiB", false)
+		}
+		handoffData, err = os.ReadFile(absolute)
+		if err != nil {
+			return output.Wrap(output.CodeAuthorizationDenied, "read handoff file", false, err)
+		}
 		handoffFile = rel
+	}
+	provenance, warnings, problem := a.promotionProvenance(c.contextFile, handoffData)
+	if problem != nil {
+		return problem
 	}
 	journal, problem := a.openWrite(c)
 	if problem != nil {
@@ -151,17 +163,16 @@ func (a *app) promoteCommand(ctx context.Context, renderer output.Renderer, c co
 	if err != nil {
 		return output.Wrap(output.CodeInternal, "derive promotion key", false, err)
 	}
-	semanticProjection := map[string]any{"title": title, "handoff_file": handoffFile != "", "project": project, "assignee": assignee, "assignee_id": assigneeID, "status": status, "supersede": supersede}
+	description := buildPromotionDescription(handoffData, source.ID, provenance)
+	descriptionDigest := sha256Digest(description)
+	semanticProjection := map[string]any{"title": title, "description_digest": descriptionDigest, "project": project, "assignee": assignee, "assignee_id": assigneeID, "status": status, "supersede": supersede}
 	semanticBytes, err := callback.CanonicalJSON(semanticProjection)
 	if err != nil {
 		return output.Wrap(output.CodeInternal, "derive promotion input digest", false, err)
 	}
 	semanticSum := sha256.Sum256(semanticBytes)
 	inputDigest := "sha256:" + hex.EncodeToString(semanticSum[:])
-	argv := []string{m.Executable, "--profile", m.Profile, "--workspace-id", m.WorkspaceID, "--server-url", m.ServerURL, "issue", "create", "--title", title, "--client-key", clientKey, "--output", "json"}
-	if handoffFile != "" {
-		argv = append(argv, "--description-file", handoffFile)
-	}
+	argv := []string{m.Executable, "--profile", m.Profile, "--workspace-id", m.WorkspaceID, "--server-url", m.ServerURL, "issue", "create", "--title", title, "--client-key", clientKey, "--description-stdin", "--output", "json"}
 	if project != "" {
 		argv = append(argv, "--project", project)
 	}
@@ -175,14 +186,17 @@ func (a *app) promoteCommand(ctx context.Context, renderer output.Renderer, c co
 		argv = append(argv, "--status", status)
 	}
 	if plan {
-		result := map[string]any{"source_execution_id": source.ID, "authority": "multica", "profile": profileName, "workspace_id": m.WorkspaceID, "client_key": clientKey, "argv": argv, "side_effect_class": output.RemoteCoordinationWrite}
-		if err := renderer.Success(output.Success{Result: result, Lines: []output.Line{{Lead: "promotion.plan", Fields: []output.Field{{Name: "source", Value: source.ID}, {Name: "profile", Value: profileName}, {Name: "client_key", Value: clientKey}, {Name: "side_effect_class", Value: output.RemoteCoordinationWrite}}}}}); err != nil {
+		result := map[string]any{"source_execution_id": source.ID, "authority": "multica", "profile": profileName, "workspace_id": m.WorkspaceID, "client_key": clientKey, "argv": argv, "description_digest": descriptionDigest, "provenance": provenance, "side_effect_class": output.RemoteCoordinationWrite}
+		if err := renderer.Success(output.Success{Result: result, Warnings: warnings, Lines: []output.Line{{Lead: "promotion.plan", Fields: []output.Field{{Name: "source", Value: source.ID}, {Name: "profile", Value: profileName}, {Name: "client_key", Value: clientKey}, {Name: "description_digest", Value: descriptionDigest}, {Name: "side_effect_class", Value: output.RemoteCoordinationWrite}}}}}); err != nil {
 			return output.Wrap(output.CodeInternal, "write output", false, err)
 		}
 		return nil
 	}
-	issue, err := runMulticaIssueCreate(ctx, argv)
+	issue, err := runMulticaIssueCreate(ctx, argv, description)
 	if err != nil {
+		if errors.Is(err, errMulticaIssueConflict) {
+			return output.Wrap(output.CodeConflict, "Multica issue client key conflicts with changed promotion semantics", false, err).WithDetail("client_key", clientKey).WithDetail("profile", profileName)
+		}
 		return output.Wrap(output.CodeRemoteFailure, "create or recover Multica issue", true, err).WithDetail("client_key", clientKey).WithDetail("profile", profileName)
 	}
 	issueID, _ := issue["id"].(string)
@@ -195,7 +209,7 @@ func (a *app) promoteCommand(ctx context.Context, renderer output.Renderer, c co
 	if err != nil {
 		return output.Wrap(output.CodeInternal, "create promotion aliases", false, err)
 	}
-	destination := model.Execution{Authority: model.AuthorityMultica, Adapter: "multica", Mode: model.ModeMultica, Acquisition: model.AcquisitionPromoted, State: model.StateWaiting, Liveness: model.LivenessUnknown, SourceState: promotionStringPointer("issue_created"), SourceBindings: bindings, Capabilities: promotedCapabilities(now), Supersedes: []ids.ExecutionID{}, Promotion: &model.PromotionLink{Role: "target", CounterpartExecutionID: source.ID, PromotionKey: clientKey, State: model.PromotionActive}, TaskContract: &model.TaskContract{ObjectiveSummary: title, SideEffectBoundary: "multica_issue"}, Observation: model.Observation{Source: model.ObservationDurableOutbox, Integrity: model.IntegrityVerified, ObservedAt: now}}
+	destination := model.Execution{Authority: model.AuthorityMultica, Adapter: "multica", Mode: model.ModeMultica, Acquisition: model.AcquisitionPromoted, State: model.StateWaiting, Liveness: model.LivenessUnknown, SourceState: promotionStringPointer("issue_created"), SourceBindings: bindings, Capabilities: promotedCapabilities(now), Supersedes: []ids.ExecutionID{}, Promotion: &model.PromotionLink{Role: "target", CounterpartExecutionID: source.ID, PromotionKey: clientKey, State: model.PromotionActive}, TaskContract: &model.TaskContract{ObjectiveSummary: title, SideEffectBoundary: "multica_issue", Provenance: &provenance}, Observation: model.Observation{Source: model.ObservationDurableOutbox, Integrity: model.IntegrityVerified, ObservedAt: now}}
 	if supersede {
 		destination.Supersedes = []ids.ExecutionID{source.ID}
 	}
@@ -239,34 +253,40 @@ func (a *app) promoteCommand(ctx context.Context, renderer output.Renderer, c co
 	} else if source.Promotion.PromotionKey != clientKey || source.Promotion.CounterpartExecutionID != created.ID {
 		return output.NewError(output.CodeConflict, "source execution is already linked to a different promotion", false).WithDetail("source_execution_id", source.ID.String())
 	}
-	if err := appendPromotionEvent(ctx, journal, source, created.ID, clientKey, now); err != nil {
+	if err := appendPromotionEvent(ctx, journal, source, created.ID, clientKey, provenance, now); err != nil {
 		return mapStoreError("record promotion event", err)
 	}
 	issueAlias, ok := bindingAlias(created.SourceBindings, "multica_issue")
 	if !ok {
 		return output.NewError(output.CodeInternal, "promoted execution omitted its issue alias", false).WithDetail("execution_id", created.ID.String())
 	}
-	result := map[string]any{"execution": redactedExecution(created), "source_execution_id": source.ID, "issue_alias": issueAlias, "identifier": identifier, "app_url": m.AppURL, "client_key": clientKey, "reused": reused}
+	result := map[string]any{"execution": redactedExecution(created), "source_execution_id": source.ID, "issue_alias": issueAlias, "identifier": identifier, "app_url": m.AppURL, "client_key": clientKey, "description_digest": descriptionDigest, "provenance": provenance, "reused": reused}
 	lines := []output.Line{{Lead: created.ID.String(), Fields: []output.Field{{Name: "authority", Value: "multica"}, {Name: "state", Value: created.State}, {Name: "source", Value: source.ID}, {Name: "issue", Value: issueAlias}, {Name: "identifier", Value: identifier}, {Name: "reused", Value: reused}}}}
-	if err := renderer.Success(output.Success{Result: result, Lines: lines}); err != nil {
+	if err := renderer.Success(output.Success{Result: result, Warnings: warnings, Lines: lines}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil
 }
 
-func runMulticaIssueCreate(ctx context.Context, argv []string) (map[string]any, error) {
+var errMulticaIssueConflict = errors.New("Multica issue client key conflict")
+
+func runMulticaIssueCreate(ctx context.Context, argv []string, stdin []byte) (map[string]any, error) {
 	if len(argv) == 0 {
 		return nil, errors.New("Multica argv is empty")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = os.Environ()
-	cmd.Stdin = nil
+	cmd.Stdin = bytes.NewReader(stdin)
 	var stdout, stderr boundedBuffer
 	stdout.limit = 1 << 20
 	stderr.limit = 64 << 10
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		message := strings.ToLower(strings.TrimSpace(stderr.String()))
+		if strings.Contains(message, "conflicts with the current state") || strings.Contains(message, "client key conflict") || strings.Contains(message, "issue_client_key_conflict") {
+			return nil, fmt.Errorf("%w: Multica rejected changed semantics", errMulticaIssueConflict)
+		}
 		return nil, fmt.Errorf("Multica issue create failed (%T)", err)
 	}
 	var result map[string]any
@@ -329,11 +349,11 @@ func bindingAlias(bindings []model.SourceBinding, kind string) (ids.ID, bool) {
 
 func promotedCapabilities(now time.Time) model.CapabilitySnapshot {
 	reason := "issue is durable; a concrete run is bound when Multica dispatches"
-	return model.CapabilitySnapshot{NegotiatedAt: now, AdapterVersion: "0.1.0", Items: []model.CapabilityItem{{Name: "durable_idempotency", Status: model.CapabilitySupported, Source: "multica_api", SemanticsVersion: 1}, {Name: "events", Status: model.CapabilityDegraded, Source: "multica_api", SemanticsVersion: 1, Reason: &reason}, {Name: "snapshot", Status: model.CapabilityUnavailable, Source: "manifest", SemanticsVersion: 1, Reason: &reason}}}
+	return model.CapabilitySnapshot{NegotiatedAt: now, AdapterVersion: "0.1.0", Items: []model.CapabilityItem{{Name: "durable_idempotency", Status: model.CapabilitySupported, Source: "multica_api", SemanticsVersion: 1}, {Name: "events", Status: model.CapabilityDegraded, Source: "multica_api", SemanticsVersion: 1, Reason: &reason, Constraints: map[string]any{"cross_restart": true, "scope": "workspace_events", "source": "native_cli"}}, {Name: "snapshot", Status: model.CapabilityUnavailable, Source: "manifest", SemanticsVersion: 1, Reason: &reason}}}
 }
 
-func appendPromotionEvent(ctx context.Context, journal contracts.Journal, source model.Execution, destination ids.ExecutionID, key string, now time.Time) error {
-	payload := map[string]any{"counterpart_execution": destination.String(), "authority": "multica"}
+func appendPromotionEvent(ctx context.Context, journal contracts.Journal, source model.Execution, destination ids.ExecutionID, key string, provenance model.ExecutionProvenance, now time.Time) error {
+	payload := map[string]any{"counterpart_execution": destination.String(), "authority": "multica", "provenance": provenance}
 	projectionValue := map[string]any{"source_execution": source.ID.String(), "counterpart_execution": destination.String(), "promotion_key": key, "kind": "promoted"}
 	dedupe, projection, err := callback.SemanticDedupeKey(source.Adapter, 1, projectionValue)
 	if err != nil {

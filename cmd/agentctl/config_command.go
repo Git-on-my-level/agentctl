@@ -29,6 +29,9 @@ func (a *app) configCommand(ctx context.Context, renderer output.Renderer, c com
 		if args[0] == "doctor" {
 			report, err := config.Doctor(ctx, cfg, c.profile)
 			if err != nil {
+				if errors.Is(err, config.ErrProfileMissing) {
+					return mapConfigError("resolve config doctor profile", err)
+				}
 				return output.Wrap(output.CodeDependencyUnavailable, "config provenance checks failed", true, err)
 			}
 			lines := []output.Line{{Lead: "config.doctor", Fields: []output.Field{{Name: "valid", Value: report.Valid}, {Name: "profile", Value: report.Profile}, {Name: "checks", Value: len(report.Checks)}}}}

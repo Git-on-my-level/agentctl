@@ -40,8 +40,9 @@ The v0.1 implementation includes:
 
 The CLI is usable now, but v0.1 retains explicit boundaries: native sessions
 are generally observable only by the process that launched them; remote host
-attach/discovery is not implemented; supervisor installation is plan-only; and
-Tailnet publishing of compiled bundles remains an external deployment step.
+attach/discovery is not implemented; supervisor installation is an explicit
+plan-derived host operation; and Tailnet publishing of compiled bundles remains
+an external deployment step.
 See [Implementation status](docs/implementation-audit.md).
 
 ## Quick start
@@ -54,7 +55,14 @@ go build -o build/agentctl ./cmd/agentctl
 build/agentctl help
 build/agentctl schema list --output json
 build/agentctl capabilities codex --probe --executable /path/to/codex
+build/agentctl bootstrap status --output json
 ```
+
+The portable skill resolves `agentctl` deterministically from `AGENTCTL_BIN`,
+`PATH`, then `$HOME/.local/bin/agentctl`; it does not assume an interactive
+shell. `bootstrap status` reports the exact binary resolution plus missing,
+duplicate, noncanonical, or drifted skill registrations across the harnesses
+present on a machine.
 
 Wrap a native argv without reparsing anything after `--`:
 
@@ -110,7 +118,27 @@ agentctl promote exec-purple-monkey-dragon-river-candle-meadow \
 Remove `--plan` to create or recover the one authority-owned issue. Repeating
 the same promotion returns the same Multica issue and the same stored agentctl
 execution alias. Changing its semantics conflicts instead of silently creating
-a second lifecycle.
+a second lifecycle. The Multica description receives bounded handoff content on
+stdin plus content digests for the installed portable skill, selected context,
+and handoff. Local file paths, prompts, and transcripts are not sent.
+
+## Portable skill reconciliation
+
+Harness installation is explicit and checksum-bound. For Codex and OMP,
+`~/.agents/skills` is the canonical shared root; compatibility copies such as
+`~/.codex/skills` should be removed once `bootstrap status` proves the canonical
+registration. Other canonical roots are `~/.hermes/skills`,
+`~/.claude/skills`, and `~/.cursor/skills`.
+
+```bash
+distributions/install.sh --harness codex --target-dir "$HOME/.agents/skills" --mode copy
+distributions/install.sh --harness codex --target-dir "$HOME/.agents/skills" --upgrade
+distributions/uninstall.sh --harness codex --target-dir "$HOME/.codex/skills" --dry-run
+```
+
+Upgrade is allowed only when the installed revision manifest proves that every
+managed asset is unmodified. Uninstall removes only manifest-bound files and
+preserves unrelated harness content.
 
 ## Knowledge sources
 

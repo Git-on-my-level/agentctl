@@ -84,6 +84,12 @@
         {"type": "null"}
       ]
     },
+    "task_contract": {
+      "anyOf": [
+        {"$ref": "#/$defs/task_contract"},
+        {"type": "null"}
+      ]
+    },
     "created_at": {"type": "string", "format": "date-time"},
     "started_at": {"type": ["string", "null"], "format": "date-time"},
     "updated_at": {"type": "string", "format": "date-time"},
@@ -180,6 +186,23 @@
             "active",
             "recovery_required"
           ]
+        }
+      }
+    },
+    "task_contract": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "objective_summary": {"type": "string", "maxLength": 2048},
+        "side_effect_boundary": {"type": "string"},
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "portable_skill_digest": {"$ref": "#/$defs/sha256"},
+            "context_digest": {"$ref": "#/$defs/sha256"},
+            "handoff_digest": {"$ref": "#/$defs/sha256"}
+          }
         }
       }
     },

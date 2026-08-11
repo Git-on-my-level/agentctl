@@ -467,6 +467,9 @@ func TestServicePlansArePureAndDeterministic(t *testing.T) {
 	if !strings.Contains(string(launchd.Contents), "agentctl-supervisor") || launchd.Path != "/tmp/LaunchAgents/agentctl-supervisor.plist" {
 		t.Fatalf("launchd plan = %+v", launchd)
 	}
+	if strings.Contains(string(launchd.Contents), "<true></true>") || strings.Count(string(launchd.Contents), "<true/>") != 2 {
+		t.Fatalf("launchd booleans must use canonical empty elements: %s", launchd.Contents)
+	}
 	systemd, err := BuildSystemdInstallPlan(service, "/tmp/systemd")
 	if err != nil {
 		t.Fatal(err)

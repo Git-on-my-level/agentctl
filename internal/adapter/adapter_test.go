@@ -63,6 +63,26 @@ func TestCursorFailureUsesStructuredErrorEvenWithZeroExit(t *testing.T) {
 	}
 }
 
+func TestOMPLiveJSONAgentEndIsTerminalSuccess(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s\n' '{"type":"session","version":3,"id":"omp-fixture"}' '{"type":"agent_start"}' '{"type":"turn_end"}' '{"type":"agent_end","messages":[]}'`)
+	a := NewOMP()
+	got, err := a.Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || !got.Result.Success || got.Result.State != StateCompleted {
+		t.Fatalf("OMP agent_end result = %#v", got.Result)
+	}
+	events, err := a.Events(context.Background(), EventsRequest{Ref: got.Session.Ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := events[len(events)-1]
+	if terminal.Kind != "terminal" || terminal.State != StateCompleted || terminal.SourceState != "agent_end" {
+		t.Fatalf("OMP terminal event = %#v", terminal)
+	}
+}
+
 func TestStructuredErrorFieldFailsWithoutSeparateErrorFlag(t *testing.T) {
 	path := fixtureExecutable(t, `printf '%s\n' '{"type":"result","error":"native failure"}'`)
 	got, err := NewGenericProcess().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
@@ -133,6 +153,48 @@ func TestGenericProbeDoesNotExecuteArbitraryExecutable(t *testing.T) {
 	}
 	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
 		t.Fatal("generic probe executed arbitrary executable")
+	}
+}
+
+func TestMulticaProbeVerifiesBoundedWorkspaceEventGrammar(t *testing.T) {
+	argsPath := filepath.Join(t.TempDir(), "args")
+	path := fixtureExecutable(t, `
+if [ "${1:-}" = "--version" ]; then printf '%s\n' 'multica 0.4.17'; exit 0; fi
+printf '%s\n' "$*" > "`+argsPath+`"
+printf '%s\n' '{"events":[],"next_cursor":"0","has_more":false}'
+`)
+	a := NewMultica(MulticaConfig{Binary: path, Profile: "desktop", Endpoint: "https://multica.example.test", Workspace: "workspace-test"})
+	result, err := a.Probe(context.Background(), ProbeRequest{Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(argv)
+	for _, required := range []string{"--profile desktop", "--workspace-id workspace-test", "--server-url https://multica.example.test", "event list", "--cursor 0", "--limit 1"} {
+		if !strings.Contains(got, required) {
+			t.Fatalf("probe argv %q missing %q", got, required)
+		}
+	}
+	for _, capability := range result.Capabilities {
+		if capability.Name == CapabilityEvents && (capability.Status != CapabilitySupported || capability.Source != "live_probe") {
+			t.Fatalf("event capability was not verified: %#v", capability)
+		}
+	}
+}
+
+func TestMulticaExplicitDefaultProfileNeverInventsNamedProfile(t *testing.T) {
+	argv := MulticaArgv(MulticaConfig{Binary: "/bin/multica", Profile: MulticaDefaultProfile, Workspace: "workspace-test", Endpoint: "https://multica.example.test"}, "event list", "--cursor", "0", "--limit", "1")
+	got := strings.Join(argv, " ")
+	if strings.Contains(got, "--profile") {
+		t.Fatalf("explicit native default emitted a named profile: %q", got)
+	}
+	for _, required := range []string{"--workspace-id workspace-test", "--server-url https://multica.example.test", "event list", "--cursor 0", "--limit 1"} {
+		if !strings.Contains(got, required) {
+			t.Fatalf("default-profile argv %q missing %q", got, required)
+		}
 	}
 }
 
@@ -319,6 +381,23 @@ func TestMulticaIssueBindingMatchesNestedTaskAndUsesAuthorityCursors(t *testing.
 	checkpoint := observed[len(observed)-1]
 	if checkpoint.Kind != "health" || checkpoint.Cursor != "evt-next" || checkpoint.Payload["page_checkpoint"] != true {
 		t.Fatalf("missing page checkpoint: %#v", checkpoint)
+	}
+}
+
+func TestMulticaEventPageAcceptsPrettyPrintedJSON(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s\n' '{' '  "events": [' '    {' '      "type": "issue:updated",' '      "aggregate_kind": "issue",' '      "aggregate_id": "issue-fixture",' '      "sequence": 2,' '      "payload": {"status": "done"}' '    }' '  ],' '  "next_cursor": "2",' '  "has_more": false' '}'`)
+	config := MulticaConfig{Binary: path, Profile: "profile-fixture", Workspace: "workspace-fixture", Issue: "issue-fixture"}
+	paged := NewMultica(config).(PagedEvents)
+	page, err := paged.EventsPage(context.Background(), EventsRequest{Ref: SourceRef{Adapter: "multica", Kind: "multica_issue", Profile: config.Profile, Workspace: config.Workspace, Issue: config.Issue}, Cursor: "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.NextCursor != "2" || page.Scanned != 1 || len(page.Events) != 1 {
+		t.Fatalf("pretty page = %#v", page)
+	}
+	event := page.Events[0]
+	if event.Kind != "terminal" || event.State != StateCompleted || event.Payload["aggregate_id"] != config.Issue {
+		t.Fatalf("pretty terminal event = %#v", event)
 	}
 }
 

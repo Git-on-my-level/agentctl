@@ -26,7 +26,7 @@ for harness in hermes codex claude cursor omp; do
   printf '%s\n' "keep-managed-$harness" >"$target/agentctl-portable/unmanaged.txt"
   "$DIST/doctor.sh" --harness "$harness" --target-dir "$target" --output=json >/dev/null
   "$DIST/install.sh" --harness "$harness" --target-dir "$target" --output=json >/dev/null
-  "$DIST/status.sh" --harness "$harness" --target-dir "$target" --output=json | grep -q '"state":"installed"'
+  "$DIST/status.sh" --harness "$harness" --target-dir "$target" --output=json | grep -q '"ok":true,"state":"installed"'
   [ "$(cat "$target/unmanaged.txt")" = "keep-$harness" ] || fail "unmanaged file changed for $harness"
   [ "$(cat "$target/agentctl-portable/unmanaged.txt")" = "keep-managed-$harness" ] || fail "managed-directory unmanaged file changed for $harness"
 
@@ -36,6 +36,32 @@ for harness in hermes codex claude cursor omp; do
   second_hash=$(shasum -a 256 "$target/agentctl-portable/SKILL.md" | awk '{print $1}')
   [ "$first_hash" = "$second_hash" ] || fail "idempotent install changed $harness"
 done
+
+# A managed older revision can be upgraded atomically. Its installed manifest
+# must bind the exact old bytes; locally modified content is never overwritten.
+upgrade="$HOME/targets/upgrade"
+mkdir -p "$upgrade"
+"$DIST/install.sh" --harness codex --target-dir "$upgrade" --output=json >/dev/null
+printf '%s\n' 'older portable skill' >"$upgrade/agentctl-portable/SKILL.md"
+old_hash=$(shasum -a 256 "$upgrade/agentctl-portable/SKILL.md" | awk '{print $1}')
+current_hash=$(shasum -a 256 "$DIST/../skills/agentctl-portable/SKILL.md" | awk '{print $1}')
+sed "s/$current_hash/$old_hash/" "$DIST/revision-manifest.json" >"$upgrade/agentctl-portable/revision-manifest.json"
+"$DIST/install.sh" --harness codex --target-dir "$upgrade" --upgrade --dry-run --output=json | grep -q '"operation":"upgrade"'
+"$DIST/install.sh" --harness codex --target-dir "$upgrade" --upgrade --output=json | grep -q '"state":"installed"'
+[ "$(shasum -a 256 "$upgrade/agentctl-portable/SKILL.md" | awk '{print $1}')" = "$current_hash" ] || fail "upgrade did not install current skill"
+printf '%s\n' modified >>"$upgrade/agentctl-portable/SKILL.md"
+if "$DIST/install.sh" --harness codex --target-dir "$upgrade" --upgrade >/dev/null 2>&1; then
+  fail "upgrade overwrote locally modified managed content"
+fi
+
+uninstall="$HOME/targets/uninstall"
+mkdir -p "$uninstall/agentctl-portable"
+printf '%s\n' preserve >"$uninstall/agentctl-portable/unmanaged.txt"
+"$DIST/install.sh" --harness codex --target-dir "$uninstall" --output=json >/dev/null
+"$DIST/uninstall.sh" --harness codex --target-dir "$uninstall" --dry-run --output=json | grep -q '"state":"planned"'
+"$DIST/uninstall.sh" --harness codex --target-dir "$uninstall" --output=json | grep -q '"state":"removed"'
+[ "$(cat "$uninstall/agentctl-portable/unmanaged.txt")" = preserve ] || fail "uninstall removed unmanaged content"
+[ ! -e "$uninstall/agentctl-portable/SKILL.md" ] || fail "uninstall left managed skill"
 
 multica="$HOME/targets/multica"
 mkdir -p "$multica"
@@ -56,8 +82,29 @@ fi
 [ "$(cat "$conflict/agentctl-portable/SKILL.md")" = caller-owned ] || fail "conflict content changed"
 
 missing="$HOME/targets/missing"
-if "$DIST/status.sh" --harness codex --target-dir "$missing" >/dev/null 2>&1; then
+missing_status="$tmp/missing-status.json"
+if "$DIST/status.sh" --harness codex --target-dir "$missing" --output=json >"$missing_status" 2>/dev/null; then
   fail "status reported a missing target as installed"
+fi
+grep -q '"ok":false,"state":"missing"' "$missing_status" || fail "missing status JSON claimed success"
+
+drifted="$HOME/targets/drifted"
+mkdir -p "$drifted"
+"$DIST/install.sh" --harness codex --target-dir "$drifted" --output=json >/dev/null
+printf '%s\n' modified >>"$drifted/agentctl-portable/SKILL.md"
+drifted_status="$tmp/drifted-status.json"
+if "$DIST/status.sh" --harness codex --target-dir "$drifted" --output=json >"$drifted_status" 2>/dev/null; then
+  fail "status reported a drifted target as installed"
+fi
+grep -q '"ok":false,"state":"drifted"' "$drifted_status" || fail "drifted status JSON claimed success"
+
+symlink_target="$HOME/targets/symlink-target"
+symlink_external="$HOME/targets/symlink-external"
+mkdir -p "$symlink_target" "$symlink_external"
+"$DIST/install.sh" --harness codex --target-dir "$symlink_external" --output=json >/dev/null
+ln -s "$symlink_external/agentctl-portable" "$symlink_target/agentctl-portable"
+if "$DIST/status.sh" --harness codex --target-dir "$symlink_target" >/dev/null 2>&1; then
+  fail "status followed a symlinked managed directory"
 fi
 
 forbidden="$HOME/targets/auth"

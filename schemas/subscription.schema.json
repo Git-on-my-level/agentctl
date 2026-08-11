@@ -25,7 +25,7 @@
     "cursor": {"$ref": "#/$defs/cursor"},
     "replaces": {"$ref": "#/$defs/subscription_id"},
     "replaced_by": {"$ref": "#/$defs/subscription_id"},
-    "state": {"enum": ["active", "paused", "cancelled", "stopped"]},
+    "state": {"enum": ["active", "paused", "cancelled", "stopped", "expired"]},
     "auto_expire_on_terminal": {"type": "boolean"},
     "resolved_authority": {"type": "string", "minLength": 1},
     "resolved_scope": {

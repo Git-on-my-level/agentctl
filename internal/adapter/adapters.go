@@ -53,6 +53,11 @@ type MulticaConfig struct {
 	EventPageLimit int
 }
 
+// MulticaDefaultProfile is an explicit request to use Multica's root/default
+// profile. It is distinct from an empty profile (invalid) and never copies or
+// discovers credentials into an agentctl profile.
+const MulticaDefaultProfile = "@default"
+
 // MulticaArgv constructs one of the currently verified read-only Multica event
 // commands. The fork's grammar uses global --profile/--workspace-id flags and
 // nested `event list|watch` commands. Unverified issue/run operations return
@@ -71,7 +76,11 @@ func MulticaArgv(config MulticaConfig, operation string, extra ...string) []stri
 	default:
 		return nil
 	}
-	argv := []string{binary, "--profile", config.Profile, "--workspace-id", config.Workspace}
+	argv := []string{binary}
+	if config.Profile != MulticaDefaultProfile {
+		argv = append(argv, "--profile", config.Profile)
+	}
+	argv = append(argv, "--workspace-id", config.Workspace)
 	if config.Endpoint != "" {
 		argv = append(argv, "--server-url", config.Endpoint)
 	}
@@ -85,7 +94,7 @@ func NewMultica(config MulticaConfig) Adapter {
 	}
 	base := newNativeAdapter(nativeConfig{
 		Manifest: multicaManifest(), Binary: config.Binary, Parser: multicaPageParser{},
-		LaunchKind: "multica_event",
+		LaunchKind: "multica_event", WholeStdout: true,
 	})
 	return &multicaAdapter{NativeAdapter: base, config: config}
 }
@@ -100,6 +109,28 @@ type multicaAdapter struct {
 
 func (m *multicaAdapter) Name() string       { return m.NativeAdapter.Name() }
 func (m *multicaAdapter) Manifest() Manifest { return m.NativeAdapter.Manifest() }
+
+func (m *multicaAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, error) {
+	req.Profile = m.config.Profile
+	req.Endpoint = m.config.Endpoint
+	req.Workspace = m.config.Workspace
+	result, err := m.NativeAdapter.Probe(ctx, req)
+	if err != nil {
+		return ProbeResult{}, err
+	}
+	probe := &multicaAdapter{NativeAdapter: m.NativeAdapter, config: m.config}
+	probe.config.EventPageLimit = 1
+	if _, err := probe.EventsPage(ctx, EventsRequest{Ref: SourceRef{Adapter: "multica", Kind: "multica_event", Profile: m.config.Profile, Workspace: m.config.Workspace}, Cursor: "0"}); err != nil {
+		return ProbeResult{}, fmt.Errorf("verify Multica workspace event capability: %w", err)
+	}
+	for i := range result.Capabilities {
+		if result.Capabilities[i].Name == CapabilityEvents {
+			result.Capabilities[i].Status = CapabilitySupported
+			result.Capabilities[i].Source = "live_probe"
+		}
+	}
+	return result, nil
+}
 
 func (m *multicaAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, error) {
 	return LaunchResult{}, capabilityError(CapabilityLaunch, "Multica launch/run route is not verified for the current CLI")

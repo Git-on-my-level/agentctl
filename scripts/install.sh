@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-PREFIX=${PREFIX:-"${HOME}/.local"}
+PREFIX=${PREFIX:-}
 BINARY_NAME=${BINARY_NAME:-agentctl}
 SOURCE=
 FORCE=0
@@ -31,6 +31,20 @@ sha256_file() {
   fi
 }
 
+safe_absolute_path() {
+  local path=$1 current=/ remainder component
+  case "$path" in /*) ;; *) return 1 ;; esac
+  case "$path" in *//*|*'/./'*|*'/../'*|*'/.'|*'/..') return 1 ;; esac
+  remainder=${path#/}
+  while [ -n "$remainder" ]; do
+    component=${remainder%%/*}
+    if [ "$remainder" = "$component" ]; then remainder=; else remainder=${remainder#*/}; fi
+    [ -n "$component" ] || continue
+    current=${current%/}/$component
+    [ ! -L "$current" ] || return 1
+  done
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --binary)
@@ -52,6 +66,11 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+if [ -z "$PREFIX" ]; then
+  [ -n "${HOME:-}" ] || die 'HOME is required unless --prefix is supplied'
+  PREFIX="$HOME/.local"
+fi
+
 case "$(uname -s)" in
   Darwin|Linux) ;;
   *) die 'only macOS and Linux are supported' ;;
@@ -64,7 +83,7 @@ case "$BINARY_NAME" in
   ''|*/*) die '--name must be a simple executable name' ;;
 esac
 [ -n "$PREFIX" ] || die '--prefix cannot be empty'
-[ ! -L "$PREFIX" ] || die "refusing symlinked prefix: $PREFIX"
+safe_absolute_path "$PREFIX" || die "prefix must be an absolute clean path without symlink components: $PREFIX"
 
 bindir=$PREFIX/bin
 sharedir=$PREFIX/share/agentctl

@@ -140,6 +140,9 @@ func (j *Journal) GetSubscriptionRecord(ctx context.Context, id string) (Subscri
 		}
 		return nil
 	})
+	if err == nil && result.Subscription.State == subscription.StateActive && !result.Subscription.ExpiresAt.IsZero() && !j.clock().UTC().Before(result.Subscription.ExpiresAt) {
+		result.Subscription.State = subscription.StateExpired
+	}
 	return result, err
 }
 
@@ -166,7 +169,11 @@ func (j *Journal) ListSubscriptions(ctx context.Context) ([]subscription.Subscri
 			if err := validateStoredSubscriptionIdentity(record.Subscription); err != nil {
 				return err
 			}
-			values = append(values, record.Subscription)
+			value := record.Subscription
+			if value.State == subscription.StateActive && !value.ExpiresAt.IsZero() && !j.clock().UTC().Before(value.ExpiresAt) {
+				value.State = subscription.StateExpired
+			}
+			values = append(values, value)
 			return nil
 		})
 	})

@@ -235,15 +235,17 @@ contract is detailed in [Adapters](adapters.md#capability-negotiation).
 
 ## Deterministic context
 
-Every launched execution receives a small context document automatically. It
-contains authority, execution ID, parent callback, relevant resource and
-knowledge references, and exact completion expectations.
+Context selection is explicit in v0.1. `agentctl context` deterministically
+selects and optionally renders a bounded document; a launch receives a context
+handle only when the caller supplies `--context-file` or
+`AGENTCTL_CONTEXT_FILE`. Launch never performs a hidden fetch or model-driven
+memory lookup.
 
-Models are not expected to remember that `agentctl` exists. A native or Multica
-adapter injects the context only through a negotiated, reviewed mechanism. If
-required injection is unavailable, launch fails before the child starts. A
-portable skill explains optional deeper commands, but correctness does not
-depend on Hermes or on any model reading a global profile.
+A native adapter passes the handle only through its negotiated mechanism. The
+current built-ins expose an environment path but do not guarantee that the
+model consumes it, so the handle is advisory rather than a correctness gate. A
+portable skill explains deeper commands, but correctness does not depend on
+Hermes or on a model reading a global profile.
 
 ## Lifecycle UX
 
