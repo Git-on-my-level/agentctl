@@ -83,8 +83,11 @@ absence of a local receipt is never evidence that no issue was created. See
 
 The CLI is the stable interface for agents and automation. Every command
 supports compact text and structured JSON, and reports source authority,
-observation time, and freshness. Text is token-efficient and line-oriented;
-JSON is the normative machine contract.
+observation time, and freshness. JSON is the default normative machine
+contract; callers opt into text with `--output text` when a compact line
+projection is useful. `agentctl help <topic>` provides progressive, just-in-time
+usage, defaults, examples, and typed `next_actions` so a skill need not carry
+every flag.
 
 ### Adapter library
 
@@ -125,9 +128,27 @@ guarantees:
 | Recover queued work on the next manual invocation | Yes | Yes |
 
 Backgrounding `agentctl await` is still process-scoped supervision. The MVP
-must not describe it as reboot-, logout-, or crash-surviving delivery. Installing
-or enabling the supervisor is an explicit host-state mutation owned by a host
-manager when one exists.
+must not describe it as reboot-, logout-, or crash-surviving delivery. Creating
+or enabling a new supervisor service is an explicit host-state mutation owned
+by a host manager when one exists. `agentctl bootstrap update` may reconcile an
+already-managed supervisor during a release update, but never creates a new
+service merely because a harness was detected.
+
+### Bootstrap reconciliation
+
+`agentctl bootstrap status` is a read-only inventory of binary resolution,
+detected harnesses, canonical skill roots, managed revisions, and drift. The
+default `agentctl bootstrap update` discovers supported harnesses, deduplicates
+shared roots (Codex and OMP commonly share `~/.agents/skills`), and atomically
+installs or upgrades only manifest-bound portable-skill assets. `--dry-run`
+shows exact paths and side effects. Legacy copies, unmanaged skills, and new
+supervisor services remain untouched unless an explicit cleanup or host-manager
+operation authorizes them.
+
+`scripts/install.sh` composes this reconciliation into a binary release: after
+the managed binary is installed it runs the same detected update and refreshes
+an existing launchd supervisor only when its manifest is agentctl-owned.
+`--binary-only` is the explicit binary-only escape.
 
 ### Shared context bundle
 

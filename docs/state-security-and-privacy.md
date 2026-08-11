@@ -131,12 +131,19 @@ output.
 
 ## Command safety
 
-- Read-only commands have no hidden refresh/fetch/cache-write behavior.
+- Read-only commands have no hidden refresh/fetch/cache-write behavior. Live
+  capability and doctor probes are bounded, declared read-only checks and
+  report freshness; a probe that mutates a native cache is not used as
+  readiness evidence.
 - Native commands are passed as argv, never reconstructed shell strings.
 - Callback command adapters receive a path to an event document.
 - Mutations use exact IDs/context references and idempotency keys.
 - External side effects require explicit mode and appear in `--plan`.
 - Destructive cleanup reports exact paths/bytes/retention before action.
+- `bootstrap update` is the explicit local reconciliation boundary: detection
+  is automatic within the command, but only canonical manifest-bound skill
+  assets and already-managed supervisor files may be changed. New services,
+  legacy-copy removal, and permission-granting flags remain explicit.
 
 ## Threat boundaries
 

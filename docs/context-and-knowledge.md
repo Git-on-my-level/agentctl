@@ -231,6 +231,15 @@ Distribution is allowlisted per harness:
 Multica skill copies are generated distribution artifacts, not the authoring
 source of truth.
 
+`agentctl bootstrap update` is the normal release reconciliation path. It
+detects installed supported harnesses, deduplicates canonical roots, and
+installs or upgrades only the embedded manifest-bound skill. It may update a
+supervisor that agentctl already manages, but it does not create a new service,
+delete legacy copies, or modify unmanaged skills. Use `bootstrap status` and
+`doctor` for read-only inventory, and `agentctl help <topic>` for the current
+command contract; the skill remains a concise routing and guardrail layer
+rather than a copy of every flag.
+
 ## Writes
 
 Knowledge writes are explicit Git operations against the owning source through

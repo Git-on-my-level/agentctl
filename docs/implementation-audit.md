@@ -1,6 +1,6 @@
 # Implementation audit
 
-Snapshot: 2026-08-10, v0.1 development branch.
+Snapshot: 2026-08-11, v0.1 development branch.
 
 This is the post-integration acceptance record. It separates implemented
 contracts from intentional adapter/deployment limits; package primitives alone
@@ -23,13 +23,13 @@ are not counted unless a CLI, supervisor, or Multica endpoint consumes them.
 | --- | --- |
 | IDs | Closed typed registry; frozen BIP-39 v1 list and digest; 60-bit payload + type-bound checksum; typed wrappers and portable URI parsing. Normal output never leads with native UUIDs. |
 | Journal | Owner-only bbolt store; schema validation; CAS execution updates; event sequence; semantic-key recomputation; one terminal event; subscriptions, outbox, receipts, and restart durability. |
-| Native work | `run`, local binding `attach`, `status`, `events`, `await`, `result`, and adapter-dependent `cancel`; preallocated IDs for live observation/subscription; bounded journal transactions and expiring runner leases while children run; exact argv after `--`; bounded structured parsers; raw prompts/transcripts/results excluded from the journal. |
+| Native work | `run`, local binding `attach`, `status`, `events`, `await`, `result`, and adapter-dependent `cancel`; preallocated IDs for live observation/subscription; bounded journal transactions and expiring runner leases while children run; exact argv after `--`; deterministic adapter inference for known executables; bounded structured parsers; raw prompts/transcripts/results excluded from the journal. |
 | Routing | Deterministic `route explain` keeps model choice in the native harness and chooses direct versus Multica from explicit work properties. It never creates an issue. |
 | Promotion | Exact configured Multica binary/profile/workspace/server; plan mode; authority-owned semantic client key; exact retry; changed-input conflict; persisted source/target links; optional supersession; replay returns the same stored issue alias and one lifecycle. |
 | Knowledge | Validated GitHub/Forgejo/generic registrations; explicit noninteractive sync; loose/structured/hybrid ingest; deterministic provenance, bundle, lexical index, verification, atomic install, selection, and bounded render. |
 | Callbacks | Atomic event fanout; file, acknowledged Unix, command, and HMAC webhook transports; TTL, retry, pause, receipt, and dead-letter state; SSRF, DNS rebinding, redirect, expiry, and replay controls. |
 | Supervisor | Real journal/runtime/outbox bridges; restart reprobe; owner-only Unix status RPC; one-shot or long-running cycle; launchd/systemd plans. |
-| Portability | Allowlisted skill and Multica runtime bundle; installer/status/doctor scripts preserve unmanaged harness state and never copy auth, memories, sessions, settings, caches, prompts, or worktrees. |
+| Portability | Allowlisted skill and Multica runtime bundle; detected-harness bootstrap reconciliation plus installer/status/doctor preserve unmanaged harness state and never copy auth, memories, sessions, settings, caches, prompts, or worktrees. |
 | Multica events | Transactional event outbox; workspace monotonic sequence; authenticated membership; exact filters; bounded cursor API; list/watch CLI; issue-create client-key idempotency; preview-first, bounded contiguous-prefix retention pruning. |
 
 ## Authority invariants
@@ -44,6 +44,25 @@ are not counted unless a CLI, supervisor, or Multica endpoint consumes them.
 6. Shared knowledge is derived from explicit Git authorities. The compiled
    bundle is immutable data, not shared session state.
 7. Credentials, raw transcripts, native databases, and worktrees remain local.
+
+## Agent-first defaults
+
+The release path is intentionally optimized for an agent that has only the
+binary and progressive help available:
+
+- `agentctl help <topic>` supplies usage, defaults, examples, and typed
+  `next_actions`; the portable skill points agents there instead of duplicating
+  every flag.
+- JSON is the default output. `--output text` is an explicit compact escape.
+- `doctor` discovers harnesses and checks launch, observation, and result
+  readiness. `capabilities` returns a concise live summary; `--full` and
+  `--static` are explicit manifest/probe escapes.
+- `run` infers known adapters, bounds work to thirty minutes, and preflights
+  `launch,result_content`. `result` requires stored content and `await` stops
+  on attention unless the caller supplies `--ignore-attention`.
+- Subscriptions default to terminal/attention/artifact, and
+  `bootstrap update` reconciles detected canonical roots while leaving
+  unmanaged files, legacy copies, and new supervisor services untouched.
 
 ## Intentional v0.1 constraints
 
@@ -63,8 +82,9 @@ These are explicit limits, not silently degraded promises:
   not claimed.
 - Outbound signed webhooks are implemented; agentctl is not a general inbound
   remote execution receiver.
-- Supervisor installation is plan-only. The operator or host manager owns
-  reviewed service-file installation.
+- Creating a new supervisor service is plan-only. The operator or host manager
+  owns reviewed service-file installation; bootstrap may update an
+  already-managed supervisor but does not create one by detection alone.
 - Bundle compilation/install is local. Publishing it into the Tailnet bootstrap
   and its checksum manifest is a separate reviewed deployment step.
 - Journal retention is not automatic in v0.1. No record referenced by an

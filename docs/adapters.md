@@ -99,8 +99,13 @@ state. The event contract records `observation` or `reconciled` ordering.
 Launch receives an argv array after `--`; no shell re-parsing is permitted:
 
 ```bash
-agentctl run --adapter codex -- codex exec --json -m gpt-5.6-sol "task"
+agentctl run -- codex exec --json -m gpt-5.6-sol "task"
 ```
+
+For known executable names, `run` infers the adapter (`codex`, `cursor-agent`,
+`claude`, and `omp`). `--adapter <name>` remains an explicit override when an
+executable is ambiguous or the caller has a reviewed authority mapping. The
+argv after `--` is passed unchanged in either case.
 
 The adapter may add only the minimum flags required to obtain structured events
 when this is safe and documented. It must report added flags in `--explain`
@@ -184,8 +189,17 @@ The draft machine contract is
 Manifests include their semantics/schema versions and a compatibility policy;
 they do not use a single unqualified boolean `capabilities` list.
 
-`agentctl doctor` validates the installed adapter/backend pair. Version skew is
-a first-class warning rather than an unstructured runtime surprise.
+`agentctl doctor` validates every detected installed adapter/backend pair by
+default and answers whether each can launch, be observed, and return a result.
+`--adapter <name>` narrows the check; `--static` reports
+manifest/configuration evidence without live probes. Version skew is a
+first-class warning rather than an unstructured runtime surprise.
+
+`agentctl capabilities <name>` returns a concise live viability projection by
+default. `--full` exposes the static manifest and `--static` suppresses probing;
+`--require launch,result_content` makes readiness for a specific operation
+machine-checkable. A live probe is read-only and its freshness is reported in
+the result.
 
 ## Testing
 

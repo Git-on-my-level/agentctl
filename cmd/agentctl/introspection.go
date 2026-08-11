@@ -12,11 +12,11 @@ import (
 
 func (a *app) capabilitiesCommand(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) == 0 {
-		return output.NewError(output.CodeUsage, "usage: agentctl capabilities <adapter> [--probe] [--summary] [--require names] [--executable path]", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl capabilities <adapter> [--require names] [--full] [--static] [--executable path]", false)
 	}
-	name := args[0]
-	probe := false
-	summary := false
+	name := strings.ToLower(strings.TrimSpace(args[0]))
+	probe := true
+	summary := true
 	required := []string{}
 	executable := ""
 	for i := 1; i < len(args); i++ {
@@ -25,6 +25,10 @@ func (a *app) capabilitiesCommand(ctx context.Context, renderer output.Renderer,
 			probe = true
 		case "--summary":
 			summary = true
+		case "--full":
+			summary = false
+		case "--static":
+			probe = false
 		case "--require":
 			if i+1 >= len(args) {
 				return output.NewError(output.CodeUsage, "--require requires a comma-separated capability list", false)
@@ -48,7 +52,9 @@ func (a *app) capabilitiesCommand(ctx context.Context, renderer output.Renderer,
 	manifest := value.Manifest()
 	result := map[string]any{"manifest": manifest}
 	lines := []output.Line{{Lead: "adapter", Fields: []output.Field{{Name: "name", Value: manifest.Adapter}, {Name: "version", Value: manifest.AdapterVersion}, {Name: "capabilities", Value: len(manifest.Capabilities)}}}}
-	if probe {
+	// A generic process has no executable discovery rule of its own. Its
+	// summary remains static unless the caller supplies the exact executable.
+	if probe && (name != "generic" && name != "generic-process" || executable != "") {
 		observation, err := value.Probe(ctx, adapter.ProbeRequest{Executable: executable, Profile: c.profile, Fresh: true})
 		if err != nil {
 			return mapAdapterError("adapter probe failed", err).WithDetail("adapter", name)

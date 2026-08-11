@@ -156,8 +156,12 @@ its delivery cursor only after destination acknowledgement.
 
 A subscription binds exact execution IDs or an explicit narrow authority query,
 event kinds, destination, expiry, retry policy, optional coordinator execution,
-and a delivery cursor. Query subscriptions record their resolved authority and
-scope; display labels are insufficient.
+and a delivery cursor. `agentctl subscribe create` listens for `terminal`,
+`attention`, and `artifact` by default: these are the minimum events needed to
+drive a parent agent without subscribing it to progress chatter. `--kind all`
+is an explicit broad subscription, while `--kind <names>` narrows the set.
+Query subscriptions record their resolved authority and scope; display labels
+are insufficient.
 
 Task subscriptions expire after acknowledged terminal delivery by default.
 Broad subscriptions require an explicit scope and retention estimate in plan
@@ -242,7 +246,10 @@ bytes is always rejected.
 `agentctl await` emits exactly one terminal, attention, timeout, or integrity
 document and follows the exit contract in
 [Agent-first CLI ergonomics](agent-ergonomics.md). Callback receipt proves only
-delivery, never task success.
+delivery, never task success. Await stops on actionable `attention` by default
+and returns `attention_required` with the execution's next action. A caller
+that intentionally wants to continue waiting uses `--ignore-attention`; a
+different bounded wait uses `--timeout <duration>`.
 
 Without a managed supervisor, retry and polling continue only while the
 foreground `run`, `await`, or an explicitly backgrounded process remains alive.
