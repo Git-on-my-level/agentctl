@@ -6,7 +6,7 @@
 set -euo pipefail
 umask 077
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 INSTALL="$ROOT/scripts/install-supervisor.sh"
 UNINSTALL="$ROOT/scripts/uninstall-supervisor.sh"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/agentctl-supervisor-test.XXXXXX")
@@ -66,11 +66,38 @@ printf '%s\n' "$*" >>"$LAUNCHCTL_LOG"
 if [ "${FAIL_ACTION:-}" = "$1" ]; then exit 97; fi
 case "$1" in
   print)
+    if [ -e "$FAKE_LOADED" ] && [ -n "${HIDE_LOADED_PRINT_COUNT_FILE:-}" ] && [ -f "$HIDE_LOADED_PRINT_COUNT_FILE" ]; then
+      remaining=$(cat "$HIDE_LOADED_PRINT_COUNT_FILE")
+      if [ "$remaining" -gt 0 ]; then
+        printf '%s\n' "$((remaining - 1))" >"$HIDE_LOADED_PRINT_COUNT_FILE"
+        exit 113
+      fi
+    fi
+    if [ -n "${DELAYED_BOOTOUT_COUNT_FILE:-}" ] && [ -f "$DELAYED_BOOTOUT_COUNT_FILE" ]; then
+      remaining=$(cat "$DELAYED_BOOTOUT_COUNT_FILE")
+      if [ "$remaining" -gt 0 ]; then
+        printf '%s\n' "$((remaining - 1))" >"$DELAYED_BOOTOUT_COUNT_FILE"
+      else
+        rm -f "$FAKE_LOADED" "$DELAYED_BOOTOUT_COUNT_FILE"
+      fi
+    fi
     [ -e "$FAKE_LOADED" ] || exit 113
     printf 'path = %s\n' "$HOME/Library/LaunchAgents/io.agentctl.supervisor.plist"
     ;;
-  bootout) rm -f "$FAKE_LOADED" ;;
-  bootstrap) : >"$FAKE_LOADED" ;;
+  bootout)
+    if [ -n "${DELAYED_BOOTOUT_COUNT_FILE:-}" ]; then
+      printf '%s\n' "${DELAYED_BOOTOUT_PRINTS:-3}" >"$DELAYED_BOOTOUT_COUNT_FILE"
+    else
+      rm -f "$FAKE_LOADED"
+    fi
+    ;;
+  bootstrap)
+    if [ -n "${FAIL_BOOTSTRAP_ONCE_FILE:-}" ] && [ ! -e "$FAIL_BOOTSTRAP_ONCE_FILE" ]; then
+      : >"$FAIL_BOOTSTRAP_ONCE_FILE"
+      exit 97
+    fi
+    : >"$FAKE_LOADED"
+    ;;
   kickstart) : ;;
   *) exit 2 ;;
 esac
@@ -115,6 +142,16 @@ first_hash=$(shasum -a 256 "$plist" | cut -d ' ' -f 1)
 second_hash=$(shasum -a 256 "$plist" | cut -d ' ' -f 1)
 [ "$first_hash" = "$second_hash" ] || fail 'idempotent install changed plist bytes'
 
+export FAIL_BOOTSTRAP_ONCE_FILE="$TMP/bootstrap-failed-once"
+"$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" >/dev/null
+[ -e "$FAIL_BOOTSTRAP_ONCE_FILE" ] && [ -e "$LOADED" ] || fail 'installer did not recover from a transient launchd bootstrap race'
+unset FAIL_BOOTSTRAP_ONCE_FILE
+
+export DELAYED_BOOTOUT_COUNT_FILE="$TMP/delayed-bootout-count" DELAYED_BOOTOUT_PRINTS=3
+"$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" >/dev/null
+[ -e "$LOADED" ] || fail 'installer did not wait for delayed launchd bootout completion'
+unset DELAYED_BOOTOUT_COUNT_FILE DELAYED_BOOTOUT_PRINTS
+
 rm -f "$manifest"
 if "$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" >/dev/null 2>&1; then fail 'installer overwrote unmanaged plist'; fi
 [ -f "$plist" ] || fail 'conflict refusal removed plist'
@@ -139,6 +176,12 @@ unset FAIL_ACTION
 # manifest rather than leaving a half-installed service definition.
 "$UNINSTALL" --agentctl "$AGENTCTL" >/dev/null
 [ ! -e "$plist" ] && [ ! -e "$manifest" ] || fail 'setup uninstall did not remove managed files'
+export HIDE_LOADED_PRINT_COUNT_FILE="$TMP/hide-loaded-print-count"
+printf '%s\n' 10 >"$HIDE_LOADED_PRINT_COUNT_FILE"
+if "$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" >/dev/null 2>&1; then fail 'installer accepted an unverified loaded service'; fi
+unset HIDE_LOADED_PRINT_COUNT_FILE
+[ ! -e "$plist" ] && [ ! -e "$manifest" ] || fail 'unverified-load rollback left new artifacts'
+[ ! -e "$LOADED" ] || fail 'unverified-load rollback left service loaded'
 export FAIL_ACTION=bootstrap
 if "$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" >/dev/null 2>&1; then fail 'installer hid launchctl bootstrap failure'; fi
 unset FAIL_ACTION
