@@ -10,10 +10,12 @@ part of the contract.
   checksum, typed wrappers, URI parser, and golden fixtures.
 - Versioned execution, event, error, adapter-manifest, and knowledge-source
   schemas.
-- Stable text/JSON envelopes and exit codes.
+- Stable JSON-first envelopes and exit codes, with explicit compact text.
 - Versioned semantic event projection and store-side recomputation.
 - Capability manifests, probe actions, privacy bounds, and malformed-output
   fixtures.
+- Progressive `agentctl help <topic>` discovery with typed `next_actions` and
+  safe agent-first defaults documented by the live command contract.
 
 The v1 word list is the frozen English BIP-39 list. It is portable and audited
 by digest but is not a custom speech-confusion-optimized list. A future codec
@@ -24,7 +26,10 @@ version may use a screened list; v1 order and membership will not change.
 - `run`, local `attach`, `status`, `events`, `await`, `result`, and `cancel`.
 - Codex, Cursor, Claude Code, OMP, generic-process, and Multica event adapters.
 - Owner-only journal, normalized source bindings, terminal conflict handling,
-  context handles, compact text, and JSON.
+  context handles, JSON-first output, and explicit compact text.
+- Known executable names infer adapters; `run` has a bounded timeout and
+  result-content preflight. `await` stops on attention by default, and
+  `result` requires stored content unless `--allow-empty` is supplied.
 
 Native launch supervision is deliberately same-process in v0.1. A new process
 cannot claim it can attach to a native session unless that native CLI exposes a
@@ -54,6 +59,9 @@ Multica run dispatch, assignment, status mutation, or review.
 - Deterministic bundle, source lock, lexical index, provenance, verification,
   atomic install, selection, and bounded rendering.
 - Allowlisted skill/runtime distribution for major harnesses and Multica.
+- Detected-harness bootstrap reconciliation for canonical portable-skill roots;
+  already-managed supervisor assets may be upgraded, while new services and
+  legacy-copy cleanup remain explicit.
 
 Publishing a verified bundle through the existing Tailnet bootstrap is an
 operator/deployment integration, not an implicit `context` side effect. The CLI
@@ -69,7 +77,8 @@ does not modify `tailnetctl` or fetch during a read.
   HTTPS-by-default, DNS re-resolution, SSRF/rebinding defense, and redirect
   refusal.
 - Restart recovery and an owner-only Unix supervisor control socket.
-- Read-only launchd/systemd plans.
+- Read-only launchd/systemd plans; a release update may reconcile an existing
+  managed supervisor but does not install a new service by detection alone.
 
 The supervisor is host-local. Remote callback receivers are separate trusted
 services; agentctl does not install them or infer credentials.

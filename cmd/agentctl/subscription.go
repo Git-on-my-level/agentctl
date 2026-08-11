@@ -8,6 +8,7 @@ import (
 
 	"github.com/Git-on-my-level/agentctl/internal/callback"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
+	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/subscription"
 )
@@ -93,7 +94,9 @@ func (a *app) subscribeCommand(ctx context.Context, renderer output.Renderer, c 
 
 func (a *app) subscribeCreate(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	var executionID, authority, destinationKind, target, credentialRef string
-	var kinds, commandArgs, allowedHosts []string
+	kinds := []string{string(model.EventTerminal), string(model.EventAttention), string(model.EventArtifact)}
+	var commandArgs, allowedHosts []string
+	kindsExplicit, allKinds := false, false
 	ttl := 24 * time.Hour
 	autoExpire := true
 	for i := 0; i < len(args); i++ {
@@ -122,7 +125,25 @@ func (a *app) subscribeCreate(ctx context.Context, renderer output.Renderer, c c
 			if problem != nil {
 				return problem
 			}
-			kinds = append(kinds, splitValues(value)...)
+			values := splitValues(value)
+			if len(values) == 1 && strings.EqualFold(values[0], "all") {
+				if kindsExplicit && !allKinds {
+					return output.NewError(output.CodeUsage, "--kind all cannot be combined with named event kinds", false)
+				}
+				kinds = nil
+				kindsExplicit, allKinds = true, true
+			} else if len(values) == 0 {
+				return output.NewError(output.CodeUsage, "--kind requires event names or all", false)
+			} else {
+				if allKinds {
+					return output.NewError(output.CodeUsage, "--kind all cannot be combined with named event kinds", false)
+				}
+				if !kindsExplicit {
+					kinds = nil
+					kindsExplicit = true
+				}
+				kinds = append(kinds, values...)
+			}
 		case "--destination":
 			value, problem := take()
 			if problem != nil {

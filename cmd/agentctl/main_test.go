@@ -68,6 +68,9 @@ func TestDoctorRequiresProfileSelectionWhenConfigHasNoDefault(t *testing.T) {
 	if code := a.run(context.Background(), []string{"--output", "json", "--config", configPath, "--profile", "local", "doctor"}); code != 0 {
 		t.Fatalf("explicit doctor exit=%d output=%s", code, stdout.String())
 	}
+	if !strings.Contains(stdout.String(), `"bootstrap"`) || !strings.Contains(stdout.String(), `"journal"`) || !strings.Contains(stdout.String(), `"adapters"`) || !strings.Contains(stdout.String(), `"generic-process"`) {
+		t.Fatalf("doctor omitted readiness dimensions: %s", stdout.String())
+	}
 }
 
 func TestHelpSideEffectClassesReflectOptionalWrites(t *testing.T) {
@@ -90,6 +93,109 @@ func TestHelpSideEffectClassesReflectOptionalWrites(t *testing.T) {
 	}
 	if classes["attach"] != "read_only" || classes["context"] != "local_operational_write" {
 		t.Fatalf("unexpected side-effect classes: %#v", classes)
+	}
+}
+
+func TestDefaultOutputIsJSONAndTopicHelpIsProgressive(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"help", "bootstrap", "update"}); code != 0 {
+		t.Fatalf("help exit=%d output=%s", code, stdout.String())
+	}
+	var doc struct {
+		OK     bool        `json:"ok"`
+		Result commandHelp `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.OK || doc.Result.Name != "bootstrap update" || !strings.Contains(doc.Result.Usage, "--dry-run") {
+		t.Fatalf("topic help=%#v", doc)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"run", "--help"}); code != 0 || !strings.Contains(stdout.String(), `"name":"run"`) {
+		t.Fatalf("inline help exit=%d output=%s", code, stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"help", "missing-topic"}); code != 3 || !strings.Contains(stdout.String(), `"code":"not_found"`) {
+		t.Fatalf("unknown help exit=%d output=%s", code, stdout.String())
+	}
+}
+
+func TestRunDefaultsInferAdapterAndBoundExecution(t *testing.T) {
+	tests := []struct{ executable, adapter string }{
+		{"/opt/bin/codex", "codex"}, {"cursor-agent", "cursor"}, {"claude.exe", "claude"}, {"omp", "omp"}, {"/bin/echo", "generic-process"},
+	}
+	for _, test := range tests {
+		opts, problem := parseRun([]string{"--", test.executable, "task"})
+		if problem != nil {
+			t.Fatalf("parse %s: %v", test.executable, problem)
+		}
+		if opts.adapter != test.adapter || opts.timeout != defaultRunTimeout {
+			t.Fatalf("parse %s adapter=%s timeout=%s", test.executable, opts.adapter, opts.timeout)
+		}
+	}
+	opts, problem := parseRun([]string{"--adapter", "generic-process", "--no-timeout", "--", "codex", "task"})
+	if problem != nil || opts.adapter != "generic-process" || opts.timeout != 0 {
+		t.Fatalf("explicit override=%#v problem=%v", opts, problem)
+	}
+}
+
+func TestRunTimeoutTerminalizesExecution(t *testing.T) {
+	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	code := a.run(context.Background(), []string{"--journal", journalPath, "run", "--timeout", "300ms", "--allow-missing-result", "--", "/bin/sh", "-c", "sleep 2"})
+	if code != output.ExitCodeFor(output.CodeTimeout) {
+		t.Fatalf("timeout exit=%d output=%s", code, stdout.String())
+	}
+	var doc output.ErrorDocument
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	executionID, _ := doc.Error.Details["execution_id"].(string)
+	id, err := ids.ParseExecutionID(executionID)
+	if err != nil {
+		t.Fatalf("timeout omitted execution ID: %s", stdout.String())
+	}
+	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	execution, err := journal.GetExecution(context.Background(), id)
+	if err != nil || !execution.State.Terminal() {
+		t.Fatalf("timed out execution=%#v err=%v", execution, err)
+	}
+}
+
+func TestRunInterruptionTerminalizesExecutionAsCancelled(t *testing.T) {
+	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	code := a.run(ctx, []string{"--journal", journalPath, "run", "--allow-missing-result", "--", "/bin/sh", "-c", "sleep 2"})
+	if code != output.ExitCodeFor(output.CodeExecutionCancelled) {
+		t.Fatalf("interruption exit=%d output=%s", code, stdout.String())
+	}
+	var doc output.ErrorDocument
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	executionID, _ := doc.Error.Details["execution_id"].(string)
+	id, err := ids.ParseExecutionID(executionID)
+	if err != nil {
+		t.Fatalf("interruption omitted execution ID: %s", stdout.String())
+	}
+	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	execution, err := journal.GetExecution(context.Background(), id)
+	if err != nil || execution.State != model.StateCancelled {
+		t.Fatalf("interrupted execution=%#v err=%v", execution, err)
 	}
 }
 
@@ -187,7 +293,7 @@ func TestRouteExplainJSON(t *testing.T) {
 func TestCapabilitiesSummaryCanRequireResultContent(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
-	code := a.run(context.Background(), []string{"--output", "json", "capabilities", "codex", "--summary", "--require", "launch,result_content"})
+	code := a.run(context.Background(), []string{"--output", "json", "capabilities", "codex", "--static", "--require", "launch,result_content"})
 	if code != 0 {
 		t.Fatalf("exit=%d output=%s", code, stdout.String())
 	}
@@ -251,7 +357,11 @@ func TestNoStoreResultWritesExplicitOutcomeTombstone(t *testing.T) {
 		t.Fatal(err)
 	}
 	stdout.Reset()
-	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "result", runDoc.Result.ID.String()}); code != 0 {
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "result", runDoc.Result.ID.String()}); code != 3 || !strings.Contains(stdout.String(), `"availability":"omitted_by_policy"`) {
+		t.Fatalf("default result exit=%d output=%s", code, stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "result", runDoc.Result.ID.String(), "--allow-empty"}); code != 0 {
 		t.Fatalf("result exit=%d output=%s", code, stdout.String())
 	}
 	if !strings.Contains(stdout.String(), `"availability":"omitted_by_policy"`) || strings.Contains(stdout.String(), secret) {
@@ -413,10 +523,10 @@ func TestSubscriptionAndPromotionPlanUseTypedDurableState(t *testing.T) {
 	}
 	stdout.Reset()
 	eventPath := filepath.Join(root, "callbacks", "events.ndjson")
-	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "subscribe", "create", "--execution", runDoc.Result.ID.String(), "--kind", "terminal", "--destination", "file", "--target", eventPath}); code != 0 {
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "subscribe", "create", "--execution", runDoc.Result.ID.String(), "--destination", "file", "--target", eventPath}); code != 0 {
 		t.Fatalf("subscribe exit=%d output=%s", code, stdout.String())
 	}
-	if !strings.Contains(stdout.String(), `"subscription"`) || !strings.Contains(stdout.String(), `"sub-`) {
+	if !strings.Contains(stdout.String(), `"subscription"`) || !strings.Contains(stdout.String(), `"sub-`) || !strings.Contains(stdout.String(), `"attention"`) || !strings.Contains(stdout.String(), `"artifact"`) || !strings.Contains(stdout.String(), `"terminal"`) {
 		t.Fatalf("subscription output=%s", stdout.String())
 	}
 	stdout.Reset()

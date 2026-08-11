@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ type runOptions struct {
 	executionID                              ids.ExecutionID
 	plan                                     bool
 	noStoreResult                            bool
+	allowMissingResult                       bool
 	timeout                                  time.Duration
 	argv                                     []string
 }
@@ -33,6 +35,7 @@ type runOptions struct {
 const (
 	nativeRunnerLeaseSeconds   = 5
 	nativeRunnerHeartbeatEvery = time.Second
+	defaultRunTimeout          = 30 * time.Minute
 )
 
 func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
@@ -44,15 +47,25 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	if problem != nil {
 		return problem
 	}
-	probeCtx := ctx
-	var probeCancel context.CancelFunc
+	operationCtx := ctx
+	var operationCancel context.CancelFunc
 	if opts.timeout > 0 {
-		probeCtx, probeCancel = context.WithTimeout(ctx, opts.timeout)
-		defer probeCancel()
+		operationCtx, operationCancel = context.WithTimeout(ctx, opts.timeout)
+		defer operationCancel()
 	}
-	probe, err := runtime.Probe(probeCtx, adapter.ProbeRequest{Executable: opts.argv[0], Profile: profileName, Timeout: 5 * time.Second, Fresh: true})
+	probe, err := runtime.Probe(operationCtx, adapter.ProbeRequest{Executable: opts.argv[0], Profile: profileName, Timeout: 5 * time.Second, Fresh: true})
 	if err != nil {
 		return mapAdapterError("adapter probe failed", err)
+	}
+	if problem := requireRunCapability(probe, adapter.CapabilityLaunch); problem != nil {
+		return problem.WithDetail("adapter", runtime.Name())
+	}
+	if !opts.allowMissingResult && !opts.noStoreResult {
+		if problem := requireRunCapability(probe, adapter.CapabilityResultContent); problem != nil {
+			problem.Message = "adapter cannot reliably return result content"
+			problem.NextActions = append(problem.NextActions, output.NextAction{Label: "Inspect adapter viability", Argv: []string{"agentctl", "capabilities", runtime.Name(), "--require", "launch,result_content"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+			return problem.WithDetail("adapter", runtime.Name())
+		}
 	}
 	if opts.plan {
 		result := map[string]any{"adapter": runtime.Name(), "executable": opts.argv[0], "argument_count": len(opts.argv) - 1, "profile": profileName, "side_effect_class": output.ExternalSideEffect, "probe": probe, "writes_local_state": true, "stores_result": !opts.noStoreResult}
@@ -93,12 +106,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	// a native child: status/subscription commands and the callback supervisor
 	// must be able to observe the execution while it is running.
 	journal.Close()
-	launchCtx := ctx
-	var cancel context.CancelFunc
-	if opts.timeout > 0 {
-		launchCtx, cancel = context.WithTimeout(ctx, opts.timeout)
-		defer cancel()
-	}
+	launchCtx := operationCtx
 	launch, err := runtime.Launch(launchCtx, adapter.LaunchRequest{Argv: opts.argv, Cwd: opts.cwd, Context: contextInput(c), DiscoveryWindow: 250 * time.Millisecond, StartOnly: true})
 	if err != nil {
 		writeJournal, current, openProblem := a.openExecutionWrite(context.Background(), c, execution.ID)
@@ -112,7 +120,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		}
 		return mapAdapterError("launch failed", err).WithDetail("execution_id", failed.ID.String())
 	}
-	writeJournal, current, openProblem := a.openExecutionWrite(ctx, c, execution.ID)
+	writeJournal, current, openProblem := a.openExecutionWrite(context.Background(), c, execution.ID)
 	if openProblem != nil {
 		return openProblem
 	}
@@ -121,7 +129,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		writeJournal.Close()
 		return mapStoreError("record launched execution", err)
 	}
-	if err := appendSynthetic(ctx, writeJournal, execution, model.EventStarted, execution.State, map[string]any{"accepted": true}, "launch"); err != nil {
+	if err := appendSynthetic(context.Background(), writeJournal, execution, model.EventStarted, execution.State, map[string]any{"accepted": true}, "launch"); err != nil {
 		writeJournal.Close()
 		return mapStoreError("record started event", err)
 	}
@@ -132,7 +140,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	defer ticker.Stop()
 	for {
 		if !a.now().Before(nextRunnerHeartbeat) {
-			writeJournal, current, openProblem = a.openExecutionWrite(ctx, c, execution.ID)
+			writeJournal, current, openProblem = a.openExecutionWrite(context.Background(), c, execution.ID)
 			if openProblem != nil {
 				return openProblem
 			}
@@ -145,7 +153,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		}
 		nativeEvents, eventErr := runtime.Events(launchCtx, adapter.EventsRequest{Ref: launch.Session.Ref, Cursor: cursor})
 		if eventErr == nil && len(nativeEvents) != 0 {
-			writeJournal, current, openProblem = a.openExecutionWrite(ctx, c, execution.ID)
+			writeJournal, current, openProblem = a.openExecutionWrite(context.Background(), c, execution.ID)
 			if openProblem != nil {
 				return openProblem
 			}
@@ -157,7 +165,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 				if nativeEvent.Kind == "terminal" {
 					continue
 				}
-				if err := appendNativeEvent(ctx, writeJournal, execution, nativeEvent); err != nil && !errors.Is(err, store.ErrTerminalConflict) {
+				if err := appendNativeEvent(context.Background(), writeJournal, execution, nativeEvent); err != nil && !errors.Is(err, store.ErrTerminalConflict) {
 					writeJournal.Close()
 					return mapStoreError("record native event", err)
 				}
@@ -174,39 +182,60 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 			} else if !errors.Is(waitErr, context.Canceled) && !errors.Is(waitErr, context.DeadlineExceeded) {
 				return mapAdapterError("wait for native process exit", waitErr).WithDetail("execution_id", execution.ID.String())
 			}
-			writeJournal, current, openProblem = a.openExecutionWrite(ctx, c, execution.ID)
+			writeJournal, current, openProblem = a.openExecutionWrite(context.Background(), c, execution.ID)
 			if openProblem != nil {
 				return openProblem
 			}
-			execution, err = finalizeResult(ctx, writeJournal, current, result, a.now().UTC(), opts.noStoreResult)
+			execution, err = finalizeResult(context.Background(), writeJournal, current, result, a.now().UTC(), opts.noStoreResult)
 			writeJournal.Close()
 			if err != nil {
 				return mapStoreError("record terminal result", err)
+			}
+			if launchCtx.Err() != nil && execution.State != model.StateCompleted {
+				return interruptedRunError(launchCtx.Err(), execution)
 			}
 			return writeExecution(renderer, execution, "run")
 		}
 		select {
 		case <-launchCtx.Done():
 			last, _ := runtime.Result(context.Background(), adapter.ResultRequest{Ref: launch.Session.Ref})
-			if terminalAdapterState(last.State) {
-				writeJournal, current, openProblem := a.openExecutionWrite(context.Background(), c, execution.ID)
-				if openProblem == nil {
-					var err error
-					execution, err = finalizeResult(context.Background(), writeJournal, current, last, a.now().UTC(), opts.noStoreResult)
-					writeJournal.Close()
-					if err == nil {
-						return writeExecution(renderer, execution, "run")
-					}
+			if !terminalAdapterState(last.State) {
+				waitCtx, waitCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				waited, waitErr := runtime.Wait(waitCtx, launch.Session.Ref)
+				waitCancel()
+				if waitErr == nil && terminalAdapterState(waited.State) {
+					last = waited
+				} else {
+					last = adapter.Result{Success: false, State: adapter.StateFailed, Error: "agentctl run deadline elapsed", SessionRef: launch.Session.Ref}
 				}
 			}
-			return output.Wrap(output.CodeTimeout, "run deadline elapsed", true, launchCtx.Err()).WithDetail("execution_id", execution.ID.String())
+			writeJournal, current, openProblem := a.openExecutionWrite(context.Background(), c, execution.ID)
+			if openProblem != nil {
+				return openProblem
+			}
+			execution, err = finalizeResult(context.Background(), writeJournal, current, last, a.now().UTC(), opts.noStoreResult)
+			writeJournal.Close()
+			if err != nil {
+				return mapStoreError("record timed out execution", err)
+			}
+			if execution.State == model.StateCompleted {
+				return writeExecution(renderer, execution, "run")
+			}
+			return interruptedRunError(launchCtx.Err(), execution)
 		case <-ticker.C:
 		}
 	}
 }
 
+func interruptedRunError(err error, execution model.Execution) *output.Error {
+	if errors.Is(err, context.Canceled) {
+		return output.Wrap(output.CodeExecutionCancelled, "run interrupted", false, err).WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State)
+	}
+	return output.Wrap(output.CodeTimeout, "run deadline elapsed", true, err).WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State)
+}
+
 func parseRun(args []string) (runOptions, *output.Error) {
-	var o runOptions
+	o := runOptions{timeout: defaultRunTimeout}
 	delimiter := -1
 	for i, arg := range args {
 		if arg == "--" {
@@ -257,10 +286,14 @@ func parseRun(args []string) (runOptions, *output.Error) {
 				return o, output.NewError(output.CodeUsage, "--timeout must be a positive duration", false)
 			}
 			o.timeout = duration
+		case "--no-timeout":
+			o.timeout = 0
 		case "--plan":
 			o.plan = true
 		case "--no-store-result":
 			o.noStoreResult = true
+		case "--allow-missing-result":
+			o.allowMissingResult = true
 		case "--issue":
 			if i+1 >= delimiter {
 				return o, output.NewError(output.CodeUsage, "--issue requires a value", false)
@@ -277,11 +310,41 @@ func parseRun(args []string) (runOptions, *output.Error) {
 			return o, output.NewError(output.CodeUsage, "unknown run flag", false).WithDetail("flag", args[i])
 		}
 	}
-	if o.adapter == "" {
-		return o, output.NewError(output.CodeUsage, "run requires --adapter", false)
-	}
 	o.argv = append([]string(nil), args[delimiter+1:]...)
+	if o.adapter == "" {
+		o.adapter = inferAdapter(o.argv[0])
+	}
 	return o, nil
+}
+
+func inferAdapter(executable string) string {
+	name := strings.ToLower(filepath.Base(executable))
+	name = strings.TrimSuffix(name, ".exe")
+	switch name {
+	case "codex":
+		return "codex"
+	case "cursor", "cursor-agent":
+		return "cursor"
+	case "claude", "claude-code":
+		return "claude"
+	case "omp":
+		return "omp"
+	default:
+		return "generic-process"
+	}
+}
+
+func requireRunCapability(probe adapter.ProbeResult, required adapter.CapabilityName) *output.Error {
+	for _, capability := range probe.Capabilities {
+		if capability.Name != required {
+			continue
+		}
+		if capability.Status != adapter.CapabilityUnavailable {
+			return nil
+		}
+		break
+	}
+	return output.NewError(output.CodeCapabilityUnavailable, "required adapter capability is unavailable", false).WithDetail("capability", required)
 }
 
 func (a *app) attachNative(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {

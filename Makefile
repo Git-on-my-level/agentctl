@@ -16,12 +16,12 @@ LDFLAGS ?= -s -w -X main.version=$(VERSION)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || printf '%s' dev)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || printf '%s' unknown)
 
-.PHONY: all ci fmt fmt-check vet test build check-ids check-schemas check-links check-scripts check-distribution release \
+.PHONY: all ci fmt fmt-check vet test build check-ids check-schemas check-links check-scripts check-portable-assets check-distribution release \
 	install uninstall clean
 
 all: ci
 
-ci: fmt-check vet test check-ids check-schemas check-links check-scripts check-distribution build
+ci: fmt-check vet test check-ids check-schemas check-links check-scripts check-portable-assets check-distribution build
 
 fmt:
 	@files="$$(find . -type f -name '*.go' -not -path './vendor/*' -not -path './.git/*')"; \
@@ -58,6 +58,10 @@ check-links:
 
 check-scripts:
 	@if command -v shellcheck >/dev/null 2>&1; then shellcheck $(SCRIPTS_DIR)/*.sh; else bash -n $(SCRIPTS_DIR)/*.sh; fi
+
+check-portable-assets:
+	@test -f go.mod || { echo 'go.mod is required for portable asset checks' >&2; exit 1; }
+	GOFLAGS='$(GOFLAGS)' $(GO) test ./internal/portableasset -run TestEmbeddedDistributionMatchesCanonicalSources -count=1
 
 check-distribution:
 	tests/validators/test_distributions.sh

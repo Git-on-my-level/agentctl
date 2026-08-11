@@ -8,7 +8,9 @@ contracts, validation, and safe defaults.
 
 ## Consistency
 
-Every command that returns a document supports `--output text|json`. Commands
+Every command that returns a document supports `--output text|json`. JSON is
+the default because it is the deterministic machine contract; callers opt into
+the compact human projection with `--output text`. Commands
 that use a configured authority, journal, or compiled context additionally
 consume the relevant global selector:
 
@@ -19,11 +21,12 @@ consume the relevant global selector:
 --journal <path>
 ```
 
-The canonical spelling places these global flags before the command. This is
-required when a subcommand owns the same word for another purpose, notably
-`agentctl --output json knowledge compile ... --output /bundle`.
+The canonical spelling places these global flags before the command. A
+subcommand may own the same word for another purpose, notably
+`agentctl knowledge compile ... --output /bundle`; the global output selector,
+when needed, still appears before `knowledge`.
 
-`text` is the default. Waiting commands expose a bounded timeout where their
+`json` is the default. Waiting commands expose a bounded timeout where their
 contract requires one. The CLI never emits ANSI color or cursor-control
 sequences; its output is for agents and automation, not terminal decoration.
 
@@ -213,9 +216,12 @@ The class appears in plan and JSON output.
 
 ## Capability negotiation
 
-`agentctl capabilities <name> --output json` is authoritative for
-what can be streamed, polled, resumed, cancelled, or inspected. Agents never
-need to infer support from backend names or versions.
+`agentctl capabilities <name>` is authoritative for what can be streamed,
+polled, resumed, cancelled, or inspected. It returns a concise live viability
+projection by default. `--full` requests the static manifest, while `--static`
+suppresses the live probe; `--require` narrows the projection to capabilities
+that a planned operation needs. Agents never need to infer support from backend
+names or versions.
 
 The result distinguishes manifest support from the fresh instance probe and
 reports `supported`, `degraded`, or `unavailable` plus constraints and
@@ -269,9 +275,41 @@ agentctl route explain
 `status` observes. `result` retrieves. `await` waits. `cancel` mutates. No command
 name mixes these responsibilities.
 
+## Safe agent-first defaults
+
+Defaults encode the common, evidence-preserving path. Each has an explicit
+escape for callers that intentionally need weaker or broader behavior:
+
+- `doctor` discovers local harnesses and checks whether they can launch, be
+  observed, and return a result. It includes bootstrap, journal, configuration,
+  supervisor, and live adapter readiness; `--adapter` narrows the check and
+  `--static` skips live probes.
+- `bootstrap update` detects supported harnesses and reconciles their
+  canonical skill roots. It upgrades managed assets and installs missing
+  portable skills, but refuses drifted assets, does not delete legacy copies,
+  and never creates a new supervisor service implicitly. `--dry-run` previews
+  the exact paths and `--harness` narrows detection.
+- `run` infers an adapter from a known executable, applies a thirty-minute
+  timeout, and preflights both `launch` and `result_content`. `--adapter`,
+  `--no-timeout`, and `--allow-missing-result` are explicit overrides; exact
+  native argv remains everything after `--`.
+- `result` requires bounded stored content, and fails closed on conflicted
+  evidence. `--allow-empty` is for metadata-only inspection; `--summary`
+  intentionally returns the bounded preview.
+- `await` uses a ten-minute timeout and stops on actionable attention, returning
+  `attention_required` with a next action. `--timeout` changes the bound and
+  `--ignore-attention` opts into continued waiting.
+- `subscribe create` listens for `terminal`, `attention`, and `artifact` by
+  default, expires after acknowledged terminal delivery, and has a bounded
+  twenty-four-hour TTL. `--kind all` is an explicit broad subscription.
+
+These defaults do not weaken authority boundaries: permission flags such as
+Cursor `--trust`, remote promotion, supervisor service creation, and cleanup
+remain visible mutations that require explicit caller intent.
+
 ## Progress hygiene
 
-Default text output is quiet:
+Default output is quiet (both JSON and the explicit text projection):
 
 - no unchanged polling ticks;
 - no token-level reasoning;
@@ -282,9 +320,13 @@ Default text output is quiet:
 
 ## Self-description
 
-`agentctl schema`, `agentctl capabilities`, `agentctl help --output json`, and
-`agentctl examples --output json` let an agent discover the live contract rather
-than rely on a stale skill.
+`agentctl help` lists the command surface. `agentctl help <topic>` is the
+progressive, just-in-time contract: it returns usage, defaults, examples, and
+typed `next_actions` that point to related topics. `agentctl schema`,
+`agentctl capabilities`, and `agentctl doctor` expose the live contract and
+readiness rather than requiring an agent to rely on a stale skill. JSON is
+already the default; use `--output text` when a human-readable projection is
+preferable.
 
 Every JSON schema and adapter manifest includes a version and canonical docs
 reference. Unknown fields are tolerated on read; unknown required semantics fail

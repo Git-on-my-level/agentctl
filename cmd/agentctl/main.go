@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/knowledgecmd"
@@ -53,13 +52,13 @@ func (a *app) run(ctx context.Context, args []string) int {
 	if len(rest) == 0 {
 		return a.help(renderer, "")
 	}
+	if topic, ok := inlineHelpTopic(rest); ok {
+		return a.help(renderer, topic)
+	}
 	var err *output.Error
 	switch rest[0] {
 	case "help", "--help", "-h":
-		topic := ""
-		if len(rest) > 1 {
-			topic = rest[1]
-		}
+		topic := strings.Join(rest[1:], " ")
 		return a.help(renderer, topic)
 	case "version", "--version":
 		_ = renderer.Success(output.Success{Result: map[string]any{"version": version}, Lines: []output.Line{{Lead: "agentctl", Fields: []output.Field{{Name: "version", Value: version}}}}})
@@ -106,13 +105,31 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = output.NewError(output.CodeUsage, "unknown command", false).WithDetail("command", rest[0])
 	}
 	if err != nil {
+		if err.Code == output.CodeUsage && len(err.NextActions) == 0 {
+			topic := rest[0]
+			err.NextActions = append(err.NextActions, output.NextAction{Label: "Discover command usage", Argv: []string{"agentctl", "help", topic}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+		}
 		return a.fail(renderer, err)
 	}
 	return 0
 }
 
+func inlineHelpTopic(args []string) (string, bool) {
+	if len(args) < 2 || args[len(args)-1] != "--help" && args[len(args)-1] != "-h" {
+		return "", false
+	}
+	for _, arg := range args {
+		if arg == "--" {
+			return "", false
+		}
+	}
+	return strings.Join(args[:len(args)-1], " "), true
+}
+
 func (a *app) parseCommon(args []string) (common, []string, error) {
-	c := common{mode: output.Text}
+	// agentctl is an agent-first interface. JSON is the deterministic default;
+	// humans can opt into the compact terminal projection with --output text.
+	c := common{mode: output.JSON}
 	rest := make([]string, 0, len(args))
 	command := ""
 	for i := 0; i < len(args); i++ {
@@ -188,41 +205,6 @@ func (a *app) parseCommon(args []string) (common, []string, error) {
 		c.contextFile = strings.TrimSpace(a.getenv("AGENTCTL_CONTEXT_FILE"))
 	}
 	return c, rest, nil
-}
-
-func (a *app) help(renderer output.Renderer, topic string) int {
-	commands := []map[string]any{
-		{"name": "run", "side_effect_class": "external_side_effect", "status": "available"},
-		{"name": "attach", "side_effect_class": "read_only", "status": "available_for_local_bindings"},
-		{"name": "status", "side_effect_class": "read_only", "status": "available"},
-		{"name": "events", "side_effect_class": "read_only", "status": "available"},
-		{"name": "subscribe", "side_effect_class": "local_operational_write", "status": "available"},
-		{"name": "await", "side_effect_class": "read_only", "status": "available"},
-		{"name": "result", "side_effect_class": "read_only", "status": "available"},
-		{"name": "promote", "side_effect_class": "remote_coordination_write", "status": "available_with_multica_client_key"},
-		{"name": "cancel", "side_effect_class": "external_side_effect", "status": "adapter_dependent"},
-		{"name": "context", "side_effect_class": "local_operational_write", "status": "read_only_without_render"},
-		{"name": "knowledge", "side_effect_class": "local_operational_write", "status": "available"},
-		{"name": "config", "side_effect_class": "local_operational_write", "status": "available"},
-		{"name": "bootstrap status", "side_effect_class": "read_only", "status": "available"},
-		{"name": "supervisor", "side_effect_class": "local_operational_write", "status": "available"},
-		{"name": "route explain", "side_effect_class": "read_only", "status": "available"},
-		{"name": "doctor", "side_effect_class": "read_only", "status": "available"},
-		{"name": "id generate", "side_effect_class": "read_only", "status": "available"},
-		{"name": "capabilities", "side_effect_class": "read_only", "status": "available"},
-		{"name": "schema", "side_effect_class": "read_only", "status": "available"},
-		{"name": "examples", "side_effect_class": "read_only", "status": "available"},
-	}
-	headerFields := []output.Field{{Name: "version", Value: version}}
-	if topic != "" {
-		headerFields = append(headerFields, output.Field{Name: "topic", Value: topic})
-	}
-	lines := []output.Line{{Lead: "agentctl", Fields: headerFields}, {Lead: "usage", Fields: []output.Field{{Name: "argv", Value: "agentctl <command> [flags]"}}}}
-	for _, item := range commands {
-		lines = append(lines, output.Line{Lead: "command", Fields: []output.Field{{Name: "name", Value: item["name"]}, {Name: "side_effect_class", Value: item["side_effect_class"]}, {Name: "status", Value: item["status"]}}})
-	}
-	_ = renderer.Success(output.Success{Result: map[string]any{"name": "agentctl", "version": version, "topic": topic, "commands": commands, "global_flags": []string{"--output text|json", "--profile <name>", "--context-file <path>", "--explain", "--config <path>", "--journal <path>"}}, Lines: lines})
-	return 0
 }
 
 func (a *app) knowledgeCommand(ctx context.Context, renderer output.Renderer, args []string) *output.Error {
@@ -324,52 +306,7 @@ func (a *app) routeCommand(renderer output.Renderer, args []string) *output.Erro
 }
 
 func (a *app) doctor(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
-	if len(args) != 0 {
-		return output.NewError(output.CodeUsage, "doctor takes no positional arguments", false)
-	}
-	journalPath, err := a.journalPath(c)
-	if err != nil {
-		return output.Wrap(output.CodeInternal, "resolve journal path", false, err)
-	}
-	result := map[string]any{"journal_path": journalPath, "journal_status": "absent", "config_status": "absent"}
-	lines := []output.Line{{Lead: "doctor", Fields: []output.Field{{Name: "journal", Value: journalPath}, {Name: "journal_status", Value: "absent"}}}}
-	if journal, jErr := store.Open(journalPath, store.Options{ReadOnly: true}); jErr == nil {
-		host, hErr := journal.HostID(ctx)
-		_ = journal.Close()
-		if hErr != nil {
-			return mapStoreError("read journal host", hErr)
-		}
-		result["journal_status"] = "ready"
-		result["origin_host_id"] = host
-		lines[0].Fields[1].Value = "ready"
-		lines[0].Fields = append(lines[0].Fields, output.Field{Name: "origin_host_id", Value: host})
-	} else if !errors.Is(jErr, store.ErrNotFound) {
-		return mapStoreError("inspect journal", jErr)
-	}
-	configPath := c.configPath
-	if configPath == "" {
-		configPath, err = config.DefaultPath()
-		if err != nil {
-			return output.Wrap(output.CodeInternal, "resolve config path", false, err)
-		}
-	}
-	result["config_path"] = configPath
-	if cfg, cErr := config.Load(configPath); cErr == nil {
-		name, _, resolveErr := cfg.ResolveProfile(c.profile)
-		if resolveErr == nil {
-			result["config_status"] = "ready"
-			result["profile"] = name
-			lines = append(lines, output.Line{Lead: "profile", Fields: []output.Field{{Name: "name", Value: name}, {Name: "status", Value: "ready"}}})
-		} else {
-			return mapConfigError("profile is unavailable", resolveErr)
-		}
-	} else if !errors.Is(cErr, config.ErrNotFound) {
-		return output.Wrap(output.CodeUsage, "invalid config", false, cErr)
-	}
-	if err := renderer.Success(output.Success{Result: result, Lines: lines}); err != nil {
-		return output.Wrap(output.CodeInternal, "write output", false, err)
-	}
-	return nil
+	return a.doctorReadiness(ctx, renderer, c, args)
 }
 
 func (a *app) status(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
@@ -393,15 +330,17 @@ func (a *app) status(ctx context.Context, renderer output.Renderer, c common, ar
 }
 func (a *app) result(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) < 1 {
-		return output.NewError(output.CodeUsage, "usage: agentctl result <execution-id> [--summary] [--require-content]", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl result <execution-id> [--summary] [--allow-empty]", false)
 	}
-	summary, requireContent := false, false
+	summary, requireContent := false, true
 	for _, arg := range args[1:] {
 		switch arg {
 		case "--summary":
 			summary = true
 		case "--require-content":
 			requireContent = true
+		case "--allow-empty":
+			requireContent = false
 		default:
 			return output.NewError(output.CodeUsage, "unknown result flag", false).WithDetail("flag", arg)
 		}
@@ -423,10 +362,7 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 		return outcomeError(output.CodeUnknownState, "execution evidence is conflicted", execution)
 	}
 	if !execution.State.Terminal() {
-		if requireContent {
-			return output.NewError(output.CodeInvalidState, "execution is not terminal", false).WithDetail("execution_id", id.String()).WithDetail("state", execution.State)
-		}
-		return writeExecution(renderer, execution, "result")
+		return output.NewError(output.CodeInvalidState, "execution is not terminal", false).WithDetail("execution_id", id.String()).WithDetail("state", execution.State)
 	}
 	outcome, err := journal.GetOutcome(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
@@ -502,14 +438,14 @@ func (a *app) events(ctx context.Context, renderer output.Renderer, c common, ar
 
 func (a *app) await(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) < 1 {
-		return output.NewError(output.CodeUsage, "usage: agentctl await <execution-id> [--timeout duration] [--stop-on-attention]", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl await <execution-id> [--timeout duration] [--ignore-attention]", false)
 	}
 	id, problem := parseExecutionRef(args[0], c)
 	if problem != nil {
 		return problem
 	}
-	timeout := 30 * time.Second
-	stopAttention := false
+	timeout := 10 * time.Minute
+	stopAttention := true
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--timeout":
@@ -524,6 +460,8 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 			timeout = value
 		case "--stop-on-attention":
 			stopAttention = true
+		case "--ignore-attention":
+			stopAttention = false
 		default:
 			return output.NewError(output.CodeUsage, "unknown await flag", false).WithDetail("flag", args[i])
 		}
