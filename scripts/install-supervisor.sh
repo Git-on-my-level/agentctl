@@ -257,11 +257,36 @@ chmod 0600 "$manifest_tmp"
 mv -f "$plist_tmp" "$plist"
 mv -f "$manifest_tmp" "$manifest"
 
+wait_for_unloaded() {
+  wait_attempt=0
+  while "$launchctl_bin" print "$domain/$LABEL" >/dev/null 2>&1; do
+    wait_attempt=$((wait_attempt + 1))
+    [ "$wait_attempt" -lt 40 ] || return 1
+    sleep 0.05
+  done
+}
+
+bootstrap_with_retry() {
+  bootstrap_path=$1
+  bootstrap_attempt=0
+  while [ "$bootstrap_attempt" -lt 10 ]; do
+    "$launchctl_bin" bootstrap "$domain" "$bootstrap_path" >/dev/null 2>&1 || :
+    if "$launchctl_bin" print "$domain/$LABEL" >/dev/null 2>&1; then
+      return 0
+    fi
+    bootstrap_attempt=$((bootstrap_attempt + 1))
+    [ "$bootstrap_attempt" -lt 10 ] || break
+    sleep 0.1
+  done
+  return 1
+}
+
 rollback() {
   # Ensure a failed bootstrap/kickstart cannot leave a service running from a
   # plist whose bytes no longer match its manifest.
-  if [ "$loaded" -eq 1 ] || [ "$service_loaded" -eq 1 ]; then
+  if [ "$loaded" -eq 1 ] || [ "$service_loaded" -eq 1 ] || "$launchctl_bin" print "$domain/$LABEL" >/dev/null 2>&1; then
     "$launchctl_bin" bootout "$domain/$LABEL" >/dev/null 2>&1 || :
+    wait_for_unloaded || :
   fi
   rm -f "$plist" "$manifest"
   if [ "$old_plist_exists" -eq 1 ]; then
@@ -273,7 +298,7 @@ rollback() {
     old_manifest_tmp=
   fi
   if [ "$loaded" -eq 1 ] && [ "$old_plist_exists" -eq 1 ]; then
-    "$launchctl_bin" bootstrap "$domain" "$plist" >/dev/null 2>&1 || :
+    bootstrap_with_retry "$plist" || :
   fi
 }
 
@@ -283,29 +308,16 @@ if [ "$loaded" -eq 1 ]; then
     rollback
     die "failed to unload existing supervisor service: $LABEL"
   fi
-	# launchctl may acknowledge bootout before the label has completely left the
-	# domain. Wait briefly so the following bootstrap does not race the old job.
-	unload_attempt=0
-	while "$launchctl_bin" print "$domain/$LABEL" >/dev/null 2>&1; do
-		unload_attempt=$((unload_attempt + 1))
-		if [ "$unload_attempt" -ge 40 ]; then
-			rollback
-			die "supervisor service did not finish unloading: $LABEL"
-		fi
-		sleep 0.05
-	done
+  # launchctl may acknowledge bootout before the label has completely left the
+  # domain. Wait briefly so the following bootstrap does not race the old job.
+  if ! wait_for_unloaded; then
+    rollback
+    die "supervisor service did not finish unloading: $LABEL"
+  fi
 fi
-bootstrap_attempt=0
-while ! "$launchctl_bin" bootstrap "$domain" "$plist" >/dev/null 2>&1; do
-	# A just-unloaded launchd label can transiently reject bootstrap even after
-	# print stops finding it. Bound retries keep real plist errors fail-closed.
-	bootstrap_attempt=$((bootstrap_attempt + 1))
-	if [ "$bootstrap_attempt" -ge 10 ]; then
-		break
-	fi
-	sleep 0.1
-done
-if ! "$launchctl_bin" print "$domain/$LABEL" >/dev/null 2>&1; then
+# A just-unloaded launchd label can transiently reject bootstrap even after
+# print stops finding it. Bound retries keep real plist errors fail-closed.
+if ! bootstrap_with_retry "$plist"; then
   rollback
   die "failed to load supervisor plist: $plist"
 fi
