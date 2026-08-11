@@ -536,9 +536,6 @@ func inspectBootstrapRoot(root, expectedDigest string) bootstrapRootInspection {
 }
 
 func (a *app) bootstrapUpdate(renderer output.Renderer, home string, selected []string, targetOverride string, dryRun bool) *output.Error {
-	if bootstrapContains(selected, "multica") {
-		return output.NewError(output.CodeCapabilityUnavailable, "Multica bootstrap requires its runtime bundle installer; use distributions/install.sh with an explicit target directory", false).WithDetail("harness", "multica")
-	}
 	if resolved, err := filepath.EvalSymlinks(home); err == nil {
 		home = filepath.Clean(resolved)
 	}
@@ -553,6 +550,20 @@ func (a *app) bootstrapUpdate(renderer output.Renderer, home string, selected []
 	manifestSum := sha256.Sum256(manifest)
 	manifestDigest := "sha256:" + hex.EncodeToString(manifestSum[:])
 	result := bootstrapUpdateResult{Home: home, Revision: skill.Revision, SkillDigest: skill.Digest, Detected: append([]string(nil), selected...), Actions: []bootstrapAction{}, Healthy: true, DryRun: dryRun}
+	filtered := make([]string, 0, len(selected))
+	for _, name := range selected {
+		if name == "multica" {
+			result.Actions = append(result.Actions, bootstrapAction{Harnesses: []string{"multica"}, State: "unsupported", Reason: "Multica bootstrap requires its runtime bundle installer; use distributions/install.sh with an explicit target directory", Changed: false})
+			continue
+		}
+		filtered = append(filtered, name)
+	}
+	if len(filtered) == 0 {
+		if bootstrapContains(selected, "multica") {
+			return output.NewError(output.CodeCapabilityUnavailable, "Multica bootstrap requires its runtime bundle installer; use distributions/install.sh with an explicit target directory", false).WithDetail("harness", "multica")
+		}
+	}
+	selected = filtered
 	groups := map[string][]string{}
 	for _, name := range selected {
 		spec := bootstrapSpec(name)

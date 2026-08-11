@@ -175,8 +175,11 @@ inspect_supervisor
 # A managed supervisor necessarily points at the currently installed target.
 # Use that matching executable for the ownership/plan dry-run; the source path
 # is intentionally different and would correctly fail the supervisor
-# installer's manifest binding check.
-reconcile_supervisor "$target" --dry-run
+# installer's manifest binding check. Skip the dry-run when the target binary
+# is absent so recovery installs can replace a deleted executable first.
+if [ -x "$target" ]; then
+  reconcile_supervisor "$target" --dry-run
+fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   printf 'would install %s -> %s\n' "$SOURCE" "$target"

@@ -191,14 +191,12 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 			if err != nil {
 				return mapStoreError("record terminal result", err)
 			}
-			if launchCtx.Err() != nil {
-				return interruptedRunError(launchCtx.Err(), execution)
-			}
 			return writeExecution(renderer, execution, "run")
 		}
 		select {
 		case <-launchCtx.Done():
 			last, _ := runtime.Result(context.Background(), adapter.ResultRequest{Ref: launch.Session.Ref})
+			timedOut := false
 			if !terminalAdapterState(last.State) {
 				waitCtx, waitCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				waited, waitErr := runtime.Wait(waitCtx, launch.Session.Ref)
@@ -206,6 +204,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 				if waitErr == nil && terminalAdapterState(waited.State) {
 					last = waited
 				} else {
+					timedOut = true
 					last = adapter.Result{Success: false, State: adapter.StateFailed, Error: "agentctl run deadline elapsed", SessionRef: launch.Session.Ref}
 				}
 			}
@@ -218,7 +217,15 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 			if err != nil {
 				return mapStoreError("record timed out execution", err)
 			}
-			return interruptedRunError(launchCtx.Err(), execution)
+			if launchCtx.Err() != nil {
+				if execution.State == model.StateCompleted {
+					return writeExecution(renderer, execution, "run")
+				}
+				if timedOut || execution.State == model.StateCancelled {
+					return interruptedRunError(launchCtx.Err(), execution)
+				}
+			}
+			return writeExecution(renderer, execution, "run")
 		case <-ticker.C:
 		}
 	}
