@@ -13,6 +13,42 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/supervisor"
 )
 
+func TestDefaultSupervisorSocketFollowsStateContract(t *testing.T) {
+	root := t.TempDir()
+	a := &app{getenv: func(key string) string {
+		switch key {
+		case "AGENTCTL_STATE_HOME":
+			return filepath.Join(root, "explicit")
+		case "XDG_STATE_HOME":
+			return filepath.Join(root, "xdg")
+		default:
+			return ""
+		}
+	}}
+	got, problem := a.defaultSupervisorSocket()
+	if problem != nil {
+		t.Fatal(problem)
+	}
+	want := filepath.Join(root, "explicit", "supervisor.sock")
+	if got != want {
+		t.Fatalf("socket=%q want %q", got, want)
+	}
+	a.getenv = func(key string) string {
+		if key == "XDG_STATE_HOME" {
+			return filepath.Join(root, "xdg")
+		}
+		return ""
+	}
+	got, problem = a.defaultSupervisorSocket()
+	if problem != nil {
+		t.Fatal(problem)
+	}
+	want = filepath.Join(root, "xdg", "agentctl", "supervisor.sock")
+	if got != want {
+		t.Fatalf("socket=%q want %q", got, want)
+	}
+}
+
 func TestLongRunningSupervisorReleasesJournalBetweenCycles(t *testing.T) {
 	root := t.TempDir()
 	journalPath := filepath.Join(root, "state", "journal.db")
