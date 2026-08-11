@@ -284,10 +284,8 @@ bootstrap_with_retry() {
 rollback() {
   # Ensure a failed bootstrap/kickstart cannot leave a service running from a
   # plist whose bytes no longer match its manifest.
-  if [ "$loaded" -eq 1 ] || [ "$service_loaded" -eq 1 ] || "$launchctl_bin" print "$domain/$LABEL" >/dev/null 2>&1; then
-    "$launchctl_bin" bootout "$domain/$LABEL" >/dev/null 2>&1 || :
-    wait_for_unloaded || :
-  fi
+  "$launchctl_bin" bootout "$domain/$LABEL" >/dev/null 2>&1 || :
+  wait_for_unloaded || :
   rm -f "$plist" "$manifest"
   if [ "$old_plist_exists" -eq 1 ]; then
     mv -f "$old_plist_tmp" "$plist"
