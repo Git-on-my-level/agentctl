@@ -18,7 +18,7 @@ die() {
 
 usage() {
   cat >&2 <<'EOF'
-usage: distribution command --harness <hermes|codex|claude|cursor|omp|multica> --target-dir <directory> [options]
+usage: distribution command --harness <hermes|codex|claude|cursor|omp|multica> --target-dir <directory> [--mode copy|link] [--upgrade] [--dry-run] [--output text|json]
 EOF
 }
 
@@ -73,6 +73,7 @@ parse_common_args() {
   MODE=copy
   JSON=0
   DRY_RUN=0
+  UPGRADE=0
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -103,6 +104,9 @@ parse_common_args() {
       --dry-run)
         DRY_RUN=1; shift
         ;;
+      --upgrade)
+        UPGRADE=1; shift
+        ;;
       --help|-h)
         usage; exit 0
         ;;
@@ -127,6 +131,21 @@ parse_common_args() {
     *"/auth"|*"/sessions"|*"/memories"|*"/settings"|*"/plugins"|*"/caches")
       die "target directory names a forbidden harness state class: $TARGET_DIR" ;;
   esac
+}
+
+manifest_asset_hash() {
+  manifest=$1
+  asset_id=$2
+  awk -v wanted="$asset_id" '
+    $0 ~ "\"id\": \"" wanted "\"" { found=1; next }
+    found && match($0, /"sha256": "[0-9a-f]+"/) {
+      value=substr($0, RSTART, RLENGTH)
+      sub(/^"sha256": "/, "", value)
+      sub(/"$/, "", value)
+      print value
+      exit
+    }
+  ' "$manifest"
 }
 
 managed_dir() {

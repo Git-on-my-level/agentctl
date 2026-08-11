@@ -7,6 +7,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$SCRIPT_DIR/lib.sh"
 
 parse_common_args "$@"
+[ "$UPGRADE" -eq 0 ] || die "--upgrade is only valid for install.sh"
 validate_sources
 
 managed=$(managed_dir)

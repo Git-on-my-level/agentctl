@@ -37,6 +37,32 @@ for harness in hermes codex claude cursor omp; do
   [ "$first_hash" = "$second_hash" ] || fail "idempotent install changed $harness"
 done
 
+# A managed older revision can be upgraded atomically. Its installed manifest
+# must bind the exact old bytes; locally modified content is never overwritten.
+upgrade="$HOME/targets/upgrade"
+mkdir -p "$upgrade"
+"$DIST/install.sh" --harness codex --target-dir "$upgrade" --output=json >/dev/null
+printf '%s\n' 'older portable skill' >"$upgrade/agentctl-portable/SKILL.md"
+old_hash=$(shasum -a 256 "$upgrade/agentctl-portable/SKILL.md" | awk '{print $1}')
+current_hash=$(shasum -a 256 "$DIST/../skills/agentctl-portable/SKILL.md" | awk '{print $1}')
+sed "s/$current_hash/$old_hash/" "$DIST/revision-manifest.json" >"$upgrade/agentctl-portable/revision-manifest.json"
+"$DIST/install.sh" --harness codex --target-dir "$upgrade" --upgrade --dry-run --output=json | grep -q '"operation":"upgrade"'
+"$DIST/install.sh" --harness codex --target-dir "$upgrade" --upgrade --output=json | grep -q '"state":"installed"'
+[ "$(shasum -a 256 "$upgrade/agentctl-portable/SKILL.md" | awk '{print $1}')" = "$current_hash" ] || fail "upgrade did not install current skill"
+printf '%s\n' modified >>"$upgrade/agentctl-portable/SKILL.md"
+if "$DIST/install.sh" --harness codex --target-dir "$upgrade" --upgrade >/dev/null 2>&1; then
+  fail "upgrade overwrote locally modified managed content"
+fi
+
+uninstall="$HOME/targets/uninstall"
+mkdir -p "$uninstall/agentctl-portable"
+printf '%s\n' preserve >"$uninstall/agentctl-portable/unmanaged.txt"
+"$DIST/install.sh" --harness codex --target-dir "$uninstall" --output=json >/dev/null
+"$DIST/uninstall.sh" --harness codex --target-dir "$uninstall" --dry-run --output=json | grep -q '"state":"planned"'
+"$DIST/uninstall.sh" --harness codex --target-dir "$uninstall" --output=json | grep -q '"state":"removed"'
+[ "$(cat "$uninstall/agentctl-portable/unmanaged.txt")" = preserve ] || fail "uninstall removed unmanaged content"
+[ ! -e "$uninstall/agentctl-portable/SKILL.md" ] || fail "uninstall left managed skill"
+
 multica="$HOME/targets/multica"
 mkdir -p "$multica"
 printf '%s\n' keep-multica >"$multica/unmanaged.txt"

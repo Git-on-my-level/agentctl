@@ -109,7 +109,7 @@ for target in $TARGETS; do
   if [ -f "$ROOT/scripts/uninstall-supervisor.sh" ]; then cp "$ROOT/scripts/uninstall-supervisor.sh" "$package_dir/scripts/"; fi
   cp "$ROOT/skills/agentctl-portable/SKILL.md" "$package_dir/skills/agentctl-portable/SKILL.md"
   cp "$ROOT/distributions/allowlist.json" "$ROOT/distributions/revision-manifest.json" \
-    "$ROOT/distributions/install.sh" "$ROOT/distributions/status.sh" "$ROOT/distributions/doctor.sh" \
+    "$ROOT/distributions/install.sh" "$ROOT/distributions/uninstall.sh" "$ROOT/distributions/status.sh" "$ROOT/distributions/doctor.sh" \
     "$ROOT/distributions/lib.sh" "$package_dir/distributions/"
   if [ -d "$ROOT/distributions/multica" ]; then cp -R "$ROOT/distributions/multica" "$package_dir/distributions/multica"; fi
   if [ -d "$ROOT/docs" ]; then cp -R "$ROOT/docs" "$package_dir/docs"; fi

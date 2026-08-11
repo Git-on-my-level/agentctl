@@ -88,6 +88,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.subscribeCommand(ctx, renderer, commonArgs, rest[1:])
 	case "config":
 		err = a.configCommand(ctx, renderer, commonArgs, rest[1:])
+	case "bootstrap":
+		err = a.bootstrapCommand(renderer, rest[1:])
 	case "supervisor":
 		err = a.supervisorCommand(ctx, renderer, commonArgs, rest[1:])
 	case "promote":
@@ -202,6 +204,7 @@ func (a *app) help(renderer output.Renderer, topic string) int {
 		{"name": "context", "side_effect_class": "local_operational_write", "status": "read_only_without_render"},
 		{"name": "knowledge", "side_effect_class": "local_operational_write", "status": "available"},
 		{"name": "config", "side_effect_class": "local_operational_write", "status": "available"},
+		{"name": "bootstrap status", "side_effect_class": "read_only", "status": "available"},
 		{"name": "supervisor", "side_effect_class": "local_operational_write", "status": "available"},
 		{"name": "route explain", "side_effect_class": "read_only", "status": "available"},
 		{"name": "doctor", "side_effect_class": "read_only", "status": "available"},

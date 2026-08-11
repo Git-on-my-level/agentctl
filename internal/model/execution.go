@@ -139,12 +139,18 @@ type PromotionLink struct {
 type Continuation struct {
 	SameSessionRequired bool `json:"same_session_required"`
 }
+type ExecutionProvenance struct {
+	PortableSkillDigest string `json:"portable_skill_digest,omitempty"`
+	ContextDigest       string `json:"context_digest,omitempty"`
+	HandoffDigest       string `json:"handoff_digest,omitempty"`
+}
 type TaskContract struct {
-	ObjectiveSummary      string         `json:"objective_summary,omitempty"`
-	SideEffectBoundary    string         `json:"side_effect_boundary,omitempty"`
-	AcceptanceRef         *ids.ContextID `json:"acceptance_ref,omitempty"`
-	ExpectedArtifactKinds []string       `json:"expected_artifact_kinds,omitempty"`
-	Continuation          *Continuation  `json:"continuation,omitempty"`
+	ObjectiveSummary      string               `json:"objective_summary,omitempty"`
+	SideEffectBoundary    string               `json:"side_effect_boundary,omitempty"`
+	AcceptanceRef         *ids.ContextID       `json:"acceptance_ref,omitempty"`
+	ExpectedArtifactKinds []string             `json:"expected_artifact_kinds,omitempty"`
+	Continuation          *Continuation        `json:"continuation,omitempty"`
+	Provenance            *ExecutionProvenance `json:"provenance,omitempty"`
 }
 
 type Execution struct {
@@ -255,6 +261,17 @@ func (e Execution) Validate() error {
 	}
 	if e.TaskContract != nil && len(e.TaskContract.ObjectiveSummary) > 2048 {
 		return errors.New("objective summary exceeds 2048 bytes")
+	}
+	if e.TaskContract != nil && e.TaskContract.Provenance != nil {
+		for name, digest := range map[string]string{
+			"portable_skill_digest": e.TaskContract.Provenance.PortableSkillDigest,
+			"context_digest":        e.TaskContract.Provenance.ContextDigest,
+			"handoff_digest":        e.TaskContract.Provenance.HandoffDigest,
+		} {
+			if digest != "" && !hashPattern.MatchString(digest) {
+				return fmt.Errorf("invalid task provenance %s", name)
+			}
+		}
 	}
 	return nil
 }

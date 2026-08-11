@@ -2,27 +2,27 @@
   "schema_version": 1,
   "manifest_kind": "agentctl_distribution_revision",
   "distribution_id": "agentctl-portable",
-  "revision": "tree:v0.1.3",
+  "revision": "tree:v0.1.4",
   "canonicalization": "sha256(raw UTF-8 bytes, LF line endings)",
   "assets": [
     {
       "id": "distribution-allowlist",
       "path": "distributions/allowlist.json",
-      "sha256": "6e91a228916c5c398c1851301debc7530a9425f7b508d9d29d974125a30bbff5",
+      "sha256": "9a5dc9ad2b704cecf59268e741d88696981a7029bb18608106b93f7ae1ca0faa",
       "kind": "control_manifest",
       "install": false
     },
     {
       "id": "portable-skill",
       "path": "skills/agentctl-portable/SKILL.md",
-      "sha256": "7225ab930d794cefd7d2fc01a7303a7a0778c091720ab2b9998e3d9e6e9ef253",
+      "sha256": "6cf2ef5f4d4320ff03e2281714374096e63d7b739ccfb46fd37d57b6e9eefe74",
       "install_name": "SKILL.md",
       "kind": "skill"
     },
     {
       "id": "multica-runtime-bundle",
       "path": "distributions/multica/agentctl-portable.bundle.json",
-      "sha256": "535f3c5fa6fb1326befde1ef21432197ae73df9bf723345dc43a1a15ba57e610",
+      "sha256": "6e0f19944d1f12a0c9cae077b517701d3fc8a0a7c64b199d1ac28d0bcfe84a54",
       "install_name": "agentctl-portable.bundle.json",
       "kind": "runtime_bundle",
       "harnesses": ["multica"]

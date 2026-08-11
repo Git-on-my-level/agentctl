@@ -428,3 +428,88 @@ func TestPromotionExecuteReplayReturnsPersistedAliasAndOneLifecycle(t *testing.T
 		t.Fatalf("promotion created %d total lifecycles; want source plus one target", len(executions))
 	}
 }
+
+func TestPromotionSendsContentBoundProvenanceOnStdin(t *testing.T) {
+	root := t.TempDir()
+	journalPath := filepath.Join(root, "state", "journal.db")
+	configPath := filepath.Join(root, "config", "config.json")
+	fakeMultica := filepath.Join(root, "fake-multica")
+	capture := filepath.Join(root, "captured-description")
+	skillPath := filepath.Join(root, "skill", "SKILL.md")
+	contextPath := filepath.Join(root, "context.md")
+	handoffPath := filepath.Join(root, "handoff.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for path, data := range map[string]string{skillPath: "portable instructions\n", contextPath: "selected context\n", handoffPath: "bounded handoff\n"} {
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(fakeMultica, []byte("#!/bin/sh\ncat >\"$AGENTCTL_TEST_CAPTURE\"\nprintf '%s\\n' '{\"id\":\"opaque-multica-uuid\",\"identifier\":\"SCA-888\"}'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	previousCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(previousCWD) }()
+	t.Setenv("AGENTCTL_TEST_CAPTURE", capture)
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	a.getenv = func(key string) string {
+		switch key {
+		case "AGENTCTL_SKILL_PATH":
+			return skillPath
+		case "HOME":
+			return root
+		default:
+			return ""
+		}
+	}
+	native := `{"type":"result","status":"completed","result":{"summary":"done"}}`
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "run", "--adapter", "generic-process", "--", "/bin/echo", native}); code != 0 {
+		t.Fatalf("run exit=%d output=%s", code, stdout.String())
+	}
+	var runDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &runDoc); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--config", configPath, "config", "set-profile", "--name", "fleet", "--multica-executable", fakeMultica, "--multica-profile", "desktop", "--workspace-id", "workspace-test", "--server-url", "https://multica.example.test", "--app-url", "https://multica.example.test", "--default"}); code != 0 {
+		t.Fatalf("config exit=%d output=%s", code, stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "--config", configPath, "--profile", "fleet", "--context-file", contextPath, "promote", runDoc.Result.ID.String(), "--title", "Continue durable work", "--handoff-file", handoffPath}); code != 0 {
+		t.Fatalf("promote exit=%d output=%s", code, stdout.String())
+	}
+	body, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"bounded handoff", "source_execution: " + runDoc.Result.ID.String(), sha256Digest([]byte("portable instructions\n")), sha256Digest([]byte("selected context\n")), sha256Digest([]byte("bounded handoff\n"))} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("description omitted %q: %s", want, body)
+		}
+	}
+	if strings.Contains(string(body), root) {
+		t.Fatalf("description leaked local path: %s", body)
+	}
+	var doc struct {
+		Result struct {
+			Execution  model.Execution           `json:"execution"`
+			Provenance model.ExecutionProvenance `json:"provenance"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Result.Execution.TaskContract == nil || doc.Result.Execution.TaskContract.Provenance == nil || doc.Result.Provenance.PortableSkillDigest == "" {
+		t.Fatalf("promotion omitted durable provenance: %s", stdout.String())
+	}
+}

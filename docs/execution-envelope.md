@@ -186,9 +186,13 @@ lookup, promotion fails with `capability_unavailable` rather than claiming
 cross-restart idempotency.
 
 The handoff contains only verified findings, bounded evidence references,
-remaining acceptance criteria, and source aliases. Partial failure leaves the
-created Multica issue authoritative and reports recovery actions. It is never
-rolled back by deleting authority-owned work.
+remaining acceptance criteria, source aliases, and SHA-256 digests for the
+portable skill, selected context, and handoff content. The description is sent
+on stdin; local file paths, prompts, transcripts, and credentials are excluded.
+The same provenance is persisted in the destination task contract and promotion
+event. Partial failure leaves the created Multica issue authoritative and
+reports recovery actions. It is never rolled back by deleting authority-owned
+work.
 
 Promotion and continuation are separate choices. When requested, supersession
 links the new execution and subscription rotation follows the two-phase rule in
