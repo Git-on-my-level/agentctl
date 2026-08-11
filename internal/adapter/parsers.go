@@ -1,17 +1,27 @@
 package adapter
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type codexParser struct{}
 
 func (codexParser) Name() string { return "codex-json" }
 func (codexParser) Parse(line []byte, stderr bool) parsedObservation {
-	return parseAgentJSON(line, stderr, "codex", []string{"thread_id"}, []string{"turn.completed", "turn.failed", "error"})
+	obs := parseAgentJSON(line, stderr, "codex", []string{"thread_id"}, []string{"turn.completed", "turn.failed", "error"})
+	if value, ok := decodeLine(line); ok {
+		if item, ok := value["item"].(map[string]any); ok && firstString(item, "type") == "agent_message" {
+			obs.Content = boundedUTF8(firstString(item, "text"), 1<<20)
+			obs.ContentType = "text/plain"
+			obs.ContentTruncated = len(firstString(item, "text")) > len(obs.Content)
+		}
+	}
+	return obs
 }
 
 type cursorParser struct{}
@@ -121,6 +131,9 @@ func (genericParser) Parse(line []byte, stderr bool) parsedObservation {
 func parseAgentJSON(line []byte, stderr bool, family string, sessionKeys, terminalTypes []string) parsedObservation {
 	value, ok := decodeLine(line)
 	if !ok {
+		if classified := classifyUnstructured(line, family); classified.Kind != "" {
+			return classified
+		}
 		if stderr {
 			return parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "stderr", Data: map[string]any{"stream": "stderr", "structured": false}}
 		}
@@ -166,22 +179,33 @@ func parseAgentJSON(line []byte, stderr bool, family string, sessionKeys, termin
 		switch result := resultValue.(type) {
 		case string:
 			obs.Summary = boundedString(result, 2048)
+			obs.Content = boundedUTF8(result, 1<<20)
+			obs.ContentType = "text/plain"
+			obs.ContentTruncated = len(result) > len(obs.Content)
 		case map[string]any:
 			if s := firstString(result, "summary", "message", "text"); s != "" {
 				obs.Summary = boundedString(s, 2048)
+				obs.Content = boundedUTF8(s, 1<<20)
+				obs.ContentType = "text/plain"
+				obs.ContentTruncated = len(s) > len(obs.Content)
 			}
 		}
 	}
 	if s := firstString(value, "summary", "message"); s != "" && obs.Summary == "" {
 		obs.Summary = boundedString(s, 2048)
 	}
+	status := observationStatus(value)
+	explicitTerminal := containsAny(typ, terminalTypes...) || isTerminalStatus(status)
 	if explicitSuccess, hasSuccess := boolValue(value, "success"); hasSuccess && (typ == "" || containsAny(typ, "result", "complete", "fail", "error")) {
 		hasResult = true
 		isError = !explicitSuccess
+		explicitTerminal = true
 	}
-	status := observationStatus(value)
+	if family == "process" && typ == "" && hasResult {
+		explicitTerminal = true
+	}
 	terminal, success := false, false
-	if hasResult || containsAny(typ, terminalTypes...) || isTerminalStatus(status) {
+	if explicitTerminal {
 		terminal = true
 		success = !isError && !containsAny(typ, "failed", "error", "cancelled", "canceled")
 		if status != "" {
@@ -202,6 +226,10 @@ func parseAgentJSON(line []byte, stderr bool, family string, sessionKeys, termin
 		obs.Liveness = LivenessExited
 	}
 	if !terminal {
+		obs.Summary = ""
+		obs.Content = ""
+		obs.ContentType = ""
+		obs.ContentTruncated = false
 		if containsAny(typ, "attention", "permission", "approval", "input") {
 			obs.State = StateAttention
 		}
@@ -370,4 +398,33 @@ func boundedString(value string, max int) string {
 		return value
 	}
 	return value[:max]
+}
+
+func boundedUTF8(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if max <= 0 || len(value) <= max {
+		return value
+	}
+	value = value[:max]
+	for len(value) > 0 && !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
+}
+
+func classifyUnstructured(line []byte, family string) parsedObservation {
+	text := strings.ToLower(string(bytes.TrimSpace(line)))
+	code, kind := "", ""
+	switch {
+	case strings.Contains(text, "workspace") && strings.Contains(text, "trust"):
+		code, kind = "workspace_trust_required", "permission"
+	case strings.Contains(text, "sign in") || strings.Contains(text, "login required") || strings.Contains(text, "authentication required"):
+		code, kind = "authentication_required", "authentication"
+	case strings.Contains(text, "approval") || strings.Contains(text, "permission required"):
+		code, kind = "approval_required", "approval"
+	}
+	if code == "" {
+		return parsedObservation{}
+	}
+	return parsedObservation{Kind: "attention", SourceState: code, State: StateAttention, Liveness: LivenessAlive, Data: map[string]any{"family": family, "attention_kind": kind, "diagnostic_code": code}}
 }

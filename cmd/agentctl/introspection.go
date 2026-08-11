@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
 	"github.com/Git-on-my-level/agentctl/internal/config"
@@ -11,15 +12,25 @@ import (
 
 func (a *app) capabilitiesCommand(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) == 0 {
-		return output.NewError(output.CodeUsage, "usage: agentctl capabilities <adapter> [--probe] [--executable path]", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl capabilities <adapter> [--probe] [--summary] [--require names] [--executable path]", false)
 	}
 	name := args[0]
 	probe := false
+	summary := false
+	required := []string{}
 	executable := ""
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--probe":
 			probe = true
+		case "--summary":
+			summary = true
+		case "--require":
+			if i+1 >= len(args) {
+				return output.NewError(output.CodeUsage, "--require requires a comma-separated capability list", false)
+			}
+			i++
+			required = append(required, splitValues(args[i])...)
 		case "--executable":
 			if i+1 >= len(args) {
 				return output.NewError(output.CodeUsage, "--executable requires a value", false)
@@ -44,6 +55,48 @@ func (a *app) capabilitiesCommand(ctx context.Context, renderer output.Renderer,
 		}
 		result["probe"] = observation
 		lines = append(lines, output.Line{Lead: "probe", Fields: []output.Field{{Name: "adapter", Value: manifest.Adapter}, {Name: "version", Value: observation.AdapterVersion}, {Name: "capabilities", Value: len(observation.Capabilities)}}})
+	}
+	if summary || len(required) > 0 {
+		statuses := map[string]adapter.CapabilityStatus{}
+		constraints := map[string]map[string]any{}
+		for _, item := range manifest.Capabilities {
+			status := item.Implementation
+			if status == adapter.CapabilityConditional {
+				status = adapter.CapabilityDegraded
+			}
+			statuses[string(item.Name)] = status
+			constraints[string(item.Name)] = item.Constraints
+		}
+		var probedAt any
+		freshForSeconds := 0
+		if observationValue, ok := result["probe"].(adapter.ProbeResult); ok {
+			for _, item := range observationValue.Capabilities {
+				statuses[string(item.Name)] = item.Status
+				constraints[string(item.Name)] = item.Constraints
+			}
+			probedAt = observationValue.ProbedAt
+			freshForSeconds = int(observationValue.FreshFor / time.Second)
+		}
+		blocking, degraded := []string{}, []string{}
+		selected := map[string]any{}
+		for _, name := range required {
+			status, ok := statuses[name]
+			if !ok || status == adapter.CapabilityUnavailable {
+				blocking = append(blocking, name)
+			} else if status == adapter.CapabilityDegraded {
+				degraded = append(degraded, name)
+			}
+			selected[name] = map[string]any{"status": status, "constraints": constraints[name]}
+		}
+		if len(required) == 0 {
+			for name, status := range statuses {
+				selected[name] = map[string]any{"status": status, "constraints": constraints[name]}
+			}
+		}
+		result = map[string]any{"adapter": manifest.Adapter, "adapter_version": manifest.AdapterVersion, "viable": len(blocking) == 0, "required": selected, "degraded": degraded, "blocking": blocking, "probed_at": probedAt, "fresh_for_seconds": freshForSeconds}
+		if len(blocking) > 0 {
+			return output.NewError(output.CodeCapabilityUnavailable, "required adapter capabilities are unavailable", false).WithDetail("adapter", manifest.Adapter).WithDetail("blocking", blocking)
+		}
 	}
 	if err := renderer.Success(output.Success{Result: result, Lines: lines}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
@@ -99,6 +152,7 @@ func (a *app) schemaCommand(renderer output.Renderer, args []string) *output.Err
 		{"name": "event-page", "version": 1, "file": "schemas/event-page.schema.json"},
 		{"name": "execution", "version": 1, "file": "schemas/execution.schema.json"},
 		{"name": "knowledge-source", "version": 1, "file": "schemas/knowledge-source.schema.json"},
+		{"name": "outcome", "version": 1, "file": "schemas/outcome.schema.json"},
 		{"name": "subscription", "version": 1, "file": "schemas/subscription.schema.json"},
 	}
 	lines := make([]output.Line, 0, len(schemas))

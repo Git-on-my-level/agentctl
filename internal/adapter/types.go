@@ -30,6 +30,7 @@ const (
 	CapabilitySnapshot           CapabilityName = "snapshot"
 	CapabilityEvents             CapabilityName = "events"
 	CapabilityResult             CapabilityName = "result"
+	CapabilityResultContent      CapabilityName = "result_content"
 	CapabilityResume             CapabilityName = "resume"
 	CapabilityCancel             CapabilityName = "cancel"
 	CapabilityArtifacts          CapabilityName = "artifacts"
@@ -384,13 +385,16 @@ type Event struct {
 }
 
 type Result struct {
-	Success    bool           `json:"success"`
-	State      State          `json:"state"`
-	Summary    string         `json:"summary,omitempty"`
-	Error      string         `json:"error,omitempty"`
-	ExitCode   *int           `json:"exit_code,omitempty"`
-	SessionRef SourceRef      `json:"session_ref"`
-	Data       map[string]any `json:"data,omitempty"`
+	Success          bool           `json:"success"`
+	State            State          `json:"state"`
+	Summary          string         `json:"summary,omitempty"`
+	Content          string         `json:"content,omitempty"`
+	ContentType      string         `json:"content_type,omitempty"`
+	ContentTruncated bool           `json:"content_truncated,omitempty"`
+	Error            string         `json:"error,omitempty"`
+	ExitCode         *int           `json:"exit_code,omitempty"`
+	SessionRef       SourceRef      `json:"session_ref"`
+	Data             map[string]any `json:"data,omitempty"`
 }
 
 type ErrorCode string

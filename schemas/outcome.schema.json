@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentctl.dev/schemas/outcome.schema.json",
+  "x-agentctl-docs": "../docs/execution-envelope.md#terminal-outcomes",
+  "title": "agentctl terminal outcome v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "execution_id", "revision", "state", "availability", "recorded_at", "source", "result_ref"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "execution_id": {"type": "string", "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"},
+    "revision": {"type": "integer", "minimum": 1},
+    "state": {"enum": ["completed", "failed", "cancelled", "orphaned"]},
+    "availability": {"enum": ["stored", "omitted_by_policy", "unavailable_at_source", "legacy_not_recorded"]},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "source": {"type": "string", "minLength": 1},
+    "result_ref": {"type": "string", "pattern": "^agentctl://host-[a-z]{3,10}(?:-[a-z]{3,10}){5}/exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"},
+    "content": {
+      "type": "object",
+      "required": ["media_type", "text", "preview", "bytes", "truncated"],
+      "properties": {
+        "media_type": {"const": "text/plain"},
+        "text": {"type": "string", "maxLength": 1048576},
+        "preview": {"type": "string", "maxLength": 512},
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "truncated": {"type": "boolean"}
+      }
+    },
+    "failure": {
+      "type": "object",
+      "required": ["code", "kind", "source", "retryable", "message"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "retryable": {"type": "boolean"},
+        "message": {"type": "string", "maxLength": 4096}
+      }
+    },
+    "native_exit_code": {"type": "integer"}
+  }
+}

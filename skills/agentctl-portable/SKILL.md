@@ -65,19 +65,20 @@ Everything after `--` is exact argv and is never reparsed as a shell command:
 
 ```bash
 "$AGENTCTL" run --adapter codex -- codex exec --json "<bounded objective>"
-"$AGENTCTL" run --adapter cursor -- cursor-agent --print "<bounded objective>"
-"$AGENTCTL" run --adapter omp -- omp "<bounded objective>"
+"$AGENTCTL" run --adapter cursor -- cursor-agent --print --output-format stream-json --trust "<bounded objective>"
+"$AGENTCTL" run --adapter omp -- omp -p --mode json "<bounded objective>"
 ```
 
-Retain the returned typed `exec-*` ID. Normal output redacts native session IDs,
-paths, prompts, transcripts, and raw result bodies.
+Retain the returned typed `exec-*` ID. Status and events redact native session
+IDs, paths, prompts, and transcripts. The explicit `result` read returns the
+bounded final answer without requiring native session-file discovery.
 
 ## Observe and subscribe
 
 ```bash
 "$AGENTCTL" status <exec-id> --output json
 "$AGENTCTL" events <exec-id> --after-sequence 0 --limit 100 --output json
-"$AGENTCTL" subscribe create \
+"$AGENTCTL" --output json subscribe create \
   --execution <exec-id> \
   --kind attention,artifact,terminal \
   --destination file \
@@ -98,7 +99,7 @@ runner so the parent can subscribe without parsing partial process output:
 
 ```bash
 EXEC_ID=$("$AGENTCTL" id generate exec | cut -d' ' -f1)
-"$AGENTCTL" subscribe create --execution "$EXEC_ID" --kind terminal,attention \
+"$AGENTCTL" --output json subscribe create --execution "$EXEC_ID" --kind terminal,attention \
   --destination file --target /absolute/path/events.ndjson
 "$AGENTCTL" run --execution-id "$EXEC_ID" --adapter codex -- codex exec --json "<task>"
 ```
@@ -107,6 +108,12 @@ The runner uses bounded journal transactions and refreshes an expiring owner
 lease so a separate callback supervisor does not falsely mark it unreachable.
 Cross-process native cancel is only available when the adapter explicitly
 advertises it.
+
+Use `result <exec-id> --require-content --output json` when delegation cannot
+succeed without a final answer. `result --summary` returns the deterministic
+preview. New runs store the bounded final answer by default; use
+`run --no-store-result` only when the caller intentionally accepts an omission
+tombstone. Never grep native session or rollout files to recover an answer.
 
 ## Promote to Multica
 

@@ -392,8 +392,19 @@ func (a *app) status(ctx context.Context, renderer output.Renderer, c common, ar
 	return writeExecution(renderer, execution, "status")
 }
 func (a *app) result(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
-	if len(args) != 1 {
-		return output.NewError(output.CodeUsage, "usage: agentctl result <execution-id>", false)
+	if len(args) < 1 {
+		return output.NewError(output.CodeUsage, "usage: agentctl result <execution-id> [--summary] [--require-content]", false)
+	}
+	summary, requireContent := false, false
+	for _, arg := range args[1:] {
+		switch arg {
+		case "--summary":
+			summary = true
+		case "--require-content":
+			requireContent = true
+		default:
+			return output.NewError(output.CodeUsage, "unknown result flag", false).WithDetail("flag", arg)
+		}
 	}
 	id, problem := parseExecutionRef(args[0], c)
 	if problem != nil {
@@ -408,7 +419,38 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 	if err != nil {
 		return mapStoreError("read execution result", err)
 	}
-	return writeExecution(renderer, execution, "result")
+	if execution.Observation.Integrity == model.IntegrityConflicted {
+		return outcomeError(output.CodeUnknownState, "execution evidence is conflicted", execution)
+	}
+	if !execution.State.Terminal() {
+		if requireContent {
+			return output.NewError(output.CodeInvalidState, "execution is not terminal", false).WithDetail("execution_id", id.String()).WithDetail("state", execution.State)
+		}
+		return writeExecution(renderer, execution, "result")
+	}
+	outcome, err := journal.GetOutcome(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		recordedAt := execution.UpdatedAt
+		if execution.TerminalAt != nil {
+			recordedAt = *execution.TerminalAt
+		}
+		outcome = model.Outcome{SchemaVersion: model.SchemaVersion, ExecutionID: id, Revision: 1, State: execution.State, Availability: model.OutcomeLegacyNotRecorded, RecordedAt: recordedAt, Source: execution.Adapter, ResultRef: fmt.Sprintf("agentctl://%s/%s", execution.OriginHostID, execution.ID)}
+	} else if err != nil {
+		return mapStoreError("read execution outcome", err)
+	}
+	if requireContent && outcome.Content == nil {
+		return output.NewError(output.CodeNotFound, "execution has no stored result content", false).WithDetail("execution_id", id.String()).WithDetail("availability", outcome.Availability)
+	}
+	if summary && outcome.Content != nil {
+		copy := *outcome.Content
+		if copy.Text != copy.Preview {
+			copy.Text = copy.Preview
+			copy.Truncated = true
+			copy.SHA256 = ""
+		}
+		outcome.Content = &copy
+	}
+	return writeExecutionOutcome(renderer, execution, outcome)
 }
 
 func (a *app) events(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
@@ -563,6 +605,9 @@ func writeExecution(renderer output.Renderer, e model.Execution, operation strin
 	if !e.State.Terminal() {
 		actions = append(actions, output.NextAction{Label: "Wait for terminal state", Argv: []string{"agentctl", "await", e.ID.String(), "--output", string(renderer.Mode)}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 	}
+	if e.State.Terminal() && operation != "result" {
+		actions = append(actions, output.NextAction{Label: "Read terminal result", Argv: []string{"agentctl", "result", e.ID.String(), "--output", string(renderer.Mode)}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+	}
 	redacted := e
 	redacted.CWD = nil
 	redacted.Repository = nil
@@ -574,6 +619,25 @@ func writeExecution(renderer output.Renderer, e model.Execution, operation strin
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	_ = operation
+	return nil
+}
+
+func writeExecutionOutcome(renderer output.Renderer, e model.Execution, outcome model.Outcome) *output.Error {
+	redacted := e
+	redacted.CWD = nil
+	redacted.Repository = nil
+	redacted.SourceBindings = append([]model.SourceBinding(nil), e.SourceBindings...)
+	for i := range redacted.SourceBindings {
+		redacted.SourceBindings[i].OpaqueID = nil
+	}
+	value := struct {
+		model.Execution
+		Outcome model.Outcome `json:"outcome"`
+	}{Execution: redacted, Outcome: outcome}
+	fields := []output.Field{{Name: "state", Value: e.State}, {Name: "availability", Value: outcome.Availability}, {Name: "content", Value: outcome.Content != nil}, {Name: "result_ref", Value: outcome.ResultRef}}
+	if err := renderer.Success(output.Success{Result: value, Lines: []output.Line{{Lead: e.ID.String(), Fields: fields}}}); err != nil {
+		return output.Wrap(output.CodeInternal, "write output", false, err)
+	}
 	return nil
 }
 func eventLine(e model.Event) output.Line {
