@@ -184,7 +184,19 @@ func TestRouteExplainJSON(t *testing.T) {
 	}
 }
 
-func TestNativeRunSupervisesToTerminalAndRedactsPrivateSource(t *testing.T) {
+func TestCapabilitiesSummaryCanRequireResultContent(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	code := a.run(context.Background(), []string{"--output", "json", "capabilities", "codex", "--summary", "--require", "launch,result_content"})
+	if code != 0 {
+		t.Fatalf("exit=%d output=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"viable":true`) || !strings.Contains(stdout.String(), `"result_content"`) || strings.Contains(stdout.String(), `"manifest"`) {
+		t.Fatalf("unexpected summary: %s", stdout.String())
+	}
+}
+
+func TestNativeRunPersistsRetrievableOutcomeAndRedactsPrivateSource(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	journal := filepath.Join(t.TempDir(), "state", "journal.db")
@@ -206,12 +218,88 @@ func TestNativeRunSupervisesToTerminalAndRedactsPrivateSource(t *testing.T) {
 	if len(doc.Result.SourceBindings) != 1 || doc.Result.SourceBindings[0].OpaqueID != nil {
 		t.Fatalf("normal output exposed opaque binding: %#v", doc.Result.SourceBindings)
 	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "result", doc.Result.ID.String(), "--require-content"}); code != 0 {
+		t.Fatalf("result exit=%d output=%s", code, stdout.String())
+	}
+	var resultDoc struct {
+		Result struct {
+			Outcome model.Outcome `json:"outcome"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &resultDoc); err != nil {
+		t.Fatal(err)
+	}
+	if resultDoc.Result.Outcome.Content == nil || resultDoc.Result.Outcome.Content.Text != "must-not-enter-journal" || resultDoc.Result.Outcome.ResultRef == "" {
+		t.Fatalf("outcome=%#v", resultDoc.Result.Outcome)
+	}
+}
+
+func TestNoStoreResultWritesExplicitOutcomeTombstone(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	journal := filepath.Join(t.TempDir(), "state", "journal.db")
+	secret := "do-not-persist-this-result"
+	native := `{"type":"result","status":"completed","result":"` + secret + `"}`
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--adapter", "generic-process", "--no-store-result", "--", "/bin/echo", native}); code != 0 {
+		t.Fatalf("run exit=%d output=%s", code, stdout.String())
+	}
+	var runDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &runDoc); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "result", runDoc.Result.ID.String()}); code != 0 {
+		t.Fatalf("result exit=%d output=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"availability":"omitted_by_policy"`) || strings.Contains(stdout.String(), secret) {
+		t.Fatalf("unexpected tombstone: %s", stdout.String())
+	}
 	raw, err := os.ReadFile(journal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(raw, []byte("must-not-enter-journal")) {
-		t.Fatal("raw native result leaked into journal")
+	if bytes.Contains(raw, []byte(secret)) {
+		t.Fatal("no-store result bytes entered journal")
+	}
+}
+
+func TestResultRejectsConflictedTerminalEvidence(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	native := `{"type":"result","status":"completed","result":"answer"}`
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "run", "--adapter", "generic-process", "--", "/bin/echo", native}); code != 0 {
+		t.Fatalf("run exit=%d output=%s", code, stdout.String())
+	}
+	var runDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &runDoc); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := journal.GetExecution(context.Background(), runDoc.Result.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution.Observation.Integrity = model.IntegrityConflicted
+	execution.UpdatedAt = execution.UpdatedAt.Add(time.Second)
+	execution.Observation.ObservedAt = execution.UpdatedAt
+	if _, err := journal.UpdateExecution(context.Background(), execution, execution.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "result", runDoc.Result.ID.String()}); code != 13 || !strings.Contains(stdout.String(), `"code":"unknown_state"`) {
+		t.Fatalf("result exit=%d output=%s", code, stdout.String())
 	}
 }
 

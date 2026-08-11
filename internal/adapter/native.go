@@ -30,19 +30,22 @@ type parsedObservation struct {
 	// CursorAuthority marks a cursor supplied by the native authority rather
 	// than the adapter's local observation counter. Multica event pages use
 	// this to preserve event sequence/source positions across polling calls.
-	CursorAuthority bool
-	SourcePosition  string
-	Kind            string
-	SourceState     string
-	State           State
-	Liveness        Liveness
-	Terminal        bool
-	Success         bool
-	Summary         string
-	Error           string
-	OccurredAt      *time.Time
-	Data            map[string]any
-	Page            *parsedPage
+	CursorAuthority  bool
+	SourcePosition   string
+	Kind             string
+	SourceState      string
+	State            State
+	Liveness         Liveness
+	Terminal         bool
+	Success          bool
+	Summary          string
+	Content          string
+	ContentType      string
+	ContentTruncated bool
+	Error            string
+	OccurredAt       *time.Time
+	Data             map[string]any
+	Page             *parsedPage
 }
 
 type parsedPage struct {
@@ -57,28 +60,31 @@ type outputParser interface {
 }
 
 type processRecord struct {
-	mu            sync.Mutex
-	cmd           *exec.Cmd
-	parser        outputParser
-	ref           SourceRef
-	binding       SourceBinding
-	startedAt     time.Time
-	updatedAt     time.Time
-	done          chan struct{}
-	waitErr       error
-	exitCode      *int
-	observations  []parsedObservation
-	events        []Event
-	result        *Result
-	parseWarnings []string
-	stdoutBytes   int
-	stderrBytes   int
-	maxOutput     int
-	cancelled     bool
-	pipes         sync.WaitGroup
-	resultPath    string
-	page          *parsedPage
-	wholeStdout   bool
+	mu               sync.Mutex
+	cmd              *exec.Cmd
+	parser           outputParser
+	ref              SourceRef
+	binding          SourceBinding
+	startedAt        time.Time
+	updatedAt        time.Time
+	done             chan struct{}
+	waitErr          error
+	exitCode         *int
+	observations     []parsedObservation
+	events           []Event
+	result           *Result
+	finalContent     string
+	contentType      string
+	contentTruncated bool
+	parseWarnings    []string
+	stdoutBytes      int
+	stderrBytes      int
+	maxOutput        int
+	cancelled        bool
+	pipes            sync.WaitGroup
+	resultPath       string
+	page             *parsedPage
+	wholeStdout      bool
 }
 
 func (p *processRecord) ingest(line []byte, stderr bool) {
@@ -125,6 +131,11 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 	if obs.BackendVersion != "" {
 		p.ref.Endpoint = obs.BackendVersion
 	}
+	if obs.Content != "" {
+		p.finalContent = obs.Content
+		p.contentType = firstNonEmpty(obs.ContentType, "text/plain")
+		p.contentTruncated = obs.ContentTruncated
+	}
 	if obs.Kind != "" || obs.State != "" || obs.SourceState != "" || obs.Error != "" {
 		p.observations = append(p.observations, obs)
 	}
@@ -154,7 +165,9 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 		p.events = append(p.events, e)
 	}
 	if obs.Terminal {
-		result := &Result{Success: obs.Success, State: obs.State, Summary: obs.Summary, Error: obs.Error, SessionRef: p.ref, Data: cloneMap(obs.Data)}
+		content := firstNonEmpty(obs.Content, p.finalContent)
+		contentType := firstNonEmpty(obs.ContentType, p.contentType)
+		result := &Result{Success: obs.Success, State: obs.State, Summary: obs.Summary, Content: content, ContentType: contentType, ContentTruncated: obs.ContentTruncated || p.contentTruncated, Error: obs.Error, SessionRef: p.ref, Data: cloneMap(obs.Data)}
 		p.result = result
 	}
 	p.updatedAt = time.Now().UTC()
@@ -179,7 +192,7 @@ func (p *processRecord) finish(err error) {
 		if data, readErr := os.ReadFile(p.resultPath); readErr == nil && len(data) <= p.maxOutput {
 			obs := p.parser.Parse(bytes.TrimSpace(data), false)
 			if obs.Terminal {
-				p.result = &Result{Success: obs.Success, State: obs.State, Summary: obs.Summary, Error: obs.Error, ExitCode: p.exitCode, SessionRef: p.ref, Data: cloneMap(obs.Data)}
+				p.result = &Result{Success: obs.Success, State: obs.State, Summary: obs.Summary, Content: firstNonEmpty(obs.Content, p.finalContent), ContentType: firstNonEmpty(obs.ContentType, p.contentType), ContentTruncated: obs.ContentTruncated || p.contentTruncated, Error: obs.Error, ExitCode: p.exitCode, SessionRef: p.ref, Data: cloneMap(obs.Data)}
 			}
 		} else if readErr != nil && !os.IsNotExist(readErr) {
 			p.parseWarnings = append(p.parseWarnings, "result file could not be read")

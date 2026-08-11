@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
 	"github.com/Git-on-my-level/agentctl/internal/callback"
@@ -24,6 +25,7 @@ type runOptions struct {
 	adapter, cwd, idempotencyKey, issue, run string
 	executionID                              ids.ExecutionID
 	plan                                     bool
+	noStoreResult                            bool
 	timeout                                  time.Duration
 	argv                                     []string
 }
@@ -53,7 +55,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		return mapAdapterError("adapter probe failed", err)
 	}
 	if opts.plan {
-		result := map[string]any{"adapter": runtime.Name(), "executable": opts.argv[0], "argument_count": len(opts.argv) - 1, "profile": profileName, "side_effect_class": output.ExternalSideEffect, "probe": probe, "writes_local_state": true}
+		result := map[string]any{"adapter": runtime.Name(), "executable": opts.argv[0], "argument_count": len(opts.argv) - 1, "profile": profileName, "side_effect_class": output.ExternalSideEffect, "probe": probe, "writes_local_state": true, "stores_result": !opts.noStoreResult}
 		if !opts.executionID.IsZero() {
 			result["execution_id"] = opts.executionID.String()
 		}
@@ -71,7 +73,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Supersedes: []ids.ExecutionID{}, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
 	mutation := contracts.MutationKey{}
 	if opts.idempotencyKey != "" {
-		digest, dErr := mutationDigest(runtime.Name(), opts.cwd, opts.argv)
+		digest, dErr := mutationDigest(runtime.Name(), opts.cwd, opts.argv, opts.noStoreResult)
 		if dErr != nil {
 			journal.Close()
 			return output.Wrap(output.CodeInternal, "canonicalize run idempotency inputs", false, dErr)
@@ -103,8 +105,11 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		if openProblem != nil {
 			return openProblem
 		}
-		failed := finalizeLaunchFailure(writeJournal, current, a.now().UTC())
+		failed, finalizeErr := finalizeResult(context.Background(), writeJournal, current, adapter.Result{Success: false, State: adapter.StateFailed, Error: err.Error()}, a.now().UTC(), opts.noStoreResult)
 		writeJournal.Close()
+		if finalizeErr != nil {
+			return mapStoreError("record launch failure outcome", finalizeErr)
+		}
 		return mapAdapterError("launch failed", err).WithDetail("execution_id", failed.ID.String())
 	}
 	writeJournal, current, openProblem := a.openExecutionWrite(ctx, c, execution.ID)
@@ -149,6 +154,9 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 				if nativeEvent.Cursor != "" {
 					cursor = nativeEvent.Cursor
 				}
+				if nativeEvent.Kind == "terminal" {
+					continue
+				}
 				if err := appendNativeEvent(ctx, writeJournal, execution, nativeEvent); err != nil && !errors.Is(err, store.ErrTerminalConflict) {
 					writeJournal.Close()
 					return mapStoreError("record native event", err)
@@ -170,7 +178,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 			if openProblem != nil {
 				return openProblem
 			}
-			execution, err = finalizeResult(ctx, writeJournal, current, result, a.now().UTC())
+			execution, err = finalizeResult(ctx, writeJournal, current, result, a.now().UTC(), opts.noStoreResult)
 			writeJournal.Close()
 			if err != nil {
 				return mapStoreError("record terminal result", err)
@@ -184,7 +192,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 				writeJournal, current, openProblem := a.openExecutionWrite(context.Background(), c, execution.ID)
 				if openProblem == nil {
 					var err error
-					execution, err = finalizeResult(context.Background(), writeJournal, current, last, a.now().UTC())
+					execution, err = finalizeResult(context.Background(), writeJournal, current, last, a.now().UTC(), opts.noStoreResult)
 					writeJournal.Close()
 					if err == nil {
 						return writeExecution(renderer, execution, "run")
@@ -251,6 +259,8 @@ func parseRun(args []string) (runOptions, *output.Error) {
 			o.timeout = duration
 		case "--plan":
 			o.plan = true
+		case "--no-store-result":
+			o.noStoreResult = true
 		case "--issue":
 			if i+1 >= delimiter {
 				return o, output.NewError(output.CodeUsage, "--issue requires a value", false)
@@ -458,8 +468,8 @@ func contextInput(c common) *adapter.ContextInput {
 	}
 	return &adapter.ContextInput{Path: c.contextFile, Required: false}
 }
-func mutationDigest(name, cwd string, argv []string) (string, error) {
-	canonical, err := callback.CanonicalJSON(map[string]any{"adapter": name, "cwd": cwd, "argv": argv})
+func mutationDigest(name, cwd string, argv []string, noStoreResult bool) (string, error) {
+	canonical, err := callback.CanonicalJSON(map[string]any{"adapter": name, "cwd": cwd, "argv": argv, "no_store_result": noStoreResult})
 	if err != nil {
 		return "", err
 	}
@@ -468,12 +478,17 @@ func mutationDigest(name, cwd string, argv []string) (string, error) {
 }
 
 func applySession(journal *store.Journal, execution model.Execution, session adapter.Session, now time.Time) (model.Execution, error) {
-	execution.State = toModelState(session.State)
-	execution.Liveness = toModelLiveness(session.Liveness)
-	execution.UpdatedAt = now
-	if execution.State.Terminal() {
-		execution.TerminalAt = &now
+	state := toModelState(session.State)
+	liveness := toModelLiveness(session.Liveness)
+	// A fast child may already be terminal when launch returns. Terminal state
+	// is committed only with its outcome and terminal event below.
+	if state.Terminal() {
+		state = model.StateRunning
+		liveness = model.LivenessAlive
 	}
+	execution.State = state
+	execution.Liveness = liveness
+	execution.UpdatedAt = now
 	observedAt := session.Observation.ObservedAt
 	if observedAt.IsZero() {
 		observedAt = now
@@ -506,31 +521,105 @@ func refreshRunnerLease(journal *store.Journal, execution model.Execution, now t
 	execution.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: now, FreshForSeconds: &leaseSeconds}
 	return journal.UpdateExecution(context.Background(), execution, execution.Revision)
 }
-func finalizeLaunchFailure(journal *store.Journal, execution model.Execution, now time.Time) model.Execution {
-	execution.State = model.StateFailed
-	execution.Liveness = model.LivenessExited
-	execution.TerminalAt = &now
-	execution.UpdatedAt = now
-	execution.Observation.ObservedAt = now
-	execution.Observation.Integrity = model.IntegrityVerified
-	updated, _ := journal.UpdateExecution(context.Background(), execution, execution.Revision)
-	return updated
-}
-func finalizeResult(ctx context.Context, journal *store.Journal, execution model.Execution, result adapter.Result, now time.Time) (model.Execution, error) {
+func finalizeResult(ctx context.Context, journal *store.Journal, execution model.Execution, result adapter.Result, now time.Time, noStoreResult bool) (model.Execution, error) {
 	execution.State = toModelState(result.State)
 	execution.Liveness = model.LivenessExited
 	execution.TerminalAt = &now
 	execution.UpdatedAt = now
 	execution.Observation.ObservedAt = now
 	execution.Observation.Integrity = model.IntegrityVerified
-	updated, err := journal.UpdateExecution(ctx, execution, execution.Revision)
+	outcome := buildOutcome(execution, result, now, noStoreResult)
+	payload := map[string]any{"result_available": outcome.Availability == model.OutcomeStored, "outcome_execution_id": execution.ID.String(), "availability": outcome.Availability}
+	if outcome.Content != nil {
+		payload["content_available"] = true
+		payload["content_sha256"] = outcome.Content.SHA256
+	}
+	if outcome.Failure != nil {
+		payload["failure_code"] = outcome.Failure.Code
+	}
+	event, canonical, err := syntheticEvent(execution, model.EventTerminal, execution.State, payload, "result", now)
 	if err != nil {
 		return execution, err
 	}
-	if err := appendSynthetic(ctx, journal, updated, model.EventTerminal, updated.State, map[string]any{"result_available": true}, "result"); err != nil && !errors.Is(err, store.ErrTerminalConflict) {
-		return updated, err
+	updated, _, _, _, err := journal.CommitTerminalOutcome(ctx, execution, execution.Revision, outcome, event, canonical)
+	return updated, err
+}
+
+func buildOutcome(execution model.Execution, result adapter.Result, now time.Time, noStoreResult bool) model.Outcome {
+	outcome := model.Outcome{SchemaVersion: model.SchemaVersion, ExecutionID: execution.ID, Revision: 1, State: execution.State, RecordedAt: now, Source: execution.Adapter, ResultRef: fmt.Sprintf("agentctl://%s/%s", execution.OriginHostID, execution.ID), NativeExitCode: result.ExitCode}
+	if noStoreResult {
+		outcome.Availability = model.OutcomeOmittedByPolicy
+	} else {
+		content := strings.TrimSpace(result.Content)
+		if content != "" {
+			bounded, truncated := boundedOutcomeText(content, model.OutcomeInlineLimit)
+			preview, _ := boundedOutcomeText(bounded, model.OutcomePreviewLimit)
+			item := &model.OutcomeContent{MediaType: "text/plain", Text: bounded, Preview: preview, Bytes: len(content), Truncated: truncated || result.ContentTruncated}
+			if !item.Truncated {
+				digest := sha256.Sum256([]byte(content))
+				item.SHA256 = "sha256:" + hex.EncodeToString(digest[:])
+			}
+			outcome.Content = item
+		}
+		if strings.TrimSpace(result.Error) != "" || execution.State == model.StateFailed {
+			message, _ := boundedOutcomeText(firstNonEmptyString(result.Error, "native execution failed"), model.OutcomeFailureLimit)
+			code, kind, retryable := classifyOutcomeFailure(message)
+			outcome.Failure = &model.OutcomeFailure{Code: code, Kind: kind, Source: execution.Adapter, Retryable: retryable, Message: message}
+		}
+		if outcome.Content != nil || outcome.Failure != nil {
+			outcome.Availability = model.OutcomeStored
+		} else {
+			outcome.Availability = model.OutcomeUnavailableAtSource
+		}
 	}
-	return updated, nil
+	return outcome
+}
+
+func boundedOutcomeText(value string, max int) (string, bool) {
+	if len(value) <= max {
+		return value, false
+	}
+	value = value[:max]
+	for len(value) > 0 && !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value, true
+}
+
+func classifyOutcomeFailure(message string) (string, string, bool) {
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "workspace") && strings.Contains(lower, "trust"):
+		return "workspace_trust_required", "permission", true
+	case strings.Contains(lower, "auth") || strings.Contains(lower, "login") || strings.Contains(lower, "sign in"):
+		return "authentication_required", "authentication", true
+	case strings.Contains(lower, "approval") || strings.Contains(lower, "permission"):
+		return "approval_required", "approval", true
+	case strings.Contains(lower, "quota") || strings.Contains(lower, "rate limit"):
+		return "quota_exceeded", "quota", true
+	default:
+		return "native_execution_failed", "unknown", false
+	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func syntheticEvent(execution model.Execution, kind model.EventKind, state model.State, payload map[string]any, source string, now time.Time) (model.Event, []byte, error) {
+	projection := map[string]any{"authority_scope": execution.Authority, "execution_fingerprint": execution.ID.String(), "kind": kind, "source": source, "state": state}
+	key, canonical, err := callback.SemanticDedupeKey(execution.Adapter, 1, projection)
+	if err != nil {
+		return model.Event{}, nil, err
+	}
+	stateValue := state
+	event := model.Event{ExecutionID: execution.ID, OriginHostID: execution.OriginHostID, Ordering: model.OrderingObservation, Kind: kind, State: &stateValue, Authority: execution.Authority, Adapter: execution.Adapter, ObservedAt: now, DedupeKey: key, DedupeVersion: 1, Payload: payload}
+	return event, canonical, nil
 }
 func appendSynthetic(ctx context.Context, journal *store.Journal, execution model.Execution, kind model.EventKind, state model.State, payload map[string]any, source string) error {
 	projection := map[string]any{"authority_scope": execution.Authority, "execution_fingerprint": execution.ID.String(), "kind": kind, "source": source, "state": state}
@@ -583,7 +672,7 @@ func appendNativeEvent(ctx context.Context, journal *store.Journal, execution mo
 }
 func safeNativePayload(input map[string]any) map[string]any {
 	output := map[string]any{}
-	for _, key := range []string{"family", "type", "is_error", "status", "state", "subtype", "usage", "artifact_ref"} {
+	for _, key := range []string{"family", "type", "is_error", "status", "state", "subtype", "usage", "artifact_ref", "attention_kind", "diagnostic_code"} {
 		if value, ok := input[key]; ok {
 			output[key] = value
 		}

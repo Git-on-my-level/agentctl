@@ -63,6 +63,39 @@ func TestCursorFailureUsesStructuredErrorEvenWithZeroExit(t *testing.T) {
 	}
 }
 
+func TestCodexReducerCarriesLastAgentMessageIntoTerminalResult(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s\n' '{"type":"thread.started","thread_id":"thread-fixture"}' '{"type":"item.completed","item":{"id":"item-1","type":"agent_message","text":"first"}}' '{"type":"item.completed","item":{"id":"item-2","type":"agent_message","text":"final answer"}}' '{"type":"turn.completed"}'`)
+	got, err := NewCodex().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || !got.Result.Success || got.Result.Content != "final answer" || got.Result.ContentType != "text/plain" {
+		t.Fatalf("unexpected Codex result: %#v", got.Result)
+	}
+}
+
+func TestCursorWorkspaceTrustTextBecomesTypedAttention(t *testing.T) {
+	obs := (cursorParser{}).Parse([]byte("Workspace trust is required before continuing"), true)
+	if obs.Kind != "attention" || obs.State != StateAttention || obs.Data["diagnostic_code"] != "workspace_trust_required" || obs.Data["attention_kind"] != "permission" {
+		t.Fatalf("unexpected attention observation: %#v", obs)
+	}
+}
+
+func TestGenericToolResultIsNotTerminalOrRetainedAsFinalContent(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s\n' '{"type":"tool_output","result":"tool secret"}' '{"type":"result","status":"completed","result":"final answer"}'`)
+	got, err := NewGenericProcess().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || !got.Result.Success || got.Result.Content != "final answer" {
+		t.Fatalf("generic result retained nonterminal tool output: %#v", got.Result)
+	}
+	obs := (genericParser{}).Parse([]byte(`{"type":"tool_output","result":"tool secret"}`), false)
+	if obs.Terminal || obs.Content != "" || obs.Summary != "" {
+		t.Fatalf("tool output classified as final: %#v", obs)
+	}
+}
+
 func TestOMPLiveJSONAgentEndIsTerminalSuccess(t *testing.T) {
 	path := fixtureExecutable(t, `printf '%s\n' '{"type":"session","version":3,"id":"omp-fixture"}' '{"type":"agent_start"}' '{"type":"turn_end"}' '{"type":"agent_end","messages":[]}'`)
 	a := NewOMP()
@@ -270,7 +303,7 @@ func TestNativeManifestDoesNotOverclaimRestartRecovery(t *testing.T) {
 	for _, a := range []Adapter{NewCodex(), NewCursor(), NewClaudeCode()} {
 		for _, declaration := range a.Manifest().Capabilities {
 			switch declaration.Name {
-			case CapabilityAttach, CapabilitySnapshot, CapabilityEvents, CapabilityResult, CapabilityCancel:
+			case CapabilityAttach, CapabilitySnapshot, CapabilityEvents, CapabilityResult, CapabilityResultContent, CapabilityCancel:
 				if declaration.Constraints["scope"] != "same_process_only" || declaration.Constraints["cross_restart"] != false {
 					t.Fatalf("%s %s overclaims restart recovery: %#v", a.Name(), declaration.Name, declaration.Constraints)
 				}

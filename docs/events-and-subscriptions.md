@@ -45,7 +45,10 @@ sorts semantic events by wall-clock timestamps.
   "dedupe_version": 1,
   "payload": {
     "result_available": true,
-    "artifact_ids": []
+    "outcome_execution_id": "exec-purple-monkey-dragon-river-candle-meadow",
+    "availability": "stored",
+    "content_available": true,
+    "content_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   }
 }
 ```
@@ -53,6 +56,8 @@ sorts semantic events by wall-clock timestamps.
 `occurred_at` is nullable when the authority did not supply it. `observed_at`
 is always the local journal time. Neither participates in journal ordering.
 Payloads are bounded, kind-specific metadata and references, not native output.
+Terminal callbacks never contain outcome content or failure messages; callers
+dereference the typed execution with `agentctl result`.
 
 ## Ordering
 

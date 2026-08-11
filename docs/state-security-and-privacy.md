@@ -119,9 +119,11 @@ caller's role and requested output mode.
 
 ## Event minimization
 
-Normalized events contain state and references, not full native output. Result
-summaries are opt-in, bounded, and redacted. Artifact events identify kind,
-authority, digest, and retrieval reference without copying content.
+Normalized events contain state and references, not full native output. The
+explicit `result` command returns the bounded final outcome stored for that
+execution; status, subscriptions, callbacks, and ordinary events do not copy
+that content. Artifact events identify kind, authority, digest, and retrieval
+reference without copying content.
 
 Debug logs are never required for normal correctness and have a separate
 retention switch. Secret scanning fixtures cover errors and malformed native

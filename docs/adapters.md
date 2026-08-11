@@ -17,7 +17,8 @@ launch      execute an argv array and discover the native session reference
 attach      bind to an existing native reference
 snapshot    obtain current state with observation freshness
 events      stream or poll normalized events from a cursor
-result      retrieve the backend's final result reference/summary
+result      retrieve the backend's terminal state/result metadata
+result_content retrieve bounded final answer content when the adapter proves it
 resume      optional; resume the same native session
 cancel      optional; request native cancellation
 artifacts   optional; enumerate references without copying content

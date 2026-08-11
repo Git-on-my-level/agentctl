@@ -108,6 +108,22 @@ observation integrity to `unknown`.
 - Completion is not acceptance evidence. The parent/coordinator verifies
   required artifacts and acceptance criteria through their actual authority.
 
+## Terminal outcomes
+
+Every newly terminalized direct execution records one versioned outcome in the
+same journal transaction as terminal state, the terminal event, and callback
+fan-out. `agentctl status` and events remain metadata-only; the explicit
+`agentctl result <execution-id>` read returns the bounded final content and
+normalized failure details. Its `result_ref` is the execution's portable
+`agentctl://host-.../exec-...` URI, so callers never locate native session or
+rollout files.
+
+Availability is explicit: `stored`, `omitted_by_policy`,
+`unavailable_at_source`, or `legacy_not_recorded`. `--no-store-result` writes
+an omission tombstone. Final text is UTF-8, at most 1 MiB inline, and includes
+a digest only when complete. The outcome never contains prompts, reasoning,
+tool chatter, token streams, or arbitrary native stdout/stderr.
+
 ## Source bindings and authority
 
 `source_bindings` retain exact local adapter bindings. A direct execution

@@ -54,7 +54,7 @@ make ci
 go build -o build/agentctl ./cmd/agentctl
 build/agentctl help
 build/agentctl schema list --output json
-build/agentctl capabilities codex --probe --executable /path/to/codex
+build/agentctl capabilities codex --probe --summary --require launch,result_content --executable /path/to/codex
 build/agentctl bootstrap status --output json
 ```
 
@@ -68,7 +68,7 @@ Wrap a native argv without reparsing anything after `--`:
 
 ```bash
 agentctl run --adapter codex -- codex exec --json -m gpt-5.6-sol "review this change"
-agentctl run --adapter cursor -- cursor-agent --print "scope this bug"
+agentctl run --adapter cursor -- cursor-agent --print --output-format stream-json --trust "scope this bug"
 agentctl run --adapter omp -- omp "investigate the service"
 ```
 
@@ -78,7 +78,7 @@ foreground runner from the parent agent's native process manager:
 
 ```bash
 EXEC_ID=$(agentctl id generate exec | cut -d' ' -f1)
-agentctl subscribe create \
+agentctl --output json subscribe create \
   --execution "$EXEC_ID" \
   --kind terminal,attention \
   --destination file \
@@ -88,6 +88,7 @@ agentctl run --execution-id "$EXEC_ID" --adapter codex -- codex exec --json "rev
 agentctl status "$EXEC_ID"
 agentctl events "$EXEC_ID" --after-sequence 0 --output json
 agentctl await "$EXEC_ID" --timeout 10m
+agentctl result "$EXEC_ID" --require-content --output json
 ```
 
 The runner opens the journal only for bounded transactions, so a separate
@@ -96,6 +97,9 @@ lease prevents that supervisor from misclassifying a process-owned session as
 unreachable; after a crash the lease expires and ordinary recovery resumes.
 Native cross-process cancel remains unavailable unless that adapter advertises
 a reviewed durable cancel mechanism; agentctl never guesses from a PID.
+The final normalized answer is stored with the execution and addressed by its
+portable `agentctl://host-.../exec-...` result reference; callers never need to
+search native rollout files. Status, events, and callbacks remain metadata-only.
 
 Configure an exact Multica authority and promote only when durable lifecycle
 tracking is worth the review overhead:

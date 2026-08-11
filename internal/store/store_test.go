@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -130,6 +132,46 @@ func TestOnlyOneTerminalEventIsAccepted(t *testing.T) {
 	event.DedupeKey, projection = semanticEvent(t, execution.Adapter, map[string]any{"terminal": "failed"})
 	if _, _, err := journal.AppendEvent(ctx, event, projection); !errors.Is(err, ErrTerminalConflict) {
 		t.Fatalf("terminal conflict err=%v", err)
+	}
+}
+
+func TestTerminalOutcomeStateEventAndContentCommitAtomically(t *testing.T) {
+	ctx := context.Background()
+	journal, _, now := openTestJournal(t)
+	execution, _, err := journal.CreateExecution(ctx, sampleExecution(now), contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalAt := now.Add(time.Second)
+	next := execution
+	next.State = model.StateCompleted
+	next.Liveness = model.LivenessExited
+	next.TerminalAt = &terminalAt
+	next.UpdatedAt = terminalAt
+	next.Observation.ObservedAt = terminalAt
+	completed := model.StateCompleted
+	key, projection := semanticEvent(t, execution.Adapter, map[string]any{"terminal": "outcome"})
+	event := model.Event{ExecutionID: execution.ID, Authority: execution.Authority, Adapter: execution.Adapter, Ordering: model.OrderingObservation, Kind: model.EventTerminal, State: &completed, ObservedAt: terminalAt, DedupeKey: key, DedupeVersion: 1, Payload: map[string]any{"availability": "stored", "outcome_execution_id": execution.ID.String()}}
+	outcome := model.Outcome{SchemaVersion: 1, ExecutionID: execution.ID, Revision: 1, State: completed, Availability: model.OutcomeStored, RecordedAt: terminalAt, Source: execution.Adapter, ResultRef: "agentctl://" + execution.OriginHostID.String() + "/" + execution.ID.String(), Content: &model.OutcomeContent{MediaType: "text/plain", Text: "answer", Preview: "answer", Bytes: 6, SHA256: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Truncated: false}}
+	if _, _, _, _, err := journal.CommitTerminalOutcome(ctx, next, execution.Revision, outcome, event, projection); err == nil {
+		t.Fatal("invalid outcome digest was accepted")
+	}
+	unchanged, err := journal.GetExecution(ctx, execution.ID)
+	if err != nil || unchanged.State != model.StateRunning {
+		t.Fatalf("failed commit changed execution: %#v err=%v", unchanged, err)
+	}
+	if events, err := journal.ListEvents(ctx, execution.ID, contracts.EventQuery{}); err != nil || len(events) != 0 {
+		t.Fatalf("failed commit left events: %#v err=%v", events, err)
+	}
+	sum := sha256.Sum256([]byte("answer"))
+	outcome.Content.SHA256 = "sha256:" + hex.EncodeToString(sum[:])
+	storedExecution, storedOutcome, storedEvent, reused, err := journal.CommitTerminalOutcome(ctx, next, execution.Revision, outcome, event, projection)
+	if err != nil || reused || storedExecution.State != model.StateCompleted || storedOutcome.Content == nil || storedEvent.Kind != model.EventTerminal {
+		t.Fatalf("commit execution=%#v outcome=%#v event=%#v reused=%v err=%v", storedExecution, storedOutcome, storedEvent, reused, err)
+	}
+	readOutcome, err := journal.GetOutcome(ctx, execution.ID)
+	if err != nil || readOutcome.Content == nil || readOutcome.Content.Text != "answer" {
+		t.Fatalf("read outcome=%#v err=%v", readOutcome, err)
 	}
 }
 

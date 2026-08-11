@@ -41,6 +41,7 @@ var (
 	bDedupe            = []byte("event_dedupe")
 	bTerminal          = []byte("terminal_events")
 	bIdempotency       = []byte("idempotency")
+	bOutcomes          = []byte("outcomes")
 	keySchema          = []byte("schema_version")
 	keyHost            = []byte("origin_host_id")
 )
@@ -155,7 +156,7 @@ func (j *Journal) Path() string { return j.path }
 
 func (j *Journal) initialize() error {
 	return j.db.Update(func(tx *bbolt.Tx) error {
-		for _, name := range [][]byte{bMetadata, bExecutions, bEvents, bEventsByExecution, bDedupe, bTerminal, bIdempotency} {
+		for _, name := range [][]byte{bMetadata, bExecutions, bEvents, bEventsByExecution, bDedupe, bTerminal, bIdempotency, bOutcomes} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return err
 			}
@@ -396,123 +397,243 @@ func (j *Journal) AppendEvent(ctx context.Context, event model.Event, canonicalP
 	if len(canonicalProjection) == 0 {
 		return model.Event{}, false, errors.New("canonical semantic projection is required")
 	}
-	var projectionValue any
-	if err := json.Unmarshal(canonicalProjection, &projectionValue); err != nil {
-		return model.Event{}, false, fmt.Errorf("canonical semantic projection: %w", err)
-	}
-	if err := model.ValidateBoundedMetadata(projectionValue, 64*1024); err != nil {
-		return model.Event{}, false, fmt.Errorf("canonical semantic projection: %w", err)
-	}
-	expectedKey, normalizedProjection, err := callback.SemanticDedupeKey(event.Adapter, uint32(event.DedupeVersion), projectionValue)
-	if err != nil {
-		return model.Event{}, false, fmt.Errorf("canonical semantic projection: %w", err)
-	}
-	if !bytes.Equal(normalizedProjection, canonicalProjection) {
-		return model.Event{}, false, fmt.Errorf("%w: semantic projection is not canonical JSON", ErrConflict)
-	}
-	if event.DedupeKey != expectedKey {
-		return model.Event{}, false, fmt.Errorf("%w: event dedupe key does not match its semantic projection", ErrConflict)
+	if err := validateEventProjection(event, canonicalProjection); err != nil {
+		return model.Event{}, false, err
 	}
 	var result model.Event
 	var reused bool
-	err = j.db.Update(func(tx *bbolt.Tx) error {
-		if known := tx.Bucket(bDedupe).Get([]byte(event.DedupeKey)); known != nil {
-			var record dedupeRecord
-			if err := json.Unmarshal(known, &record); err != nil {
-				return corrupt(err)
-			}
-			digest := projectionDigest(canonicalProjection)
-			if record.ProjectionDigest != digest {
-				return fmt.Errorf("%w: unequal projections share dedupe key", ErrCorrupt)
-			}
-			raw := tx.Bucket(bEvents).Get([]byte(record.EventID))
-			if raw == nil {
-				return fmt.Errorf("%w: dedupe target missing", ErrCorrupt)
-			}
-			var stored storedEvent
-			if err := json.Unmarshal(raw, &stored); err != nil {
-				return corrupt(err)
-			}
-			if err := stored.Event.Validate(); err != nil {
-				return corrupt(err)
-			}
-			result = stored.Event
-			reused = true
-			return nil
-		}
-		execRaw := tx.Bucket(bExecutions).Get([]byte(event.ExecutionID.String()))
-		if execRaw == nil {
-			return ErrNotFound
-		}
-		var execution model.Execution
-		if err := json.Unmarshal(execRaw, &execution); err != nil {
-			return corrupt(err)
-		}
-		if event.ID.IsZero() {
-			allocated, err := newUniqueEventID(tx, j.generator)
-			if err != nil {
-				return err
-			}
-			event.ID = allocated
-		}
-		if event.OriginHostID.IsZero() {
-			event.OriginHostID = execution.OriginHostID
-		}
-		if event.OriginHostID != execution.OriginHostID || event.Authority != execution.Authority || event.Adapter != execution.Adapter {
-			return fmt.Errorf("%w: event provenance disagrees with execution", ErrConflict)
-		}
-		byExec := tx.Bucket(bEventsByExecution)
-		nested, err := byExec.CreateBucketIfNotExists([]byte(event.ExecutionID.String()))
-		if err != nil {
-			return err
-		}
-		sequence := uint64(nested.Stats().KeyN) + 1
-		if lastKey, _ := nested.Cursor().Last(); lastKey != nil {
-			sequence = binary.BigEndian.Uint64(lastKey) + 1
-		}
-		event.Sequence = sequence
-		event.SchemaVersion = model.SchemaVersion
-		if event.ObservedAt.IsZero() {
-			event.ObservedAt = j.clock().UTC()
-		}
-		if event.Kind == model.EventTerminal && tx.Bucket(bTerminal).Get([]byte(event.ExecutionID.String())) != nil {
-			return ErrTerminalConflict
-		}
-		if err := event.Validate(); err != nil {
-			return fmt.Errorf("event validation: %w", err)
-		}
-		stored := storedEvent{Event: event, Projection: append([]byte(nil), canonicalProjection...)}
-		encoded, err := json.Marshal(stored)
-		if err != nil {
-			return err
-		}
-		if err := tx.Bucket(bEvents).Put([]byte(event.ID.String()), encoded); err != nil {
-			return err
-		}
-		var seqKey [8]byte
-		binary.BigEndian.PutUint64(seqKey[:], sequence)
-		if err := nested.Put(seqKey[:], []byte(event.ID.String())); err != nil {
-			return err
-		}
-		dedupe, err := json.Marshal(dedupeRecord{EventID: event.ID.String(), ProjectionDigest: projectionDigest(canonicalProjection)})
-		if err != nil {
-			return err
-		}
-		if err := tx.Bucket(bDedupe).Put([]byte(event.DedupeKey), dedupe); err != nil {
-			return err
-		}
-		if event.Kind == model.EventTerminal {
-			if err := tx.Bucket(bTerminal).Put([]byte(event.ExecutionID.String()), []byte(event.ID.String())); err != nil {
-				return err
-			}
-		}
-		if err := enqueueMatchingSubscriptionsTx(tx, &event, canonicalProjection, event.ObservedAt, j.generator); err != nil {
-			return fmt.Errorf("subscription fan-out: %w", err)
-		}
-		result = event
-		return nil
+	err := j.db.Update(func(tx *bbolt.Tx) error {
+		var err error
+		result, reused, err = j.appendEventTx(tx, event, canonicalProjection)
+		return err
 	})
 	return result, reused, err
+}
+
+func validateEventProjection(event model.Event, canonicalProjection []byte) error {
+	var projectionValue any
+	if err := json.Unmarshal(canonicalProjection, &projectionValue); err != nil {
+		return fmt.Errorf("canonical semantic projection: %w", err)
+	}
+	if err := model.ValidateBoundedMetadata(projectionValue, 64*1024); err != nil {
+		return fmt.Errorf("canonical semantic projection: %w", err)
+	}
+	expectedKey, normalizedProjection, err := callback.SemanticDedupeKey(event.Adapter, uint32(event.DedupeVersion), projectionValue)
+	if err != nil {
+		return fmt.Errorf("canonical semantic projection: %w", err)
+	}
+	if !bytes.Equal(normalizedProjection, canonicalProjection) {
+		return fmt.Errorf("%w: semantic projection is not canonical JSON", ErrConflict)
+	}
+	if event.DedupeKey != expectedKey {
+		return fmt.Errorf("%w: event dedupe key does not match its semantic projection", ErrConflict)
+	}
+	return nil
+}
+
+func (j *Journal) appendEventTx(tx *bbolt.Tx, event model.Event, canonicalProjection []byte) (model.Event, bool, error) {
+	if known := tx.Bucket(bDedupe).Get([]byte(event.DedupeKey)); known != nil {
+		var record dedupeRecord
+		if err := json.Unmarshal(known, &record); err != nil {
+			return model.Event{}, false, corrupt(err)
+		}
+		digest := projectionDigest(canonicalProjection)
+		if record.ProjectionDigest != digest {
+			return model.Event{}, false, fmt.Errorf("%w: unequal projections share dedupe key", ErrCorrupt)
+		}
+		raw := tx.Bucket(bEvents).Get([]byte(record.EventID))
+		if raw == nil {
+			return model.Event{}, false, fmt.Errorf("%w: dedupe target missing", ErrCorrupt)
+		}
+		var stored storedEvent
+		if err := json.Unmarshal(raw, &stored); err != nil {
+			return model.Event{}, false, corrupt(err)
+		}
+		if err := stored.Event.Validate(); err != nil {
+			return model.Event{}, false, corrupt(err)
+		}
+		return stored.Event, true, nil
+	}
+	execRaw := tx.Bucket(bExecutions).Get([]byte(event.ExecutionID.String()))
+	if execRaw == nil {
+		return model.Event{}, false, ErrNotFound
+	}
+	var execution model.Execution
+	if err := json.Unmarshal(execRaw, &execution); err != nil {
+		return model.Event{}, false, corrupt(err)
+	}
+	if event.ID.IsZero() {
+		allocated, err := newUniqueEventID(tx, j.generator)
+		if err != nil {
+			return model.Event{}, false, err
+		}
+		event.ID = allocated
+	}
+	if event.OriginHostID.IsZero() {
+		event.OriginHostID = execution.OriginHostID
+	}
+	if event.OriginHostID != execution.OriginHostID || event.Authority != execution.Authority || event.Adapter != execution.Adapter {
+		return model.Event{}, false, fmt.Errorf("%w: event provenance disagrees with execution", ErrConflict)
+	}
+	byExec := tx.Bucket(bEventsByExecution)
+	nested, err := byExec.CreateBucketIfNotExists([]byte(event.ExecutionID.String()))
+	if err != nil {
+		return model.Event{}, false, err
+	}
+	sequence := uint64(nested.Stats().KeyN) + 1
+	if lastKey, _ := nested.Cursor().Last(); lastKey != nil {
+		sequence = binary.BigEndian.Uint64(lastKey) + 1
+	}
+	event.Sequence = sequence
+	event.SchemaVersion = model.SchemaVersion
+	if event.ObservedAt.IsZero() {
+		event.ObservedAt = j.clock().UTC()
+	}
+	if event.Kind == model.EventTerminal && tx.Bucket(bTerminal).Get([]byte(event.ExecutionID.String())) != nil {
+		return model.Event{}, false, ErrTerminalConflict
+	}
+	if err := event.Validate(); err != nil {
+		return model.Event{}, false, fmt.Errorf("event validation: %w", err)
+	}
+	stored := storedEvent{Event: event, Projection: append([]byte(nil), canonicalProjection...)}
+	encoded, err := json.Marshal(stored)
+	if err != nil {
+		return model.Event{}, false, err
+	}
+	if err := tx.Bucket(bEvents).Put([]byte(event.ID.String()), encoded); err != nil {
+		return model.Event{}, false, err
+	}
+	var seqKey [8]byte
+	binary.BigEndian.PutUint64(seqKey[:], sequence)
+	if err := nested.Put(seqKey[:], []byte(event.ID.String())); err != nil {
+		return model.Event{}, false, err
+	}
+	dedupe, err := json.Marshal(dedupeRecord{EventID: event.ID.String(), ProjectionDigest: projectionDigest(canonicalProjection)})
+	if err != nil {
+		return model.Event{}, false, err
+	}
+	if err := tx.Bucket(bDedupe).Put([]byte(event.DedupeKey), dedupe); err != nil {
+		return model.Event{}, false, err
+	}
+	if event.Kind == model.EventTerminal {
+		if err := tx.Bucket(bTerminal).Put([]byte(event.ExecutionID.String()), []byte(event.ID.String())); err != nil {
+			return model.Event{}, false, err
+		}
+	}
+	if err := enqueueMatchingSubscriptionsTx(tx, &event, canonicalProjection, event.ObservedAt, j.generator); err != nil {
+		return model.Event{}, false, fmt.Errorf("subscription fan-out: %w", err)
+	}
+	return event, false, nil
+}
+
+// CommitTerminalOutcome atomically records terminal execution state, its
+// bounded outcome, the terminal event, and matching callback deliveries.
+func (j *Journal) CommitTerminalOutcome(ctx context.Context, next model.Execution, expectedRevision uint64, outcome model.Outcome, event model.Event, canonicalProjection []byte) (model.Execution, model.Outcome, model.Event, bool, error) {
+	if j.readOnly {
+		return model.Execution{}, model.Outcome{}, model.Event{}, false, ErrReadOnly
+	}
+	if err := ctx.Err(); err != nil {
+		return model.Execution{}, model.Outcome{}, model.Event{}, false, err
+	}
+	if err := outcome.Validate(); err != nil {
+		return model.Execution{}, model.Outcome{}, model.Event{}, false, fmt.Errorf("outcome validation: %w", err)
+	}
+	if err := validateEventProjection(event, canonicalProjection); err != nil {
+		return model.Execution{}, model.Outcome{}, model.Event{}, false, err
+	}
+	var storedExecution model.Execution
+	var storedOutcome model.Outcome
+	var storedEvent model.Event
+	var reused bool
+	err := j.db.Update(func(tx *bbolt.Tx) error {
+		executions := tx.Bucket(bExecutions)
+		raw := executions.Get([]byte(next.ID.String()))
+		if raw == nil {
+			return ErrNotFound
+		}
+		var previous model.Execution
+		if err := json.Unmarshal(raw, &previous); err != nil {
+			return corrupt(err)
+		}
+		outcomes, err := ensureJournalBucket(tx, bOutcomes)
+		if err != nil {
+			return err
+		}
+		if previous.State.Terminal() {
+			existing := outcomes.Get([]byte(next.ID.String()))
+			if existing == nil {
+				return ErrTerminalConflict
+			}
+			if err := json.Unmarshal(existing, &storedOutcome); err != nil {
+				return corrupt(err)
+			}
+			candidate, _ := json.Marshal(outcome)
+			if !bytes.Equal(existing, candidate) {
+				return ErrTerminalConflict
+			}
+			storedExecution = previous
+			storedEvent, reused, err = j.appendEventTx(tx, event, canonicalProjection)
+			return err
+		}
+		if previous.Revision != expectedRevision {
+			return fmt.Errorf("%w: expected revision %d, current %d", ErrConflict, expectedRevision, previous.Revision)
+		}
+		next.Revision = expectedRevision + 1
+		if err := model.ValidateTransition(previous, next); err != nil {
+			return fmt.Errorf("%w: %v", ErrConflict, err)
+		}
+		outcome.Revision = 1
+		expectedResultRef := fmt.Sprintf("agentctl://%s/%s", next.OriginHostID, next.ID)
+		if outcome.ExecutionID != next.ID || outcome.State != next.State || outcome.Source != next.Adapter || outcome.ResultRef != expectedResultRef {
+			return fmt.Errorf("%w: outcome disagrees with execution", ErrConflict)
+		}
+		if err := outcome.Validate(); err != nil {
+			return fmt.Errorf("outcome validation: %w", err)
+		}
+		encodedExecution, err := json.Marshal(next)
+		if err != nil {
+			return err
+		}
+		encodedOutcome, err := json.Marshal(outcome)
+		if err != nil {
+			return err
+		}
+		if err := executions.Put([]byte(next.ID.String()), encodedExecution); err != nil {
+			return err
+		}
+		if err := outcomes.Put([]byte(next.ID.String()), encodedOutcome); err != nil {
+			return err
+		}
+		storedEvent, reused, err = j.appendEventTx(tx, event, canonicalProjection)
+		if err != nil {
+			return err
+		}
+		storedExecution, storedOutcome = next, outcome
+		return nil
+	})
+	return storedExecution, storedOutcome, storedEvent, reused, err
+}
+
+func (j *Journal) GetOutcome(ctx context.Context, executionID ids.ExecutionID) (model.Outcome, error) {
+	if err := ctx.Err(); err != nil {
+		return model.Outcome{}, err
+	}
+	var outcome model.Outcome
+	err := j.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket(bOutcomes)
+		if bucket == nil {
+			return ErrNotFound
+		}
+		raw := bucket.Get([]byte(executionID.String()))
+		if raw == nil {
+			return ErrNotFound
+		}
+		if err := json.Unmarshal(raw, &outcome); err != nil {
+			return corrupt(err)
+		}
+		return outcome.Validate()
+	})
+	return outcome, err
 }
 
 func (j *Journal) GetEvent(ctx context.Context, id ids.EventID) (model.Event, error) {
