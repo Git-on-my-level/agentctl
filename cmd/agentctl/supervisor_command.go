@@ -133,15 +133,22 @@ func (a *app) supervisorRun(ctx context.Context, renderer output.Renderer, c com
 }
 
 func (a *app) supervisorStatus(ctx context.Context, renderer output.Renderer, args []string) *output.Error {
-	cfg := supervisor.DefaultConfig()
+	socketPath := ""
 	for i := 0; i < len(args); i++ {
 		if args[i] != "--socket" || i+1 >= len(args) {
 			return output.NewError(output.CodeUsage, "usage: agentctl supervisor status [--socket path]", false)
 		}
 		i++
-		cfg.SocketPath = args[i]
+		socketPath = args[i]
 	}
-	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", cfg.SocketPath)
+	if socketPath == "" {
+		var problem *output.Error
+		socketPath, problem = a.defaultSupervisorSocket()
+		if problem != nil {
+			return problem
+		}
+	}
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 	if err != nil {
 		return output.Wrap(output.CodeDependencyUnavailable, "connect supervisor", true, err)
 	}
@@ -161,6 +168,33 @@ func (a *app) supervisorStatus(ctx context.Context, renderer output.Renderer, ar
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil
+}
+
+func (a *app) defaultSupervisorSocket() (string, *output.Error) {
+	stateDir := ""
+	if a.getenv != nil {
+		stateDir = strings.TrimSpace(a.getenv("AGENTCTL_STATE_HOME"))
+		if stateDir == "" {
+			if xdg := strings.TrimSpace(a.getenv("XDG_STATE_HOME")); xdg != "" {
+				stateDir = filepath.Join(xdg, "agentctl")
+			}
+		}
+	}
+	if stateDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", output.Wrap(output.CodeDependencyUnavailable, "resolve supervisor state directory", false, err)
+		}
+		if home == "" {
+			return "", output.NewError(output.CodeDependencyUnavailable, "resolve supervisor state directory", false)
+		}
+		stateDir = filepath.Join(home, ".local", "state", "agentctl")
+	}
+	absolute, err := filepath.Abs(stateDir)
+	if err != nil {
+		return "", output.Wrap(output.CodeInternal, "resolve supervisor state directory", false, err)
+	}
+	return filepath.Join(absolute, "supervisor.sock"), nil
 }
 
 func (a *app) supervisorPlan(renderer output.Renderer, args []string) *output.Error {
