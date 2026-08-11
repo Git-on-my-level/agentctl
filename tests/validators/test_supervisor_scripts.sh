@@ -6,7 +6,7 @@
 set -euo pipefail
 umask 077
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 INSTALL="$ROOT/scripts/install-supervisor.sh"
 UNINSTALL="$ROOT/scripts/uninstall-supervisor.sh"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/agentctl-supervisor-test.XXXXXX")
@@ -70,7 +70,13 @@ case "$1" in
     printf 'path = %s\n' "$HOME/Library/LaunchAgents/io.agentctl.supervisor.plist"
     ;;
   bootout) rm -f "$FAKE_LOADED" ;;
-  bootstrap) : >"$FAKE_LOADED" ;;
+  bootstrap)
+    if [ -n "${FAIL_BOOTSTRAP_ONCE_FILE:-}" ] && [ ! -e "$FAIL_BOOTSTRAP_ONCE_FILE" ]; then
+      : >"$FAIL_BOOTSTRAP_ONCE_FILE"
+      exit 97
+    fi
+    : >"$FAKE_LOADED"
+    ;;
   kickstart) : ;;
   *) exit 2 ;;
 esac
@@ -114,6 +120,11 @@ first_hash=$(shasum -a 256 "$plist" | cut -d ' ' -f 1)
 "$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" >/dev/null
 second_hash=$(shasum -a 256 "$plist" | cut -d ' ' -f 1)
 [ "$first_hash" = "$second_hash" ] || fail 'idempotent install changed plist bytes'
+
+export FAIL_BOOTSTRAP_ONCE_FILE="$TMP/bootstrap-failed-once"
+"$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" >/dev/null
+[ -e "$FAIL_BOOTSTRAP_ONCE_FILE" ] && [ -e "$LOADED" ] || fail 'installer did not recover from a transient launchd bootstrap race'
+unset FAIL_BOOTSTRAP_ONCE_FILE
 
 rm -f "$manifest"
 if "$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" >/dev/null 2>&1; then fail 'installer overwrote unmanaged plist'; fi
