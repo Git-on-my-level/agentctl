@@ -172,11 +172,14 @@ if [ "$BINARY_ONLY" -eq 0 ]; then
   "$source_absolute" bootstrap update --dry-run >/dev/null || die 'bootstrap update preflight failed; refusing to mutate the binary'
 fi
 inspect_supervisor
-# A managed supervisor necessarily points at the currently installed target.
-# Use that matching executable for the ownership/plan dry-run; the source path
-# is intentionally different and would correctly fail the supervisor
-# installer's manifest binding check.
-reconcile_supervisor "$target" --dry-run
+# A managed supervisor normally points at the currently installed target. Use
+# that matching executable for the ownership/plan dry-run; the source path is
+# intentionally different and would correctly fail manifest binding. If the
+# target was deleted, restoring it is the recovery prerequisite, so defer the
+# helper invocation until the replacement exists.
+if [ -x "$target" ]; then
+  reconcile_supervisor "$target" --dry-run
+fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   printf 'would install %s -> %s\n' "$SOURCE" "$target"

@@ -84,6 +84,38 @@ absent_supervisor_prefix="$TMP/absent-supervisor-prefix"
 "$INSTALL" --binary "$SOURCE" --prefix "$absent_supervisor_prefix" --binary-only >/dev/null
 [ ! -e "$HOME/Library/LaunchAgents/io.agentctl.supervisor.agentctl-manifest" ] || fail 'installer created a supervisor when no managed supervisor existed'
 
+recovery_home="$TMP/recovery-home"
+recovery_prefix="$TMP/recovery-prefix"
+recovery_package="$TMP/recovery-package"
+recovery_log="$TMP/recovery-supervisor.log"
+mkdir -p "$recovery_home/Library/LaunchAgents" "$recovery_package"
+cp "$INSTALL" "$recovery_package/install.sh"
+cat >"$recovery_package/install-supervisor.sh" <<'SH'
+#!/bin/bash
+set -euo pipefail
+agentctl_path=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --agentctl) agentctl_path=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -x "$agentctl_path" ]
+printf '%s\n' "$agentctl_path" >>"$RECOVERY_LOG"
+SH
+chmod 0755 "$recovery_package/install.sh" "$recovery_package/install-supervisor.sh"
+cat >"$recovery_home/Library/LaunchAgents/io.agentctl.supervisor.agentctl-manifest" <<EOF
+manifest_version=1
+managed_by=agentctl-supervisor
+label=io.agentctl.supervisor
+agentctl=$recovery_prefix/bin/agentctl
+plist=$recovery_home/Library/LaunchAgents/io.agentctl.supervisor.plist
+state_dir=$recovery_home/state
+EOF
+HOME="$recovery_home" RECOVERY_LOG="$recovery_log" "$recovery_package/install.sh" --binary "$SOURCE" --prefix "$recovery_prefix" >/dev/null
+[ -x "$recovery_prefix/bin/agentctl" ] || fail 'installer did not restore a missing managed supervisor binary'
+[ "$(wc -l <"$recovery_log")" -eq 1 ] || fail 'missing-target recovery did not defer supervisor reconciliation until after install'
+
 printf '\0' >>"$target"
 if "$UNINSTALL" --prefix "$PREFIX" >/dev/null 2>&1; then
   fail 'uninstaller removed a modified managed binary without force'

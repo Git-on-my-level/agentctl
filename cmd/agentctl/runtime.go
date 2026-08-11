@@ -191,7 +191,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 			if err != nil {
 				return mapStoreError("record terminal result", err)
 			}
-			if launchCtx.Err() != nil {
+			if launchCtx.Err() != nil && execution.State != model.StateCompleted {
 				return interruptedRunError(launchCtx.Err(), execution)
 			}
 			return writeExecution(renderer, execution, "run")
@@ -217,6 +217,9 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 			writeJournal.Close()
 			if err != nil {
 				return mapStoreError("record timed out execution", err)
+			}
+			if execution.State == model.StateCompleted {
+				return writeExecution(renderer, execution, "run")
 			}
 			return interruptedRunError(launchCtx.Err(), execution)
 		case <-ticker.C:
