@@ -310,7 +310,7 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 			if probeCtx.Err() != nil {
 				return ProbeResult{}, nativeContextError(probeCtx, "native version probe")
 			}
-			return ProbeResult{}, dependencyError("native version probe failed", cmdErr)
+			return ProbeResult{}, nativeProbeCommandError(out.String(), cmdErr)
 		}
 		backendVersion = firstLine(out.String())
 	}
@@ -331,6 +331,29 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 	}
 	scope := Fingerprint(a.Name(), backendVersion, digest, req.Profile, req.Endpoint, req.Workspace)
 	return ProbeResult{AdapterVersion: a.config.Manifest.AdapterVersion, BackendVersion: backendVersion, Executable: resolved, ExecutableDigest: digest, ScopeFingerprint: scope, ProbedAt: started, FreshFor: time.Minute, ReadOnly: true, Capabilities: capabilities}, nil
+}
+
+func nativeProbeCommandError(output string, cause error) error {
+	lower := strings.ToLower(output)
+	if strings.Contains(lower, "login keychain is locked") {
+		return &AdapterError{
+			Code:      ErrAuthenticationRequired,
+			Message:   "native version probe requires an unlocked macOS login keychain",
+			Retryable: true,
+			Details: map[string]any{
+				"attention_kind":  "authentication",
+				"diagnostic_code": "macos_login_keychain_locked",
+				"remediation":     "unlock the login keychain in an interactive macOS user session, then retry",
+			},
+			Cause: cause,
+		}
+	}
+	details := map[string]any{"diagnostic_code": "native_version_probe_failed"}
+	var exitErr *exec.ExitError
+	if errors.As(cause, &exitErr) && exitErr.ProcessState != nil {
+		details["native_exit_code"] = exitErr.ProcessState.ExitCode()
+	}
+	return &AdapterError{Code: ErrDependencyUnavailable, Message: "native version probe failed", Retryable: true, Details: details, Cause: cause}
 }
 
 func resolveExecutable(name string) (string, error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,6 +61,21 @@ func TestCursorFailureUsesStructuredErrorEvenWithZeroExit(t *testing.T) {
 	}
 	if got.Result.Error != "approval denied" {
 		t.Fatalf("error = %q", got.Result.Error)
+	}
+}
+
+func TestCursorProbeClassifiesLockedMacOSKeychain(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s\n' 'Error: Your macOS login keychain is locked.' >&2; exit 1`)
+	_, err := NewCursor().Probe(context.Background(), ProbeRequest{Executable: path})
+	var adapterErr *AdapterError
+	if !errors.As(err, &adapterErr) {
+		t.Fatalf("probe error=%v, want AdapterError", err)
+	}
+	if adapterErr.Code != ErrAuthenticationRequired || adapterErr.Details["diagnostic_code"] != "macos_login_keychain_locked" || adapterErr.Details["attention_kind"] != "authentication" {
+		t.Fatalf("unexpected keychain classification: %#v", adapterErr)
+	}
+	if strings.Contains(fmt.Sprint(adapterErr.Details), "login keychain is locked") {
+		t.Fatalf("raw native output leaked into details: %#v", adapterErr.Details)
 	}
 }
 
