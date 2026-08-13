@@ -170,6 +170,26 @@ func TestRunDefaultsInferAdapterAndBoundExecution(t *testing.T) {
 	}
 }
 
+func TestCursorPlanModeFailsClosedBeforeProbeOrJournal(t *testing.T) {
+	for _, native := range [][]string{{"cursor-agent", "--print", "--plan", "review"}, {"cursor-agent", "--mode", "plan", "review"}, {"cursor-agent", "--mode=plan", "review"}} {
+		journal := filepath.Join(t.TempDir(), "journal.db")
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		args := append([]string{"--journal", journal, "run", "--"}, native...)
+		if code := a.run(context.Background(), args); code != output.ExitCodeFor(output.CodeCapabilityUnavailable) || !strings.Contains(stdout.String(), `"diagnostic_code":"cursor_plan_result_unreliable"`) {
+			t.Fatalf("plan mode exit=%d output=%s", code, stdout.String())
+		}
+		if _, err := os.Stat(journal); !os.IsNotExist(err) {
+			t.Fatalf("rejected plan mode created journal: %v", err)
+		}
+	}
+
+	opts, problem := parseRun([]string{"--allow-unreliable-result", "--", "cursor-agent", "--plan", "review"})
+	if problem != nil || !opts.allowUnreliableResult {
+		t.Fatalf("explicit override was not parsed: opts=%#v problem=%v", opts, problem)
+	}
+}
+
 func TestRunTimeoutTerminalizesExecution(t *testing.T) {
 	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
 	var stdout, stderr bytes.Buffer
@@ -818,6 +838,18 @@ func TestCursorRunStoresAssistantFallbackAndDrainsFinalEvents(t *testing.T) {
 	stdout.Reset()
 	if code := a.run(context.Background(), []string{"--journal", journalPath, "result", runDoc.Result.ID.String()}); code != 0 || !strings.Contains(stdout.String(), `"text":"fallback answer"`) {
 		t.Fatalf("fallback result exit=%d output=%s", code, stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "result", runDoc.Result.ID.String(), "--require-result-source", "assistant", "--min-result-bytes", "15"}); code != 0 || !strings.Contains(stdout.String(), `"source":"assistant_message_fallback"`) {
+		t.Fatalf("result guarantees exit=%d output=%s", code, stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "result", runDoc.Result.ID.String(), "--min-result-bytes", "100"}); code != output.ExitCodeFor(output.CodeInvalidState) || !strings.Contains(stdout.String(), `"actual_bytes":15`) {
+		t.Fatalf("minimum result assertion exit=%d output=%s", code, stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "result", runDoc.Result.ID.String(), "--require-result-source", "terminal_result"}); code != output.ExitCodeFor(output.CodeInvalidState) || !strings.Contains(stdout.String(), `"actual_source":"assistant_message_fallback"`) {
+		t.Fatalf("result source assertion exit=%d output=%s", code, stdout.String())
 	}
 	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
 	if err != nil {

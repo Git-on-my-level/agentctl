@@ -29,6 +29,7 @@ const (
 
 type OutcomeContent struct {
 	MediaType string `json:"media_type"`
+	Source    string `json:"source,omitempty"`
 	Text      string `json:"text"`
 	Preview   string `json:"preview"`
 	Bytes     int    `json:"bytes"`
@@ -83,6 +84,9 @@ func (o Outcome) Validate() error {
 	if o.Content != nil {
 		if o.Content.MediaType != "text/plain" || !utf8.ValidString(o.Content.Text) || !utf8.ValidString(o.Content.Preview) {
 			return errors.New("outcome content must be UTF-8 text/plain")
+		}
+		if len(o.Content.Source) > 128 {
+			return errors.New("outcome content source is too long")
 		}
 		if len(o.Content.Text) > OutcomeInlineLimit || len(o.Content.Preview) > OutcomePreviewLimit || o.Content.Bytes < len(o.Content.Text) {
 			return errors.New("outcome content bounds are invalid")

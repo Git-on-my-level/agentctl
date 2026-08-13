@@ -144,6 +144,18 @@ handles but cannot claim the child model read them.
   authentication-required with an actionable diagnostic, without copying raw
   native stderr into the error envelope.
 - Preserve workspace trust and approval-mode semantics visibly.
+- Treat omitted `--mode` as Cursor's normal Agent behavior and `--mode ask` as
+  read-only Q&A. Reject `--plan` and `--mode plan` by default because Cursor can
+  emit an intermediate assistant message followed by a successful terminal
+  envelope without a completed plan body; the explicit
+  `--allow-unreliable-result` escape hatch records caller acceptance.
+- Emit metadata-only progress phases (`initializing`, `assistant`, `tool`, and
+  `completing`) without tool output or reasoning.
+- Preserve a bounded, redacted stderr diagnostic in explicit failed outcomes
+  when no structured error is available; events and callbacks remain
+  metadata-only.
+- Label stored content provenance (`terminal_result` or
+  `assistant_message_fallback`) so callers can assert an assistant source.
 - Retain Cursor session ID for attach/resume.
 
 ### Claude Code

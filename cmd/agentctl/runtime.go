@@ -28,6 +28,7 @@ type runOptions struct {
 	plan                                     bool
 	noStoreResult                            bool
 	allowMissingResult                       bool
+	allowUnreliableResult                    bool
 	timeout                                  time.Duration
 	argv                                     []string
 }
@@ -47,6 +48,13 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	runtime, profileName, problem := a.runtimeAdapter(c, opts.adapter, opts.issue, opts.run)
 	if problem != nil {
 		return problem
+	}
+	if runtime.Name() == "cursor" && cursorPlanMode(opts.argv) && !opts.allowUnreliableResult {
+		return output.NewError(output.CodeCapabilityUnavailable, "Cursor plan mode does not provide reliable one-shot terminal result semantics", false).
+			WithDetail("adapter", "cursor").
+			WithDetail("mode", "plan").
+			WithDetail("diagnostic_code", "cursor_plan_result_unreliable").
+			WithActions(output.NextAction{Label: "Use default Cursor agent mode", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"omit Cursor --plan and --mode plan"}})
 	}
 	operationCtx := ctx
 	var operationCancel context.CancelFunc
@@ -423,6 +431,8 @@ func parseRun(args []string) (runOptions, *output.Error) {
 			o.noStoreResult = true
 		case "--allow-missing-result":
 			o.allowMissingResult = true
+		case "--allow-unreliable-result":
+			o.allowUnreliableResult = true
 		case "--issue":
 			if i+1 >= delimiter {
 				return o, output.NewError(output.CodeUsage, "--issue requires a value", false)
@@ -444,6 +454,20 @@ func parseRun(args []string) (runOptions, *output.Error) {
 		o.adapter = inferAdapter(o.argv[0])
 	}
 	return o, nil
+}
+
+func cursorPlanMode(argv []string) bool {
+	for i := 1; i < len(argv); i++ {
+		switch argv[i] {
+		case "--plan", "--mode=plan":
+			return true
+		case "--mode":
+			if i+1 < len(argv) && strings.EqualFold(argv[i+1], "plan") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func inferAdapter(executable string) string {
@@ -788,7 +812,8 @@ func buildOutcome(execution model.Execution, result adapter.Result, now time.Tim
 		if content != "" {
 			bounded, truncated := boundedOutcomeText(content, model.OutcomeInlineLimit)
 			preview, _ := boundedOutcomeText(bounded, model.OutcomePreviewLimit)
-			item := &model.OutcomeContent{MediaType: "text/plain", Text: bounded, Preview: preview, Bytes: len(content), Truncated: truncated || result.ContentTruncated}
+			contentSource, _ := result.Data["result_content_source"].(string)
+			item := &model.OutcomeContent{MediaType: "text/plain", Source: strings.TrimSpace(contentSource), Text: bounded, Preview: preview, Bytes: len(content), Truncated: truncated || result.ContentTruncated}
 			if !item.Truncated {
 				digest := sha256.Sum256([]byte(content))
 				item.SHA256 = "sha256:" + hex.EncodeToString(digest[:])
@@ -927,7 +952,7 @@ func appendNativeEvent(ctx context.Context, journal *store.Journal, execution mo
 }
 func safeNativePayload(input map[string]any) map[string]any {
 	output := map[string]any{}
-	for _, key := range []string{"family", "type", "is_error", "status", "state", "subtype", "usage", "artifact_ref", "attention_kind", "diagnostic_code"} {
+	for _, key := range []string{"family", "type", "is_error", "status", "state", "subtype", "usage", "artifact_ref", "attention_kind", "diagnostic_code", "progress_phase"} {
 		if value, ok := input[key]; ok {
 			output[key] = value
 		}

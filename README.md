@@ -89,6 +89,7 @@ Launch a native CLI by placing its exact argv after `--`:
 ```bash
 agentctl run -- codex exec --json "review the current change"
 agentctl run -- cursor-agent --print --output-format stream-json --trust "scope this bug"
+agentctl run -- cursor-agent --print --output-format stream-json --mode ask --trust "explain this code"
 agentctl run -- claude --output-format stream-json "review this patch"
 ```
 
@@ -97,6 +98,12 @@ ambiguous executable or a deliberate override. `run` waits for a terminal
 result, uses a 30-minute timeout, and requires result-content support by
 default. The native CLI's arguments, permissions, and provider authentication
 remain unchanged.
+
+For Cursor, omitting `--mode` selects its normal Agent behavior; `--mode ask`
+is the read-only Q&A path. Cursor plan mode is rejected by default because its
+one-shot terminal result is not yet reliable. `--allow-unreliable-result` is an
+explicit escape hatch. Workspace trust remains visible in native argv; an
+operator can authorize agents to pass `--trust` through advisory config.
 
 For live observation, allocate the execution ID and subscription before launch:
 
@@ -116,6 +123,8 @@ agentctl result "$EXEC_ID"
 
 `status`, events, subscriptions, and callbacks contain metadata and references,
 not the final answer. `result` is the explicit content-retrieval path.
+Callers can require provenance or a task-specific minimum size with
+`result --require-result-source assistant --min-result-bytes N`.
 
 ## Data-storage disclosure
 

@@ -20,6 +20,7 @@
       "required": ["media_type", "text", "preview", "bytes", "truncated"],
       "properties": {
         "media_type": {"const": "text/plain"},
+        "source": {"type": "string", "maxLength": 128},
         "text": {"type": "string", "maxLength": 1048576},
         "preview": {"type": "string", "maxLength": 512},
         "bytes": {"type": "integer", "minimum": 0},
