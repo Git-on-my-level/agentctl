@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"go.etcd.io/bbolt"
@@ -369,6 +370,17 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time) (CleanupPlan, []
 			}
 			for _, id := range value.Filter.ExecutionIDs {
 				protect(id, "active_subscription")
+			}
+			authority := strings.ToLower(strings.TrimSpace(value.Filter.Authority))
+			if authority == "direct" {
+				authority = string(model.AuthorityNative)
+			}
+			if authority != "" && len(value.Filter.ExecutionIDs) == 0 {
+				for id, execution := range executions {
+					if string(execution.Authority) == authority {
+						protect(id, "active_subscription")
+					}
+				}
 			}
 			protect(value.CoordinatorExecutionID, "active_subscription")
 			if value.Cursor.EventID != "" {

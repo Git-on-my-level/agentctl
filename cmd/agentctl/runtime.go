@@ -173,6 +173,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 				return openProblem
 			}
 			if terminal {
+				reapNativeChild(runtime, launch.Session.Ref)
 				return writeExecution(renderer, execution, "run")
 			}
 		}
@@ -186,6 +187,20 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 			var waitProblem *output.Error
 			execution, waited, waitErr, waitProblem := a.waitForNativeExitWithLease(launchCtx, c, runtime, launch.Session.Ref, execution)
 			if waitProblem != nil {
+				writeJournal, current, openProblem := a.openExecutionWrite(context.Background(), c, execution.ID)
+				if openProblem == nil && !current.State.Terminal() {
+					result := waited
+					if !terminalAdapterState(result.State) {
+						result = adapter.Result{Success: false, State: adapter.StateFailed, Error: waitProblem.Message, SessionRef: launch.Session.Ref}
+					}
+					execution, err = finalizeResultConverging(context.Background(), writeJournal, current, result, a.now().UTC(), opts.noStoreResult)
+					writeJournal.Close()
+					if err != nil {
+						return mapStoreError("record wait abort outcome", err)
+					}
+				} else if writeJournal != nil {
+					writeJournal.Close()
+				}
 				return waitProblem
 			}
 			if waitErr == nil {
@@ -203,6 +218,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 					return openProblem
 				}
 				if terminal {
+					reapNativeChild(runtime, launch.Session.Ref)
 					return writeExecution(renderer, execution, "run")
 				}
 			}
@@ -243,6 +259,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 					return openProblem
 				}
 				if terminal {
+					reapNativeChild(runtime, launch.Session.Ref)
 					return writeExecution(renderer, execution, "run")
 				}
 			}
@@ -330,12 +347,16 @@ func (a *app) waitForNativeExitWithLease(ctx context.Context, c common, runtime 
 		case <-heartbeat.C:
 			journal, current, problem := a.openExecutionWrite(context.Background(), c, execution.ID)
 			if problem != nil {
-				return execution, adapter.Result{}, nil, problem
+				cancel()
+				outcome := <-done
+				return execution, outcome.result, outcome.err, problem
 			}
 			refreshed, err := refreshRunnerLease(journal, current, a.now().UTC())
 			journal.Close()
 			if err != nil {
-				return execution, adapter.Result{}, nil, mapStoreError("refresh native runner lease while waiting for exit", err)
+				cancel()
+				outcome := <-done
+				return execution, outcome.result, outcome.err, mapStoreError("refresh native runner lease while waiting for exit", err)
 			}
 			execution = refreshed
 		}
@@ -621,13 +642,19 @@ func (a *app) runtimeAdapter(c common, name, issue, run string) (adapter.Adapter
 func (a *app) resolveProfile(c common) (string, config.Profile, *output.Error) {
 	resolution, err := configResolution(c)
 	if err != nil {
-		return "", config.Profile{}, output.Wrap(output.CodeNotFound, "load profile config", false, err)
+		return "", config.Profile{}, mapConfigError("load profile config", err)
 	}
 	name, profile, err := resolution.Config.ResolveProfile(c.profile)
 	if err != nil {
-		return "", config.Profile{}, output.Wrap(output.CodeNotFound, "resolve profile", false, err)
+		return "", config.Profile{}, mapConfigError("resolve profile", err)
 	}
 	return name, profile, nil
+}
+
+func reapNativeChild(runtime adapter.Adapter, ref adapter.SourceRef) {
+	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, _ = runtime.Wait(waitCtx, ref)
 }
 func (a *app) openWrite(c common) (*store.Journal, *output.Error) {
 	path, err := a.journalPath(c)

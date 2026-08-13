@@ -581,14 +581,14 @@ func (a *NativeAdapter) Wait(ctx context.Context, ref SourceRef) (Result, error)
 	if record == nil {
 		return Result{}, &AdapterError{Code: ErrNotFound, Message: "native session is not known to this adapter"}
 	}
-	if _, err := a.waitRecord(ctx, record, true); err != nil {
+	result, err := a.waitRecord(ctx, record, true)
+	if result != nil {
+		return *result, err
+	}
+	if err != nil {
 		return Result{}, err
 	}
-	result := a.currentResult(record)
-	if result == nil {
-		return Result{}, &AdapterError{Code: ErrExecutionUnknown, Message: "native process ended without a result", Retryable: true}
-	}
-	return *result, nil
+	return Result{}, &AdapterError{Code: ErrExecutionUnknown, Message: "native process ended without a result", Retryable: true}
 }
 
 func (a *NativeAdapter) waitRecord(ctx context.Context, record *processRecord, killOnCancel bool) (*Result, error) {
