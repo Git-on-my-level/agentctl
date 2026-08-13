@@ -63,6 +63,23 @@ func TestCursorFailureUsesStructuredErrorEvenWithZeroExit(t *testing.T) {
 	}
 }
 
+func TestCursorReducerFallsBackToLastAssistantMessageForEmptySuccessResult(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"first answer"}]}}' '{"type":"tool_call","message":{"role":"assistant","content":[{"type":"text","text":"tool secret"}]}}' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"final answer"}]}}' '{"type":"result","subtype":"success","is_error":false}'`)
+	got, err := NewCursor().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || !got.Result.Success || got.Result.State != StateCompleted || got.Result.Content != "final answer" {
+		t.Fatalf("unexpected Cursor fallback result: %#v", got.Result)
+	}
+	if got.Result.Data["diagnostic_code"] != "empty_terminal_result" || got.Result.Data["result_content_source"] != "assistant_message_fallback" {
+		t.Fatalf("missing Cursor fallback diagnostics: %#v", got.Result.Data)
+	}
+	if strings.Contains(got.Result.Content, "tool secret") {
+		t.Fatalf("tool content leaked into Cursor fallback: %#v", got.Result)
+	}
+}
+
 func TestCodexReducerCarriesLastAgentMessageIntoTerminalResult(t *testing.T) {
 	path := fixtureExecutable(t, `printf '%s\n' '{"type":"thread.started","thread_id":"thread-fixture"}' '{"type":"item.completed","item":{"id":"item-1","type":"agent_message","text":"first"}}' '{"type":"item.completed","item":{"id":"item-2","type":"agent_message","text":"final answer"}}' '{"type":"turn.completed"}'`)
 	got, err := NewCodex().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})

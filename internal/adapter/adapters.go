@@ -345,7 +345,7 @@ func codexManifest() Manifest {
 
 func cursorManifest() Manifest {
 	return baseManifest("cursor", "0.1.0", "cursor_session", "cursor-stream-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContentDecl(CapabilitySupported, "result"), capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContentDecl(CapabilitySupported, "result_or_assistant_message"), capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 }
 

@@ -767,6 +767,55 @@ func TestNativeRunRenewsLeaseWhileReapingAfterEarlyResult(t *testing.T) {
 	}
 }
 
+func TestCursorRunStoresAssistantFallbackAndDrainsFinalEvents(t *testing.T) {
+	root := t.TempDir()
+	journalPath := filepath.Join(root, "state", "journal.db")
+	script := filepath.Join(root, "cursor-empty-result")
+	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"cursor-fallback\"}' '{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"fallback answer\"}]}}' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}'\n"
+	if err := os.WriteFile(script, []byte(contents), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "run", "--adapter", "cursor", "--", script}); code != 0 {
+		t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var runDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &runDoc); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "result", runDoc.Result.ID.String()}); code != 0 || !strings.Contains(stdout.String(), `"text":"fallback answer"`) {
+		t.Fatalf("fallback result exit=%d output=%s", code, stdout.String())
+	}
+	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.ListEvents(context.Background(), runDoc.Result.ID, contracts.EventQuery{})
+	journal.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawAssistant, sawTerminal bool
+	for _, event := range events {
+		if event.SourceState != nil && *event.SourceState == "assistant" {
+			sawAssistant = true
+		}
+		if event.Kind == model.EventTerminal {
+			sawTerminal = true
+			if event.Payload["diagnostic_code"] != "empty_terminal_result" || event.Payload["result_content_source"] != "assistant_message_fallback" {
+				t.Fatalf("terminal event has wrong fallback metadata: %#v", event.Payload)
+			}
+		}
+	}
+	if !sawAssistant || !sawTerminal {
+		t.Fatalf("missing assistant or terminal event: %#v", events)
+	}
+}
+
 func TestIncompleteMutationReturnsStableUsageError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)

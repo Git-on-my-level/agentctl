@@ -135,6 +135,11 @@ handles but cannot claim the child model read them.
 
 - Consume `stream-json`.
 - Use `result.is_error`, not process exit code alone.
+- Prefer terminal `result` content, but retain the last bounded assistant text
+  as a fallback when a successful terminal envelope has no result body. Tool,
+  reasoning, and user content are never eligible fallback sources.
+- Report `empty_terminal_result` and `assistant_message_fallback` as
+  metadata-only diagnostics when that fallback is required.
 - Preserve workspace trust and approval-mode semantics visibly.
 - Retain Cursor session ID for attach/resume.
 

@@ -28,7 +28,48 @@ type cursorParser struct{}
 
 func (cursorParser) Name() string { return "cursor-stream-json" }
 func (cursorParser) Parse(line []byte, stderr bool) parsedObservation {
-	return parseAgentJSON(line, stderr, "cursor", []string{"session_id"}, []string{"result"})
+	obs := parseAgentJSON(line, stderr, "cursor", []string{"session_id"}, []string{"result"})
+	value, ok := decodeLine(line)
+	if !ok {
+		return obs
+	}
+	if obs.Terminal && obs.Success && strings.TrimSpace(obs.Content) == "" {
+		obs.Data["diagnostic_code"] = "empty_terminal_result"
+	}
+	if strings.EqualFold(firstString(value, "type"), "assistant") {
+		message, ok := value["message"].(map[string]any)
+		if !ok || !strings.EqualFold(firstString(message, "role"), "assistant") {
+			return obs
+		}
+		content := cursorAssistantText(message["content"])
+		if content != "" {
+			obs.Content = boundedUTF8(content, 1<<20)
+			obs.ContentType = "text/plain"
+			obs.ContentTruncated = len(content) > len(obs.Content)
+		}
+	}
+	return obs
+}
+
+func cursorAssistantText(value any) string {
+	switch content := value.(type) {
+	case string:
+		return strings.TrimSpace(content)
+	case []any:
+		parts := make([]string, 0, len(content))
+		for _, item := range content {
+			part, ok := item.(map[string]any)
+			if !ok || !strings.EqualFold(firstString(part, "type"), "text") {
+				continue
+			}
+			if text := strings.TrimSpace(firstString(part, "text")); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
 }
 
 type claudeParser struct{}

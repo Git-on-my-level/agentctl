@@ -168,7 +168,11 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 	if obs.Terminal {
 		content := firstNonEmpty(obs.Content, p.finalContent)
 		contentType := firstNonEmpty(obs.ContentType, p.contentType)
-		result := &Result{Success: obs.Success, State: obs.State, Summary: obs.Summary, Content: content, ContentType: contentType, ContentTruncated: obs.ContentTruncated || p.contentTruncated, Error: obs.Error, SessionRef: p.ref, Data: cloneMap(obs.Data)}
+		data := cloneMap(obs.Data)
+		if data["diagnostic_code"] == "empty_terminal_result" && content != "" {
+			data["result_content_source"] = "assistant_message_fallback"
+		}
+		result := &Result{Success: obs.Success, State: obs.State, Summary: firstNonEmpty(obs.Summary, boundedString(content, 2048)), Content: content, ContentType: contentType, ContentTruncated: obs.ContentTruncated || p.contentTruncated, Error: obs.Error, SessionRef: p.ref, Data: data}
 		p.result = result
 	}
 	p.updatedAt = time.Now().UTC()

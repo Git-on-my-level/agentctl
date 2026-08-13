@@ -167,49 +167,14 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		}
 		nativeEvents, eventErr := runtime.Events(launchCtx, adapter.EventsRequest{Ref: launch.Session.Ref, Cursor: cursor})
 		if eventErr == nil && len(nativeEvents) != 0 {
-			writeJournal, current, openProblem = a.openExecutionWrite(context.Background(), c, execution.ID)
+			var terminal bool
+			execution, terminal, openProblem = a.recordNativeEvents(c, execution, nativeEvents, &cursor)
 			if openProblem != nil {
 				return openProblem
 			}
-			execution = current
-			for _, nativeEvent := range nativeEvents {
-				if nativeEvent.Cursor != "" {
-					cursor = nativeEvent.Cursor
-				}
-				if nativeEvent.Kind == "terminal" {
-					continue
-				}
-				updated, appendErr := appendNativeEvent(context.Background(), writeJournal, execution, nativeEvent)
-				if errors.Is(appendErr, store.ErrConflict) {
-					latest, reloadErr := writeJournal.GetExecution(context.Background(), execution.ID)
-					if reloadErr != nil {
-						writeJournal.Close()
-						return mapStoreError("reload execution after native event conflict", reloadErr)
-					}
-					if latest.State.Terminal() {
-						writeJournal.Close()
-						return writeExecution(renderer, latest, "run")
-					}
-					execution = latest
-					updated, appendErr = appendNativeEvent(context.Background(), writeJournal, execution, nativeEvent)
-				}
-				if errors.Is(appendErr, store.ErrTerminalConflict) {
-					latest, reloadErr := writeJournal.GetExecution(context.Background(), execution.ID)
-					writeJournal.Close()
-					if reloadErr != nil {
-						return mapStoreError("reload terminal execution", reloadErr)
-					}
-					return writeExecution(renderer, latest, "run")
-				}
-				if appendErr != nil {
-					writeJournal.Close()
-					return mapStoreError("record native event", appendErr)
-				}
-				if appendErr == nil {
-					execution = updated
-				}
+			if terminal {
+				return writeExecution(renderer, execution, "run")
 			}
-			writeJournal.Close()
 		}
 		result, resultErr := runtime.Result(launchCtx, adapter.ResultRequest{Ref: launch.Session.Ref})
 		if resultErr == nil && terminalAdapterState(result.State) {
@@ -227,6 +192,19 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 				result = waited
 			} else if !errors.Is(waitErr, context.Canceled) && !errors.Is(waitErr, context.DeadlineExceeded) {
 				return mapAdapterError("wait for native process exit", waitErr).WithDetail("execution_id", execution.ID.String())
+			}
+			// Drain records that arrived between the last poll and terminal
+			// result observation. The normalized terminal event remains owned by
+			// CommitTerminalOutcome below, so native terminal records are skipped.
+			if pending, pendingErr := runtime.Events(context.Background(), adapter.EventsRequest{Ref: launch.Session.Ref, Cursor: cursor}); pendingErr == nil && len(pending) != 0 {
+				var terminal bool
+				execution, terminal, openProblem = a.recordNativeEvents(c, execution, pending, &cursor)
+				if openProblem != nil {
+					return openProblem
+				}
+				if terminal {
+					return writeExecution(renderer, execution, "run")
+				}
 			}
 			writeJournal, current, openProblem = a.openExecutionWrite(context.Background(), c, execution.ID)
 			if openProblem != nil {
@@ -255,6 +233,19 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 					last = adapter.Result{Success: false, State: adapter.StateFailed, Error: "agentctl run deadline elapsed", SessionRef: launch.Session.Ref}
 				}
 			}
+			// Cancellation or a deadline can race with the final structured
+			// records. Preserve any assistant/diagnostic events already parsed
+			// before committing the normalized terminal outcome.
+			if pending, pendingErr := runtime.Events(context.Background(), adapter.EventsRequest{Ref: launch.Session.Ref, Cursor: cursor}); pendingErr == nil && len(pending) != 0 {
+				var terminal bool
+				execution, terminal, openProblem = a.recordNativeEvents(c, execution, pending, &cursor)
+				if openProblem != nil {
+					return openProblem
+				}
+				if terminal {
+					return writeExecution(renderer, execution, "run")
+				}
+			}
 			writeJournal, current, openProblem := a.openExecutionWrite(context.Background(), c, execution.ID)
 			if openProblem != nil {
 				return openProblem
@@ -271,6 +262,50 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		case <-ticker.C:
 		}
 	}
+}
+
+func (a *app) recordNativeEvents(c common, execution model.Execution, nativeEvents []adapter.Event, cursor *string) (model.Execution, bool, *output.Error) {
+	journal, current, problem := a.openExecutionWrite(context.Background(), c, execution.ID)
+	if problem != nil {
+		return execution, false, problem
+	}
+	defer journal.Close()
+	execution = current
+	if execution.State.Terminal() {
+		return execution, true, nil
+	}
+	for _, nativeEvent := range nativeEvents {
+		if nativeEvent.Cursor != "" {
+			*cursor = nativeEvent.Cursor
+		}
+		if nativeEvent.Kind == "terminal" {
+			continue
+		}
+		updated, appendErr := appendNativeEvent(context.Background(), journal, execution, nativeEvent)
+		if errors.Is(appendErr, store.ErrConflict) {
+			latest, reloadErr := journal.GetExecution(context.Background(), execution.ID)
+			if reloadErr != nil {
+				return execution, false, mapStoreError("reload execution after native event conflict", reloadErr)
+			}
+			if latest.State.Terminal() {
+				return latest, true, nil
+			}
+			execution = latest
+			updated, appendErr = appendNativeEvent(context.Background(), journal, execution, nativeEvent)
+		}
+		if errors.Is(appendErr, store.ErrTerminalConflict) {
+			latest, reloadErr := journal.GetExecution(context.Background(), execution.ID)
+			if reloadErr != nil {
+				return execution, false, mapStoreError("reload terminal execution", reloadErr)
+			}
+			return latest, true, nil
+		}
+		if appendErr != nil {
+			return execution, false, mapStoreError("record native event", appendErr)
+		}
+		execution = updated
+	}
+	return execution, false, nil
 }
 
 type nativeWaitOutcome struct {
@@ -715,6 +750,11 @@ func finalizeResult(ctx context.Context, journal *store.Journal, execution model
 	}
 	if outcome.Failure != nil {
 		payload["failure_code"] = outcome.Failure.Code
+	}
+	for _, key := range []string{"diagnostic_code", "result_content_source"} {
+		if value, ok := result.Data[key].(string); ok && strings.TrimSpace(value) != "" {
+			payload[key] = value
+		}
 	}
 	event, canonical, err := syntheticEvent(execution, model.EventTerminal, execution.State, payload, "result", now)
 	if err != nil {
