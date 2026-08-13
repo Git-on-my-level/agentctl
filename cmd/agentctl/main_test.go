@@ -284,7 +284,8 @@ func TestNativeAttentionUpdatesExecutionAndStopsAwait(t *testing.T) {
 	root := t.TempDir()
 	journalPath := filepath.Join(root, "state", "journal.db")
 	script := filepath.Join(root, "attention-agent")
-	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"session.started\",\"session_id\":\"attention-fixture\"}' '{\"type\":\"permission.required\",\"message\":\"must-not-persist\"}'\nsleep 2\nprintf '%s\\n' '{\"type\":\"result\",\"status\":\"completed\",\"result\":\"done\"}'\n"
+	blocker := filepath.Join(root, "attention-blocker")
+	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"session.started\",\"session_id\":\"attention-fixture\"}' '{\"type\":\"permission.required\",\"message\":\"must-not-persist\"}'\nmkfifo \"$1\"\nexec cat \"$1\"\n"
 	if err := os.WriteFile(script, []byte(contents), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -302,10 +303,10 @@ func TestNativeAttentionUpdatesExecutionAndStopsAwait(t *testing.T) {
 	defer cancel()
 	done := make(chan int, 1)
 	go func() {
-		done <- runner.run(runCtx, []string{"--output", "json", "--journal", journalPath, "run", "--adapter", "generic-process", "--execution-id", executionID.String(), "--", script})
+		done <- runner.run(runCtx, []string{"--output", "json", "--journal", journalPath, "run", "--adapter", "generic-process", "--execution-id", executionID.String(), "--", script, blocker})
 	}()
 
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		journal, openErr := store.Open(journalPath, store.Options{ReadOnly: true})
 		if openErr == nil {
