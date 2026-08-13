@@ -49,6 +49,16 @@ func TestGenericLaunchDiscoversSessionAndStructuredSuccess(t *testing.T) {
 	}
 }
 
+func TestProcessEventsCursorUsesNativeIntBounds(t *testing.T) {
+	record := &processRecord{events: []Event{{Sequence: 1}, {Sequence: 2}}}
+	if got := record.eventsAfter("1"); len(got) != 1 || got[0].Sequence != 2 {
+		t.Fatalf("cursor 1 returned %#v", got)
+	}
+	if got := record.eventsAfter("9223372036854775808"); len(got) != 2 {
+		t.Fatalf("out-of-range cursor should be ignored, got %#v", got)
+	}
+}
+
 func TestCursorFailureUsesStructuredErrorEvenWithZeroExit(t *testing.T) {
 	path := fixtureExecutable(t, `printf '%s\n' '{"type":"system","subtype":"init","session_id":"cursor-fixture"}' '{"type":"result","is_error":true,"error":"approval denied"}'`)
 	a := NewCursor()
