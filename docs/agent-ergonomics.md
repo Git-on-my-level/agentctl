@@ -307,6 +307,12 @@ These defaults do not weaken authority boundaries: permission flags such as
 Cursor `--trust`, remote promotion, supervisor service creation, and cleanup
 remain visible mutations that require explicit caller intent.
 
+An operator may record advisory authorization for Cursor workspace trust in a
+profile. Agents consult `config doctor` and pass `--trust` explicitly when that
+authorization exists; agentctl never inserts it. For Cursor automation, normal
+Agent mode is the omitted-mode default, Ask is the supported read-only mode,
+and Plan fails closed unless unreliable-result acceptance is explicit.
+
 ## Progress hygiene
 
 Default output is quiet (both JSON and the explicit text projection):

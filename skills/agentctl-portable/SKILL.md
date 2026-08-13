@@ -49,6 +49,7 @@ Pass native argv exactly after `--`; agentctl does not shell-reparse it:
 ```bash
 agentctl run -- codex exec --json "<bounded objective>"
 agentctl run -- cursor-agent --print --output-format stream-json --trust "<bounded objective>"
+agentctl run -- cursor-agent --print --output-format stream-json --mode ask --trust "<bounded read-only question>"
 agentctl run -- omp -p --mode json "<bounded objective>"
 ```
 
@@ -66,10 +67,20 @@ at-least-once, so deduplicate by the full event key. A receipt proves delivery,
 not successful work. A managed supervisor is required only for cross-restart
 delivery and must not be silently installed as a new service.
 
-Permission-granting native flags remain explicit. In particular, never add
-Cursor `--trust`, force/yolo, sandbox changes, or MCP approval on the caller's
-behalf. `run --no-store-result` is also an explicit acceptance that delegation
-may have no retrievable answer.
+Permission-granting native flags remain explicit in argv. Consult
+`agentctl config doctor` for advisory operator preferences: pass Cursor
+`--trust` when that exact authorization is present, otherwise preserve the
+native trust prompt. Never infer authorization for force/yolo, sandbox changes,
+or MCP approval. For Cursor, omit `--mode` for normal Agent work, use
+`--mode ask` for bounded read-only Q&A, and avoid `--plan`/`--mode plan` because
+Cursor's one-shot plan completion is not reliably represented; agentctl rejects
+it unless `--allow-unreliable-result` is explicit. `run --no-store-result` is
+also an explicit acceptance that delegation may have no retrievable answer.
+
+For automation that needs stronger answer guarantees, inspect
+`agentctl help result` and use `--require-result-source assistant` and/or
+`--min-result-bytes`. These are caller-selected assertions, not universal
+quality heuristics.
 
 ## Promotion and shared context
 

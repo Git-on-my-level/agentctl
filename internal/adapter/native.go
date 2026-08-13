@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +23,11 @@ import (
 const (
 	defaultOutputLimit         = 2 << 20
 	nativeObservationFreshness = 15 * time.Second
+)
+
+var (
+	secretAssignmentPattern = regexp.MustCompile(`(?i)\b(api[_-]?key|authorization|bearer|password|secret|token)(\s*[:=]?\s+|\s*=\s*)\S+`)
+	urlCredentialPattern    = regexp.MustCompile(`(?i)(https?://)[^/@\s]+@`)
 )
 
 type parsedObservation struct {
@@ -42,6 +48,7 @@ type parsedObservation struct {
 	Summary          string
 	Content          string
 	ContentType      string
+	ContentSource    string
 	ContentTruncated bool
 	Error            string
 	OccurredAt       *time.Time
@@ -53,6 +60,13 @@ type parsedPage struct {
 	Observations []parsedObservation
 	NextCursor   string
 	Scanned      int
+}
+
+func safeFailureDiagnostic(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	value = secretAssignmentPattern.ReplaceAllString(value, "$1 [REDACTED]")
+	value = urlCredentialPattern.ReplaceAllString(value, "$1[REDACTED]@")
+	return boundedString(value, 1024)
 }
 
 type outputParser interface {
@@ -76,7 +90,10 @@ type processRecord struct {
 	result           *Result
 	finalContent     string
 	contentType      string
+	contentSource    string
 	contentTruncated bool
+	lastError        string
+	stderrDiagnostic string
 	parseWarnings    []string
 	stdoutBytes      int
 	stderrBytes      int
@@ -110,6 +127,11 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 	}
 	p.mu.Unlock()
 	obs := p.parser.Parse(line, stderr)
+	if stderr {
+		p.mu.Lock()
+		p.stderrDiagnostic = safeFailureDiagnostic(string(line))
+		p.mu.Unlock()
+	}
 	if obs.Page != nil {
 		p.mu.Lock()
 		p.page = obs.Page
@@ -135,7 +157,11 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 	if obs.Content != "" {
 		p.finalContent = obs.Content
 		p.contentType = firstNonEmpty(obs.ContentType, "text/plain")
+		p.contentSource = firstNonEmpty(obs.ContentSource, "terminal_result")
 		p.contentTruncated = obs.ContentTruncated
+	}
+	if obs.Error != "" {
+		p.lastError = obs.Error
 	}
 	if obs.Kind != "" || obs.State != "" || obs.SourceState != "" || obs.Error != "" {
 		p.observations = append(p.observations, obs)
@@ -168,9 +194,13 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 	if obs.Terminal {
 		content := firstNonEmpty(obs.Content, p.finalContent)
 		contentType := firstNonEmpty(obs.ContentType, p.contentType)
+		contentSource := firstNonEmpty(obs.ContentSource, p.contentSource)
 		data := cloneMap(obs.Data)
 		if data["diagnostic_code"] == "empty_terminal_result" && content != "" {
 			data["result_content_source"] = "assistant_message_fallback"
+			contentSource = "assistant"
+		} else if content != "" {
+			data["result_content_source"] = firstNonEmpty(contentSource, "terminal_result")
 		}
 		result := &Result{Success: obs.Success, State: obs.State, Summary: firstNonEmpty(obs.Summary, boundedString(content, 2048)), Content: content, ContentType: contentType, ContentTruncated: obs.ContentTruncated || p.contentTruncated, Error: obs.Error, SessionRef: p.ref, Data: data}
 		p.result = result
@@ -197,7 +227,12 @@ func (p *processRecord) finish(err error) {
 		if data, readErr := os.ReadFile(p.resultPath); readErr == nil && len(data) <= p.maxOutput {
 			obs := p.parser.Parse(bytes.TrimSpace(data), false)
 			if obs.Terminal {
-				p.result = &Result{Success: obs.Success, State: obs.State, Summary: obs.Summary, Content: firstNonEmpty(obs.Content, p.finalContent), ContentType: firstNonEmpty(obs.ContentType, p.contentType), ContentTruncated: obs.ContentTruncated || p.contentTruncated, Error: obs.Error, ExitCode: p.exitCode, SessionRef: p.ref, Data: cloneMap(obs.Data)}
+				content := firstNonEmpty(obs.Content, p.finalContent)
+				data := cloneMap(obs.Data)
+				if content != "" {
+					data["result_content_source"] = firstNonEmpty(obs.ContentSource, p.contentSource, "terminal_result")
+				}
+				p.result = &Result{Success: obs.Success, State: obs.State, Summary: obs.Summary, Content: content, ContentType: firstNonEmpty(obs.ContentType, p.contentType), ContentTruncated: obs.ContentTruncated || p.contentTruncated, Error: obs.Error, ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
 			}
 		} else if readErr != nil && !os.IsNotExist(readErr) {
 			p.parseWarnings = append(p.parseWarnings, "result file could not be read")
@@ -207,11 +242,11 @@ func (p *processRecord) finish(err error) {
 		if p.cancelled {
 			p.result = &Result{Success: false, State: StateCancelled, Error: "native process cancelled", ExitCode: p.exitCode, SessionRef: p.ref}
 		} else if p.exitCode != nil && *p.exitCode != 0 {
-			p.result = &Result{Success: false, State: StateFailed, Error: "native process exited unsuccessfully", ExitCode: p.exitCode, SessionRef: p.ref}
+			p.result = &Result{Success: false, State: StateFailed, Error: firstNonEmpty(p.lastError, p.stderrDiagnostic, "native process exited unsuccessfully"), ExitCode: p.exitCode, SessionRef: p.ref}
 		} else {
 			// A zero exit code does not establish domain success. Native adapters
 			// require an explicit terminal result in their structured stream.
-			p.result = &Result{Success: false, State: StateFailed, Error: "native process exited without an explicit result", ExitCode: p.exitCode, SessionRef: p.ref}
+			p.result = &Result{Success: false, State: StateFailed, Error: firstNonEmpty(p.lastError, p.stderrDiagnostic, "native process exited without an explicit result"), ExitCode: p.exitCode, SessionRef: p.ref}
 		}
 	}
 	p.updatedAt = time.Now().UTC()

@@ -40,9 +40,9 @@ func helpTopics() map[string]commandHelp {
 			Examples: [][]string{{"agentctl", "capabilities", "codex"}, {"agentctl", "capabilities", "cursor", "--require", "launch,result_content"}}, Related: []string{"doctor", "run"},
 		},
 		"run": {
-			Name: "run", Summary: "Launch an exact native argv and persist its normalized execution and final result.", Usage: "agentctl run [--execution-id exec-...] [--adapter name] [--timeout duration|--no-timeout] [flags] -- <native argv>",
-			SideEffectClass: output.ExternalSideEffect, Defaults: []string{"adapter inferred from known executable names", "execution ID generated unless preallocated", "30 minute timeout", "launch and result_content preflight", "bounded final result storage"},
-			Examples: [][]string{{"agentctl", "run", "--", "codex", "exec", "--json", "review this change"}, {"agentctl", "run", "--", "cursor-agent", "--print", "--output-format", "stream-json", "--trust", "review this change"}}, Related: []string{"capabilities", "await", "result", "subscribe"},
+			Name: "run", Summary: "Launch an exact native argv and persist its normalized execution and final result.", Usage: "agentctl run [--execution-id exec-...] [--adapter name] [--timeout duration|--no-timeout] [--allow-unreliable-result] [flags] -- <native argv>",
+			SideEffectClass: output.ExternalSideEffect, Defaults: []string{"adapter inferred from known executable names", "execution ID generated unless preallocated", "30 minute timeout", "launch and result_content preflight", "bounded final result storage", "Cursor plan mode rejected because its one-shot completion is unreliable"},
+			Examples: [][]string{{"agentctl", "run", "--", "codex", "exec", "--json", "review this change"}, {"agentctl", "run", "--", "cursor-agent", "--print", "--output-format", "stream-json", "--trust", "review this change"}, {"agentctl", "run", "--", "cursor-agent", "--print", "--output-format", "stream-json", "--mode", "ask", "--trust", "explain this code"}}, Related: []string{"capabilities", "await", "result", "subscribe"},
 		},
 		"await": {
 			Name: "await", Summary: "Wait for terminal state or attention without polling native session files.", Usage: "agentctl await <execution-id> [--timeout duration] [--ignore-attention]",
@@ -50,9 +50,9 @@ func helpTopics() map[string]commandHelp {
 			Examples: [][]string{{"agentctl", "await", "exec-..."}}, Related: []string{"status", "events", "result"},
 		},
 		"result": {
-			Name: "result", Summary: "Dereference the bounded final result for a terminal execution.", Usage: "agentctl result <execution-id> [--summary] [--allow-empty]",
+			Name: "result", Summary: "Dereference and optionally assert guarantees on a bounded terminal result.", Usage: "agentctl result <execution-id> [--summary] [--allow-empty] [--require-result-source source] [--min-result-bytes n]",
 			SideEffectClass: output.ReadOnly, Defaults: []string{"stored content or a structured failure is required", "integrity conflicts fail closed"},
-			Examples: [][]string{{"agentctl", "result", "exec-..."}, {"agentctl", "result", "exec-...", "--summary"}}, Related: []string{"run", "await", "events"},
+			Examples: [][]string{{"agentctl", "result", "exec-..."}, {"agentctl", "result", "exec-...", "--require-result-source", "assistant", "--min-result-bytes", "200"}}, Related: []string{"run", "await", "events"},
 		},
 		"subscribe": {
 			Name: "subscribe", Summary: "Create durable at-least-once callback delivery for execution events.", Usage: "agentctl subscribe create --execution ID --destination file|webhook --target target [--authority direct|multica] [--kind kind] [--ttl duration] [--keep-after-terminal] | list | show ID | cancel ID",

@@ -18,6 +18,7 @@ func (codexParser) Parse(line []byte, stderr bool) parsedObservation {
 		if item, ok := value["item"].(map[string]any); ok && firstString(item, "type") == "agent_message" {
 			obs.Content = boundedUTF8(firstString(item, "text"), 1<<20)
 			obs.ContentType = "text/plain"
+			obs.ContentSource = "assistant"
 			obs.ContentTruncated = len(firstString(item, "text")) > len(obs.Content)
 		}
 	}
@@ -36,7 +37,18 @@ func (cursorParser) Parse(line []byte, stderr bool) parsedObservation {
 	if obs.Terminal && obs.Success && strings.TrimSpace(obs.Content) == "" {
 		obs.Data["diagnostic_code"] = "empty_terminal_result"
 	}
-	if strings.EqualFold(firstString(value, "type"), "assistant") {
+	typ := strings.ToLower(firstString(value, "type"))
+	switch typ {
+	case "system":
+		obs.Data["progress_phase"] = "initializing"
+	case "assistant":
+		obs.Data["progress_phase"] = "assistant"
+	case "tool_call", "tool_result", "tool":
+		obs.Data["progress_phase"] = "tool"
+	case "result":
+		obs.Data["progress_phase"] = "completing"
+	}
+	if typ == "assistant" {
 		message, ok := value["message"].(map[string]any)
 		if !ok || !strings.EqualFold(firstString(message, "role"), "assistant") {
 			return obs
@@ -45,6 +57,7 @@ func (cursorParser) Parse(line []byte, stderr bool) parsedObservation {
 		if content != "" {
 			obs.Content = boundedUTF8(content, 1<<20)
 			obs.ContentType = "text/plain"
+			obs.ContentSource = "assistant"
 			obs.ContentTruncated = len(content) > len(obs.Content)
 		}
 	}
@@ -222,12 +235,14 @@ func parseAgentJSON(line []byte, stderr bool, family string, sessionKeys, termin
 			obs.Summary = boundedString(result, 2048)
 			obs.Content = boundedUTF8(result, 1<<20)
 			obs.ContentType = "text/plain"
+			obs.ContentSource = "terminal_result"
 			obs.ContentTruncated = len(result) > len(obs.Content)
 		case map[string]any:
 			if s := firstString(result, "summary", "message", "text"); s != "" {
 				obs.Summary = boundedString(s, 2048)
 				obs.Content = boundedUTF8(s, 1<<20)
 				obs.ContentType = "text/plain"
+				obs.ContentSource = "terminal_result"
 				obs.ContentTruncated = len(s) > len(obs.Content)
 			}
 		}

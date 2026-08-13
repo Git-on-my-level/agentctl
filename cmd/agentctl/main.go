@@ -338,19 +338,40 @@ func (a *app) status(ctx context.Context, renderer output.Renderer, c common, ar
 }
 func (a *app) result(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) < 1 {
-		return output.NewError(output.CodeUsage, "usage: agentctl result <execution-id> [--summary] [--allow-empty]", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl result <execution-id> [--summary] [--allow-empty] [--require-result-source source] [--min-result-bytes n]", false)
 	}
 	summary, requireContent := false, true
-	for _, arg := range args[1:] {
-		switch arg {
+	requireSource := ""
+	minResultBytes := 0
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
 		case "--summary":
 			summary = true
 		case "--require-content":
 			requireContent = true
 		case "--allow-empty":
 			requireContent = false
+		case "--require-result-source":
+			if i+1 >= len(args) {
+				return output.NewError(output.CodeUsage, "--require-result-source requires a value", false)
+			}
+			i++
+			requireSource = strings.TrimSpace(args[i])
+			if requireSource == "" {
+				return output.NewError(output.CodeUsage, "--require-result-source cannot be empty", false)
+			}
+		case "--min-result-bytes":
+			if i+1 >= len(args) {
+				return output.NewError(output.CodeUsage, "--min-result-bytes requires a value", false)
+			}
+			i++
+			value, err := strconv.Atoi(args[i])
+			if err != nil || value < 0 {
+				return output.NewError(output.CodeUsage, "--min-result-bytes must be a non-negative integer", false)
+			}
+			minResultBytes = value
 		default:
-			return output.NewError(output.CodeUsage, "unknown result flag", false).WithDetail("flag", arg)
+			return output.NewError(output.CodeUsage, "unknown result flag", false).WithDetail("flag", args[i])
 		}
 	}
 	id, problem := parseExecutionRef(args[0], c)
@@ -385,6 +406,22 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 	if requireContent && outcome.Content == nil && outcome.Failure == nil {
 		return output.NewError(output.CodeNotFound, "execution has no stored result content", false).WithDetail("execution_id", id.String()).WithDetail("availability", outcome.Availability)
 	}
+	if requireSource != "" {
+		if outcome.Content == nil || !resultSourceSatisfies(outcome.Content.Source, requireSource) {
+			actual := ""
+			if outcome.Content != nil {
+				actual = outcome.Content.Source
+			}
+			return output.NewError(output.CodeInvalidState, "result content source does not satisfy requirement", false).WithDetail("execution_id", id.String()).WithDetail("required_source", requireSource).WithDetail("actual_source", actual)
+		}
+	}
+	if minResultBytes > 0 && (outcome.Content == nil || outcome.Content.Bytes < minResultBytes) {
+		actual := 0
+		if outcome.Content != nil {
+			actual = outcome.Content.Bytes
+		}
+		return output.NewError(output.CodeInvalidState, "result content is shorter than required", false).WithDetail("execution_id", id.String()).WithDetail("minimum_bytes", minResultBytes).WithDetail("actual_bytes", actual)
+	}
 	if summary && outcome.Content != nil {
 		copy := *outcome.Content
 		if copy.Text != copy.Preview {
@@ -395,6 +432,15 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 		outcome.Content = &copy
 	}
 	return writeExecutionOutcome(renderer, execution, outcome)
+}
+
+func resultSourceSatisfies(actual, required string) bool {
+	actual = strings.ToLower(strings.TrimSpace(actual))
+	required = strings.ToLower(strings.TrimSpace(required))
+	if actual == required {
+		return true
+	}
+	return required == "assistant" && actual == "assistant_message_fallback"
 }
 
 func (a *app) events(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {

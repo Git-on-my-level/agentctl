@@ -74,6 +74,20 @@ func TestCursorFailureUsesStructuredErrorEvenWithZeroExit(t *testing.T) {
 	}
 }
 
+func TestCursorFailureRetainsBoundedRedactedStderrDiagnostic(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s\n' 'Model grok-4.6 is temporarily unavailable: workspace trust required token=top-secret' >&2; exit 17`)
+	got, err := NewCursor().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || got.Result.State != StateFailed || !strings.Contains(got.Result.Error, "Model grok-4.6 is temporarily unavailable") {
+		t.Fatalf("stderr diagnostic not retained: %#v", got.Result)
+	}
+	if strings.Contains(got.Result.Error, "top-secret") {
+		t.Fatalf("secret-like assignment was not redacted: %#v", got.Result)
+	}
+}
+
 func TestCursorProbeClassifiesLockedMacOSKeychain(t *testing.T) {
 	path := fixtureExecutable(t, `printf '%s\n' 'Error: Your macOS login keychain is locked.' >&2; exit 1`)
 	_, err := NewCursor().Probe(context.Background(), ProbeRequest{Executable: path})
@@ -103,6 +117,35 @@ func TestCursorReducerFallsBackToLastAssistantMessageForEmptySuccessResult(t *te
 	}
 	if strings.Contains(got.Result.Content, "tool secret") {
 		t.Fatalf("tool content leaked into Cursor fallback: %#v", got.Result)
+	}
+}
+
+func TestCursorTerminalResultCarriesContentProvenance(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s\n' '{"type":"result","result":"direct answer","is_error":false}'`)
+	got, err := NewCursor().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || got.Result.Content != "direct answer" || got.Result.Data["result_content_source"] != "terminal_result" {
+		t.Fatalf("terminal result provenance=%#v", got.Result)
+	}
+}
+
+func TestCursorProgressPhasesAreMetadataOnly(t *testing.T) {
+	parser := cursorParser{}
+	for input, want := range map[string]string{
+		`{"type":"system","subtype":"init"}`: "initializing",
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]}}`: "assistant",
+		`{"type":"tool_call","tool":"shell","output":"secret"}`:                                           "tool",
+		`{"type":"result","result":"done"}`:                                                               "completing",
+	} {
+		obs := parser.Parse([]byte(input), false)
+		if obs.Data["progress_phase"] != want {
+			t.Fatalf("input %s phase=%v want=%s", input, obs.Data["progress_phase"], want)
+		}
+		if _, ok := obs.Data["output"]; ok {
+			t.Fatalf("tool output leaked into progress metadata: %#v", obs.Data)
+		}
 	}
 }
 
