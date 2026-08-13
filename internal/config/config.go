@@ -6,6 +6,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -31,8 +32,7 @@ type Profile struct {
 }
 
 type Adapter struct {
-	Executable string   `json:"executable,omitempty"`
-	Arguments  []string `json:"arguments,omitempty"`
+	Executable string `json:"executable,omitempty"`
 }
 
 // Multica deliberately carries the exact profile, workspace, and link origin.
@@ -133,8 +133,20 @@ func (m Multica) Validate() error {
 		if parsed.RawQuery != "" || parsed.Fragment != "" {
 			return fmt.Errorf("%s must not contain a query or fragment", field)
 		}
+		if parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopbackHost(parsed.Hostname())) {
+			return fmt.Errorf("%s must use https (http is allowed only for loopback)", field)
+		}
 	}
 	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (c Config) ResolveProfile(name string) (string, Profile, error) {

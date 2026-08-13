@@ -142,15 +142,11 @@ func (a *app) promoteCommand(ctx context.Context, renderer output.Renderer, c co
 	if source.Authority != model.AuthorityNative {
 		return output.NewError(output.CodeInvalidState, "only direct native executions can be promoted", false)
 	}
-	cfgPath, err := configPath(c)
-	if err != nil {
-		return output.Wrap(output.CodeInternal, "resolve config path", false, err)
-	}
-	cfg, err := config.Load(cfgPath)
+	resolution, err := configResolution(c)
 	if err != nil {
 		return mapConfigError("read promotion config", err)
 	}
-	profileName, profile, err := cfg.ResolveProfile(c.profile)
+	profileName, profile, err := resolution.Config.ResolveProfile(c.profile)
 	if err != nil {
 		return mapConfigError("resolve promotion profile", err)
 	}

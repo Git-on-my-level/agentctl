@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -303,7 +304,7 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 		cmdErr := cmd.Run()
 		if cmdErr != nil {
 			if probeCtx.Err() != nil {
-				return ProbeResult{}, &AdapterError{Code: ErrTimeout, Message: "native version probe timed out", Retryable: true, Cause: probeCtx.Err()}
+				return ProbeResult{}, nativeContextError(probeCtx, "native version probe")
 			}
 			return ProbeResult{}, dependencyError("native version probe failed", cmdErr)
 		}
@@ -411,6 +412,12 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		return LaunchResult{}, dependencyError("cannot capture native stderr", err)
 	}
 	if err := cmd.Start(); err != nil {
+		// exec.CommandContext reports a context error from Start when the
+		// caller is cancelled before the child is accepted. That is an
+		// interruption, not an unavailable executable or other dependency.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return LaunchResult{}, nativeContextError(runCtx, "native process launch")
+		}
 		return LaunchResult{}, dependencyError("native process failed to start", err)
 	}
 	started = true
@@ -462,6 +469,14 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		}
 	}
 	return LaunchResult{Session: a.session(record), Result: a.currentResult(record)}, nil
+}
+
+func nativeContextError(ctx context.Context, operation string) *AdapterError {
+	err := ctx.Err()
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &AdapterError{Code: ErrTimeout, Message: operation + " timed out", Retryable: true, Cause: err}
+	}
+	return &AdapterError{Code: ErrExecutionCancelled, Message: operation + " cancelled", Retryable: false, Cause: err}
 }
 
 func (a *NativeAdapter) readPipe(record *processRecord, r io.Reader, stderr bool) {

@@ -220,11 +220,14 @@ and independently observable.
 
 ## Retention
 
-Initial policy proposals are 14 days for terminal envelopes/events and 30 days
-for delivery receipts/dead letters. Nonterminal records remain until terminal
-or explicitly abandoned. Artifact content is never copied by default.
+Automatic retention is not implemented in the preview. Result bodies are
+stored by default up to 1 MiB per execution and remain in the owner-only local
+journal until an explicit digest-bound `agentctl data cleanup` operation.
+Artifact content is not copied by default.
 
 Alias bindings, source fingerprints, promotion receipts, and supersession links
-must outlive every retained reference to them. Cleanup plans exact records,
-bytes, broken references, and rebuildability before mutation. Retention remains
-a measured roadmap decision, not a compatibility guarantee.
+must outlive every reference to them. Cleanup plans exact execution graphs,
+record categories, logical bytes, and protected references, then rejects apply
+if the reviewed plan digest changes. Promotion-linked executions remain
+protected in the preview. Retention remains an operator decision, not a
+compatibility guarantee.

@@ -1,95 +1,82 @@
 # agentctl
 
-`agentctl` is a portable, agent-oriented supervision, event, callback, and
-context layer for work executed by native agent CLIs or coordinated by Multica.
+`agentctl` is a local, agent-oriented control layer for native coding-agent
+CLIs. It launches an existing CLI, records normalized lifecycle metadata,
+delivers bounded events and callbacks, and stores a retrievable final result.
+The native CLI keeps ownership of model selection, authentication, permissions,
+and session behavior.
 
-It deliberately does not replace Codex, Claude Code, Cursor, OMP, Multica,
-`tailnetctl`, or host management such as `macctl`:
+The standalone path needs no control-plane service, private network, fleet
+manager, or private configuration repository. Optional integrations add durable
+coordination and operator-specific topology without changing the core execution
+contract.
 
-- GPT work stays native to Codex;
-- Cursor models stay native to Cursor;
-- Claude stays native to Claude Code;
-- open-weight models such as GLM stay native to OMP;
-- Multica owns durable issues, runs, assignment, and review;
-- `agentctl` owns normalized observation, subscriptions, callbacks, and compiled
-  context handles.
+> **Public preview:** agentctl is pre-1.0. Command, JSON, configuration, and
+> journal formats may evolve with documented migrations. Review the
+> [known constraints](docs/implementation-audit.md#intentional-preview-constraints)
+> before relying on it for unattended or durable work.
 
-## Current implementation
+## What it does
 
-The v0.1 implementation includes:
+- launches Codex, Cursor, Claude Code, OMP, or a structured generic process;
+- returns JSON by default and exposes progressive `agentctl help <topic>`
+  discovery;
+- allocates typed, checksum-validated word IDs and portable result references;
+- persists normalized state and bounded final results in an owner-only local
+  journal;
+- supports pre-launch subscriptions and at-least-once file, Unix-socket,
+  command, and signed-webhook delivery;
+- installs one allowlisted portable skill into detected supported harnesses;
+- optionally validates, compiles, and renders context from independently owned
+  Git knowledge sources; and
+- optionally promotes direct work into a configured Multica authority.
 
-- typed, checksum-validated six-word IDs and portable URIs;
-- a hardened owner-only bbolt journal with CAS revisions, semantic event
-  deduplication, subscriptions, delivery outbox, receipts, retries, and dead
-  letters;
-- direct execution adapters for Codex, Cursor, Claude Code, OMP, and generic
-  structured processes;
-- explicit, idempotent promotion of a direct execution to one Multica issue;
-- normative `json` output by default, with an explicit compact `text` escape;
-- deterministic knowledge validation, explicit Git sync, loose/structured/
-  hybrid compilation, bundle verification/install, lexical selection, and
-  bounded context rendering;
-- owner-only file and Unix callbacks, explicit command callbacks, and signed
-  webhook delivery with SSRF and DNS-rebinding protections;
-- an optional restart-capable local supervisor plus launchd/systemd install
-  plans; updates reconcile an already-managed supervisor but never create a
-  new service implicitly;
-- allowlisted portable skill distribution for Hermes, Codex, Claude, Cursor,
-  OMP, and Multica;
-- a companion Multica fork change adding durable workspace events and
-  authority-owned issue-create idempotency keys.
-
-The CLI is usable now, but v0.1 retains explicit boundaries: native sessions
-are generally observable only by the process that launched them; remote host
-attach/discovery is not implemented; creating a new supervisor service remains
-an explicit plan-derived host operation; and Tailnet publishing of compiled
-bundles remains an external deployment step.
-See [Implementation status](docs/implementation-audit.md).
+It is not a model gateway, transcript database, issue tracker, credential
+manager, or replacement for the agent CLI being supervised.
 
 ## Quick start
 
-Build and discover the live contract. JSON is the default so agents can consume
-one stable document; add `--output text` only for a compact human projection:
+Requirements: a supported platform, the Go version declared in `go.mod` or
+newer, and at least one native agent CLI. Building and the read-only discovery
+commands do not require private configuration.
 
 ```bash
+git clone https://github.com/Git-on-my-level/agentctl.git
+cd agentctl
 make ci
 go build -o build/agentctl ./cmd/agentctl
+
 build/agentctl help
-build/agentctl help run
 build/agentctl doctor
-build/agentctl capabilities codex --require launch,result_content --executable /path/to/codex
-build/agentctl capabilities codex --static --full
-build/agentctl bootstrap status
+build/agentctl capabilities codex --require launch,result_content
 ```
 
-The portable skill resolves `agentctl` deterministically from `AGENTCTL_BIN`,
-`PATH`, then `$HOME/.local/bin/agentctl`; it does not assume an interactive
-shell. `doctor` answers whether detected agents can launch, be observed, and
-return a result. `bootstrap status` reports the exact binary resolution plus
-missing, duplicate, noncanonical, or drifted skill registrations across the
-harnesses present on a machine. Use `agentctl help <topic>` for just-in-time
-syntax and typed `next_actions` instead of relying on a copied runbook.
+`doctor` reports detected adapters, journal readiness, optional configuration,
+portable-skill state, and supervisor state. Use `--output text` when a compact
+human projection is preferable to the default JSON.
 
-Wrap a native argv without reparsing anything after `--`. Adapter names are
-inferred from known executable names; retain `--adapter` when an executable is
-ambiguous or when an explicit override is part of the authority contract:
+Launch a native CLI by placing its exact argv after `--`:
 
 ```bash
-agentctl run -- codex exec --json -m gpt-5.6-sol "review this change"
+agentctl run -- codex exec --json "review the current change"
 agentctl run -- cursor-agent --print --output-format stream-json --trust "scope this bug"
-agentctl run -- omp "investigate the service"
+agentctl run -- claude --output-format stream-json "review this patch"
 ```
 
-For synchronous work, `run` returns the terminal `exec-*` envelope. For live
-observation, preallocate the ID, create any subscriptions, and then start the
-foreground runner from the parent agent's native process manager:
+Known executable names select their built-in adapter. Use `--adapter` for an
+ambiguous executable or a deliberate override. `run` waits for a terminal
+result, uses a 30-minute timeout, and requires result-content support by
+default. The native CLI's arguments, permissions, and provider authentication
+remain unchanged.
+
+For live observation, allocate the execution ID and subscription before launch:
 
 ```bash
 EXEC_ID=$(agentctl id generate exec --output text | cut -d' ' -f1)
 agentctl subscribe create \
   --execution "$EXEC_ID" \
   --destination file \
-  --target /absolute/path/events.ndjson
+  --target "$PWD/agentctl-events.ndjson"
 agentctl run --execution-id "$EXEC_ID" -- codex exec --json "review this change"
 
 agentctl status "$EXEC_ID"
@@ -98,127 +85,143 @@ agentctl await "$EXEC_ID"
 agentctl result "$EXEC_ID"
 ```
 
-The runner opens the journal only for bounded transactions, so a separate
-supervisor can deliver callbacks while work is active. A short-lived runner
-lease prevents that supervisor from misclassifying a process-owned session as
-unreachable; after a crash the lease expires and ordinary recovery resumes.
-Native cross-process cancel remains unavailable unless that adapter advertises
-a reviewed durable cancel mechanism; agentctl never guesses from a PID.
-The final normalized answer is stored with the execution and addressed by its
-portable `agentctl://host-.../exec-...` result reference; callers never need to
-search native rollout files. `result` requires stored content by default;
-`result --allow-empty` is the explicit metadata-only escape. Status, events,
-and callbacks remain metadata-only.
+`status`, events, subscriptions, and callbacks contain metadata and references,
+not the final answer. `result` is the explicit content-retrieval path.
 
-`await` uses a bounded ten-minute timeout and stops on actionable attention by
-default. Use `--timeout` for a different bound or `--ignore-attention` when a
-caller intentionally wants to continue waiting. `run` applies a thirty-minute
-bound and preflights both `launch` and `result_content`; use `--no-timeout`,
-`--allow-missing-result`, or `--no-store-result` only when the surrounding
-authority explicitly permits those weaker semantics.
+## Data-storage disclosure
 
-Configure an exact Multica authority and promote only when durable lifecycle
-tracking is worth the review overhead:
+By default, agentctl stores the final UTF-8 result body in its local journal,
+bounded to **1 MiB per execution**. This makes delegated output retrievable
+without scraping a native harness's session files. `--no-store-result` records
+an omission tombstone instead; `result --allow-empty` permits a metadata-only
+read.
+
+**Automatic journal retention is not implemented in this preview.** Inspect
+owner-only local usage with `agentctl data inventory`. Cleanup is operator
+initiated: `agentctl data cleanup --before <RFC3339> --plan` reports exact
+eligible graphs, protected references, logical bytes, and a plan digest. Apply
+requires that digest with `--apply --plan-digest ...` and rejects a changed
+plan. Promotion-linked executions remain conservatively protected. Do not run
+agentctl with sensitive prompts or results unless this local persistence is
+acceptable. See [State, security, privacy, and retention](docs/state-security-and-privacy.md).
+
+## Configuration
+
+Configuration is optional for the standalone native-agent path. When used, it
+is a versioned, owner-only JSON document with named profiles. It records exact
+native executable expectations for `doctor` and an optional
+runtime-effective Multica authority; it does not contain credentials or alter
+the exact argv supplied to `run --`.
+
+The default path is `$XDG_CONFIG_HOME/agentctl/config.json`, falling back to
+`~/.config/agentctl/config.json`. `AGENTCTL_CONFIG` or the global `--config`
+flag selects an explicit path.
 
 ```bash
 agentctl config set-profile \
-  --name fleet --default \
-  --multica-executable /absolute/path/to/multica \
-  --multica-profile desktop-multica-01 \
-  --workspace-id <workspace-id> \
-  --server-url https://multica-01.example \
-  --app-url https://multica-01.example
+  --name local \
+  --default \
+  --adapter codex=/absolute/path/to/codex \
+  --adapter cursor=/absolute/path/to/cursor-agent
 
-agentctl promote exec-purple-monkey-dragon-river-candle-meadow \
-  --title "Implement the durable change" \
-  --handoff-file handoff.md \
-  --plan
+agentctl config validate
+agentctl config doctor
+agentctl --profile local doctor
 ```
 
-Remove `--plan` to create or recover the one authority-owned issue. Repeating
-the same promotion returns the same Multica issue and the same stored agentctl
-execution alias. Changing its semantics conflicts instead of silently creating
-a second lifecycle. The Multica description receives bounded handoff content on
-stdin plus content digests for the installed portable skill, selected context,
-and handoff. Local file paths, prompts, and transcripts are not sent.
+Operator-specific executable and optional authority profiles can live in a
+separately reviewed repository as a narrow config bundle. It is never
+discovered, fetched, installed, or applied implicitly:
+
+```bash
+agentctl --config-bundle /absolute/path/to/config-bundle.json \
+  config bundle validate
+agentctl --config-bundle /absolute/path/to/config-bundle.json \
+  config bundle plan
+agentctl --config-bundle /absolute/path/to/config-bundle.json \
+  --profile coordinated doctor
+```
+
+The bundle composes additively for that invocation. It cannot replace a
+different user profile/default, provide adapter arguments, configure callbacks
+or install roots, or contain secrets. The plan reports its SHA-256 provenance
+and does not mutate local config. See [Configuration](docs/configuration.md).
 
 ## Portable skill reconciliation
 
-`agentctl bootstrap update` is the normal idempotent path. It detects supported
-harnesses, deduplicates shared roots, and installs or upgrades only the
-embedded portable skill in canonical locations. It updates a supervisor that
-agentctl already manages, but does not create a new launchd/systemd service or
-delete legacy copies by default. For Codex and OMP, `~/.agents/skills` is the
-canonical shared root; compatibility copies such as `~/.codex/skills` should be
-removed only through an explicit cleanup after `bootstrap status` proves the
-canonical registration. Other canonical roots are `~/.hermes/skills`,
-`~/.claude/skills`, and `~/.cursor/skills`.
+`agentctl bootstrap update` detects supported harnesses and installs or upgrades
+only agentctl's embedded portable skill in canonical locations. It leaves
+unmanaged files, credentials, sessions, settings, caches, and legacy copies
+alone. An existing agentctl-managed supervisor may be reconciled; a new service
+is never created merely because a harness was detected.
 
 ```bash
 agentctl bootstrap update --dry-run
 agentctl bootstrap update
-agentctl bootstrap update --harness cursor
 agentctl bootstrap status
 ```
 
-The lower-level distribution scripts remain useful for disposable roots and
-explicit harness-manager integrations. Upgrade is allowed only when the
-installed revision manifest proves that every managed asset is unmodified;
-uninstall removes only manifest-bound files and preserves unrelated harness
-content.
+The release installer performs the same detected-harness reconciliation by
+default. Use `--binary-only` only when a binary-only installation is
+intentional.
 
-The release installer follows the same policy: `scripts/install.sh` updates the
-binary, then runs `bootstrap update` across detected harnesses and reconciles a
-launchd supervisor only when its existing manifest proves agentctl already
-manages it. `--binary-only` is the explicit escape for a binary-only rollout.
+## Support matrix
 
-## Knowledge sources
+| Area | Preview support | Boundary |
+| --- | --- | --- |
+| macOS | amd64 and arm64 release targets | launchd supervisor reconciliation is implemented for an already-managed service |
+| Linux | amd64 and arm64 release targets | explicit systemd-user installer consumes the reviewed plan; rerun it after binary updates because binary install does not create or restart the service |
+| Codex | built-in structured-output adapter | attach, observation, result, and cancel beyond the launching process depend on native CLI support |
+| Cursor | built-in `stream-json` adapter | workspace trust and approval behavior remain Cursor-owned |
+| Claude Code | built-in structured-output adapter | permissions and hooks remain Claude-owned |
+| OMP | built-in structured-output adapter | some event and result-content semantics are reported as degraded |
+| Generic process | explicit structured-result adapter | a zero exit code alone is not treated as task success |
+| Multica | optional configured integration | promotion and durable workspace events require a compatible Multica deployment |
 
-Knowledge remains in independently owned GitHub, Forgejo, or generic Git
-repositories. Existing loose stores do not need migration.
+The exact live answer for an installed backend comes from
+`agentctl capabilities <adapter>` or `agentctl doctor`, not from this table.
+See [Adapters](docs/adapters.md) for capability semantics.
 
-```bash
-agentctl knowledge validate --source source.json
-agentctl knowledge sync --source source.json --checkout /private/checkout --plan
-agentctl knowledge compile \
-  --source source.json=/private/checkout \
-  --output /private/bundles/revision-1
-agentctl knowledge verify --bundle /private/bundles/revision-1
-agentctl context \
-  --bundle /private/bundles/revision-1 \
-  --repository /work/project \
-  --task-kind investigation \
-  --query multica \
-  --render /private/context.md
-```
+## Optional integrations
 
-Read-only context commands never fetch. Sync is explicit. Credentials, raw
-sessions, prompts, transcripts, worktrees, and harness databases are never
-compiled or distributed.
+The following are not required for local use:
 
-## Authority model
+- Multica for durable issue/run/review coordination and explicit promotion;
+- Tailscale or another network layer for operator-managed reachability;
+- `tailnetctl`, `macctl`, or another fleet tool for resource and host desired
+  state; and
+- independently owned Git repositories for shared knowledge or private policy.
 
-| Concern | Authority |
-| --- | --- |
-| Direct conversation and execution | Native agent CLI/session |
-| Durable issue/run/review lifecycle | Multica |
-| Network identity and shared resources | Tailscale + `tailnetctl` |
-| Per-host desired state | `macctl` or equivalent host manager |
-| Shared policy and knowledge | Independent private Git sources + verified bundle |
-| Observation, subscriptions, callbacks | `agentctl` |
-| Credentials, raw sessions, caches | Local harness/machine |
+These systems retain their own authority. agentctl consumes explicit references
+or configuration and does not centralize their credentials or databases. See
+[Optional integrations](docs/optional-integrations.md).
 
-## Documents
+## Project status and contributing
+
+The implementation and its limits are tracked in the
+[implementation audit](docs/implementation-audit.md) and [roadmap](docs/roadmap.md).
+For changes, read [Contributing](CONTRIBUTING.md), the
+[Code of Conduct](CODE_OF_CONDUCT.md), and [Support](SUPPORT.md). Report
+vulnerabilities through the process in [Security](SECURITY.md).
+
+## Documentation
 
 - [Architecture](docs/architecture.md)
-- [Identifiers](docs/identifiers.md)
-- [Execution envelope](docs/execution-envelope.md)
+- [Configuration](docs/configuration.md)
 - [Adapters](docs/adapters.md)
-- [Events and callbacks](docs/events-and-subscriptions.md)
-- [Agent ergonomics](docs/agent-ergonomics.md)
+- [Execution envelope](docs/execution-envelope.md)
+- [Events, subscriptions, and callbacks](docs/events-and-subscriptions.md)
+- [Identifiers](docs/identifiers.md)
 - [Context and knowledge](docs/context-and-knowledge.md)
-- [Security and privacy](docs/state-security-and-privacy.md)
+- [State, security, privacy, and retention](docs/state-security-and-privacy.md)
+- [Optional integrations](docs/optional-integrations.md)
+- [Agent ergonomics](docs/agent-ergonomics.md)
 - [Implementation status](docs/implementation-audit.md)
 - [Roadmap](docs/roadmap.md)
 
 Machine-readable contracts live under [`schemas/`](schemas/).
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE). Third-party notices, including
+the vendored BIP-39 English word list, are recorded in [NOTICE](NOTICE).

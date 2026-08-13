@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agentctl.dev/schemas/event-page.schema.json",
+  "$id": "urn:agentctl:schema:event-page:v1",
   "x-agentctl-docs": "../docs/events-and-subscriptions.md#cursors-and-replay",
   "title": "agentctl bounded event page result v1",
   "type": "object",

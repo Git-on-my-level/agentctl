@@ -189,6 +189,19 @@ func TestGenericProbeDoesNotExecuteArbitraryExecutable(t *testing.T) {
 	}
 }
 
+func TestNativeLaunchClassifiesCancellationBeforeChildAcceptance(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := NewGenericProcess().Launch(ctx, LaunchRequest{Argv: []string{"/bin/sh", "-c", "exit 0"}, StartOnly: true})
+	var adapterErr *AdapterError
+	if !errors.As(err, &adapterErr) || adapterErr.Code != ErrExecutionCancelled {
+		t.Fatalf("launch error=%#v result=%#v", err, result)
+	}
+	if !result.Session.Ref.Empty() {
+		t.Fatalf("cancelled pre-acceptance launch returned a session: %#v", result.Session)
+	}
+}
+
 func TestMulticaProbeVerifiesBoundedWorkspaceEventGrammar(t *testing.T) {
 	argsPath := filepath.Join(t.TempDir(), "args")
 	path := fixtureExecutable(t, `

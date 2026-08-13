@@ -11,7 +11,7 @@ import (
 
 func (a *app) configCommand(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) == 0 {
-		return output.NewError(output.CodeUsage, "usage: agentctl config set-profile|show|validate|doctor ...", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl config set-profile|show|validate|doctor|bundle ...", false)
 	}
 	path, err := configPath(c)
 	if err != nil {
@@ -22,12 +22,15 @@ func (a *app) configCommand(ctx context.Context, renderer output.Renderer, c com
 		if len(args) != 1 {
 			return output.NewError(output.CodeUsage, "config "+args[0]+" takes no positional arguments", false)
 		}
-		cfg, err := config.Load(path)
+		resolution, err := config.Resolve(path, c.configBundle)
 		if err != nil {
 			return mapConfigError("read config", err)
 		}
+		cfg := resolution.Config
 		if args[0] == "doctor" {
 			report, err := config.Doctor(ctx, cfg, c.profile)
+			report.Bundle = resolution.Bundle
+			report.Composition = resolution.Composition
 			if err != nil {
 				if errors.Is(err, config.ErrProfileMissing) {
 					return mapConfigError("resolve config doctor profile", err)
@@ -40,23 +43,68 @@ func (a *app) configCommand(ctx context.Context, renderer output.Renderer, c com
 			}
 			return nil
 		}
-		result := any(cfg)
+		result := any(resolution)
 		if c.profile != "" {
 			name, profile, err := cfg.ResolveProfile(c.profile)
 			if err != nil {
 				return mapConfigError("resolve profile", err)
 			}
-			result = map[string]any{"name": name, "profile": profile}
+			result = map[string]any{"name": name, "profile": profile, "base_path": resolution.BasePath, "base_present": resolution.BasePresent, "bundle": resolution.Bundle, "composition_order": resolution.Composition, "notes": resolution.Notes}
 		}
 		if err := renderer.Success(output.Success{Result: result, Lines: []output.Line{{Lead: "config", Fields: []output.Field{{Name: "valid", Value: true}, {Name: "path", Value: path}, {Name: "profiles", Value: len(cfg.Profiles)}, {Name: "default", Value: cfg.DefaultProfile}}}}}); err != nil {
 			return output.Wrap(output.CodeInternal, "write output", false, err)
 		}
 		return nil
+	case "bundle":
+		return a.configBundleCommand(renderer, path, c, args[1:])
 	case "set-profile":
+		if c.configBundle != "" {
+			return output.NewError(output.CodeUsage, "set-profile cannot be combined with --config-bundle", false)
+		}
 		return a.configSetProfile(renderer, path, args[1:])
 	default:
-		return output.NewError(output.CodeUsage, "config requires set-profile, show, validate, or doctor", false)
+		return output.NewError(output.CodeUsage, "config requires set-profile, show, validate, doctor, or bundle", false)
 	}
+}
+
+func (a *app) configBundleCommand(renderer output.Renderer, basePath string, c common, args []string) *output.Error {
+	if len(args) != 1 || args[0] != "validate" && args[0] != "show" && args[0] != "plan" {
+		return output.NewError(output.CodeUsage, "usage: agentctl --config-bundle <local-path> config bundle validate|show|plan", false)
+	}
+	if strings.TrimSpace(c.configBundle) == "" {
+		return output.NewError(output.CodeUsage, "config bundle requires explicit --config-bundle <local-path>", false)
+	}
+	if args[0] == "plan" {
+		plan, err := config.PlanBundle(basePath, c.configBundle)
+		if err != nil {
+			return mapConfigError("plan config bundle", err)
+		}
+		if err := renderer.Success(output.Success{Result: plan, Lines: []output.Line{{Lead: "config.bundle.plan", Fields: []output.Field{{Name: "valid", Value: plan.Valid}, {Name: "digest", Value: plan.Provenance.SHA256}, {Name: "profiles", Value: len(plan.AddProfiles)}, {Name: "mutates", Value: plan.Mutates}}}}}); err != nil {
+			return output.Wrap(output.CodeInternal, "write output", false, err)
+		}
+		return nil
+	}
+	bundle, provenance, err := config.LoadBundle(c.configBundle)
+	if err != nil {
+		return mapConfigError("read config bundle", err)
+	}
+	result := map[string]any{"valid": true, "provenance": provenance}
+	if args[0] == "show" {
+		result["bundle"] = bundle
+	} else {
+		resolution, err := config.Resolve(basePath, c.configBundle)
+		if err != nil {
+			return mapConfigError("validate config bundle composition", err)
+		}
+		result["base_path"] = resolution.BasePath
+		result["base_present"] = resolution.BasePresent
+		result["composition_order"] = resolution.Composition
+		result["notes"] = resolution.Notes
+	}
+	if err := renderer.Success(output.Success{Result: result, Lines: []output.Line{{Lead: "config.bundle", Fields: []output.Field{{Name: "valid", Value: true}, {Name: "path", Value: provenance.SourcePath}, {Name: "digest", Value: provenance.SHA256}, {Name: "profiles", Value: len(bundle.Profiles)}}}}}); err != nil {
+		return output.Wrap(output.CodeInternal, "write output", false, err)
+	}
+	return nil
 }
 
 func (a *app) configSetProfile(renderer output.Renderer, path string, args []string) *output.Error {
@@ -170,6 +218,14 @@ func configPath(c common) (string, error) {
 		return c.configPath, nil
 	}
 	return config.DefaultPath()
+}
+
+func configResolution(c common) (config.Resolution, error) {
+	path, err := configPath(c)
+	if err != nil {
+		return config.Resolution{}, err
+	}
+	return config.Resolve(path, c.configBundle)
 }
 
 func mapConfigError(message string, err error) *output.Error {

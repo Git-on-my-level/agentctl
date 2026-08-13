@@ -151,7 +151,7 @@ handles but cannot claim the child model read them.
 - Treat OMP statistics commands as potentially mutating local caches and do not
   use them for a read-only probe unless explicitly documented.
 
-### Multica
+### Multica (optional)
 
 - Bind to exact workspace, issue, and run IDs.
 - Prefer the companion fork's durable Multica workspace event outbox.

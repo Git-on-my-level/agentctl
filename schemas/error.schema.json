@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agentctl.dev/schemas/error.schema.json",
+  "$id": "urn:agentctl:schema:error:v1",
   "x-agentctl-docs": "../docs/agent-ergonomics.md#error-contract",
   "title": "agentctl structured error v1",
   "type": "object",

@@ -35,7 +35,7 @@ Native launch supervision is deliberately same-process in v0.1. A new process
 cannot claim it can attach to a native session unless that native CLI exposes a
 reviewed durable attach/status API.
 
-## Phase 2 — Multica and promotion: implemented at the authority boundary
+## Phase 2 — Optional Multica and promotion: implemented at the authority boundary
 
 - Exact configured binary/profile/workspace/server; no ambient default profile.
 - Config provenance doctor and application URL support.
@@ -63,9 +63,9 @@ Multica run dispatch, assignment, status mutation, or review.
   already-managed supervisor assets may be upgraded, while new services and
   legacy-copy cleanup remain explicit.
 
-Publishing a verified bundle through the existing Tailnet bootstrap is an
+Publishing a verified bundle through a network or fleet bootstrap is an
 operator/deployment integration, not an implicit `context` side effect. The CLI
-does not modify `tailnetctl` or fetch during a read.
+does not modify an operator's network tools or fetch during a read.
 
 ## Phase 4 — Durable callbacks and supervisor: implemented
 
@@ -83,7 +83,7 @@ does not modify `tailnetctl` or fetch during a read.
 The supervisor is host-local. Remote callback receivers are separate trusted
 services; agentctl does not install them or infer credentials.
 
-## Phase 5 — Multica durable events: implemented in the companion fork
+## Phase 5 — Optional Multica durable events: implemented in a companion fork
 
 - Transactional workspace event outbox with monotonic sequence.
 - Authenticated workspace-isolated cursor API.
@@ -100,9 +100,10 @@ does not duplicate agentctl callback destinations, receipts, or retry policy.
 ## Post-v0.1 work
 
 - remote host capability discovery and cross-host URI attach;
-- a publisher job integrating compiled bundles into the reviewed Tailnet
-  bootstrap/checksum chain;
-- measured journal retention and an explicit safe cleanup command;
+- an operator-facing publisher interface for integrating compiled bundles into
+  a reviewed deployment/checksum chain;
+- automatic retention policy only after the explicit inventory and
+  digest-bound terminal-graph cleanup command has operational mileage;
 - native cross-restart attach where a backend gains a reviewed API;
 - service installation commands after the plan format has deployment mileage;
 - an optional speech-confusion-optimized ID codec v2;
@@ -115,4 +116,5 @@ does not duplicate agentctl callback destinations, receipts, or retry policy.
 - model selection hidden inside agentctl;
 - credentials or session database synchronization;
 - automatic Multica issue creation from prompt keywords;
-- replacement for Multica, native CLIs, `tailnetctl`, or `macctl`.
+- replacement for native CLIs or an operator's optional coordination, network,
+  or host-management tools.

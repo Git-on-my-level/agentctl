@@ -1,10 +1,11 @@
 # Implementation audit
 
-Snapshot: 2026-08-11, v0.1 development branch.
+Snapshot: current public-preview preparation branch.
 
 This is the post-integration acceptance record. It separates implemented
 contracts from intentional adapter/deployment limits; package primitives alone
-are not counted unless a CLI, supervisor, or Multica endpoint consumes them.
+are not counted unless a CLI, supervisor, or optional integration consumes
+them.
 
 ## Mechanical status
 
@@ -13,9 +14,8 @@ are not counted unless a CLI, supervisor, or Multica endpoint consumes them.
 - The distribution validator passes in disposable harness roots.
 - Release packaging produces deterministic archives for macOS and Linux on
   amd64/arm64.
-- The companion Multica worktree passes fresh migrations through 254, service,
-  handler, server, CLI, bounded retention-pruner, migration lint, build, vet,
-  and down-migration tests.
+- Optional Multica compatibility is verified separately from the standalone
+  release gate and is not a prerequisite for native execution.
 
 ## Implemented end-to-end
 
@@ -23,19 +23,20 @@ are not counted unless a CLI, supervisor, or Multica endpoint consumes them.
 | --- | --- |
 | IDs | Closed typed registry; frozen BIP-39 v1 list and digest; 60-bit payload + type-bound checksum; typed wrappers and portable URI parsing. Normal output never leads with native UUIDs. |
 | Journal | Owner-only bbolt store; schema validation; CAS execution updates; event sequence; semantic-key recomputation; one terminal event; subscriptions, outbox, receipts, and restart durability. |
-| Native work | `run`, local binding `attach`, `status`, `events`, `await`, `result`, and adapter-dependent `cancel`; preallocated IDs for live observation/subscription; bounded journal transactions and expiring runner leases while children run; exact argv after `--`; deterministic adapter inference for known executables; bounded structured parsers; raw prompts/transcripts/results excluded from the journal. |
-| Routing | Deterministic `route explain` keeps model choice in the native harness and chooses direct versus Multica from explicit work properties. It never creates an issue. |
-| Promotion | Exact configured Multica binary/profile/workspace/server; plan mode; authority-owned semantic client key; exact retry; changed-input conflict; persisted source/target links; optional supersession; replay returns the same stored issue alias and one lifecycle. |
+| Native work | `run`, local binding `attach`, `status`, `events`, `await`, `result`, and adapter-dependent `cancel`; preallocated IDs for live observation/subscription; bounded journal transactions and expiring runner leases while children run; exact argv after `--`; deterministic adapter inference for known executables; bounded structured parsers; raw prompts, intermediate output, and transcripts excluded from the journal; final result content stored by default up to 1 MiB. |
+| Routing | Deterministic `route explain` keeps model choice in the native harness and chooses direct versus an explicitly configured optional authority from work properties. It never creates an issue. |
+| Optional promotion | Exact configured Multica binary/profile/workspace/server; plan mode; authority-owned semantic client key; exact retry; changed-input conflict; persisted source/target links; optional supersession; replay returns the same stored issue alias and one lifecycle. |
 | Knowledge | Validated GitHub/Forgejo/generic registrations; explicit noninteractive sync; loose/structured/hybrid ingest; deterministic provenance, bundle, lexical index, verification, atomic install, selection, and bounded render. |
 | Callbacks | Atomic event fanout; file, acknowledged Unix, command, and HMAC webhook transports; TTL, retry, pause, receipt, and dead-letter state; SSRF, DNS rebinding, redirect, expiry, and replay controls. |
 | Supervisor | Real journal/runtime/outbox bridges; restart reprobe; owner-only Unix status RPC; one-shot or long-running cycle; launchd/systemd plans. |
 | Portability | Allowlisted skill and Multica runtime bundle; detected-harness bootstrap reconciliation plus installer/status/doctor preserve unmanaged harness state and never copy auth, memories, sessions, settings, caches, prompts, or worktrees. |
-| Multica events | Transactional event outbox; workspace monotonic sequence; authenticated membership; exact filters; bounded cursor API; list/watch CLI; issue-create client-key idempotency; preview-first, bounded contiguous-prefix retention pruning. |
+| Optional Multica events | Transactional event outbox; workspace monotonic sequence; authenticated membership; exact filters; bounded cursor API; list/watch CLI; issue-create client-key idempotency; preview-first, bounded contiguous-prefix retention pruning in the companion integration. |
 
 ## Authority invariants
 
 1. Native agent CLIs own direct session semantics and correctness.
-2. Multica owns durable issue, run, assignment, and review state.
+2. When configured, Multica owns its durable issue, run, assignment, and review
+   state; standalone operation does not require it.
 3. agentctl may observe and correlate both, but does not invent a second issue
    lifecycle or silently promote direct work.
 4. One promotion key identifies one semantic source/destination handoff. Exact
@@ -64,7 +65,7 @@ binary and progressive help available:
   `bootstrap update` reconciles detected canonical roots while leaving
   unmanaged files, legacy copies, and new supervisor services untouched.
 
-## Intentional v0.1 constraints
+## Intentional preview constraints
 
 These are explicit limits, not silently degraded promises:
 
@@ -85,10 +86,12 @@ These are explicit limits, not silently degraded promises:
 - Creating a new supervisor service is plan-only. The operator or host manager
   owns reviewed service-file installation; bootstrap may update an
   already-managed supervisor but does not create one by detection alone.
-- Bundle compilation/install is local. Publishing it into the Tailnet bootstrap
-  and its checksum manifest is a separate reviewed deployment step.
-- Journal retention is not automatic in v0.1. No record referenced by an
-  execution, subscription, receipt, or promotion is silently deleted.
+- Bundle compilation/install is local. Publishing it into an operator's network
+  or fleet bootstrap is a separate reviewed deployment step.
+- Journal retention is not automatic in the preview. `data inventory` and digest-bound
+  `data cleanup --plan|--apply` expose an explicit terminal-graph lifecycle. No
+  nonterminal, active-subscription, delivery/receipt, partial-lineage, or
+  promotion-linked execution is silently deleted.
 - The frozen BIP-39 word list is not optimized for speech confusion or cultural
   screening. The type checksum catches most transcription mistakes; a future
   codec version can improve word choice without rewriting v1 IDs.
@@ -108,27 +111,35 @@ These are explicit limits, not silently degraded promises:
 - Multica event payloads omit comment bodies, prompts, task results,
   transcripts, and storage URLs.
 
-## Release gates
+## Standalone public-preview release gates
 
-Before tagging v0.1:
+Before tagging a public preview:
 
-1. land the companion Multica PR and deploy a version exposing `event
-   list|watch` plus issue `--client-key`;
-2. run one real direct execution, exact promotion replay, Multica event watch,
-   and terminal callback canary against the target profile;
-3. regenerate distribution revision/hash manifests from the release commit;
-4. verify the configured Multica `app_url` and signed binary provenance;
-5. install the portable skill into disposable Hermes, Codex, Claude, Cursor,
-   OMP, and Multica roots and run the distribution doctor;
-6. decide the first journal retention policy from measured data rather than
-   enabling destructive cleanup by default.
+1. pass full CI, focused race tests, schema/link checks, vulnerability checks,
+   and deterministic release packaging on the exact release commit;
+2. run native execution and result retrieval in a disposable home with no
+   private configuration, Tailnet, fleet manager, or Multica installation;
+3. regenerate and verify distribution revision/hash manifests;
+4. install and remove the portable skill in disposable supported harness roots
+   without changing unmanaged files;
+5. scan the complete Git history and release archives for credentials and
+   machine-specific data; and
+6. preserve the prominent 1 MiB result-storage and absent-automatic-retention
+   disclosures while cleanup remains an explicit operator-reviewed lifecycle.
+
+Optional Multica, network, and fleet integrations have their own compatibility
+canaries. Failure of an optional integration does not redefine standalone
+support, but its capability must be reported accurately.
 
 ## Highest-value follow-ups
 
-1. Add a read-only Tailnet host/capability resolver and cross-host URI attach.
-2. Add a reviewed bundle publisher that extends the existing `tailnetctl`
-   bootstrap/checksum contract without making tailnetctl an agent control plane.
-3. Add explicit retention inventory and approval-gated cleanup.
+1. Define an operator-neutral read-only host/capability resolver and cross-host
+   URI attach contract.
+2. Add a reviewed publisher interface for operator deployment/checksum chains
+   without making any network index an agent control plane.
+3. Evaluate an automatic retention policy and physical journal compaction only
+   after the explicit inventory and digest-bound cleanup workflow has
+   operational evidence.
 4. Expand golden schemas for subscriptions, deliveries, context results, and
    Multica cursor pages.
 5. Add an independent canonical-event fixture reader alongside the implemented

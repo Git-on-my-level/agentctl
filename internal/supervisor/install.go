@@ -356,12 +356,20 @@ func joinSystemdArgs(args []string) string {
 }
 
 func escapeSystemdArg(value string) string {
+	escaped := strings.NewReplacer(
+		`\`, `\\`,
+		`"`, `\"`,
+		"\n", `\n`,
+		"\r", `\r`,
+		"\t", `\t`,
+		`%`, `%%`,
+	).Replace(value)
 	if value != "" && strings.IndexFunc(value, func(r rune) bool {
-		return r == ' ' || r == '\t' || r == '\n' || r == '\\' || r == '"' || r == '\''
+		return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\\' || r == '"' || r == '\''
 	}) == -1 {
-		return value
+		return escaped
 	}
-	return `"` + strings.ReplaceAll(strings.ReplaceAll(value, `\`, `\\`), `"`, `\"`) + `"`
+	return `"` + escaped + `"`
 }
 
 func escapeSystemdValue(value string) string {

@@ -1,0 +1,48 @@
+name: Feature request
+description: Propose a scoped improvement to the public standalone tool or an optional integration.
+title: "[feature] "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Describe the observable problem without prescribing an implementation.
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Intended scope
+      options:
+        - Standalone core
+        - Built-in native adapter
+        - Optional integration
+        - Documentation or developer experience
+        - Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Proposed behavior
+      description: Include JSON, failure, side-effect, and compatibility semantics where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Authority, privacy, and retention boundaries
+      description: Explain what remains owned by the native CLI or optional external system and what data would be stored.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Data-safety check
+      options:
+        - label: This request contains no credentials, private agent output, native session data, or machine-specific topology.
+          required: true

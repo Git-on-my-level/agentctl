@@ -77,6 +77,12 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		}
 		return nil
 	}
+	// Do not create a durable execution when the operation was already
+	// interrupted before launch preparation began. Once an execution is
+	// created below, all later interruptions are terminalized durably.
+	if err := operationCtx.Err(); err != nil {
+		return interruptedRunError(err, model.Execution{})
+	}
 	journal, problem := a.openWrite(c)
 	if problem != nil {
 		return problem
@@ -93,7 +99,10 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		}
 		mutation = contracts.MutationKey{Scope: "execution:run", Key: opts.idempotencyKey, InputDigest: digest}
 	}
-	execution, reused, err := journal.CreateExecution(ctx, execution, mutation)
+	// The operation context can be cancelled concurrently with this small local
+	// commit. Complete it under a live context so every created execution either
+	// launches or reaches one durable terminal state.
+	execution, reused, err := journal.CreateExecution(context.Background(), execution, mutation)
 	if err != nil {
 		journal.Close()
 		return mapStoreError("create execution", err)
@@ -113,7 +122,11 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		if openProblem != nil {
 			return openProblem
 		}
-		failed, finalizeErr := finalizeResult(context.Background(), writeJournal, current, adapter.Result{Success: false, State: adapter.StateFailed, Error: err.Error()}, a.now().UTC(), opts.noStoreResult)
+		failureState := adapter.StateFailed
+		if launchInterrupted(err) {
+			failureState = adapter.StateCancelled
+		}
+		failed, finalizeErr := finalizeResult(context.Background(), writeJournal, current, adapter.Result{Success: false, State: failureState, Error: err.Error()}, a.now().UTC(), opts.noStoreResult)
 		writeJournal.Close()
 		if finalizeErr != nil {
 			return mapStoreError("record launch failure outcome", finalizeErr)
@@ -228,10 +241,24 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 }
 
 func interruptedRunError(err error, execution model.Execution) *output.Error {
-	if errors.Is(err, context.Canceled) {
-		return output.Wrap(output.CodeExecutionCancelled, "run interrupted", false, err).WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State)
+	withExecution := func(problem *output.Error) *output.Error {
+		if execution.ID.IsZero() {
+			return problem
+		}
+		return problem.WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State)
 	}
-	return output.Wrap(output.CodeTimeout, "run deadline elapsed", true, err).WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State)
+	if errors.Is(err, context.Canceled) {
+		return withExecution(output.Wrap(output.CodeExecutionCancelled, "run interrupted", false, err))
+	}
+	return withExecution(output.Wrap(output.CodeTimeout, "run deadline elapsed", true, err))
+}
+
+func launchInterrupted(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var adapterErr *adapter.AdapterError
+	return errors.As(err, &adapterErr) && (adapterErr.Code == adapter.ErrExecutionCancelled || adapterErr.Code == adapter.ErrTimeout)
 }
 
 func parseRun(args []string) (runOptions, *output.Error) {
@@ -469,19 +496,11 @@ func (a *app) runtimeAdapter(c common, name, issue, run string) (adapter.Adapter
 	}
 }
 func (a *app) resolveProfile(c common) (string, config.Profile, *output.Error) {
-	path := c.configPath
-	var err error
-	if path == "" {
-		path, err = config.DefaultPath()
-		if err != nil {
-			return "", config.Profile{}, output.Wrap(output.CodeInternal, "resolve config path", false, err)
-		}
-	}
-	cfg, err := config.Load(path)
+	resolution, err := configResolution(c)
 	if err != nil {
 		return "", config.Profile{}, output.Wrap(output.CodeNotFound, "load profile config", false, err)
 	}
-	name, profile, err := cfg.ResolveProfile(c.profile)
+	name, profile, err := resolution.Config.ResolveProfile(c.profile)
 	if err != nil {
 		return "", config.Profile{}, output.Wrap(output.CodeNotFound, "resolve profile", false, err)
 	}

@@ -258,7 +258,7 @@ component wakes itself after logout or reboot. Cross-restart automatic delivery
 therefore requires the optional supervisor; the daemonless MVP must not claim
 otherwise.
 
-## Multica integration
+## Optional Multica integration
 
 The companion Multica fork exposes a server-side durable workspace event outbox
 with monotonic source positions and filter-bound cursors. The adapter uses its

@@ -1,0 +1,65 @@
+name: Bug report
+description: Report reproducible agentctl behavior that differs from its contract.
+title: "[bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, prompts, final results, journal files, native session data, private endpoints, or unredacted local paths. Report security issues through the repository Security tab.
+  - type: input
+    id: version
+    attributes:
+      label: agentctl version or commit
+      placeholder: v0.x.y or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS arm64
+        - macOS amd64
+        - Linux arm64
+        - Linux amd64
+        - Other or unknown
+    validations:
+      required: true
+  - type: input
+    id: adapter
+    attributes:
+      label: Adapter and native CLI version
+      description: Use none if the behavior does not involve an adapter.
+      placeholder: codex, cursor, claude-code, omp, generic-process, multica, or none
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: State the expected and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Use synthetic prompts, IDs, paths, and endpoints.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics
+      description: Include the smallest relevant doctor, capabilities, or error projection after removing sensitive fields.
+      render: json
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Data-safety check
+      options:
+        - label: I removed credentials, private output, native session data, machine-specific identifiers, and sensitive paths or endpoints.
+          required: true
+        - label: This report does not disclose a security vulnerability.
+          required: true

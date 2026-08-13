@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
+	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
@@ -91,7 +92,7 @@ func TestHelpSideEffectClassesReflectOptionalWrites(t *testing.T) {
 	for _, command := range doc.Result.Commands {
 		classes[command["name"].(string)] = command["side_effect_class"].(string)
 	}
-	if classes["attach"] != "read_only" || classes["context"] != "local_operational_write" {
+	if classes["attach"] != "read_only" || classes["context"] != "local_operational_write" || classes["data"] != "local_operational_write" {
 		t.Fatalf("unexpected side-effect classes: %#v", classes)
 	}
 }
@@ -171,11 +172,50 @@ func TestRunTimeoutTerminalizesExecution(t *testing.T) {
 
 func TestRunInterruptionTerminalizesExecutionAsCancelled(t *testing.T) {
 	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	rawExecutionID, err := ids.New(ids.TypeExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionID, err := ids.ParseExecutionID(rawExecutionID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(200*time.Millisecond, cancel)
-	code := a.run(ctx, []string{"--journal", journalPath, "run", "--allow-missing-result", "--", "/bin/sh", "-c", "sleep 2"})
+	defer cancel()
+	done := make(chan int, 1)
+	go func() {
+		done <- a.run(ctx, []string{"--journal", journalPath, "run", "--execution-id", executionID.String(), "--allow-missing-result", "--", "/bin/sh", "-c", "sleep 2"})
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		journal, openErr := store.Open(journalPath, store.Options{ReadOnly: true})
+		if openErr == nil {
+			execution, getErr := journal.GetExecution(context.Background(), executionID)
+			journal.Close()
+			if getErr == nil && execution.State == model.StateRunning {
+				break
+			}
+		}
+		select {
+		case code := <-done:
+			t.Fatalf("run terminated before launch acceptance: exit=%d output=%s", code, stdout.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("execution did not reach the accepted running state")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	var code int
+	select {
+	case code = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("interrupted run did not terminate")
+	}
 	if code != output.ExitCodeFor(output.CodeExecutionCancelled) {
 		t.Fatalf("interruption exit=%d output=%s", code, stdout.String())
 	}
@@ -183,9 +223,9 @@ func TestRunInterruptionTerminalizesExecutionAsCancelled(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
 		t.Fatal(err)
 	}
-	executionID, _ := doc.Error.Details["execution_id"].(string)
-	id, err := ids.ParseExecutionID(executionID)
-	if err != nil {
+	documentedID, _ := doc.Error.Details["execution_id"].(string)
+	id, err := ids.ParseExecutionID(documentedID)
+	if err != nil || id != executionID {
 		t.Fatalf("interruption omitted execution ID: %s", stdout.String())
 	}
 	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
@@ -196,6 +236,34 @@ func TestRunInterruptionTerminalizesExecutionAsCancelled(t *testing.T) {
 	execution, err := journal.GetExecution(context.Background(), id)
 	if err != nil || execution.State != model.StateCancelled {
 		t.Fatalf("interrupted execution=%#v err=%v", execution, err)
+	}
+	events, err := journal.ListEvents(context.Background(), id, contracts.EventQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := 0
+	for _, event := range events {
+		if event.Kind == model.EventTerminal {
+			terminal++
+		}
+	}
+	if terminal != 1 {
+		t.Fatalf("terminal event count=%d events=%#v", terminal, events)
+	}
+}
+
+func TestRunCancelledBeforeLaunchDoesNotCreateExecution(t *testing.T) {
+	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	code := a.run(ctx, []string{"--journal", journalPath, "run", "--allow-missing-result", "--", "/bin/sh", "-c", "sleep 2"})
+	if code != output.ExitCodeFor(output.CodeExecutionCancelled) || !strings.Contains(stdout.String(), `"code":"execution_cancelled"`) {
+		t.Fatalf("pre-launch interruption exit=%d output=%s", code, stdout.String())
+	}
+	if _, err := os.Stat(journalPath); !os.IsNotExist(err) {
+		t.Fatalf("pre-launch interruption created a journal: %v", err)
 	}
 }
 

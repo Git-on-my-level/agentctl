@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agentctl.dev/schemas/adapter-manifest.schema.json",
+  "$id": "urn:agentctl:schema:adapter-manifest:v1",
   "x-agentctl-docs": "../docs/adapters.md#adapter-manifests",
   "title": "agentctl adapter manifest v1",
   "type": "object",

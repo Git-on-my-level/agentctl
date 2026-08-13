@@ -29,9 +29,9 @@ type app struct {
 	now            func() time.Time
 }
 type common struct {
-	mode                                          output.Mode
-	profile, contextFile, configPath, journalPath string
-	explain                                       bool
+	mode                                                        output.Mode
+	profile, contextFile, configPath, configBundle, journalPath string
+	explain                                                     bool
 }
 
 func main() {
@@ -87,6 +87,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.subscribeCommand(ctx, renderer, commonArgs, rest[1:])
 	case "config":
 		err = a.configCommand(ctx, renderer, commonArgs, rest[1:])
+	case "data":
+		err = a.dataCommand(ctx, renderer, commonArgs, rest[1:])
 	case "bootstrap":
 		err = a.bootstrapCommand(renderer, rest[1:])
 	case "supervisor":
@@ -186,6 +188,12 @@ func (a *app) parseCommon(args []string) (common, []string, error) {
 				return c, nil, e
 			}
 			c.configPath = v
+		case "--config-bundle":
+			v, e := take()
+			if e != nil {
+				return c, nil, e
+			}
+			c.configBundle = v
 		case "--journal":
 			v, e := take()
 			if e != nil {

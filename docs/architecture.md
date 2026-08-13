@@ -2,19 +2,21 @@
 
 ## Thesis
 
-`agentctl` is a common supervision and context layer, not a universal agent
-runtime and not a project-management system.
+`agentctl` is a local supervision and context layer, not a universal agent
+runtime and not a project-management system. Its standalone core runs without
+a fleet controller, shared network, or durable coordination service.
 
 The system separates four concerns that are often accidentally coupled:
 
-1. **Task authority** — whether a native session or Multica owns the work.
+1. **Task authority** — normally the native session, or an explicitly selected
+   optional durable coordinator.
 2. **Execution** — Codex, Claude Code, Cursor, OMP, or another native backend.
 3. **Observation** — normalized state, events, health, and artifacts.
 4. **Delivery** — waking a parent agent or sending a callback reliably.
 
-This allows direct investigative work to remain lightweight while durable work
-can opt into Multica without changing the normalized event and callback
-contract used to observe completion.
+This keeps ordinary work lightweight while an operator can opt into durable
+coordination without changing the normalized event and callback contract used
+to observe completion.
 
 Three rules constrain every component:
 
@@ -27,10 +29,10 @@ Three rules constrain every component:
 | Plane | Owner | `agentctl` responsibility |
 | --- | --- | --- |
 | Direct execution | Native CLI/session | Launch or attach; retain native reference |
-| Durable coordination | Multica | Create only when explicitly selected; subscribe and reconcile |
-| Resource topology | `tailnetctl` | Consume structured output; do not reimplement resolution |
-| Host state | `macctl` or host equivalent | Consume context/doctor output when present |
-| Shared context | Git-authored verified bundle | Select and render deterministic context |
+| Optional durable coordination | Multica | Create only when explicitly selected; subscribe and reconcile |
+| Optional resource topology | Operator-selected network/index tool | Consume explicit structured output; do not reimplement resolution |
+| Optional host state | Operator-selected host manager | Consume context/doctor output when present |
+| Optional shared context | Git-authored verified bundle | Select and render deterministic context |
 | Callback transport | Local supervisor/outbox | Normalize, retry, acknowledge, and expire |
 
 No plane silently becomes authoritative for another plane.
@@ -97,11 +99,13 @@ as an argv array after `--`.
 
 ### Local journal
 
-The local journal contains operational metadata only. It is owner-only,
-append-oriented, bounded by retention, and partially rebuildable from native
-sources where adapters support exact history. Word aliases, delivery receipts,
-and observation-order events may not be reconstructable, so rebuildability is
-reported per record rather than promised globally. It is not a transcript store.
+The local journal is owner-only and append-oriented. It contains normalized
+operational metadata plus an explicitly retrievable final result body of at
+most 1 MiB per execution by default. It does not store raw prompts,
+intermediate output, reasoning, or transcripts. Automatic retention is not
+implemented in the preview. Word aliases, results, delivery receipts, and
+observation-order events may not be reconstructable, so rebuildability is
+reported per record rather than promised globally.
 
 ### Optional local supervisor
 
@@ -109,9 +113,9 @@ The initial CLI can supervise foreground processes without a daemon. A small
 managed local supervisor is justified only for cross-restart subscriptions,
 remote callbacks, or retrying a delivery while no parent process is alive.
 
-The supervisor must remain host-local. It exposes a Unix socket by default;
-Tailnet HTTP exposure is explicit, authenticated, and read-only unless a
-separate mutation capability is granted.
+The supervisor remains host-local and exposes an owner-only Unix socket.
+Remote callback delivery is explicit and authenticated; agentctl does not
+publish the supervisor as a general remote execution endpoint.
 
 ### Daemonless boundary
 
@@ -152,32 +156,32 @@ an existing launchd supervisor only when its manifest is agentctl-owned.
 
 ### Shared context bundle
 
-One or more private Git repositories are the authoring sources. They remain
-independently owned and may be structured, loose, or hybrid corpora hosted on
-GitHub, Forgejo, or another Git server. A publisher validates and compiles their
-pinned revisions with policy, portable skills, and routing data into a
-content-addressed bundle with a machine-readable index. A client installs a
-verified local cache and continues to work from the last valid revision when
-the publisher is unavailable.
+One or more independently owned public or private Git repositories may be
+authoring sources. They may be structured, loose, or hybrid corpora hosted on
+GitHub, Forgejo, or another Git server. A publisher validates and compiles
+pinned revisions into a content-addressed bundle with a machine-readable index.
+A client installs a verified local cache and continues to work from the last
+valid revision when the publisher is unavailable.
 
 ## Routing policy
 
 `agentctl route explain` is advisory and deterministic. It never creates an
 issue or launches an agent.
 
-The caller explicitly selects `direct` or `multica`. If the caller asks for an
-automatic recommendation, uncertainty resolves to `direct`, because promotion
-is available later and unwanted Multica cards impose review cost.
+The caller explicitly selects `direct` or an optional durable authority. If the
+caller asks for an automatic recommendation, uncertainty resolves to `direct`,
+because promotion is available later and unwanted remote records impose review
+cost.
 
-Model-family routing is separate from lifecycle routing. A default reviewed
-policy may prefer:
+Model-family routing is separate from lifecycle routing. An operator-provided
+reviewed policy may map a model family to a native executor, for example:
 
 | Model family | Native executor |
 | --- | --- |
 | OpenAI GPT | Codex |
 | Anthropic Claude | Claude Code |
-| Cursor Composer/Grok | Cursor |
-| GLM and other open-weight models | OMP |
+| Models supported by Cursor | Cursor |
+| Open-weight models supported by OMP | OMP |
 
 Cross-family routes remain explicit experiments or fallbacks rather than
 default aliases.
@@ -214,8 +218,9 @@ converge on full semantic dedupe keys.
 State becomes shared only through an existing owner:
 
 - promotion/idempotency bindings are stored as Multica metadata when Multica
-  owns the durable lifecycle;
-- host and resource aliases come from the fleet/resource authority;
+  owns the optional durable lifecycle;
+- host and resource aliases, when used, come from the operator's chosen
+  fleet/resource authority;
 - context revisions come from the verified Git bundle;
 - native session/run outcome remains at the native CLI or Multica.
 

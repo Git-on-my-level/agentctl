@@ -38,12 +38,14 @@ type ExecutableProvenance struct {
 // It contains only local observations. In particular, checks never contact
 // server_url/app_url and never update an executable/cache.
 type ProvenanceReport struct {
-	Valid    bool                            `json:"valid"`
-	Profile  string                          `json:"profile,omitempty"`
-	Checks   []ProvenanceCheck               `json:"checks"`
-	Errors   []string                        `json:"errors,omitempty"`
-	Adapters map[string]ExecutableProvenance `json:"adapters,omitempty"`
-	Multica  *ExecutableProvenance           `json:"multica,omitempty"`
+	Valid       bool                            `json:"valid"`
+	Profile     string                          `json:"profile,omitempty"`
+	Checks      []ProvenanceCheck               `json:"checks"`
+	Errors      []string                        `json:"errors,omitempty"`
+	Adapters    map[string]ExecutableProvenance `json:"adapters,omitempty"`
+	Multica     *ExecutableProvenance           `json:"multica,omitempty"`
+	Bundle      *BundleProvenance               `json:"bundle,omitempty"`
+	Composition []string                        `json:"composition_order,omitempty"`
 }
 
 // ProvenanceOptions injects deterministic local functions for tests and

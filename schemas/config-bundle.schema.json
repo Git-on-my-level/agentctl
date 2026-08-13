@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentctl:schema:config-bundle:v1",
+  "title": "agentctl explicit local configuration bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profiles"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "default_profile": { "type": "string", "minLength": 1 },
+    "profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/profile" }
+    }
+  },
+  "$defs": {
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "adapters": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/adapter" }
+        },
+        "multica": { "$ref": "#/$defs/multica" }
+      },
+      "anyOf": [
+        { "required": ["adapters"] },
+        { "required": ["multica"] }
+      ]
+    },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable"],
+      "properties": {
+        "executable": { "type": "string", "minLength": 1 }
+      }
+    },
+    "multica": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable", "profile", "workspace_id", "server_url", "app_url"],
+      "properties": {
+        "executable": { "type": "string", "minLength": 1 },
+        "profile": { "type": "string", "minLength": 1 },
+        "workspace_id": { "type": "string", "minLength": 1 },
+        "server_url": { "type": "string", "format": "uri", "description": "HTTPS, or HTTP on an explicit loopback host" },
+        "app_url": { "type": "string", "format": "uri", "description": "HTTPS, or HTTP on an explicit loopback host" }
+      }
+    }
+  }
+}

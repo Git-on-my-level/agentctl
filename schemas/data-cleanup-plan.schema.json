@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentctl:schema:data-cleanup-plan:v1",
+  "x-agentctl-docs": "../docs/state-security-and-privacy.md#retention-and-cleanup",
+  "title": "agentctl journal cleanup plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "before", "generated_at", "applied", "plan_digest", "eligible", "protected", "records", "logical_bytes"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "before": {"type": "string", "format": "date-time"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "applied": {"type": "boolean"},
+    "plan_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "logical_bytes": {"type": "integer", "minimum": 0},
+    "eligible": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["execution_id", "terminal_at", "records", "logical_bytes"],
+        "properties": {
+          "execution_id": {"type": "string", "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"},
+          "terminal_at": {"type": "string", "format": "date-time"},
+          "logical_bytes": {"type": "integer", "minimum": 0},
+          "records": {"$ref": "#/$defs/recordCounts"}
+        }
+      }
+    },
+    "protected": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["execution_id", "terminal_at", "reasons"],
+        "properties": {
+          "execution_id": {"type": "string", "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"},
+          "terminal_at": {"type": "string", "format": "date-time"},
+          "reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}
+        }
+      }
+    },
+    "records": {"$ref": "#/$defs/recordCounts"}
+  },
+  "$defs": {
+    "recordCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executions", "events", "event_indexes", "event_dedupe", "terminal_indexes", "outcomes", "idempotency_keys"],
+      "properties": {
+        "executions": {"type": "integer", "minimum": 0},
+        "events": {"type": "integer", "minimum": 0},
+        "event_indexes": {"type": "integer", "minimum": 0},
+        "event_dedupe": {"type": "integer", "minimum": 0},
+        "terminal_indexes": {"type": "integer", "minimum": 0},
+        "outcomes": {"type": "integer", "minimum": 0},
+        "idempotency_keys": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

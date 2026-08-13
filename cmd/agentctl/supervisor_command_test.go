@@ -49,6 +49,49 @@ func TestDefaultSupervisorSocketFollowsStateContract(t *testing.T) {
 	}
 }
 
+func TestLinuxSupervisorPlanUsesXDGConfigHome(t *testing.T) {
+	root := t.TempDir()
+	xdg := filepath.Join(root, "xdg-config")
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	a := testApp(stdout, stderr)
+	a.getenv = func(key string) string {
+		if key == "XDG_CONFIG_HOME" {
+			return xdg
+		}
+		return ""
+	}
+	executable := filepath.Join(root, "agentctl")
+	state := filepath.Join(root, "state")
+	if code := a.run(context.Background(), []string{"--output", "json", "supervisor", "plan", "--platform", "linux", "--executable", executable, "--state-dir", state}); code != 0 {
+		t.Fatalf("plan exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var doc struct {
+		Result struct {
+			Path string `json:"Path"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(xdg, "systemd", "user", "io.agentctl.supervisor.service")
+	if doc.Result.Path != want {
+		t.Fatalf("path=%q want=%q", doc.Result.Path, want)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	a.getenv = func(key string) string {
+		if key == "XDG_CONFIG_HOME" {
+			return "relative"
+		}
+		return ""
+	}
+	if code := a.run(context.Background(), []string{"--output", "json", "supervisor", "plan", "--platform", "linux", "--executable", executable, "--state-dir", state}); code != 2 {
+		t.Fatalf("relative XDG_CONFIG_HOME exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestLongRunningSupervisorReleasesJournalBetweenCycles(t *testing.T) {
 	root := t.TempDir()
 	journalPath := filepath.Join(root, "state", "journal.db")

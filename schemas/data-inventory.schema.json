@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentctl:schema:data-inventory:v1",
+  "x-agentctl-docs": "../docs/state-security-and-privacy.md#retention-and-cleanup",
+  "title": "agentctl journal data inventory v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "generated_at", "journal_path", "file_bytes", "logical_bytes", "buckets", "executions"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "journal_path": {"type": "string", "minLength": 1},
+    "file_bytes": {"type": "integer", "minimum": 0},
+    "logical_bytes": {"type": "integer", "minimum": 0},
+    "buckets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "records", "nested_buckets", "key_bytes", "value_bytes"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "records": {"type": "integer", "minimum": 0},
+          "nested_buckets": {"type": "integer", "minimum": 0},
+          "key_bytes": {"type": "integer", "minimum": 0},
+          "value_bytes": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "executions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "terminal", "nonterminal", "events", "outcomes", "result_bytes"],
+      "properties": {
+        "total": {"type": "integer", "minimum": 0},
+        "terminal": {"type": "integer", "minimum": 0},
+        "nonterminal": {"type": "integer", "minimum": 0},
+        "events": {"type": "integer", "minimum": 0},
+        "outcomes": {"type": "integer", "minimum": 0},
+        "result_bytes": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

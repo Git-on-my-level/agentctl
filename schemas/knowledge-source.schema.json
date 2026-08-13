@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agentctl.dev/schemas/knowledge-source.schema.json",
+  "$id": "urn:agentctl:schema:knowledge-source:v1",
   "x-agentctl-docs": "../docs/context-and-knowledge.md#git-hosting-and-source-registry",
   "title": "agentctl knowledge source v1",
   "type": "object",

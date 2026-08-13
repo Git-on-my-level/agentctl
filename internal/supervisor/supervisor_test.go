@@ -483,6 +483,29 @@ func TestServicePlansArePureAndDeterministic(t *testing.T) {
 	}
 }
 
+func TestSystemdEscapingPreventsSpecifierAndLineInjection(t *testing.T) {
+	service := ServicePlan{
+		Name:       "agentctl-supervisor",
+		Executable: "/opt/agent%ctl/bin/agentctl",
+		Arguments:  []string{"supervisor", "line\nbreak", `quoted"value`},
+		StateDir:   "/tmp/state%h",
+	}
+	plan, err := BuildSystemdInstallPlan(service, "/tmp/systemd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(plan.Contents)
+	if !strings.Contains(text, `/opt/agent%%ctl/bin/agentctl`) || !strings.Contains(text, `/tmp/state%%h`) {
+		t.Fatalf("systemd specifiers were not escaped: %s", text)
+	}
+	if !strings.Contains(text, `"line\nbreak"`) || strings.Contains(text, "line\nbreak") {
+		t.Fatalf("systemd newline was not encoded inside one argument: %q", text)
+	}
+	if !strings.Contains(text, `"quoted\"value"`) {
+		t.Fatalf("systemd quote was not escaped: %s", text)
+	}
+}
+
 func TestBackoffClamps(t *testing.T) {
 	for attempt, want := range map[int]time.Duration{1: time.Second, 2: 2 * time.Second, 3: 4 * time.Second, 10: 8 * time.Second} {
 		if got := backoff(time.Second, 8*time.Second, attempt); got != want {

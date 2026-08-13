@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
-	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 )
 
@@ -123,15 +122,11 @@ func (a *app) adapterForIntrospection(name string, c common) (adapter.Adapter, *
 	case "omp":
 		return adapter.NewOMP(), nil
 	case "multica":
-		path, err := configPath(c)
-		if err != nil {
-			return nil, output.Wrap(output.CodeInternal, "resolve config path", false, err)
-		}
-		cfg, err := config.Load(path)
+		resolution, err := configResolution(c)
 		if err != nil {
 			return nil, mapConfigError("read exact Multica authority", err)
 		}
-		_, profile, err := cfg.ResolveProfile(c.profile)
+		_, profile, err := resolution.Config.ResolveProfile(c.profile)
 		if err != nil {
 			return nil, mapConfigError("resolve exact Multica profile", err)
 		}
@@ -152,7 +147,10 @@ func (a *app) schemaCommand(renderer output.Renderer, args []string) *output.Err
 	schemas := []map[string]any{
 		{"name": "adapter-manifest", "version": 1, "file": "schemas/adapter-manifest.schema.json"},
 		{"name": "callback-envelope", "version": 1, "file": "schemas/callback-envelope.schema.json"},
+		{"name": "config-bundle", "version": 1, "file": "schemas/config-bundle.schema.json"},
 		{"name": "context-result", "version": 1, "file": "schemas/context-result.schema.json"},
+		{"name": "data-cleanup-plan", "version": 1, "file": "schemas/data-cleanup-plan.schema.json"},
+		{"name": "data-inventory", "version": 1, "file": "schemas/data-inventory.schema.json"},
 		{"name": "error", "version": 1, "file": "schemas/error.schema.json"},
 		{"name": "event", "version": 1, "file": "schemas/event.schema.json"},
 		{"name": "event-page", "version": 1, "file": "schemas/event-page.schema.json"},
