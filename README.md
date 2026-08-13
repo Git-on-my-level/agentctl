@@ -117,21 +117,9 @@ The default path is `$XDG_CONFIG_HOME/agentctl/config.json`, falling back to
 `~/.config/agentctl/config.json`. `AGENTCTL_CONFIG` or the global `--config`
 flag selects an explicit path.
 
-```bash
-agentctl config set-profile \
-  --name local \
-  --default \
-  --adapter codex=/absolute/path/to/codex \
-  --adapter cursor=/absolute/path/to/cursor-agent
-
-agentctl config validate
-agentctl config doctor
-agentctl --profile local doctor
-```
-
 Operator-specific executable and optional authority profiles can live in a
-separately reviewed repository as a narrow config bundle. It is never
-discovered, fetched, installed, or applied implicitly:
+separately reviewed repository as a narrow config bundle. Use it for one
+invocation, or explicitly materialize it as the owner-only live config:
 
 ```bash
 agentctl --config-bundle /absolute/path/to/config-bundle.json \
@@ -140,12 +128,50 @@ agentctl --config-bundle /absolute/path/to/config-bundle.json \
   config bundle plan
 agentctl --config-bundle /absolute/path/to/config-bundle.json \
   --profile coordinated doctor
+agentctl config source init \
+  --remote git@github.com:owner/agentctl-config.git \
+  --ref main \
+  --plan
+agentctl config source init \
+  --remote git@github.com:owner/agentctl-config.git \
+  --ref main
+agentctl config source update
+agentctl config source status
 ```
 
-The bundle composes additively for that invocation. It cannot replace a
+The invocation-scoped bundle composes additively. It cannot replace a
 different user profile/default, provide adapter arguments, configure callbacks
 or install roots, or contain secrets. The plan reports its SHA-256 provenance
-and does not mutate local config. See [Configuration](docs/configuration.md).
+and does not mutate local config. A configured Git source updates only on the
+explicit `source update` command, accepts fast-forwards only, and fails closed
+on checkout or live-config drift. Git/SSH continues to own credentials. See
+[Configuration](docs/configuration.md).
+
+Choose one setup path:
+
+- durable team or personal Git config: run `config source init` before any
+  `set-profile` command;
+- one-off bundle inspection: pass `--config-bundle` for that invocation; or
+- manual host-local config: use `config set-profile` and do not initialize a
+  Git source for the same file.
+
+For a private SSH remote on a new Mac, first verify `git --version` and normal
+Git-host SSH access. agentctl runs Git noninteractively and never owns SSH keys
+or tokens. Release installs use `~/.local/bin` by default; ensure that directory
+is on `PATH`. macOS intentionally uses the same XDG-style config and data paths
+as Linux.
+
+Manual host-local setup remains available:
+
+```bash
+agentctl config set-profile \
+  --name local \
+  --default \
+  --adapter codex=/absolute/path/to/codex \
+  --adapter cursor=/absolute/path/to/cursor-agent
+agentctl config validate
+agentctl config doctor
+```
 
 ## Portable skill reconciliation
 

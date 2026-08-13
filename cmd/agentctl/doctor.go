@@ -27,6 +27,8 @@ type doctorConfig struct {
 	Bundle      *config.BundleProvenance `json:"bundle,omitempty"`
 	Composition []string                 `json:"composition_order,omitempty"`
 	Provenance  *config.ProvenanceReport `json:"provenance,omitempty"`
+	Source      *config.SourceStatus     `json:"source,omitempty"`
+	SourceError string                   `json:"source_error,omitempty"`
 }
 
 type doctorAdapter struct {
@@ -132,6 +134,17 @@ func (a *app) doctorReadiness(ctx context.Context, renderer output.Renderer, c c
 	} else if !errors.Is(configErr, config.ErrNotFound) {
 		return output.Wrap(output.CodeUsage, "invalid config", false, configErr)
 	}
+	if sourceStatus, sourceErr := config.SourceStatusReadOnly(ctx, configPath); sourceErr != nil {
+		report.Healthy = false
+		report.Problems = append(report.Problems, "config_source_invalid")
+		report.Config.SourceError = sourceErr.Error()
+	} else if sourceStatus.Configured {
+		report.Config.Source = &sourceStatus
+		if !sourceStatus.InSync {
+			report.Healthy = false
+			report.Problems = append(report.Problems, "config_source_drift")
+		}
+	}
 
 	if len(selected) == 0 {
 		for _, name := range expected {
@@ -194,6 +207,9 @@ func (a *app) doctorReadiness(ctx context.Context, renderer output.Renderer, c c
 	actions := []output.NextAction{}
 	if !bootstrap.Healthy {
 		actions = append(actions, output.NextAction{Label: "Reconcile detected installations", Argv: []string{"agentctl", "bootstrap", "update", "--dry-run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+	}
+	if report.Config.Source != nil && !report.Config.Source.InSync {
+		actions = append(actions, output.NextAction{Label: "Inspect config source drift", Argv: []string{"agentctl", "config", "source", "status"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 	}
 	if err := renderer.Success(output.Success{Result: report, Lines: lines, NextActions: actions}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)

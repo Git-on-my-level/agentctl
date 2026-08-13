@@ -80,3 +80,36 @@ func TestConfigBundleIsNeverImplicitlyDiscovered(t *testing.T) {
 		t.Fatalf("implicit bundle discovery occurred: exit=%d output=%s", code, stdout.String())
 	}
 }
+
+func TestConfigSourceInitPlanIsNetworkFreeAndReadOnly(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "runtime", "config.json")
+	checkoutPath := filepath.Join(root, "checkout")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	code := a.run(context.Background(), []string{"--config", configPath, "config", "source", "init", "--remote", "git@github.com:example/private-config.git", "--checkout", checkoutPath, "--plan"})
+	if code != 0 {
+		t.Fatalf("source plan exit=%d output=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"plan_invocation_side_effects":{"network_access":false,"mutates":false}`) || !strings.Contains(stdout.String(), `"apply_invocation_side_effects":{"network_access":true,"mutates":true}`) || !strings.Contains(stdout.String(), `"remote_validated":false`) {
+		t.Fatalf("source plan omitted safety contract: %s", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Dir(configPath)); !os.IsNotExist(err) {
+		t.Fatalf("source plan created config parent: %v", err)
+	}
+	if _, err := os.Stat(checkoutPath); !os.IsNotExist(err) {
+		t.Fatalf("source plan created checkout: %v", err)
+	}
+}
+
+func TestConfigSourceStatusIsExplicitlyUnconfigured(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	configPath := filepath.Join(t.TempDir(), "missing", "config.json")
+	if code := a.run(context.Background(), []string{"--config", configPath, "config", "source", "status"}); code != 0 {
+		t.Fatalf("status exit=%d output=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"configured":false`) || !strings.Contains(stdout.String(), `"in_sync":false`) {
+		t.Fatalf("unexpected source status: %s", stdout.String())
+	}
+}

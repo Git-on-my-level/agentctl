@@ -106,7 +106,7 @@ func LoadBundle(path string) (Bundle, BundleProvenance, error) {
 // Resolve applies a bundle additively after the base config. Existing profile
 // definitions and an existing default cannot be replaced.
 func Resolve(basePath, bundlePath string) (Resolution, error) {
-	result := Resolution{BasePath: basePath, Composition: []string{"safe_builtins", "user_config", "explicit_additive_bundle"}}
+	result := Resolution{BasePath: basePath, Composition: []string{"safe_builtins", "user_config"}}
 	base, err := Load(basePath)
 	if err == nil {
 		result.BasePresent = true
@@ -119,6 +119,7 @@ func Resolve(basePath, bundlePath string) (Resolution, error) {
 		result.Config = base
 		return result, nil
 	}
+	result.Composition = append(result.Composition, "explicit_additive_bundle")
 	bundle, provenance, err := LoadBundle(bundlePath)
 	if err != nil {
 		return Resolution{}, err

@@ -34,7 +34,8 @@ not be reached through symlinked parent directories.
 }
 ```
 
-Use the CLI to write a profile atomically:
+Use the CLI to write a profile atomically only for a manual host-local setup.
+For a Git-backed live config, skip this command and initialize the source first.
 
 ```bash
 agentctl config set-profile \
@@ -106,10 +107,10 @@ world-writable. A normal read-only Git checkout file may therefore be `0644`.
 The commands report its exact source path, byte count, schema version, and
 SHA-256 digest.
 
-Composition is read-only and invocation-scoped. Bundle profiles are added after
-safe built-ins and the selected user config. A profile collision fails closed
+Composition with `--config-bundle` is read-only and invocation-scoped. Bundle
+profiles are added after safe built-ins and the selected user config. A profile collision fails closed
 unless the definitions are identical. A bundle default cannot replace a
-different user-config default. There is no bundle install or apply command.
+different user-config default.
 
 Bundles can contain only adapter executable expectations and an optional exact
 Multica authority. They cannot add adapter arguments, callback commands,
@@ -117,10 +118,69 @@ installation roots, tokens, or arbitrary fields. An adapter executable in a
 bundle is a profile/doctor expectation; it never rewrites the native argv after
 `agentctl run --`.
 
-agentctl does not clone, pull, install, or update that repository. Ordinary Git,
-configuration management, or a host manager owns checkout and revision
-selection. This keeps repository access, rollout, and rollback under the
-operator's existing authority while agentctl reports content provenance.
+For a durable Git-backed live config, initialize an explicit source:
+
+```bash
+agentctl config source init \
+  --remote git@github.com:owner/agentctl-config.git \
+  --ref main \
+  --plan
+agentctl config source init \
+  --remote git@github.com:owner/agentctl-config.git \
+  --ref main
+agentctl config source status
+agentctl config source update
+agentctl config doctor
+```
+
+The default repository file is `config-bundle.json`; override it with
+`--bundle <repository-relative-path>`. The default managed checkout is
+`$XDG_DATA_HOME/agentctl/config-source`, falling back to
+`~/.local/share/agentctl/config-source`; override it at initialization with
+`--checkout <absolute-path>`.
+
+`source init` and `source update` are explicit network and local-write actions.
+They ask native Git/SSH to authenticate noninteractively, validate the fetched
+bundle before applying it, materialize a canonical owner-only `0600` live
+config, and record its commit and content digests in an owner-only state file.
+The checkout is a managed cache, not an editing workspace. Dirty checkouts,
+live-config edits, remote changes, invalid bundles, and non-fast-forward Git
+history fail closed. Edit and push through a separate authoring clone.
+
+`source status` and either command's `--plan` form perform no fetch and make no
+filesystem changes. Plan output distinguishes the current plan invocation from
+the eventual apply invocation and states that the remote and bundle were not
+validated. Updates are never implicit during `run`, `doctor`, or config reads.
+Repository credentials and SSH configuration remain entirely owned by native
+Git/SSH.
+
+On a new Mac, verify prerequisites before initialization:
+
+```bash
+git --version
+ssh -T git@github.com  # or the equivalent check for your Git host
+agentctl config source init --remote git@github.com:owner/agentctl-config.git --plan
+```
+
+The repository must contain `config-bundle.json` at the selected ref unless
+`--bundle` names another repository-relative file. The plan is a local syntax
+and path review, not a network preflight. The real init reports typed Git
+dependency or authorization failures.
+
+If `source status` reports only `live_config` drift, inspect and restore the
+exact already-pinned bundle without a fetch:
+
+```bash
+agentctl config source restore --plan
+agentctl config source restore
+```
+
+Dirty checkout, checkout revision, or bundle drift is never overwritten by
+restore. Fix the authoring repository or managed-checkout cause first. A
+non-fast-forward remote update is rejected; restore the reviewed remote history
+or choose a new source/ref rather than silently accepting rewritten history.
+`doctor` includes configured source status and becomes unhealthy on source
+drift.
 
 Do not place API tokens, SSH keys, callback signing secrets, cookies, prompts,
 results, or native session data in such a repository merely because it is
@@ -134,6 +194,10 @@ The implemented precedence is deliberately small:
 2. the selected user config file;
 3. one explicit additive `--config-bundle`; and
 4. explicit command-line flags and profile selection.
+
+The Git source materializes the live user config; it is not an additional
+runtime precedence layer. Local `config set-profile` changes deliberately
+produce drift and must be reconciled in the source repository.
 
 Environment variables select documented paths or context handles; they are not
 a general policy scripting layer. Configuration is data, not executable code.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/output"
@@ -11,7 +12,7 @@ import (
 
 func (a *app) configCommand(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) == 0 {
-		return output.NewError(output.CodeUsage, "usage: agentctl config set-profile|show|validate|doctor|bundle ...", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl config set-profile|show|validate|doctor|bundle|source ...", false)
 	}
 	path, err := configPath(c)
 	if err != nil {
@@ -57,14 +58,175 @@ func (a *app) configCommand(ctx context.Context, renderer output.Renderer, c com
 		return nil
 	case "bundle":
 		return a.configBundleCommand(renderer, path, c, args[1:])
+	case "source":
+		if c.configBundle != "" {
+			return output.NewError(output.CodeUsage, "config source cannot be combined with --config-bundle", false)
+		}
+		return a.configSourceCommand(ctx, renderer, path, args[1:])
 	case "set-profile":
 		if c.configBundle != "" {
 			return output.NewError(output.CodeUsage, "set-profile cannot be combined with --config-bundle", false)
 		}
 		return a.configSetProfile(renderer, path, args[1:])
 	default:
-		return output.NewError(output.CodeUsage, "config requires set-profile, show, validate, doctor, or bundle", false)
+		return output.NewError(output.CodeUsage, "config requires set-profile, show, validate, doctor, bundle, or source", false)
 	}
+}
+
+func (a *app) configSourceCommand(ctx context.Context, renderer output.Renderer, configPath string, args []string) *output.Error {
+	if len(args) == 0 {
+		return output.NewError(output.CodeUsage, "usage: agentctl config source init|status|update|restore ...", false)
+	}
+	switch args[0] {
+	case "status":
+		if len(args) != 1 {
+			return output.NewError(output.CodeUsage, "config source status takes no arguments", false)
+		}
+		status, err := config.SourceStatusReadOnly(ctx, configPath)
+		if err != nil {
+			return mapConfigError("read config source status", err)
+		}
+		if err := renderer.Success(output.Success{Result: status, Lines: []output.Line{{Lead: "config.source", Fields: []output.Field{{Name: "configured", Value: status.Configured}, {Name: "in_sync", Value: status.InSync}, {Name: "commit", Value: status.AppliedCommit}}}}}); err != nil {
+			return output.Wrap(output.CodeInternal, "write output", false, err)
+		}
+		return nil
+	case "update":
+		plan := false
+		for _, arg := range args[1:] {
+			if arg == "--plan" {
+				plan = true
+				continue
+			}
+			return output.NewError(output.CodeUsage, "unknown config source update flag", false).WithDetail("flag", arg)
+		}
+		if plan {
+			statePath, err := config.SourceStatePath(configPath)
+			if err != nil {
+				return mapConfigError("resolve config source state", err)
+			}
+			state, err := config.LoadSourceState(statePath)
+			if err != nil {
+				return mapConfigError("read config source state", err)
+			}
+			proposal, err := config.PlanSource(configPath, state.Spec, "update")
+			if err != nil {
+				return mapConfigError("plan config source update", err)
+			}
+			if err := renderer.Success(output.Success{Result: proposal, Lines: []output.Line{{Lead: "config.source.plan", Fields: []output.Field{{Name: "operation", Value: proposal.Operation}, {Name: "plan_network", Value: proposal.PlanEffects.NetworkAccess}, {Name: "apply_network", Value: proposal.ApplyEffects.NetworkAccess}}}}}); err != nil {
+				return output.Wrap(output.CodeInternal, "write output", false, err)
+			}
+			return nil
+		}
+		update, err := config.UpdateSource(ctx, configPath, a.currentTime())
+		if err != nil {
+			return mapConfigError("update config source", err)
+		}
+		if err := renderer.Success(output.Success{Result: update, Lines: []output.Line{{Lead: "config.source.update", Fields: []output.Field{{Name: "changed", Value: update.Changed}, {Name: "in_sync", Value: update.Status.InSync}, {Name: "commit", Value: update.Status.AppliedCommit}}}}}); err != nil {
+			return output.Wrap(output.CodeInternal, "write output", false, err)
+		}
+		return nil
+	case "restore":
+		plan := false
+		for _, arg := range args[1:] {
+			if arg == "--plan" {
+				plan = true
+				continue
+			}
+			return output.NewError(output.CodeUsage, "unknown config source restore flag", false).WithDetail("flag", arg)
+		}
+		if plan {
+			status, err := config.SourceStatusReadOnly(ctx, configPath)
+			if err != nil {
+				return mapConfigError("plan config source restore", err)
+			}
+			result := map[string]any{"operation": "restore", "network_access": false, "mutates": false, "would_restore": status.Configured && !status.InSync, "status": status}
+			if err := renderer.Success(output.Success{Result: result, Lines: []output.Line{{Lead: "config.source.restore.plan", Fields: []output.Field{{Name: "would_restore", Value: status.Configured && !status.InSync}, {Name: "network", Value: false}, {Name: "mutates", Value: false}}}}}); err != nil {
+				return output.Wrap(output.CodeInternal, "write output", false, err)
+			}
+			return nil
+		}
+		update, err := config.RestoreSource(ctx, configPath)
+		if err != nil {
+			return mapConfigError("restore config source", err)
+		}
+		if err := renderer.Success(output.Success{Result: update, Lines: []output.Line{{Lead: "config.source.restore", Fields: []output.Field{{Name: "changed", Value: update.Changed}, {Name: "in_sync", Value: update.Status.InSync}}}}}); err != nil {
+			return output.Wrap(output.CodeInternal, "write output", false, err)
+		}
+		return nil
+	case "init":
+		var remote, ref, bundlePath, checkoutPath string
+		plan := false
+		for i := 1; i < len(args); i++ {
+			take := func() (string, *output.Error) {
+				if i+1 >= len(args) {
+					return "", output.NewError(output.CodeUsage, args[i]+" requires a value", false)
+				}
+				i++
+				return args[i], nil
+			}
+			switch args[i] {
+			case "--remote":
+				value, problem := take()
+				if problem != nil {
+					return problem
+				}
+				remote = value
+			case "--ref":
+				value, problem := take()
+				if problem != nil {
+					return problem
+				}
+				ref = value
+			case "--bundle":
+				value, problem := take()
+				if problem != nil {
+					return problem
+				}
+				bundlePath = value
+			case "--checkout":
+				value, problem := take()
+				if problem != nil {
+					return problem
+				}
+				checkoutPath = value
+			case "--plan":
+				plan = true
+			default:
+				return output.NewError(output.CodeUsage, "unknown config source init flag", false).WithDetail("flag", args[i])
+			}
+		}
+		if strings.TrimSpace(remote) == "" {
+			return output.NewError(output.CodeUsage, "config source init requires --remote", false)
+		}
+		spec := config.SourceSpec{Remote: remote, Ref: ref, BundlePath: bundlePath, CheckoutPath: checkoutPath}
+		if plan {
+			proposal, err := config.PlanSource(configPath, spec, "init")
+			if err != nil {
+				return mapConfigError("plan config source init", err)
+			}
+			if err := renderer.Success(output.Success{Result: proposal, Lines: []output.Line{{Lead: "config.source.plan", Fields: []output.Field{{Name: "operation", Value: proposal.Operation}, {Name: "plan_network", Value: proposal.PlanEffects.NetworkAccess}, {Name: "apply_network", Value: proposal.ApplyEffects.NetworkAccess}}}}}); err != nil {
+				return output.Wrap(output.CodeInternal, "write output", false, err)
+			}
+			return nil
+		}
+		update, err := config.InitSource(ctx, configPath, spec, a.currentTime())
+		if err != nil {
+			return mapConfigError("initialize config source", err)
+		}
+		if err := renderer.Success(output.Success{Result: update, Lines: []output.Line{{Lead: "config.source.init", Fields: []output.Field{{Name: "in_sync", Value: update.Status.InSync}, {Name: "commit", Value: update.Status.AppliedCommit}}}}}); err != nil {
+			return output.Wrap(output.CodeInternal, "write output", false, err)
+		}
+		return nil
+	default:
+		return output.NewError(output.CodeUsage, "config source requires init, status, update, or restore", false)
+	}
+}
+
+func (a *app) currentTime() time.Time {
+	if a.now != nil {
+		return a.now()
+	}
+	return time.Now()
 }
 
 func (a *app) configBundleCommand(renderer output.Renderer, basePath string, c common, args []string) *output.Error {
@@ -236,6 +398,10 @@ func mapConfigError(message string, err error) *output.Error {
 		return output.Wrap(output.CodeConflict, message, false, err)
 	case errors.Is(err, config.ErrUnsafePath), errors.Is(err, config.ErrUnmanaged):
 		return output.Wrap(output.CodeAuthorizationDenied, message, false, err)
+	case errors.Is(err, config.ErrSourceAuth):
+		return output.Wrap(output.CodeAuthorizationDenied, message, false, err)
+	case errors.Is(err, config.ErrSourceGit):
+		return output.Wrap(output.CodeDependencyUnavailable, message, true, err)
 	default:
 		return output.Wrap(output.CodeUsage, message, false, err)
 	}
