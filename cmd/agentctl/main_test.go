@@ -701,6 +701,72 @@ func TestNativeRunWithPreallocatedIDReleasesJournalWhileRunning(t *testing.T) {
 	}
 }
 
+func TestNativeRunRenewsLeaseWhileReapingAfterEarlyResult(t *testing.T) {
+	root := t.TempDir()
+	journalPath := filepath.Join(root, "state", "journal.db")
+	script := filepath.Join(root, "slow-exit-agent")
+	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"result\",\"status\":\"completed\",\"result\":\"done\"}'\nsleep 7\n"
+	if err := os.WriteFile(script, []byte(contents), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rawID, err := ids.New(ids.TypeExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionID, err := ids.ParseExecutionID(rawID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runOut, runErr bytes.Buffer
+	runner := testApp(&runOut, &runErr)
+	done := make(chan int, 1)
+	go func() {
+		done <- runner.run(context.Background(), []string{"--journal", journalPath, "run", "--adapter", "generic-process", "--execution-id", executionID.String(), "--", script})
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		journal, openErr := store.Open(journalPath, store.Options{ReadOnly: true})
+		if openErr == nil {
+			execution, getErr := journal.GetExecution(context.Background(), executionID)
+			journal.Close()
+			if getErr == nil && execution.State == model.StateRunning && execution.Liveness == model.LivenessAlive {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("early-result execution did not become observable")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(6 * time.Second)
+	var supervisorOut, supervisorErr bytes.Buffer
+	supervisorApp := testApp(&supervisorOut, &supervisorErr)
+	if code := supervisorApp.run(context.Background(), []string{"--journal", journalPath, "supervisor", "run", "--once", "--state-dir", filepath.Join(root, "supervisor")}); code != 0 {
+		t.Fatalf("supervisor cycle exit=%d output=%s stderr=%s", code, supervisorOut.String(), supervisorErr.String())
+	}
+	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := journal.GetExecution(context.Background(), executionID)
+	journal.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.State != model.StateRunning || live.Liveness != model.LivenessAlive || live.Observation.Source != model.ObservationNativeStream || live.Observation.Integrity != model.IntegrityVerified {
+		t.Fatalf("supervisor corrupted lease during native exit cleanup: %#v", live)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("run exit=%d output=%s stderr=%s", code, runOut.String(), runErr.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("run did not finish after slow exit")
+	}
+}
+
 func TestIncompleteMutationReturnsStableUsageError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)

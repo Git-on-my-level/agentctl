@@ -215,8 +215,15 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		if resultErr == nil && terminalAdapterState(result.State) {
 			// The structured stream may announce terminal state just before the
 			// process exits. Reap the child before returning so a foreground run
-			// never leaves an orphan behind.
-			if waited, waitErr := runtime.Wait(launchCtx, launch.Session.Ref); waitErr == nil {
+			// never leaves an orphan behind. Keep renewing the runner lease while
+			// waiting because some native CLIs perform lengthy exit cleanup after
+			// emitting their terminal result.
+			var waitProblem *output.Error
+			execution, waited, waitErr, waitProblem := a.waitForNativeExitWithLease(launchCtx, c, runtime, launch.Session.Ref, execution)
+			if waitProblem != nil {
+				return waitProblem
+			}
+			if waitErr == nil {
 				result = waited
 			} else if !errors.Is(waitErr, context.Canceled) && !errors.Is(waitErr, context.DeadlineExceeded) {
 				return mapAdapterError("wait for native process exit", waitErr).WithDetail("execution_id", execution.ID.String())
@@ -262,6 +269,40 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 			}
 			return interruptedRunError(launchCtx.Err(), execution)
 		case <-ticker.C:
+		}
+	}
+}
+
+type nativeWaitOutcome struct {
+	result adapter.Result
+	err    error
+}
+
+func (a *app) waitForNativeExitWithLease(ctx context.Context, c common, runtime adapter.Adapter, ref adapter.SourceRef, execution model.Execution) (model.Execution, adapter.Result, error, *output.Error) {
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan nativeWaitOutcome, 1)
+	go func() {
+		result, err := runtime.Wait(waitCtx, ref)
+		done <- nativeWaitOutcome{result: result, err: err}
+	}()
+	heartbeat := time.NewTicker(nativeRunnerHeartbeatEvery)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case outcome := <-done:
+			return execution, outcome.result, outcome.err, nil
+		case <-heartbeat.C:
+			journal, current, problem := a.openExecutionWrite(context.Background(), c, execution.ID)
+			if problem != nil {
+				return execution, adapter.Result{}, nil, problem
+			}
+			refreshed, err := refreshRunnerLease(journal, current, a.now().UTC())
+			journal.Close()
+			if err != nil {
+				return execution, adapter.Result{}, nil, mapStoreError("refresh native runner lease while waiting for exit", err)
+			}
+			execution = refreshed
 		}
 	}
 }
