@@ -74,6 +74,17 @@ func TestDoctorRequiresProfileSelectionWhenConfigHasNoDefault(t *testing.T) {
 	}
 }
 
+func TestDoctorIncludesDetectedNativeAdaptersAlongsideConfiguredAuthority(t *testing.T) {
+	got := doctorAdapterSelection(nil, []string{"multica"}, []string{"claude", "codex", "cursor", "hermes"})
+	want := []string{"claude", "codex", "cursor", "multica"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("selection=%v, want %v", got, want)
+	}
+	if explicit := doctorAdapterSelection([]string{"cursor"}, []string{"multica"}, []string{"codex"}); !reflect.DeepEqual(explicit, []string{"cursor"}) {
+		t.Fatalf("explicit selection widened unexpectedly: %v", explicit)
+	}
+}
+
 func TestHelpSideEffectClassesReflectOptionalWrites(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)

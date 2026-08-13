@@ -97,6 +97,64 @@ func TestSourceInitUpdateAndStatusAreDeterministic(t *testing.T) {
 	}
 }
 
+func TestSourceInitSafelyEnrichesExistingLiveConfig(t *testing.T) {
+	remote, _, configPath, checkout := sourceFixture(t)
+	existing := Config{
+		SchemaVersion:  SchemaVersion,
+		DefaultProfile: "private",
+		Profiles: map[string]Profile{
+			"private": {
+				Multica: &Multica{
+					Executable:  "/opt/bin/multica",
+					Profile:     "operator",
+					WorkspaceID: "workspace-1",
+					ServerURL:   "https://coord.example",
+					AppURL:      "https://coord.example",
+				},
+			},
+		},
+	}
+	if err := Save(configPath, existing, false); err != nil {
+		t.Fatal(err)
+	}
+	update, err := InitSource(context.Background(), configPath, SourceSpec{Remote: remote, CheckoutPath: checkout}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !update.Changed || !update.Status.InSync {
+		t.Fatalf("unexpected init: %#v", update)
+	}
+	materialized, err := Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := materialized.Profiles["private"]
+	if profile.Multica == nil || profile.AgentPreferences == nil || profile.Adapters["codex"].Executable != "/opt/bin/codex" {
+		t.Fatalf("existing config was not safely enriched: %#v", materialized)
+	}
+}
+
+func TestSourceInitRejectsChangesToExistingLiveValues(t *testing.T) {
+	remote, _, configPath, checkout := sourceFixture(t)
+	existing := Config{SchemaVersion: SchemaVersion, DefaultProfile: "private", Profiles: map[string]Profile{"private": {Adapters: map[string]Adapter{"codex": {Executable: "/different/codex"}}}}}
+	if err := Save(configPath, existing, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InitSource(context.Background(), configPath, SourceSpec{Remote: remote, CheckoutPath: checkout}, time.Now()); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "never replace or remove") {
+		t.Fatalf("conflicting init error=%v", err)
+	}
+	got, err := Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Profiles["private"].Adapters["codex"].Executable != "/different/codex" {
+		t.Fatalf("conflicting init changed live config: %#v", got)
+	}
+	if _, err := os.Lstat(checkout); !os.IsNotExist(err) {
+		t.Fatalf("conflicting init activated checkout: %v", err)
+	}
+}
+
 func TestSourceUpdateFailsClosedOnLiveOrCheckoutDrift(t *testing.T) {
 	remote, _, configPath, checkout := sourceFixture(t)
 	ctx := context.Background()

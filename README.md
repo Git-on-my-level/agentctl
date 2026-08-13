@@ -150,6 +150,8 @@ and does not mutate local config. A configured Git source updates only on the
 explicit `source update` command, accepts fast-forwards only, and fails closed
 on checkout or live-config drift. Git/SSH continues to own credentials. See
 [Configuration](docs/configuration.md).
+First-time source setup may safely add missing bundle fields to an existing
+valid live config, but never replaces or removes an existing value implicitly.
 
 Choose one setup path:
 
