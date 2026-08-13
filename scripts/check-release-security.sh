@@ -29,13 +29,17 @@ trap 'rm -rf "$work"' EXIT
 )
 
 found=0
-for archive in "$dist_abs"/*.tar.gz; do
-  [ -f "$archive" ] || continue
-  found=1
-  archive_name=$(basename "$archive")
-  awk -v file="$archive_name" '$2 == file { found=1 } END { exit found ? 0 : 1 }' \
-    "$dist_abs/SHA256SUMS" || die "archive is not listed in SHA256SUMS: $archive_name"
-  name=$(basename "$archive" .tar.gz)
+while read -r _ archive_name; do
+	[ -n "$archive_name" ] || continue
+	case "$archive_name" in
+		agentctl_*.tar.gz) ;;
+		*) die "unexpected release artifact in SHA256SUMS: $archive_name" ;;
+	esac
+	[ "$(basename "$archive_name")" = "$archive_name" ] || die "release artifact must be a basename: $archive_name"
+	archive="$dist_abs/$archive_name"
+	[ -f "$archive" ] || die "release archive is missing: $archive_name"
+	found=1
+	name=$(basename "$archive" .tar.gz)
   target="$work/$name"
   mkdir -p "$target"
   tar -xzf "$archive" -C "$target"
@@ -49,8 +53,8 @@ for archive in "$dist_abs"/*.tar.gz; do
   done
   binary="$target/$name/agentctl"
   [ -f "$binary" ] || die "archive does not contain the expected agentctl binary: $archive_name"
-  printf 'scanning %s\n' "$archive_name"
-  "$GOVULNCHECK" -mode=binary "$binary"
-done
+	printf 'scanning %s\n' "$archive_name"
+	"$GOVULNCHECK" -mode=binary "$binary"
+done < "$dist_abs/SHA256SUMS"
 
 [ "$found" -eq 1 ] || die "no release archives found in $dist_abs"
