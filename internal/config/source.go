@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -331,10 +332,12 @@ func InitSourceWithGit(ctx context.Context, git SourceGit, configPath string, sp
 	}
 	materialized := MaterializeBundle(bundle)
 	configExisted := false
+	var previousConfig Config
 	if existing, loadErr := Load(cleanConfig); loadErr == nil {
 		configExisted = true
-		if !configsEqual(existing, materialized) {
-			return SourceUpdate{}, fmt.Errorf("%w: existing live config differs from Git bundle", ErrConflict)
+		previousConfig = existing
+		if !configsEqual(existing, materialized) && !configCanBeEnrichedBy(existing, materialized) {
+			return SourceUpdate{}, fmt.Errorf("%w: existing live config conflicts with Git bundle; initialization may add missing profiles or profile fields but never replace or remove existing values", ErrConflict)
 		}
 	} else if !errors.Is(loadErr, ErrNotFound) {
 		return SourceUpdate{}, loadErr
@@ -352,8 +355,22 @@ func InitSourceWithGit(ctx context.Context, git SourceGit, configPath string, sp
 			_ = os.RemoveAll(spec.CheckoutPath)
 		}
 	}()
-	if err := Save(cleanConfig, materialized, false); err != nil {
-		return SourceUpdate{}, err
+	rollbackLive := false
+	defer func() {
+		if !rollbackLive {
+			return
+		}
+		if configExisted {
+			_ = Save(cleanConfig, previousConfig, true)
+		} else {
+			_ = os.Remove(cleanConfig)
+		}
+	}()
+	if !configExisted || !configsEqual(previousConfig, materialized) {
+		if err := Save(cleanConfig, materialized, configExisted); err != nil {
+			return SourceUpdate{}, err
+		}
+		rollbackLive = true
 	}
 	liveDigest, err := fileSHA256(cleanConfig)
 	if err != nil {
@@ -362,12 +379,10 @@ func InitSourceWithGit(ctx context.Context, git SourceGit, configPath string, sp
 	state := SourceState{SchemaVersion: SourceSchemaVersion, Spec: spec, AppliedCommit: commit, BundleSHA256: bundleDigest, LiveSHA256: liveDigest, AppliedAt: now.UTC()}
 	if err := SaveSourceState(statePath, state, false); err != nil {
 		_ = os.Remove(statePath)
-		if !configExisted {
-			_ = os.Remove(cleanConfig)
-		}
 		return SourceUpdate{}, err
 	}
 	rollbackCheckout = false
+	rollbackLive = false
 	status, err := SourceStatusWithGit(ctx, git, cleanConfig)
 	if err != nil {
 		return SourceUpdate{}, err
@@ -683,6 +698,37 @@ func configsEqual(a, b Config) bool {
 	aBytes, aErr := marshalConfig(a)
 	bBytes, bErr := marshalConfig(b)
 	return aErr == nil && bErr == nil && bytes.Equal(aBytes, bBytes)
+}
+
+// configCanBeEnrichedBy permits a first-time source setup to adopt a live
+// config when the fetched bundle only adds missing values. Existing profile
+// fields remain authoritative for this check: any replacement or removal still
+// fails closed.
+func configCanBeEnrichedBy(existing, desired Config) bool {
+	if existing.SchemaVersion != desired.SchemaVersion {
+		return false
+	}
+	if existing.DefaultProfile != "" && existing.DefaultProfile != desired.DefaultProfile {
+		return false
+	}
+	for name, current := range existing.Profiles {
+		target, ok := desired.Profiles[name]
+		if !ok {
+			return false
+		}
+		if current.Multica != nil && !reflect.DeepEqual(current.Multica, target.Multica) {
+			return false
+		}
+		if current.AgentPreferences != nil && !reflect.DeepEqual(current.AgentPreferences, target.AgentPreferences) {
+			return false
+		}
+		for adapterName, adapter := range current.Adapters {
+			if targetAdapter, ok := target.Adapters[adapterName]; !ok || targetAdapter != adapter {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func fileSHA256(path string) (string, error) {

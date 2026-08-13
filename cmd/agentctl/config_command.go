@@ -429,18 +429,20 @@ func configResolution(c common) (config.Resolution, error) {
 }
 
 func mapConfigError(message string, err error) *output.Error {
+	var problem *output.Error
 	switch {
 	case errors.Is(err, config.ErrNotFound), errors.Is(err, config.ErrProfileMissing):
-		return output.Wrap(output.CodeNotFound, message, false, err)
+		problem = output.Wrap(output.CodeNotFound, message, false, err)
 	case errors.Is(err, config.ErrConflict):
-		return output.Wrap(output.CodeConflict, message, false, err)
+		problem = output.Wrap(output.CodeConflict, message, false, err)
 	case errors.Is(err, config.ErrUnsafePath), errors.Is(err, config.ErrUnmanaged):
-		return output.Wrap(output.CodeAuthorizationDenied, message, false, err)
+		problem = output.Wrap(output.CodeAuthorizationDenied, message, false, err)
 	case errors.Is(err, config.ErrSourceAuth):
-		return output.Wrap(output.CodeAuthorizationDenied, message, false, err)
+		problem = output.Wrap(output.CodeAuthorizationDenied, message, false, err)
 	case errors.Is(err, config.ErrSourceGit):
-		return output.Wrap(output.CodeDependencyUnavailable, message, true, err)
+		problem = output.Wrap(output.CodeDependencyUnavailable, message, true, err)
 	default:
-		return output.Wrap(output.CodeUsage, message, false, err)
+		problem = output.Wrap(output.CodeUsage, message, false, err)
 	}
+	return problem.WithDetail("reason", err.Error())
 }

@@ -109,6 +109,7 @@ func (a *app) doctorReadiness(ctx context.Context, renderer output.Renderer, c c
 	}
 	report.Config = doctorConfig{Path: configPath, Status: "absent_optional"}
 	configuredExecutables := map[string]string{}
+	configuredAdapters := []string{}
 	if resolution, configErr := config.Resolve(configPath, c.configBundle); configErr == nil {
 		cfg := resolution.Config
 		name, profile, resolveErr := cfg.ResolveProfile(c.profile)
@@ -126,10 +127,10 @@ func (a *app) doctorReadiness(ctx context.Context, renderer output.Renderer, c c
 		}
 		for name, value := range profile.Adapters {
 			configuredExecutables[canonicalAdapterName(name)] = value.Executable
-			selected = append(selected, name)
+			configuredAdapters = append(configuredAdapters, name)
 		}
 		if profile.Multica != nil {
-			selected = append(selected, "multica")
+			configuredAdapters = append(configuredAdapters, "multica")
 			configuredExecutables["multica"] = profile.Multica.Executable
 		}
 	} else if !errors.Is(configErr, config.ErrNotFound) {
@@ -147,14 +148,7 @@ func (a *app) doctorReadiness(ctx context.Context, renderer output.Renderer, c c
 		}
 	}
 
-	if len(selected) == 0 {
-		for _, name := range expected {
-			if name != "hermes" {
-				selected = append(selected, name)
-			}
-		}
-	}
-	selected = uniqueAdapterNames(selected)
+	selected = doctorAdapterSelection(selected, configuredAdapters, expected)
 	for _, name := range selected {
 		value, adapterProblem := a.adapterForIntrospection(name, c)
 		if adapterProblem != nil {
@@ -219,6 +213,19 @@ func (a *app) doctorReadiness(ctx context.Context, renderer output.Renderer, c c
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil
+}
+
+func doctorAdapterSelection(explicit, configured, detected []string) []string {
+	if len(explicit) != 0 {
+		return uniqueAdapterNames(explicit)
+	}
+	selected := append([]string(nil), configured...)
+	for _, name := range detected {
+		if name != "hermes" {
+			selected = append(selected, name)
+		}
+	}
+	return uniqueAdapterNames(selected)
 }
 
 func canonicalAdapterName(value string) string {

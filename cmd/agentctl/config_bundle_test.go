@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
+	"github.com/Git-on-my-level/agentctl/internal/output"
 )
 
 func cliBundle(t *testing.T) string {
@@ -143,6 +145,13 @@ func TestConfigSourceStatusIsExplicitlyUnconfigured(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"configured":false`) || !strings.Contains(stdout.String(), `"in_sync":true`) {
 		t.Fatalf("unexpected source status: %s", stdout.String())
+	}
+}
+
+func TestConfigErrorsExposeSafeActionableReason(t *testing.T) {
+	problem := mapConfigError("initialize config source", fmt.Errorf("%w: existing live config conflicts with Git bundle", config.ErrConflict))
+	if problem.Code != output.CodeConflict || problem.Details["reason"] != "agentctl config conflict: existing live config conflicts with Git bundle" {
+		t.Fatalf("unexpected mapped config error: %#v", problem)
 	}
 }
 
