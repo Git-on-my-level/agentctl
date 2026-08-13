@@ -154,7 +154,7 @@ handles but cannot claim the child model read them.
 - Preserve a bounded, redacted stderr diagnostic in explicit failed outcomes
   when no structured error is available; events and callbacks remain
   metadata-only.
-- Label stored content provenance (`terminal_result` or
+- Label stored content provenance (`assistant_terminal_result` or
   `assistant_message_fallback`) so callers can assert an assistant source.
 - Retain Cursor session ID for attach/resume.
 

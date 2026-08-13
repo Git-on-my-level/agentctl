@@ -128,8 +128,10 @@ a digest only when complete. The outcome never contains prompts, reasoning,
 tool chatter, token streams, or arbitrary native stdout/stderr.
 
 Stored text content may include a bounded `source` label such as
-`terminal_result` or `assistant_message_fallback`. `agentctl result` can assert
-that provenance and a caller-selected minimum byte count. Failed outcomes may
+`assistant_terminal_result`, `assistant_message_fallback`, or the generic
+`terminal_result`. `agentctl result` can assert that provenance and a
+caller-selected minimum byte count; the semantic `assistant` requirement
+accepts both Cursor assistant sources. Failed outcomes may
 carry one bounded, secret-redacted native diagnostic when structured failure
 data is absent; terminal events expose only its normalized failure code.
 

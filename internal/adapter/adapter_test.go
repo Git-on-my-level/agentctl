@@ -126,7 +126,7 @@ func TestCursorTerminalResultCarriesContentProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Result == nil || got.Result.Content != "direct answer" || got.Result.Data["result_content_source"] != "terminal_result" {
+	if got.Result == nil || got.Result.Content != "direct answer" || got.Result.Data["result_content_source"] != "assistant_terminal_result" {
 		t.Fatalf("terminal result provenance=%#v", got.Result)
 	}
 }
