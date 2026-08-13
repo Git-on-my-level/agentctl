@@ -49,8 +49,9 @@ Initial prefixes are a registry, not an open string:
 | `issue` | Imported durable issue binding |
 | `run` | Imported durable run binding |
 
-Display labels such as `m5-mbp`, `omi`, or `SCA-293` may be shown alongside a
-word ID, but are never accepted as the sole target of a mutation.
+Display labels such as `build-laptop`, `example-service`, or `TASK-123` may be
+shown alongside a word ID, but are never accepted as the sole target of a
+mutation.
 
 ## Version 1 encoding
 

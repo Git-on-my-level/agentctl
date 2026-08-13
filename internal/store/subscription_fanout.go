@@ -111,6 +111,14 @@ func matchesEventScope(value subscription.Subscription, event *model.Event, now 
 		return false
 	}
 	filter := value.Filter
+	// Normalize aliases at match time as well as creation time so legacy
+	// subscriptions written with the user-facing `direct` authority continue
+	// to match native events after upgrade.
+	normalized, err := filter.Normalize()
+	if err != nil {
+		return false
+	}
+	filter = normalized
 	if len(filter.ExecutionIDs) > 0 {
 		matched := false
 		for _, executionID := range filter.ExecutionIDs {

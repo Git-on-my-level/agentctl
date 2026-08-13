@@ -38,7 +38,15 @@ func (f EventFilter) Normalize() (EventFilter, error) {
 	if len(f.ExecutionIDs) == 0 && strings.TrimSpace(f.Authority) == "" && strings.TrimSpace(f.Query) == "" {
 		return EventFilter{}, fmt.Errorf("%w: exact execution, authority, or narrow query required", ErrInvalidFilter)
 	}
-	result := EventFilter{Authority: strings.TrimSpace(f.Authority), Query: strings.TrimSpace(f.Query)}
+	authority := strings.ToLower(strings.TrimSpace(f.Authority))
+	switch authority {
+	case "", "multica":
+	case "direct", "native":
+		authority = "native"
+	default:
+		return EventFilter{}, fmt.Errorf("%w: authority must be direct, native, or multica", ErrInvalidFilter)
+	}
+	result := EventFilter{Authority: authority, Query: strings.TrimSpace(f.Query)}
 	seen := make(map[string]struct{})
 	for _, id := range f.ExecutionIDs {
 		id = strings.TrimSpace(id)

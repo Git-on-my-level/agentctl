@@ -52,7 +52,10 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 	want := map[string]string{
 		"adapter-manifest":  "schemas/adapter-manifest.schema.json",
 		"callback-envelope": "schemas/callback-envelope.schema.json",
+		"config-bundle":     "schemas/config-bundle.schema.json",
 		"context-result":    "schemas/context-result.schema.json",
+		"data-cleanup-plan": "schemas/data-cleanup-plan.schema.json",
+		"data-inventory":    "schemas/data-inventory.schema.json",
 		"error":             "schemas/error.schema.json",
 		"event":             "schemas/event.schema.json",
 		"event-page":        "schemas/event-page.schema.json",

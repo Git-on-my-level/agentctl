@@ -2,6 +2,7 @@ SHELL := /bin/sh
 
 GO ?= go
 PYTHON ?= python3
+GOVULNCHECK ?= govulncheck
 BINARY_NAME ?= agentctl
 MAIN_PKG ?= ./cmd/agentctl
 BUILD_DIR ?= build
@@ -16,12 +17,23 @@ LDFLAGS ?= -s -w -X main.version=$(VERSION)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || printf '%s' dev)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || printf '%s' unknown)
 
-.PHONY: all ci fmt fmt-check vet test build check-ids check-schemas check-links check-scripts check-portable-assets check-distribution release \
+.PHONY: all ci security vuln-check fmt fmt-check vet test test-race build check-ids check-schemas check-links check-scripts check-portable-assets check-distribution release check-release-security \
 	install uninstall clean
 
 all: ci
 
 ci: fmt-check vet test check-ids check-schemas check-links check-scripts check-portable-assets check-distribution build
+
+# Security checks are separate from ci because they query the live Go
+# vulnerability database. CI installs the pinned scanner; local callers should
+# install it explicitly so an ordinary `make ci` never hides a network fetch.
+security: vuln-check
+
+vuln-check:
+	@command -v '$(GOVULNCHECK)' >/dev/null 2>&1 || { \
+		echo 'govulncheck is required; install golang.org/x/vuln/cmd/govulncheck@v1.6.0' >&2; exit 1; \
+	}
+	'$(GOVULNCHECK)' ./...
 
 fmt:
 	@files="$$(find . -type f -name '*.go' -not -path './vendor/*' -not -path './.git/*')"; \
@@ -41,6 +53,12 @@ vet:
 test:
 	@test -f go.mod || { echo 'go.mod is required for tests' >&2; exit 1; }
 	GOFLAGS='$(GOFLAGS)' $(GO) test ./...
+
+# Exercise the stateful and process-lifecycle packages under the race detector
+# without imposing the cost on every local `make ci` invocation.
+test-race:
+	@test -f go.mod || { echo 'go.mod is required for race tests' >&2; exit 1; }
+	GOFLAGS='$(GOFLAGS)' $(GO) test -race ./cmd/agentctl ./internal/store ./internal/adapter ./internal/supervisor ./internal/portableasset
 
 check-ids:
 	$(PYTHON) $(SCRIPTS_DIR)/id-reference.py
@@ -66,11 +84,21 @@ check-portable-assets:
 check-distribution:
 	tests/validators/test_distributions.sh
 	tests/validators/test_install_scripts.sh
+	tests/validators/test_public_default.sh
 	@if [ -x tests/validators/test_supervisor_scripts.sh ]; then tests/validators/test_supervisor_scripts.sh; fi
+	@if [ -x tests/validators/test_systemd_supervisor_scripts.sh ]; then tests/validators/test_systemd_supervisor_scripts.sh; fi
 
 release:
 	VERSION='$(VERSION)' COMMIT='$(COMMIT)' MAIN_PKG='$(MAIN_PKG)' \
 		$(SCRIPTS_DIR)/build-release.sh --output-dir '$(DIST_DIR)'
+
+# Scan the exact release binaries, including the standard library compiled
+# into them. Run this after `make release`; it does not alter the archives.
+check-release-security:
+	@command -v '$(GOVULNCHECK)' >/dev/null 2>&1 || { \
+		echo 'govulncheck is required; install golang.org/x/vuln/cmd/govulncheck@v1.6.0' >&2; exit 1; \
+	}
+	GOVULNCHECK='$(GOVULNCHECK)' $(SCRIPTS_DIR)/check-release-security.sh '$(DIST_DIR)'
 
 install: build
 	$(SCRIPTS_DIR)/install.sh --binary '$(BIN)' --force

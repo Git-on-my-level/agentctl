@@ -38,12 +38,16 @@ type ExecutableProvenance struct {
 // It contains only local observations. In particular, checks never contact
 // server_url/app_url and never update an executable/cache.
 type ProvenanceReport struct {
-	Valid    bool                            `json:"valid"`
-	Profile  string                          `json:"profile,omitempty"`
-	Checks   []ProvenanceCheck               `json:"checks"`
-	Errors   []string                        `json:"errors,omitempty"`
-	Adapters map[string]ExecutableProvenance `json:"adapters,omitempty"`
-	Multica  *ExecutableProvenance           `json:"multica,omitempty"`
+	Valid            bool                            `json:"valid"`
+	Profile          string                          `json:"profile,omitempty"`
+	Checks           []ProvenanceCheck               `json:"checks"`
+	Errors           []string                        `json:"errors,omitempty"`
+	Adapters         map[string]ExecutableProvenance `json:"adapters,omitempty"`
+	Multica          *ExecutableProvenance           `json:"multica,omitempty"`
+	AgentPreferences *AgentPreferences               `json:"agent_preferences,omitempty"`
+	Bundle           *BundleProvenance               `json:"bundle,omitempty"`
+	Composition      []string                        `json:"composition_order,omitempty"`
+	Source           *SourceStatus                   `json:"source,omitempty"`
 }
 
 // ProvenanceOptions injects deterministic local functions for tests and
@@ -75,6 +79,10 @@ func CheckProfileProvenance(profile Profile, options ...ProvenanceOptions) Prove
 	}
 
 	report := ProvenanceReport{Valid: true, Adapters: make(map[string]ExecutableProvenance)}
+	if profile.AgentPreferences != nil {
+		preferences := cloneProfile(Profile{AgentPreferences: profile.AgentPreferences}).AgentPreferences
+		report.AgentPreferences = preferences
+	}
 	if err := validateProfileForReport(profile); err != nil {
 		report.addError(err)
 	}

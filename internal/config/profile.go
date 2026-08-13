@@ -19,7 +19,6 @@ type ProfileInput struct {
 	// AdapterName and AdapterExecutable are the convenient single-adapter form.
 	AdapterName       string
 	AdapterExecutable string
-	AdapterArguments  []string
 
 	// Multica may be supplied as a complete value. The scalar fields are a
 	// convenient form for callers constructing input from flags or JSON.
@@ -40,7 +39,7 @@ func BuildProfile(input ProfileInput) (Profile, error) {
 	if len(input.Adapters) > 0 {
 		profile.Adapters = cloneAdapters(input.Adapters)
 	}
-	if strings.TrimSpace(input.AdapterName) != "" || strings.TrimSpace(input.AdapterExecutable) != "" || len(input.AdapterArguments) > 0 {
+	if strings.TrimSpace(input.AdapterName) != "" || strings.TrimSpace(input.AdapterExecutable) != "" {
 		name := strings.TrimSpace(input.AdapterName)
 		if name == "" {
 			return Profile{}, errors.New("adapter name is required when adapter executable is supplied")
@@ -54,7 +53,7 @@ func BuildProfile(input ProfileInput) (Profile, error) {
 		if _, exists := profile.Adapters[name]; exists {
 			return Profile{}, fmt.Errorf("adapter %q supplied more than once", name)
 		}
-		profile.Adapters[name] = Adapter{Executable: input.AdapterExecutable, Arguments: append([]string(nil), input.AdapterArguments...)}
+		profile.Adapters[name] = Adapter{Executable: input.AdapterExecutable}
 	}
 
 	if input.Multica != nil {
@@ -165,7 +164,6 @@ func cloneAdapters(in map[string]Adapter) map[string]Adapter {
 	}
 	out := make(map[string]Adapter, len(in))
 	for name, adapter := range in {
-		adapter.Arguments = append([]string(nil), adapter.Arguments...)
 		out[name] = adapter
 	}
 	return out
@@ -188,6 +186,12 @@ func cloneProfile(in Profile) Profile {
 	if in.Multica != nil {
 		m := *in.Multica
 		out.Multica = &m
+	}
+	if in.AgentPreferences != nil {
+		preferences := *in.AgentPreferences
+		preferences.Preferred = append([]AgentPreference(nil), in.AgentPreferences.Preferred...)
+		preferences.Notes = append([]string(nil), in.AgentPreferences.Notes...)
+		out.AgentPreferences = &preferences
 	}
 	return out
 }

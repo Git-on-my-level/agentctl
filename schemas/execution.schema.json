@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agentctl.dev/schemas/execution.schema.json",
+  "$id": "urn:agentctl:schema:execution:v1",
   "x-agentctl-docs": "../docs/execution-envelope.md#core-record",
   "title": "agentctl execution envelope v1",
   "type": "object",

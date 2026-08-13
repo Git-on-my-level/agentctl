@@ -117,6 +117,36 @@ func TestEventAppendIsAtomicContiguousAndDeduplicated(t *testing.T) {
 	}
 }
 
+func TestObservedEventStateAndCallbackCommitAtomically(t *testing.T) {
+	ctx := context.Background()
+	journal, _, now := openTestJournal(t)
+	execution, _, err := journal.CreateExecution(ctx, sampleExecution(now), contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attention := model.StateAttention
+	key, projection := semanticEvent(t, execution.Adapter, map[string]any{"attention": "permission"})
+	event := model.Event{ExecutionID: execution.ID, Authority: execution.Authority, Adapter: execution.Adapter, Ordering: model.OrderingObservation, Kind: model.EventAttention, State: &attention, ObservedAt: now.Add(time.Second), DedupeKey: key, DedupeVersion: 1, Payload: map[string]any{"attention_kind": "permission"}}
+	next := execution
+	next.State = model.StateAttention
+	next.Liveness = model.LivenessBlocked
+	next.UpdatedAt = event.ObservedAt
+	next.Observation.ObservedAt = event.ObservedAt
+	stored, storedEvent, reused, err := journal.CommitObservedEvent(ctx, next, execution.Revision, event, projection)
+	if err != nil || reused || stored.State != model.StateAttention || stored.Liveness != model.LivenessBlocked || stored.Revision != execution.Revision+1 || storedEvent.Kind != model.EventAttention {
+		t.Fatalf("stored=%#v event=%#v reused=%v err=%v", stored, storedEvent, reused, err)
+	}
+	again, duplicate, reused, err := journal.CommitObservedEvent(ctx, stored, stored.Revision, event, projection)
+	if err != nil || !reused || again.Revision != stored.Revision || duplicate.ID != storedEvent.ID {
+		t.Fatalf("again=%#v event=%#v reused=%v err=%v", again, duplicate, reused, err)
+	}
+	invalid := stored
+	invalid.State = model.StateCompleted
+	if _, _, _, err := journal.CommitObservedEvent(ctx, invalid, stored.Revision, event, projection); !errors.Is(err, ErrConflict) {
+		t.Fatalf("terminal observed state err=%v", err)
+	}
+}
+
 func TestOnlyOneTerminalEventIsAccepted(t *testing.T) {
 	ctx := context.Background()
 	journal, _, now := openTestJournal(t)
@@ -172,6 +202,11 @@ func TestTerminalOutcomeStateEventAndContentCommitAtomically(t *testing.T) {
 	readOutcome, err := journal.GetOutcome(ctx, execution.ID)
 	if err != nil || readOutcome.Content == nil || readOutcome.Content.Text != "answer" {
 		t.Fatalf("read outcome=%#v err=%v", readOutcome, err)
+	}
+	progressKey, progressProjection := semanticEvent(t, execution.Adapter, map[string]any{"progress": "late"})
+	progress := model.Event{ExecutionID: execution.ID, Authority: execution.Authority, Adapter: execution.Adapter, Ordering: model.OrderingObservation, Kind: model.EventProgress, ObservedAt: terminalAt.Add(time.Second), DedupeKey: progressKey, DedupeVersion: 1}
+	if _, _, err := journal.AppendEvent(ctx, progress, progressProjection); !errors.Is(err, ErrTerminalConflict) {
+		t.Fatalf("late nonterminal event err=%v", err)
 	}
 }
 

@@ -462,6 +462,12 @@ func (j *Journal) appendEventTx(tx *bbolt.Tx, event model.Event, canonicalProjec
 	if err := json.Unmarshal(execRaw, &execution); err != nil {
 		return model.Event{}, false, corrupt(err)
 	}
+	if execution.State.Terminal() {
+		switch event.Kind {
+		case model.EventStarted, model.EventProgress, model.EventAttention, model.EventHealth:
+			return model.Event{}, false, ErrTerminalConflict
+		}
+	}
 	if event.ID.IsZero() {
 		allocated, err := newUniqueEventID(tx, j.generator)
 		if err != nil {
@@ -524,6 +530,73 @@ func (j *Journal) appendEventTx(tx *bbolt.Tx, event model.Event, canonicalProjec
 		return model.Event{}, false, fmt.Errorf("subscription fan-out: %w", err)
 	}
 	return event, false, nil
+}
+
+// CommitObservedEvent atomically records a nonterminal execution observation,
+// its normalized event, and matching callback deliveries. An exact duplicate
+// event is reused without advancing the execution revision.
+func (j *Journal) CommitObservedEvent(ctx context.Context, next model.Execution, expectedRevision uint64, event model.Event, canonicalProjection []byte) (model.Execution, model.Event, bool, error) {
+	if j.readOnly {
+		return model.Execution{}, model.Event{}, false, ErrReadOnly
+	}
+	if err := ctx.Err(); err != nil {
+		return model.Execution{}, model.Event{}, false, err
+	}
+	if event.Kind == model.EventTerminal || next.State.Terminal() {
+		return model.Execution{}, model.Event{}, false, fmt.Errorf("%w: observed event must be nonterminal", ErrConflict)
+	}
+	if err := validateEventProjection(event, canonicalProjection); err != nil {
+		return model.Execution{}, model.Event{}, false, err
+	}
+	var storedExecution model.Execution
+	var storedEvent model.Event
+	var reused bool
+	err := j.db.Update(func(tx *bbolt.Tx) error {
+		executions := tx.Bucket(bExecutions)
+		raw := executions.Get([]byte(next.ID.String()))
+		if raw == nil {
+			return ErrNotFound
+		}
+		var previous model.Execution
+		if err := json.Unmarshal(raw, &previous); err != nil {
+			return corrupt(err)
+		}
+		if previous.State.Terminal() {
+			return ErrTerminalConflict
+		}
+		if previous.Revision != expectedRevision {
+			return fmt.Errorf("%w: expected revision %d, current %d", ErrConflict, expectedRevision, previous.Revision)
+		}
+		var appendErr error
+		storedEvent, reused, appendErr = j.appendEventTx(tx, event, canonicalProjection)
+		if appendErr != nil {
+			return appendErr
+		}
+		if reused {
+			storedExecution = previous
+			return nil
+		}
+		next.Revision = expectedRevision + 1
+		if next.UpdatedAt.IsZero() {
+			next.UpdatedAt = j.clock().UTC()
+		}
+		if next.Observation.ObservedAt.IsZero() {
+			next.Observation.ObservedAt = next.UpdatedAt
+		}
+		if err := model.ValidateTransition(previous, next); err != nil {
+			return fmt.Errorf("%w: %v", ErrConflict, err)
+		}
+		encoded, err := json.Marshal(next)
+		if err != nil {
+			return err
+		}
+		if err := executions.Put([]byte(next.ID.String()), encoded); err != nil {
+			return err
+		}
+		storedExecution = next
+		return nil
+	})
+	return storedExecution, storedEvent, reused, err
 }
 
 // CommitTerminalOutcome atomically records terminal execution state, its

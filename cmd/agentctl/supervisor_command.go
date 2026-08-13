@@ -237,7 +237,16 @@ func (a *app) supervisorPlan(renderer output.Renderer, args []string) *output.Er
 		if err != nil {
 			return output.Wrap(output.CodeInternal, "resolve home", false, err)
 		}
-		plan, err := supervisor.BuildSystemdInstallPlan(service, filepath.Join(home, ".config", "systemd", "user"))
+		configHome := ""
+		if a.getenv != nil {
+			configHome = strings.TrimSpace(a.getenv("XDG_CONFIG_HOME"))
+		}
+		if configHome == "" {
+			configHome = filepath.Join(home, ".config")
+		} else if !filepath.IsAbs(configHome) {
+			return output.NewError(output.CodeUsage, "XDG_CONFIG_HOME must be an absolute path", false)
+		}
+		plan, err := supervisor.BuildSystemdInstallPlan(service, filepath.Join(configHome, "systemd", "user"))
 		if err != nil {
 			return output.Wrap(output.CodeUsage, "build systemd plan", false, err)
 		}

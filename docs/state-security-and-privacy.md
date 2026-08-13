@@ -2,39 +2,42 @@
 
 ## State classes
 
-### Shared and versioned
+### Optionally shared and versioned
 
 - schemas and adapter manifests;
 - knowledge-source registry entries and pinned source revisions;
-- fleet roles and capability policy;
+- operator-defined roles and capability policy;
 - reviewed model/executor routing policy;
 - portable skills and runbooks;
 - knowledge index metadata;
 - public/nonsecret resource aliases.
 
-### Shared through existing authorities
+### Shared through optional existing authorities
 
-- Multica issues, runs, comments, ownership, and artifact references;
-- Tailnet service/resource contract;
+- durable-coordinator issues, runs, comments, ownership, and artifact
+  references;
+- operator-selected network service/resource contracts;
 - Git branches, commits, PRs, and CI state.
 
 ### Host-local operational state
 
 - execution envelopes;
-- event cursor and short-retention normalized journal;
+- normalized journal and event cursors;
+- bounded final result bodies, stored by default up to 1 MiB per execution;
 - subscription definitions;
 - callback outbox, acknowledgements, and dead letters;
 - opaque native resume references;
 - last verified shared-context bundle.
 
 This state is namespaced by stable host word ID and local store generation. It
-is not database-replicated between machines. Cross-host callbacks exchange
-bounded documents and converge on full semantic dedupe keys; portable URIs keep
-the origin host explicit.
+is not database-replicated between machines. Automatic journal retention is not
+implemented in the preview. Cross-host callbacks exchange bounded metadata
+documents and converge on full semantic dedupe keys; portable URIs keep the
+origin host explicit.
 
 ### Never synchronized by `agentctl`
 
-- raw prompts, reasoning, or transcripts;
+- raw prompts, reasoning, intermediate output, or transcripts;
 - Hermes/Codex/Claude/Cursor/OMP session databases;
 - authentication tokens, SSH keys, cookies, Keychain values;
 - environment dumps;
@@ -101,29 +104,59 @@ destination-resolution rules are normative in
 A valid callback cannot mutate or cancel an execution unless it uses a separate
 explicit mutation capability.
 
-## Sensitivity classes
+## Output sensitivity boundaries
 
-Proposed classes:
+agentctl does not implement caller roles or role-dependent rendering. Normal
+`status` and `result` projections omit execution working-directory and
+repository paths plus opaque native source IDs. Events and callbacks carry
+bounded normalized metadata rather than prompts, transcripts, or result
+bodies.
 
-```text
-public
-fleet-internal
-operator-private
-project-confidential
-credential-local
-```
+Operator-facing diagnostics are intentionally more explicit: configuration
+provenance, data inventory, bootstrap status, and install plans can expose
+selected local paths, content digests, host-scoped IDs, and artifact metadata.
+Treat their JSON as operator-private and redact it before sharing. Credentials
+remain forbidden from configuration and normalized journal records rather than
+being protected by an output-role system.
 
-Repository and transport boundaries enforce classes. Output renderers redact
-paths, native source IDs, host details, and artifact metadata according to the
-caller's role and requested output mode.
+## Result storage and event minimization
 
-## Event minimization
+Normalized events contain state and references, not full native output. By
+default, the local journal stores the final UTF-8 outcome body, bounded to 1 MiB
+per execution. The explicit `result` command returns it; status, subscriptions,
+callbacks, and ordinary events do not copy that content. `--no-store-result`
+records an omission tombstone when the caller deliberately does not want result
+content persisted. Artifact events identify kind, authority, digest, and
+retrieval reference without copying content.
 
-Normalized events contain state and references, not full native output. The
-explicit `result` command returns the bounded final outcome stored for that
-execution; status, subscriptions, callbacks, and ordinary events do not copy
-that content. Artifact events identify kind, authority, digest, and retrieval
-reference without copying content.
+### Retention and cleanup
+
+Automatic retention is not implemented in the preview. Operators must include
+the journal in their local data-handling and backup policy and should not run
+sensitive work unless this persistence is acceptable.
+
+`agentctl data inventory` is a read-only aggregate of the journal file,
+logical bucket bytes, record counts, terminal/nonterminal executions, outcomes,
+and stored result bytes. `agentctl data cleanup --before <RFC3339> --plan` is
+also read-only. It selects only complete terminal execution graphs strictly
+before the cutoff and reports every eligible execution, record category,
+logical byte count, protected execution and protection reason.
+
+Deletion requires `--apply --plan-digest <sha256:...>`. Apply recomputes the
+plan in one journal write transaction and rejects it if the reviewed digest no
+longer matches. The mutation deletes the execution, outcome, events, event
+indexes/dedupe records, terminal index, and execution idempotency keys together.
+It is idempotent when the caller reviews the resulting empty plan before a
+repeat apply. The logical byte estimate does not promise immediate shrinkage of
+the bbolt file; no physical compaction is performed.
+
+Nonterminal graphs, partial parent/supersession graphs, active subscription
+filters/cursors/coordinators, and every retained outbox delivery or receipt are
+protected. Promotion-linked executions are conservatively never eligible in
+this preview because those records can encode authority handoff and recovery
+state. Stopped subscriptions alone do not protect a graph, but their retained
+deliveries and receipts do. Cleanup never removes subscription, outbox,
+receipt, or promotion records themselves.
 
 Debug logs are never required for normal correctness and have a separate
 retention switch. Secret scanning fixtures cover errors and malformed native

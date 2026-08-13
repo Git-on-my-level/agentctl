@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Git-on-my-level/agentctl/security/advisories/new
+    about: Report vulnerabilities privately; do not include security details in a public issue.

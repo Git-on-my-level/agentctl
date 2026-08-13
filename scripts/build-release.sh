@@ -9,6 +9,7 @@ MAIN_PKG=${MAIN_PKG:-./cmd/agentctl}
 VERSION=${VERSION:-}
 TARGETS=${TARGETS:-}
 PYTHON=${PYTHON:-python3}
+MIN_RELEASE_GO_VERSION=${MIN_RELEASE_GO_VERSION:-go1.25.12}
 
 die() { printf 'error: %s\n' "$*" >&2; exit 2; }
 usage() {
@@ -53,6 +54,24 @@ done
 command -v go >/dev/null 2>&1 || die 'Go is required'
 command -v "$PYTHON" >/dev/null 2>&1 || die "Python is required to create deterministic archives: $PYTHON"
 [ -f "$ROOT/go.mod" ] || die 'go.mod is required for a release build'
+go_version=$(go env GOVERSION)
+"$PYTHON" - "$go_version" "$MIN_RELEASE_GO_VERSION" <<'PY' ||
+import re
+import sys
+
+def version(value):
+    match = re.fullmatch(r"go(\d+)\.(\d+)(?:\.(\d+))?", value)
+    if not match:
+        raise SystemExit(2)
+    return tuple(int(part or 0) for part in match.groups())
+
+raise SystemExit(0 if version(sys.argv[1]) >= version(sys.argv[2]) else 1)
+PY
+case "$?" in
+  0) ;;
+  1) die "Go $MIN_RELEASE_GO_VERSION or newer is required for release builds (found $go_version)" ;;
+  *) die "could not compare Go versions: found $go_version, minimum $MIN_RELEASE_GO_VERSION" ;;
+esac
 if [ -z "${TARGETS:-}" ] && [ -f "$ROOT/packaging/release-targets.txt" ]; then
   TARGETS=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$ROOT/packaging/release-targets.txt" | tr '\n' ' ')
 fi
@@ -77,9 +96,15 @@ OUT_DIR="$(cd -- "$OUT_DIR" && pwd)"
 staging=$(mktemp -d "$OUT_DIR/.agentctl-release.XXXXXX")
 trap 'rm -rf "$staging"' EXIT
 
-if [ ! -f "$ROOT/LICENSE" ] && [ ! -f "$ROOT/NOTICE" ]; then
-  printf '%s\n' 'warning: no LICENSE or NOTICE is present; review licensing before publishing' >&2
-fi
+[ -f "$ROOT/LICENSE" ] || die 'LICENSE is required for release archives'
+for required in \
+  README.md NOTICE \
+  scripts/install.sh scripts/uninstall.sh \
+  scripts/install-supervisor.sh scripts/uninstall-supervisor.sh \
+  scripts/install-systemd-supervisor.sh scripts/uninstall-systemd-supervisor.sh \
+  skills/agentctl-portable/SKILL.md; do
+  [ -f "$ROOT/$required" ] || die "required release file is missing: $required"
+done
 
 archive_files=
 for target in $TARGETS; do
@@ -104,9 +129,11 @@ for target in $TARGETS; do
 
   cp "$ROOT/README.md" "$package_dir/README.md"
   mkdir -p "$package_dir/scripts" "$package_dir/skills/agentctl-portable" "$package_dir/distributions"
-  cp "$ROOT/scripts/install.sh" "$ROOT/scripts/uninstall.sh" "$package_dir/scripts/"
-  if [ -f "$ROOT/scripts/install-supervisor.sh" ]; then cp "$ROOT/scripts/install-supervisor.sh" "$package_dir/scripts/"; fi
-  if [ -f "$ROOT/scripts/uninstall-supervisor.sh" ]; then cp "$ROOT/scripts/uninstall-supervisor.sh" "$package_dir/scripts/"; fi
+  cp \
+    "$ROOT/scripts/install.sh" "$ROOT/scripts/uninstall.sh" \
+    "$ROOT/scripts/install-supervisor.sh" "$ROOT/scripts/uninstall-supervisor.sh" \
+    "$ROOT/scripts/install-systemd-supervisor.sh" "$ROOT/scripts/uninstall-systemd-supervisor.sh" \
+    "$package_dir/scripts/"
   cp "$ROOT/skills/agentctl-portable/SKILL.md" "$package_dir/skills/agentctl-portable/SKILL.md"
   cp "$ROOT/distributions/allowlist.json" "$ROOT/distributions/revision-manifest.json" \
     "$ROOT/distributions/install.sh" "$ROOT/distributions/uninstall.sh" "$ROOT/distributions/status.sh" "$ROOT/distributions/doctor.sh" \
@@ -114,9 +141,7 @@ for target in $TARGETS; do
   if [ -d "$ROOT/distributions/multica" ]; then cp -R "$ROOT/distributions/multica" "$package_dir/distributions/multica"; fi
   if [ -d "$ROOT/docs" ]; then cp -R "$ROOT/docs" "$package_dir/docs"; fi
   if [ -d "$ROOT/schemas" ]; then cp -R "$ROOT/schemas" "$package_dir/schemas"; fi
-  for metadata in LICENSE NOTICE; do
-    if [ -f "$ROOT/$metadata" ]; then cp "$ROOT/$metadata" "$package_dir/$metadata"; fi
-  done
+  cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$package_dir/"
 
   archive="$OUT_DIR/$package_name"
   "$PYTHON" "$ROOT/scripts/make-archive.py" \

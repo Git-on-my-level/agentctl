@@ -114,8 +114,8 @@ Every newly terminalized direct execution records one versioned outcome in the
 same journal transaction as terminal state, the terminal event, and callback
 fan-out. `agentctl status` and events remain metadata-only; the explicit
 `agentctl result <execution-id>` read returns the bounded final content and
-normalized failure details. Stored content is required by default so a
-successful retrieval cannot be mistaken for a successful task with no answer;
+normalized failure details. Stored content or a structured failure is required
+by default so a successful retrieval cannot be mistaken for an empty outcome;
 `--allow-empty` is the explicit metadata-only escape for omission tombstones or
 legacy records. Its `result_ref` is the execution's portable
 `agentctl://host-.../exec-...` URI, so callers never locate native session or
@@ -220,11 +220,14 @@ and independently observable.
 
 ## Retention
 
-Initial policy proposals are 14 days for terminal envelopes/events and 30 days
-for delivery receipts/dead letters. Nonterminal records remain until terminal
-or explicitly abandoned. Artifact content is never copied by default.
+Automatic retention is not implemented in the preview. Result bodies are
+stored by default up to 1 MiB per execution and remain in the owner-only local
+journal until an explicit digest-bound `agentctl data cleanup` operation.
+Artifact content is not copied by default.
 
 Alias bindings, source fingerprints, promotion receipts, and supersession links
-must outlive every retained reference to them. Cleanup plans exact records,
-bytes, broken references, and rebuildability before mutation. Retention remains
-a measured roadmap decision, not a compatibility guarantee.
+must outlive every reference to them. Cleanup plans exact execution graphs,
+record categories, logical bytes, and protected references, then rejects apply
+if the reviewed plan digest changes. Promotion-linked executions remain
+protected in the preview. Retention remains an operator decision, not a
+compatibility guarantee.

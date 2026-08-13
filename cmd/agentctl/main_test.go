@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
+	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
@@ -91,7 +92,7 @@ func TestHelpSideEffectClassesReflectOptionalWrites(t *testing.T) {
 	for _, command := range doc.Result.Commands {
 		classes[command["name"].(string)] = command["side_effect_class"].(string)
 	}
-	if classes["attach"] != "read_only" || classes["context"] != "local_operational_write" {
+	if classes["attach"] != "read_only" || classes["context"] != "local_operational_write" || classes["data"] != "local_operational_write" {
 		t.Fatalf("unexpected side-effect classes: %#v", classes)
 	}
 }
@@ -171,11 +172,50 @@ func TestRunTimeoutTerminalizesExecution(t *testing.T) {
 
 func TestRunInterruptionTerminalizesExecutionAsCancelled(t *testing.T) {
 	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	rawExecutionID, err := ids.New(ids.TypeExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionID, err := ids.ParseExecutionID(rawExecutionID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(200*time.Millisecond, cancel)
-	code := a.run(ctx, []string{"--journal", journalPath, "run", "--allow-missing-result", "--", "/bin/sh", "-c", "sleep 2"})
+	defer cancel()
+	done := make(chan int, 1)
+	go func() {
+		done <- a.run(ctx, []string{"--journal", journalPath, "run", "--execution-id", executionID.String(), "--allow-missing-result", "--", "/bin/sh", "-c", "sleep 2"})
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		journal, openErr := store.Open(journalPath, store.Options{ReadOnly: true})
+		if openErr == nil {
+			execution, getErr := journal.GetExecution(context.Background(), executionID)
+			journal.Close()
+			if getErr == nil && execution.State == model.StateRunning {
+				break
+			}
+		}
+		select {
+		case code := <-done:
+			t.Fatalf("run terminated before launch acceptance: exit=%d output=%s", code, stdout.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("execution did not reach the accepted running state")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	var code int
+	select {
+	case code = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("interrupted run did not terminate")
+	}
 	if code != output.ExitCodeFor(output.CodeExecutionCancelled) {
 		t.Fatalf("interruption exit=%d output=%s", code, stdout.String())
 	}
@@ -183,9 +223,9 @@ func TestRunInterruptionTerminalizesExecutionAsCancelled(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
 		t.Fatal(err)
 	}
-	executionID, _ := doc.Error.Details["execution_id"].(string)
-	id, err := ids.ParseExecutionID(executionID)
-	if err != nil {
+	documentedID, _ := doc.Error.Details["execution_id"].(string)
+	id, err := ids.ParseExecutionID(documentedID)
+	if err != nil || id != executionID {
 		t.Fatalf("interruption omitted execution ID: %s", stdout.String())
 	}
 	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
@@ -196,6 +236,143 @@ func TestRunInterruptionTerminalizesExecutionAsCancelled(t *testing.T) {
 	execution, err := journal.GetExecution(context.Background(), id)
 	if err != nil || execution.State != model.StateCancelled {
 		t.Fatalf("interrupted execution=%#v err=%v", execution, err)
+	}
+	events, err := journal.ListEvents(context.Background(), id, contracts.EventQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := 0
+	for _, event := range events {
+		if event.Kind == model.EventTerminal {
+			terminal++
+		}
+	}
+	if terminal != 1 {
+		t.Fatalf("terminal event count=%d events=%#v", terminal, events)
+	}
+}
+
+func TestNativeAttentionUpdatesExecutionAndStopsAwait(t *testing.T) {
+	root := t.TempDir()
+	journalPath := filepath.Join(root, "state", "journal.db")
+	script := filepath.Join(root, "attention-agent")
+	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"session.started\",\"session_id\":\"attention-fixture\"}' '{\"type\":\"permission.required\",\"message\":\"must-not-persist\"}'\nsleep 2\nprintf '%s\\n' '{\"type\":\"result\",\"status\":\"completed\",\"result\":\"done\"}'\n"
+	if err := os.WriteFile(script, []byte(contents), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rawExecutionID, err := ids.New(ids.TypeExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionID, err := ids.ParseExecutionID(rawExecutionID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runOut, runErr bytes.Buffer
+	runner := testApp(&runOut, &runErr)
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan int, 1)
+	go func() {
+		done <- runner.run(runCtx, []string{"--output", "json", "--journal", journalPath, "run", "--adapter", "generic-process", "--execution-id", executionID.String(), "--", script})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		journal, openErr := store.Open(journalPath, store.Options{ReadOnly: true})
+		if openErr == nil {
+			execution, getErr := journal.GetExecution(context.Background(), executionID)
+			journal.Close()
+			if getErr == nil && execution.State == model.StateAttention {
+				if execution.Liveness != model.LivenessBlocked {
+					t.Fatalf("attention liveness=%s", execution.Liveness)
+				}
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("execution did not reach attention; run_output=%s", runOut.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	var awaitOut, awaitErr bytes.Buffer
+	observer := testApp(&awaitOut, &awaitErr)
+	if code := observer.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "await", executionID.String(), "--timeout", "1s"}); code != output.ExitCodeFor(output.CodeAttentionRequired) {
+		t.Fatalf("await exit=%d output=%s stderr=%s", code, awaitOut.String(), awaitErr.String())
+	}
+	cancel()
+	select {
+	case code := <-done:
+		if code != output.ExitCodeFor(output.CodeExecutionCancelled) {
+			t.Fatalf("attention run cancellation exit=%d output=%s", code, runOut.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("attention run did not terminate after cancellation")
+	}
+	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := journal.GetExecution(context.Background(), executionID)
+	journal.Close()
+	if err != nil || terminal.State != model.StateCancelled {
+		t.Fatalf("cancelled attention execution=%#v err=%v", terminal, err)
+	}
+	raw, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("must-not-persist")) {
+		t.Fatal("attention prompt entered journal")
+	}
+}
+
+func TestAwaitContextCancellationIsNotReportedAsTimeout(t *testing.T) {
+	now := time.Now().UTC()
+	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journal, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, _, err := journal.CreateExecution(context.Background(), model.Execution{Authority: model.AuthorityNative, Adapter: "generic-process", Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateRunning, Liveness: model.LivenessAlive, SourceBindings: []model.SourceBinding{}, Capabilities: model.CapabilitySnapshot{NegotiatedAt: now, AdapterVersion: "test", Items: []model.CapabilityItem{}}, Observation: model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: now}}, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() {
+		done <- a.run(ctx, []string{"--output", "json", "--journal", journalPath, "await", execution.ID.String(), "--timeout", "5s"})
+	}()
+	time.Sleep(25 * time.Millisecond)
+	cancel()
+	select {
+	case code := <-done:
+		if code != output.ExitCodeFor(output.CodeExecutionCancelled) || !strings.Contains(stdout.String(), `"code":"execution_cancelled"`) {
+			t.Fatalf("await exit=%d output=%s", code, stdout.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled await did not return")
+	}
+}
+
+func TestRunCancelledBeforeLaunchDoesNotCreateExecution(t *testing.T) {
+	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	code := a.run(ctx, []string{"--journal", journalPath, "run", "--allow-missing-result", "--", "/bin/sh", "-c", "sleep 2"})
+	if code != output.ExitCodeFor(output.CodeExecutionCancelled) || !strings.Contains(stdout.String(), `"code":"execution_cancelled"`) {
+		t.Fatalf("pre-launch interruption exit=%d output=%s", code, stdout.String())
+	}
+	if _, err := os.Stat(journalPath); !os.IsNotExist(err) {
+		t.Fatalf("pre-launch interruption created a journal: %v", err)
 	}
 }
 
@@ -376,6 +553,37 @@ func TestNoStoreResultWritesExplicitOutcomeTombstone(t *testing.T) {
 	}
 }
 
+func TestFailedRunResultReturnsStoredFailureWithoutAllowEmpty(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	journal := filepath.Join(t.TempDir(), "state", "journal.db")
+	native := `{"type":"result","status":"failed","error":"permission denied"}`
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--adapter", "generic-process", "--", "/bin/echo", native}); code != 0 {
+		t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var runDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &runDoc); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "result", runDoc.Result.ID.String()}); code != 0 {
+		t.Fatalf("result exit=%d output=%s", code, stdout.String())
+	}
+	var resultDoc struct {
+		Result struct {
+			Outcome model.Outcome `json:"outcome"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &resultDoc); err != nil {
+		t.Fatal(err)
+	}
+	if resultDoc.Result.Outcome.Failure == nil || resultDoc.Result.Outcome.Failure.Message != "permission denied" {
+		t.Fatalf("outcome=%#v", resultDoc.Result.Outcome)
+	}
+}
+
 func TestResultRejectsConflictedTerminalEvidence(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
@@ -490,6 +698,121 @@ func TestNativeRunWithPreallocatedIDReleasesJournalWhileRunning(t *testing.T) {
 		}
 	case <-time.After(4 * time.Second):
 		t.Fatal("run did not terminate")
+	}
+}
+
+func TestNativeRunRenewsLeaseWhileReapingAfterEarlyResult(t *testing.T) {
+	root := t.TempDir()
+	journalPath := filepath.Join(root, "state", "journal.db")
+	script := filepath.Join(root, "slow-exit-agent")
+	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"result\",\"status\":\"completed\",\"result\":\"done\"}'\nsleep 7\n"
+	if err := os.WriteFile(script, []byte(contents), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rawID, err := ids.New(ids.TypeExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionID, err := ids.ParseExecutionID(rawID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runOut, runErr bytes.Buffer
+	runner := testApp(&runOut, &runErr)
+	done := make(chan int, 1)
+	go func() {
+		done <- runner.run(context.Background(), []string{"--journal", journalPath, "run", "--adapter", "generic-process", "--execution-id", executionID.String(), "--", script})
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		journal, openErr := store.Open(journalPath, store.Options{ReadOnly: true})
+		if openErr == nil {
+			execution, getErr := journal.GetExecution(context.Background(), executionID)
+			journal.Close()
+			if getErr == nil && execution.State == model.StateRunning && execution.Liveness == model.LivenessAlive {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("early-result execution did not become observable")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(6 * time.Second)
+	var supervisorOut, supervisorErr bytes.Buffer
+	supervisorApp := testApp(&supervisorOut, &supervisorErr)
+	if code := supervisorApp.run(context.Background(), []string{"--journal", journalPath, "supervisor", "run", "--once", "--state-dir", filepath.Join(root, "supervisor")}); code != 0 {
+		t.Fatalf("supervisor cycle exit=%d output=%s stderr=%s", code, supervisorOut.String(), supervisorErr.String())
+	}
+	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := journal.GetExecution(context.Background(), executionID)
+	journal.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.State != model.StateRunning || live.Liveness != model.LivenessAlive || live.Observation.Source != model.ObservationNativeStream || live.Observation.Integrity != model.IntegrityVerified {
+		t.Fatalf("supervisor corrupted lease during native exit cleanup: %#v", live)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("run exit=%d output=%s stderr=%s", code, runOut.String(), runErr.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("run did not finish after slow exit")
+	}
+}
+
+func TestCursorRunStoresAssistantFallbackAndDrainsFinalEvents(t *testing.T) {
+	root := t.TempDir()
+	journalPath := filepath.Join(root, "state", "journal.db")
+	script := filepath.Join(root, "cursor-empty-result")
+	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"cursor-fallback\"}' '{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"fallback answer\"}]}}' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}'\n"
+	if err := os.WriteFile(script, []byte(contents), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "run", "--adapter", "cursor", "--", script}); code != 0 {
+		t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var runDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &runDoc); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "result", runDoc.Result.ID.String()}); code != 0 || !strings.Contains(stdout.String(), `"text":"fallback answer"`) {
+		t.Fatalf("fallback result exit=%d output=%s", code, stdout.String())
+	}
+	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.ListEvents(context.Background(), runDoc.Result.ID, contracts.EventQuery{})
+	journal.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawAssistant, sawTerminal bool
+	for _, event := range events {
+		if event.SourceState != nil && *event.SourceState == "assistant" {
+			sawAssistant = true
+		}
+		if event.Kind == model.EventTerminal {
+			sawTerminal = true
+			if event.Payload["diagnostic_code"] != "empty_terminal_result" || event.Payload["result_content_source"] != "assistant_message_fallback" {
+				t.Fatalf("terminal event has wrong fallback metadata: %#v", event.Payload)
+			}
+		}
+	}
+	if !sawAssistant || !sawTerminal {
+		t.Fatalf("missing assistant or terminal event: %#v", events)
 	}
 }
 

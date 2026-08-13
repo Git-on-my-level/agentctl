@@ -2,57 +2,54 @@
 
 ## Goal
 
-Agents on different machines and in different harnesses should receive the same
-relevant operational context without copying Hermes profiles or depending on a
-model to browse a large memory store correctly.
+The optional knowledge subsystem gives different machines and agent harnesses
+the same relevant, versioned operational context without copying harness
+profiles, credentials, session databases, or one operator's private topology.
+Standalone execution does not require a knowledge bundle.
 
-## Authority
+## Authority and repository boundary
 
-Independent private Git repositories are the authoring authorities. A source
-registry pins and classifies them, and a publishing pipeline validates and
-compiles a versioned, checksummed bundle for clients. The bundle is data, not a
-live shared session database.
+Independent public or private Git repositories remain the authoring
+authorities. A source registration pins and classifies each repository, and an
+explicit publishing workflow validates and compiles a versioned, checksummed
+bundle. The bundle is immutable derived data, not a live session database.
 
-Knowledge does not need to live in the `agentctl` repository or be migrated into
-one universal format. Existing repositories such as the Omi knowledge store can
-remain independently owned and unchanged. Separate repositories or bundles
-enforce sensitivity boundaries. Frontmatter labels are useful for selection but
-are not a substitute for repository/ACL separation.
-
-The intended storage split is:
+Knowledge does not need to live in the agentctl repository or move into one
+universal format. Separate repositories and access-control boundaries enforce
+sensitivity; frontmatter labels help selection but do not replace repository
+permissions.
 
 | Layer | Contents |
 | --- | --- |
-| `agentctl` code repository | Schemas, compiler/client behavior, fixtures, and portable skill |
-| Small fleet registry repository | Reviewed source registrations, overlays, routing policy, and bundle policy |
-| Independent knowledge repositories | Omi knowledge, personal/ops knowledge, project corpora, and future domain stores |
-| Published bundle | Immutable derived index/assets for fast verified client consumption |
+| agentctl repository | Schemas, compiler/client behavior, fixtures, and portable skill |
+| Optional configuration repository | Reviewed source registrations, overlays, routing policy, and bundle policy |
+| Independent knowledge repositories | Project, operational, personal, or other domain corpora |
+| Published bundle | Immutable derived index and assets for verified local use |
 
-The registry repository is small control-plane configuration; it is not a new
-knowledge monorepo. A knowledge repository remains independently cloneable and
-useful without `agentctl`.
+The optional configuration repository is a small control-plane input, not a
+knowledge monorepo. A source repository remains independently cloneable and
+useful without agentctl.
 
-## Git hosting and source registry
+## Git hosting and source registration
 
 The read path uses ordinary Git semantics and supports GitHub, Forgejo, and
-generic Git servers over reviewed SSH or HTTPS remotes. Host-provider metadata
-is optional and enables links or contribution workflows; it is never required
-to fetch, verify, compile, or read knowledge. Authentication remains in native
-Git/SSH credential storage and is not copied into `agentctl` state.
+generic Git servers over reviewed SSH or HTTPS remotes. Provider metadata is
+optional. Authentication remains in native Git or SSH credential storage and
+is never copied into agentctl state.
 
 Each source is registered explicitly:
 
 ```yaml
 schema_version: 1
 id: repo-amber-willow-orbit-tiger-harbor-gentle
-slug: omi-knowledge
+slug: operational-guides
 mode: loose
 remote:
-  provider: forgejo
-  url: ssh://git@git-01.tail.example/omi/knowledge.git
+  provider: generic
+  url: ssh://git@code.example.com/platform/operational-guides.git
   credential_mode: native_git
 ref: refs/heads/main
-subpath: .
+subpath: docs
 sensitivity: project-confidential
 ingest:
   include: ["**/*.md", "**/*.yaml", "**/*.yml", "**/*.json", "**/*.txt"]
@@ -60,13 +57,12 @@ ingest:
   max_file_bytes: 1048576
 ```
 
-The registry entry is configuration, not a vendored checkout or Git submodule.
-The publisher records the resolved commit and tree/content digests in the bundle
-lock. Moving a branch does not change an already published bundle. Source sync
-is an explicit command or publisher job; read-only context commands never fetch
-or update Git state.
+The registration is configuration, not a vendored checkout or submodule. The
+publisher records the resolved commit and tree/content digests in the bundle
+lock. Moving a branch does not alter an already published bundle. Source sync
+is explicit; read-only context commands never fetch or update Git state.
 
-The draft registry contract is
+The machine contract is
 [`schemas/knowledge-source.schema.json`](../schemas/knowledge-source.schema.json).
 
 ## Repository modes
@@ -79,188 +75,122 @@ may participate in deterministic policy selection and required launch context.
 
 ### Loose
 
-A loose repository is an allowlisted document corpus. It does not need
-frontmatter, a directory migration, or agentctl-specific files. The publisher:
+A loose repository is an allowlisted document corpus. It does not require
+frontmatter or an agentctl-specific directory migration. The compiler:
 
 1. walks only configured subpaths and file globs;
 2. rejects symlink/path escape, oversized files, unsupported encodings, and
    secret-policy violations;
 3. chunks text deterministically by document headings and bounded byte ranges;
 4. assigns deterministic record IDs while retaining repository, commit, path,
-   line range, and content digest provenance;
+   line range, and content-digest provenance; and
 5. builds a deterministic lexical index without invoking a model.
 
-Loose records are advisory knowledge. They may be discovered by repository,
-path, explicit tags from the source registry, and lexical query, but they cannot
-silently become mandatory safety policy, routing policy, or mutation authority.
-Promoting a loose observation into policy requires an explicit structured
-record and normal Git review.
+Loose records are advisory. They may be selected by repository, path, explicit
+tags, and lexical query, but cannot silently become required policy, routing
+policy, or mutation authority.
 
 ### Hybrid
 
-A hybrid source combines a loose corpus with a structured overlay.
-The overlay may live in the source repository or in a separately reviewed
-registry repository, so an existing corpus can gain scopes, aliases,
-supersession, and priority without being rewritten. Overlay entries bind to
-commit-relative paths or content digests and cannot alter source content.
+A hybrid source combines a loose corpus with a structured overlay. The overlay
+may live in the source repository or in a separately reviewed configuration
+repository. It can add scopes, aliases, supersession, and priority without
+rewriting the underlying source and binds to commit-relative paths or content
+digests.
 
-This is the recommended onboarding path for the current Omi knowledge store:
-register it as `loose` immediately, then add a small external overlay only for
-documents that should be injected deterministically or treated as reviewed
-operational guidance.
-
-The current Omi checkout is also a useful compatibility fixture because it is a
-mixed Forgejo corpus: Markdown project and incident documents coexist with JSON
-evidence, scripts, templates, private subtrees, and log artifacts. Its initial
-registration should be deny-by-default—narrow content globs, explicit exclusion
-of private/raw/log/script paths, repository-level confidentiality, and later
-path-level overlays where a smaller sensitivity boundary is proven. Successful
-indexing must not imply that every tracked file is safe to distribute or inject.
+Hybrid mode is useful for existing mixed repositories. Start with narrow
+content globs, explicitly exclude raw data, logs, generated output, scripts, and
+private subtrees, and add structured overlays only for documents that have been
+reviewed for deterministic injection. Successful indexing does not prove every
+tracked file is safe to distribute.
 
 ## Record metadata
 
-Knowledge and policy records include validated metadata:
+Structured records carry validated metadata:
 
 ```yaml
 schema_version: 1
 id: knowledge-silver-otter-canyon-lantern-drift-velvet
-slug: multica-terminal-delivery
-title: Multica terminal delivery contract
+slug: terminal-delivery
+title: Terminal delivery contract
 scope:
-  projects: [multica]
-  repositories: [Git-on-my-level/multica]
+  projects: [example-platform]
+  repositories: [example/platform-service]
   task_kinds: [coordination, reliability]
-  host_roles: [authenticated_coordinator]
-sensitivity: operator-private
-authority: multica
-owner: agent-platform
+  host_roles: [coordinator]
+sensitivity: project-confidential
+authority: project-policy
+owner: platform-team
 reviewed_at: 2026-08-10
 expires_at: null
 supersedes: []
 ```
 
-CI rejects duplicate IDs, invalid authorities, broken references, expired hard
-requirements, and unresolved supersession chains.
+Validation rejects duplicate IDs, invalid authorities, broken references,
+expired hard requirements, and unsupported sensitivity transitions. Loose
+documents receive generated provenance metadata but do not acquire policy
+authority.
 
 ## Compiled bundle
 
-The publisher produces:
+Compilation resolves exact source commits, validates content and overlays,
+normalizes text deterministically, builds a lexical index and cross-reference
+graph, and writes a content-addressed bundle. The manifest declares its schema
+version, minimum reader semantics, word-list digest, asset hashes, source
+commits, and selection limits.
 
-- `manifest.json` with every source repository ID, provider, resolved commit,
-  creation time, compatibility, and per-asset hashes;
-- `sources.lock.json` pinning source revisions, ingestion rules, overlay
-  revisions, and source-tree/content digests;
-- structured registries for fleet roles, resources, routes, and policies;
-- a deterministic token-to-record lexical index spanning structured and loose
-  knowledge;
-- selected Markdown/runbook assets;
-- allowlisted portable skill packages;
-- schema files and cross-reference graph.
-
-The local cache is installed atomically after full hash validation. Failed
-updates preserve the previous valid revision.
-
-The manifest declares a bundle schema version, minimum reader semantics,
-ordered word-list digest, and the exact canonicalization used for asset hashes.
-Unknown required feature names make the bundle incompatible; clients keep the
-last compatible verified revision rather than partially loading a new one.
+The local cache is installed atomically only after full hash validation. Failed
+updates preserve the previous valid revision. Unknown required features make a
+bundle incompatible rather than partially usable.
 
 ## Context selection
 
 `agentctl context` deterministically matches records using observable inputs:
 
 - current repository root and Git remotes;
-- explicit Multica project/issue/run;
-- current host and functional roles;
-- requested task kind and side-effect boundary;
-- explicit resource/capability needs;
+- explicit project, issue, or run references when available;
+- explicitly configured host or functional roles;
+- task kind and side-effect boundary;
+- requested resource or capability needs; and
 - record priority, review state, and expiry.
 
-It does not perform semantic model inference. Optional semantic search may be an
-additional discovery tool, never the mandatory correctness path.
-
-The output explains why each record matched and identifies its revision:
-
-```json
-{
-  "id": "context-gentle-comet-maple-badger-valley-sparrow",
-  "bundle_revision": "git:...",
-  "matches": [
-    {
-      "record_id": "knowledge-silver-otter-canyon-lantern-drift-velvet",
-      "source_repo_id": "repo-amber-willow-orbit-tiger-harbor-gentle",
-      "reason": ["repository", "task_kind"],
-      "path": "runbooks/multica-terminal-delivery.md",
-      "source_commit": "git:...",
-      "content_digest": "sha256:..."
-    }
-  ]
-}
-```
+Selection does not depend on semantic model inference. Optional semantic search
+may supplement discovery but is never the mandatory correctness path. Results
+explain every match and retain exact source provenance.
 
 ## Launch injection
 
-Adapters provide the rendered context file and execution handle only through a
-negotiated backend-specific mechanism. Supported mechanism classes are an
-inherited environment path, a native argv option, a native instruction-file
-option, or an authority-owned artifact/reference. The adapter manifest states
-whether delivery to the worker is guaranteed or merely exposed to the process.
+Adapters can expose a rendered context file and execution handle only through a
+negotiated backend-specific mechanism: environment path, native argument,
+native instruction file, or authority-owned artifact reference. The adapter
+manifest states whether delivery to the worker is guaranteed or merely exposed
+to the process.
 
-If the task contract requires context and no reviewed mechanism is supported,
-dispatch fails before launch. It never pastes context into a prompt, edits a
-Hermes profile, or assumes a Multica worker shares the coordinator filesystem.
-The rendered document contains no credentials, uses portable references rather
-than local paths where crossing runtimes, and is bounded by declared byte and
+If a task requires context and no reviewed mechanism is supported, dispatch
+fails before launch. agentctl does not paste the context into a prompt, edit a
+harness profile, or assume a remote worker shares the coordinator filesystem.
+Rendered documents contain no credentials and are bounded by declared byte and
 record limits.
 
-One portable `agentctl` skill may be distributed to Hermes, Codex, Claude,
-Cursor, OMP, and Multica runtimes. It explains deeper discovery and operational
-commands, but launch correctness does not depend on the skill being installed,
-on a model choosing to read it, or on a harness having a global memory system.
+## Portable skill distribution
 
-## Harness distribution
+The embedded portable skill can be reconciled into detected Hermes, Codex,
+Claude, Cursor, and OMP harness roots. A separately packaged Multica runtime
+bundle is optional. The skill teaches progressive `agentctl help <topic>`
+discovery, but launch correctness never depends on a model reading the skill or
+on a harness having global memory.
 
-Distribution is allowlisted per harness:
+`bootstrap update` owns only manifest-bound agentctl assets. It does not copy
+knowledge repositories, credentials, profiles, settings, prompts, sessions,
+worktrees, or caches.
 
-- link or install only named portable skills;
-- preserve unmanaged local skills and agent definitions;
-- never sync harness auth, sessions, memories, settings, plugins, or caches;
-- validate frontmatter and source revision;
-- report managed drift separately from unmanaged state.
+## Writes and offline behavior
 
-Multica skill copies are generated distribution artifacts, not the authoring
-source of truth.
+Knowledge-source sync, compilation, installation, and proposal are explicit
+mutations. Read-only validation, verification, selection, and rendering do not
+fetch. Proposed changes return to the owning Git source through its normal
+review policy; agentctl never turns one model observation into shared truth.
 
-`agentctl bootstrap update` is the normal release reconciliation path. It
-detects installed supported harnesses, deduplicates canonical roots, and
-installs or upgrades only the embedded manifest-bound skill. It may update a
-supervisor that agentctl already manages, but it does not create a new service,
-delete legacy copies, or modify unmanaged skills. Use `bootstrap status` and
-`doctor` for read-only inventory, and `agentctl help <topic>` for the current
-command contract; the skill remains a concise routing and guardrail layer
-rather than a copy of every flag.
-
-## Writes
-
-Knowledge writes are explicit Git operations against the owning source through
-its normal review policy. `agentctl knowledge propose` may validate and stage a
-record, commit to a caller-selected branch, or use an optional GitHub/Forgejo
-provider adapter to open a pull request. Without a provider adapter it returns
-the exact native Git next actions. It never silently turns a model observation
-into shared truth or writes to a loose source merely because that source was
-read during a task.
-
-Dynamic state does not belong in Git:
-
-- task/run/ownership state stays in Multica;
-- reachability stays in Tailscale/`tailnetctl` observations;
-- machine health stays in host-local tools;
-- execution state stays native plus the bounded local `agentctl` journal;
-- credentials and raw sessions stay local.
-
-## Offline behavior
-
-When the publisher is unavailable, clients use the last verified bundle and
-surface age, revision, and failed-refresh state. Service reachability and bundle
-freshness are separate health dimensions; a healthy service does not make stale
-policy current.
+Dynamic execution, network reachability, machine health, and credentials do not
+belong in Git knowledge. When a publisher is unavailable, clients use the last
+verified bundle and surface its age, revision, and failed-refresh state.

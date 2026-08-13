@@ -154,14 +154,15 @@ its delivery cursor only after destination acknowledgement.
 
 ## Subscriptions
 
-A subscription binds exact execution IDs or an explicit narrow authority query,
-event kinds, destination, expiry, retry policy, optional coordinator execution,
-and a delivery cursor. `agentctl subscribe create` listens for `terminal`,
+A subscription binds an exact execution ID, event kinds, destination, expiry,
+retry policy, optional coordinator execution, and a delivery cursor. The
+current CLI intentionally does not create broad authority queries; reserved
+query/scope filters fail closed in local fan-out. `agentctl subscribe create` listens for `terminal`,
 `attention`, and `artifact` by default: these are the minimum events needed to
 drive a parent agent without subscribing it to progress chatter. `--kind all`
 is an explicit broad subscription, while `--kind <names>` narrows the set.
-Query subscriptions record their resolved authority and scope; display labels
-are insufficient.
+`--authority direct` is normalized to the stored native authority; display
+labels are insufficient authority identifiers.
 
 Task subscriptions expire after acknowledged terminal delivery by default.
 Broad subscriptions require an explicit scope and retention estimate in plan
@@ -258,7 +259,7 @@ component wakes itself after logout or reboot. Cross-restart automatic delivery
 therefore requires the optional supervisor; the daemonless MVP must not claim
 otherwise.
 
-## Multica integration
+## Optional Multica integration
 
 The companion Multica fork exposes a server-side durable workspace event outbox
 with monotonic source positions and filter-bound cursors. The adapter uses its

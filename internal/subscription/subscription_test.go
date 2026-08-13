@@ -1,11 +1,25 @@
 package subscription
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/callback"
 )
+
+func TestFilterAuthorityNormalizesDirectAliasAndRejectsUnknown(t *testing.T) {
+	filter, err := (EventFilter{Authority: "direct"}).Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filter.Authority != "native" {
+		t.Fatalf("direct authority normalized to %q", filter.Authority)
+	}
+	if _, err := (EventFilter{Authority: "typo"}).Normalize(); !errors.Is(err, ErrInvalidFilter) {
+		t.Fatalf("unknown authority error=%v", err)
+	}
+}
 
 func testFilter() EventFilter {
 	return EventFilter{ExecutionIDs: []string{"exec-b", "exec-a"}, Kinds: []string{"terminal", "attention"}}

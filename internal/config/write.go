@@ -229,6 +229,7 @@ func marshalConfig(cfg Config) ([]byte, error) {
 func decodeConfig(data []byte) (Config, error) {
 	var cfg Config
 	dec := json.NewDecoder(strings.NewReader(string(data)))
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}

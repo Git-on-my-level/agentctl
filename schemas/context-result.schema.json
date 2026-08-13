@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agentctl.dev/schemas/context-result.schema.json",
+  "$id": "urn:agentctl:schema:context-result:v1",
   "x-agentctl-docs": "../docs/context-and-knowledge.md#context-selection",
   "title": "agentctl context selection result v1",
   "type": "object",

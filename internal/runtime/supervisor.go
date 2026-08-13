@@ -196,7 +196,7 @@ func unreachableProbe(execution model.Execution, now time.Time) supervisor.Probe
 }
 
 func activeNativeRunnerLease(execution model.Execution, now time.Time) bool {
-	if execution.Authority != model.AuthorityNative || execution.State.Terminal() || execution.Liveness != model.LivenessAlive || execution.Observation.Source != model.ObservationNativeStream || execution.Observation.Integrity != model.IntegrityVerified || execution.Observation.FreshForSeconds == nil || *execution.Observation.FreshForSeconds <= 0 {
+	if execution.Authority != model.AuthorityNative || execution.State.Terminal() || (execution.Liveness != model.LivenessAlive && execution.Liveness != model.LivenessBlocked) || execution.Observation.Source != model.ObservationNativeStream || execution.Observation.Integrity != model.IntegrityVerified || execution.Observation.FreshForSeconds == nil || *execution.Observation.FreshForSeconds <= 0 {
 		return false
 	}
 	expiresAt := execution.Observation.ObservedAt.Add(time.Duration(*execution.Observation.FreshForSeconds) * time.Second)
@@ -215,7 +215,16 @@ func (b SupervisorExecutions) ApplyProbe(ctx context.Context, id string, result 
 	if err != nil {
 		return wrapError("get_execution", "", err)
 	}
-	if result.Source == string(model.ObservationNativeStream) && result.Liveness == string(model.LivenessAlive) && (execution.State.Terminal() || activeNativeRunnerLease(execution, b.Engine.now())) {
+	// Reprobe and ApplyProbe are separated by adapter work and a journal read.
+	// A live native runner may renew its lease in that gap. Never let an
+	// unreachable/unknown conclusion computed from an older revision overwrite
+	// the newer verified runner lease.
+	staleNativeProbe := execution.Authority == model.AuthorityNative && result.Revision != 0 && result.Revision < execution.Revision && activeNativeRunnerLease(execution, b.Engine.now())
+	if staleNativeProbe {
+		return nil
+	}
+	nativeRunnerEcho := result.Source == string(model.ObservationNativeStream) && (result.Liveness == string(model.LivenessAlive) || result.Liveness == string(model.LivenessBlocked))
+	if nativeRunnerEcho && (execution.State.Terminal() || activeNativeRunnerLease(execution, b.Engine.now())) {
 		// The runner is the live native authority and refreshes this bounded
 		// lease itself. Applying the supervisor's echo would erase the lease and
 		// make the next cycle falsely classify the child as unreachable. If the

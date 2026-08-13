@@ -9,23 +9,52 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build release artifacts
+  validate:
+    name: Validate release source (Go ${{ matrix.go-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ['1.25.12', '1.26.5']
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
         with:
-          go-version: '1.23.x'
+          go-version: ${{ matrix.go-version }}
           cache: true
+      - name: Run the full source validation gate
+        run: make ci
+
+  build:
+    name: Build release artifacts
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+        with:
+          go-version: '1.26.5'
+          cache: true
+      - name: Install pinned vulnerability scanner
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+      - name: Run focused race tests
+        run: make test-race
+      - name: Scan reachable source symbols
+        run: make security
       - name: Build cross-platform archives and checksums
         env:
           VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('dev-{0}', github.sha) }}
         run: make release
+      - name: Scan compiled release binaries
+        run: make check-release-security
       - name: Verify artifact contract
         shell: bash
         run: |
@@ -38,7 +67,7 @@ jobs:
             grep -Fq "  $(basename "$artifact")" dist/SHA256SUMS
           done
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: agentctl-${{ github.sha }}
           path: |
@@ -55,11 +84,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out tagged source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: agentctl-${{ github.sha }}
           path: dist

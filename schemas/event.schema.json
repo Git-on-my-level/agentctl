@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agentctl.dev/schemas/event.schema.json",
+  "$id": "urn:agentctl:schema:event:v1",
   "x-agentctl-docs": "../docs/events-and-subscriptions.md#event-shape",
   "title": "agentctl normalized event v1",
   "type": "object",

@@ -6,6 +6,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -26,13 +27,29 @@ type Config struct {
 }
 
 type Profile struct {
-	Adapters map[string]Adapter `json:"adapters,omitempty"`
-	Multica  *Multica           `json:"multica,omitempty"`
+	Adapters         map[string]Adapter `json:"adapters,omitempty"`
+	Multica          *Multica           `json:"multica,omitempty"`
+	AgentPreferences *AgentPreferences  `json:"agent_preferences,omitempty"`
 }
 
 type Adapter struct {
-	Executable string   `json:"executable,omitempty"`
-	Arguments  []string `json:"arguments,omitempty"`
+	Executable string `json:"executable,omitempty"`
+}
+
+// AgentPreferences records human- and agent-readable delegation guidance.
+// It is deliberately advisory: agentctl never rewrites or rejects the exact
+// native argv supplied by a caller based on these values.
+type AgentPreferences struct {
+	Mode      string            `json:"mode"`
+	Preferred []AgentPreference `json:"preferred"`
+	Notes     []string          `json:"notes,omitempty"`
+}
+
+type AgentPreference struct {
+	Agent  string `json:"agent"`
+	Model  string `json:"model"`
+	Speed  string `json:"speed"`
+	UseFor string `json:"use_for,omitempty"`
 }
 
 // Multica deliberately carries the exact profile, workspace, and link origin.
@@ -108,6 +125,55 @@ func (c Config) Validate() error {
 				return fmt.Errorf("profile %q multica: %w", name, err)
 			}
 		}
+		if profile.AgentPreferences != nil {
+			if err := profile.AgentPreferences.Validate(); err != nil {
+				return fmt.Errorf("profile %q agent_preferences: %w", name, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (p AgentPreferences) Validate() error {
+	if p.Mode != "advisory" {
+		return errors.New("mode must be advisory")
+	}
+	if len(p.Preferred) == 0 {
+		return errors.New("preferred requires at least one entry")
+	}
+	if len(p.Preferred) > 32 {
+		return errors.New("preferred exceeds 32-entry limit")
+	}
+	seen := make(map[string]struct{}, len(p.Preferred))
+	for i, preference := range p.Preferred {
+		fields := map[string]string{"agent": preference.Agent, "model": preference.Model, "speed": preference.Speed}
+		for field, value := range fields {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("preferred[%d].%s is required", i, field)
+			}
+			if len(value) > 128 {
+				return fmt.Errorf("preferred[%d].%s exceeds 128-byte limit", i, field)
+			}
+		}
+		if len(preference.UseFor) > 128 {
+			return fmt.Errorf("preferred[%d].use_for exceeds 128-byte limit", i)
+		}
+		key := preference.Agent + "\x00" + preference.Model + "\x00" + preference.Speed + "\x00" + preference.UseFor
+		if _, ok := seen[key]; ok {
+			return fmt.Errorf("preferred[%d] duplicates an earlier entry", i)
+		}
+		seen[key] = struct{}{}
+	}
+	if len(p.Notes) > 16 {
+		return errors.New("notes exceeds 16-entry limit")
+	}
+	for i, note := range p.Notes {
+		if strings.TrimSpace(note) == "" {
+			return fmt.Errorf("notes[%d] cannot be empty", i)
+		}
+		if len(note) > 1024 {
+			return fmt.Errorf("notes[%d] exceeds 1024-byte limit", i)
+		}
 	}
 	return nil
 }
@@ -133,8 +199,20 @@ func (m Multica) Validate() error {
 		if parsed.RawQuery != "" || parsed.Fragment != "" {
 			return fmt.Errorf("%s must not contain a query or fragment", field)
 		}
+		if parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopbackHost(parsed.Hostname())) {
+			return fmt.Errorf("%s must use https (http is allowed only for loopback)", field)
+		}
 	}
 	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (c Config) ResolveProfile(name string) (string, Profile, error) {

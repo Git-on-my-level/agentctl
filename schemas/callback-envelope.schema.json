@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agentctl.dev/schemas/callback-envelope.schema.json",
+  "$id": "urn:agentctl:schema:callback-envelope:v1",
   "x-agentctl-docs": "../docs/events-and-subscriptions.md#webhook-protocol-and-security",
   "title": "agentctl callback envelope v1",
   "type": "object",

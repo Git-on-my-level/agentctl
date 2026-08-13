@@ -28,7 +28,48 @@ type cursorParser struct{}
 
 func (cursorParser) Name() string { return "cursor-stream-json" }
 func (cursorParser) Parse(line []byte, stderr bool) parsedObservation {
-	return parseAgentJSON(line, stderr, "cursor", []string{"session_id"}, []string{"result"})
+	obs := parseAgentJSON(line, stderr, "cursor", []string{"session_id"}, []string{"result"})
+	value, ok := decodeLine(line)
+	if !ok {
+		return obs
+	}
+	if obs.Terminal && obs.Success && strings.TrimSpace(obs.Content) == "" {
+		obs.Data["diagnostic_code"] = "empty_terminal_result"
+	}
+	if strings.EqualFold(firstString(value, "type"), "assistant") {
+		message, ok := value["message"].(map[string]any)
+		if !ok || !strings.EqualFold(firstString(message, "role"), "assistant") {
+			return obs
+		}
+		content := cursorAssistantText(message["content"])
+		if content != "" {
+			obs.Content = boundedUTF8(content, 1<<20)
+			obs.ContentType = "text/plain"
+			obs.ContentTruncated = len(content) > len(obs.Content)
+		}
+	}
+	return obs
+}
+
+func cursorAssistantText(value any) string {
+	switch content := value.(type) {
+	case string:
+		return strings.TrimSpace(content)
+	case []any:
+		parts := make([]string, 0, len(content))
+		for _, item := range content {
+			part, ok := item.(map[string]any)
+			if !ok || !strings.EqualFold(firstString(part, "type"), "text") {
+				continue
+			}
+			if text := strings.TrimSpace(firstString(part, "text")); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
 }
 
 type claudeParser struct{}
@@ -253,7 +294,41 @@ func parseAgentJSON(line []byte, stderr bool, family string, sessionKeys, termin
 	}
 	obs.Terminal, obs.Success = terminal, success
 	obs.Data = safeObservationData(value, obs.SessionID, obs.BackendVersion, typ, family)
+	if obs.State == StateAttention {
+		attentionKind := "unknown"
+		switch {
+		case containsAny(typ, "permission"):
+			attentionKind = "permission"
+		case containsAny(typ, "approval"):
+			attentionKind = "approval"
+		case containsAny(typ, "authentication", "login"):
+			attentionKind = "authentication"
+		case containsAny(typ, "input"):
+			attentionKind = "input"
+		case containsAny(typ, "quota", "rate_limit"):
+			attentionKind = "quota"
+		}
+		obs.Data["attention_kind"] = attentionKind
+		obs.Data["diagnostic_code"] = normalizedDiagnosticCode(typ)
+	}
 	return obs
+}
+
+func normalizedDiagnosticCode(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var out strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			out.WriteRune(r)
+		case out.Len() != 0 && !strings.HasSuffix(out.String(), "_"):
+			out.WriteByte('_')
+		}
+		if out.Len() >= 128 {
+			break
+		}
+	}
+	return strings.Trim(out.String(), "_")
 }
 
 func observationStatus(value map[string]any) string {

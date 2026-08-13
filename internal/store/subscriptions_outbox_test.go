@@ -253,6 +253,19 @@ func TestSubscriptionFanoutUsesNormalizedEnvelopeAndExactFilters(t *testing.T) {
 	}
 }
 
+func TestLegacyDirectAuthorityFilterMatchesNativeEvent(t *testing.T) {
+	now := time.Now().UTC()
+	value := subscription.Subscription{State: subscription.StateActive, ExpiresAt: now.Add(time.Hour), Filter: subscription.EventFilter{Authority: "direct"}}
+	event := &model.Event{Authority: model.AuthorityNative}
+	if !matchesEventScope(value, event, now) {
+		t.Fatal("legacy direct authority did not match native event")
+	}
+	value.Filter.Authority = "unknown"
+	if matchesEventScope(value, event, now) {
+		t.Fatal("unknown authority unexpectedly matched")
+	}
+}
+
 func TestSubscriptionAutoExpiresOnlyAfterTerminalAcknowledgement(t *testing.T) {
 	ctx := context.Background()
 	j, _, now := openTestJournal(t)
