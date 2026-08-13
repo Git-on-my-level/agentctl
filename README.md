@@ -42,7 +42,7 @@ portable skill. Download both the archive for your platform and
 then verify the archive before installing it. For example, on Apple silicon:
 
 ```bash
-VERSION=v0.2.2
+VERSION=$(gh release view --repo Git-on-my-level/agentctl --json tagName --jq .tagName)
 ARCHIVE="agentctl_${VERSION}_darwin_arm64.tar.gz"
 
 gh release download "$VERSION" \
