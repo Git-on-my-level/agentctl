@@ -34,7 +34,36 @@ contract.
 It is not a model gateway, transcript database, issue tracker, credential
 manager, or replacement for the agent CLI being supervised.
 
-## Quick start
+## Install a release
+
+Release archives contain the binary, installer, schemas, documentation, and
+portable skill. Download both the archive for your platform and
+`SHA256SUMS` from the [latest release](https://github.com/Git-on-my-level/agentctl/releases/latest),
+then verify the archive before installing it. For example, on Apple silicon:
+
+```bash
+VERSION=v0.2.2
+ARCHIVE="agentctl_${VERSION}_darwin_arm64.tar.gz"
+
+gh release download "$VERSION" \
+  --repo Git-on-my-level/agentctl \
+  --pattern "$ARCHIVE" \
+  --pattern SHA256SUMS
+grep " $ARCHIVE\$" SHA256SUMS | shasum -a 256 -c -
+tar -xzf "$ARCHIVE"
+cd "agentctl_${VERSION}_darwin_arm64"
+
+scripts/install.sh --binary "$PWD/agentctl" --dry-run
+scripts/install.sh --binary "$PWD/agentctl"
+agentctl doctor
+```
+
+Use `darwin_amd64`, `linux_amd64`, or `linux_arm64` for another supported
+platform. On Linux, replace `shasum -a 256` with `sha256sum`. The default
+install prefix is `~/.local`; ensure `~/.local/bin` is on `PATH`. The installer
+does not download code and previews its changes with `--dry-run`.
+
+## Build from source
 
 Requirements: a supported platform, the Go version declared in `go.mod` or
 newer, and at least one native agent CLI. Building and the read-only discovery
