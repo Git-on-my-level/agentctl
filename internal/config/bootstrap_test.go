@@ -143,12 +143,13 @@ func TestCheckProvenanceIsLocalAndStructured(t *testing.T) {
 	if err := os.WriteFile(path, []byte("adapter binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	profile := Profile{Adapters: map[string]Adapter{"local": {Executable: path}}, Multica: &Multica{Executable: path, Profile: "p", WorkspaceID: "w", ServerURL: "https://server", AppURL: "https://app"}}
+	preferences := &AgentPreferences{Mode: "advisory", Preferred: []AgentPreference{{Agent: "cursor", Model: "composer-2.5", Speed: "regular"}}}
+	profile := Profile{Adapters: map[string]Adapter{"local": {Executable: path}}, Multica: &Multica{Executable: path, Profile: "p", WorkspaceID: "w", ServerURL: "https://server", AppURL: "https://app"}, AgentPreferences: preferences}
 	report, err := CheckConfigProvenance(Config{SchemaVersion: SchemaVersion, DefaultProfile: "p", Profiles: map[string]Profile{"p": profile}}, "", ProvenanceOptions{ResolveExecutable: func(string) (string, error) { return path, nil }})
 	if err != nil {
 		t.Fatalf("provenance failed: %v (%#v)", err, report)
 	}
-	if !report.Valid || report.Multica == nil || report.Multica.Digest == "" {
+	if !report.Valid || report.Multica == nil || report.Multica.Digest == "" || report.AgentPreferences == nil || report.AgentPreferences.Preferred[0].Model != "composer-2.5" {
 		t.Fatalf("incomplete provenance report: %#v", report)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

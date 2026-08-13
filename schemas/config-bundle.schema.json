@@ -23,11 +23,13 @@
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/adapter" }
         },
-        "multica": { "$ref": "#/$defs/multica" }
+        "multica": { "$ref": "#/$defs/multica" },
+        "agent_preferences": { "$ref": "#/$defs/agent_preferences" }
       },
       "anyOf": [
         { "required": ["adapters"] },
-        { "required": ["multica"] }
+        { "required": ["multica"] },
+        { "required": ["agent_preferences"] }
       ]
     },
     "adapter": {
@@ -36,6 +38,37 @@
       "required": ["executable"],
       "properties": {
         "executable": { "type": "string", "minLength": 1 }
+      }
+    },
+    "agent_preferences": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "preferred"],
+      "properties": {
+        "mode": { "const": "advisory" },
+        "preferred": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/agent_preference" }
+        },
+        "notes": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
+        }
+      }
+    },
+    "agent_preference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "model", "speed"],
+      "properties": {
+        "agent": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "model": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "speed": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "use_for": { "type": "string", "maxLength": 128 }
       }
     },
     "multica": {

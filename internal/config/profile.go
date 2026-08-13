@@ -187,5 +187,11 @@ func cloneProfile(in Profile) Profile {
 		m := *in.Multica
 		out.Multica = &m
 	}
+	if in.AgentPreferences != nil {
+		preferences := *in.AgentPreferences
+		preferences.Preferred = append([]AgentPreference(nil), in.AgentPreferences.Preferred...)
+		preferences.Notes = append([]string(nil), in.AgentPreferences.Notes...)
+		out.AgentPreferences = &preferences
+	}
 	return out
 }

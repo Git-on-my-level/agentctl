@@ -31,8 +31,9 @@ type Bundle struct {
 }
 
 type BundleProfile struct {
-	Adapters map[string]BundleAdapter `json:"adapters,omitempty"`
-	Multica  *Multica                 `json:"multica,omitempty"`
+	Adapters         map[string]BundleAdapter `json:"adapters,omitempty"`
+	Multica          *Multica                 `json:"multica,omitempty"`
+	AgentPreferences *AgentPreferences        `json:"agent_preferences,omitempty"`
 }
 
 type BundleAdapter struct {
@@ -130,7 +131,7 @@ func Resolve(basePath, bundlePath string) (Resolution, error) {
 	}
 	result.Config = effective
 	result.Bundle = &provenance
-	result.Notes = []string{"bundle profiles compose additively and collisions fail closed", "native adapter executable entries are doctor validation expectations only; run argv is unchanged", "bundle provenance is not copied into execution events"}
+	result.Notes = []string{"bundle profiles compose additively and collisions fail closed", "agent preferences are advisory; native run argv remains caller-authoritative", "native adapter executable entries are doctor validation expectations only; run argv is unchanged", "bundle provenance is not copied into execution events"}
 	return result, nil
 }
 
@@ -162,7 +163,7 @@ func PlanBundle(basePath, bundlePath string) (BundlePlan, error) {
 	}
 	sort.Strings(add)
 	sort.Strings(existing)
-	return BundlePlan{Valid: true, Provenance: provenance, AddProfiles: add, Existing: existing, DefaultProfile: bundle.DefaultProfile, Mutates: false, RuntimeScope: []string{"profile resolution", "multica authority", "config doctor provenance"}}, nil
+	return BundlePlan{Valid: true, Provenance: provenance, AddProfiles: add, Existing: existing, DefaultProfile: bundle.DefaultProfile, Mutates: false, RuntimeScope: []string{"profile resolution", "agent preferences", "multica authority", "config doctor provenance"}}, nil
 }
 
 func applyBundle(base Config, bundle Bundle) (Config, error) {
@@ -196,7 +197,7 @@ func applyBundle(base Config, bundle Bundle) (Config, error) {
 }
 
 func (p BundleProfile) profile() Profile {
-	result := Profile{Multica: p.Multica}
+	result := cloneProfile(Profile{Multica: p.Multica, AgentPreferences: p.AgentPreferences})
 	if len(p.Adapters) != 0 {
 		result.Adapters = make(map[string]Adapter, len(p.Adapters))
 		for name, adapter := range p.Adapters {

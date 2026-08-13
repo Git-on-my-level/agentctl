@@ -387,6 +387,45 @@ func TestStaleNativeLeaseProbeCannotCorruptTerminalExecution(t *testing.T) {
 	}
 }
 
+func TestStaleUnreachableProbeCannotOverwriteRenewedNativeLease(t *testing.T) {
+	session := fixtureSession("fixture", "fixture_session", "session-renewed", adapter.StateRunning)
+	fake := &fakeAdapter{name: "fixture", launch: adapter.LaunchResult{Session: session}}
+	registry := NewRegistry()
+	_ = registry.Register("fixture", func(AdapterSpec) (adapter.Adapter, error) { return fake, nil })
+	engine, journal, _ := testEngine(t, registry)
+	execution, err := engine.Launch(context.Background(), LaunchOptions{Adapter: AdapterSpec{Name: "fixture", Executable: "/opt/fixture"}, Request: adapter.LaunchRequest{Argv: []string{"/opt/fixture"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseSeconds := 5
+	execution.Liveness = model.LivenessAlive
+	execution.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: fixtureNow.Add(-10 * time.Second), FreshForSeconds: &leaseSeconds}
+	execution, err = journal.UpdateExecution(context.Background(), execution, execution.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := unreachableProbe(execution, fixtureNow)
+
+	renewed := execution
+	renewed.UpdatedAt = fixtureNow
+	renewed.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: fixtureNow, FreshForSeconds: &leaseSeconds}
+	renewed, err = journal.UpdateExecution(context.Background(), renewed, renewed.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge := SupervisorExecutions{Engine: engine}
+	if err := bridge.ApplyProbe(context.Background(), execution.ID.String(), stale); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := journal.GetExecution(context.Background(), execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Revision != renewed.Revision || stored.Liveness != model.LivenessAlive || stored.Observation.Integrity != model.IntegrityVerified {
+		t.Fatalf("stale unreachable probe overwrote renewed lease: %#v", stored)
+	}
+}
+
 func TestBlockedNativeRunnerLeaseRemainsActive(t *testing.T) {
 	leaseSeconds := 5
 	execution := model.Execution{Authority: model.AuthorityNative, State: model.StateAttention, Liveness: model.LivenessBlocked, Observation: model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: fixtureNow, FreshForSeconds: &leaseSeconds}}

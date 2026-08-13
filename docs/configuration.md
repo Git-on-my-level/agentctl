@@ -28,6 +28,14 @@ not be reached through symlinked parent directories.
       "adapters": {
         "codex": {"executable": "/opt/agent-tools/bin/codex"},
         "cursor": {"executable": "/opt/agent-tools/bin/cursor-agent"}
+      },
+      "agent_preferences": {
+        "mode": "advisory",
+        "preferred": [
+          {"agent": "cursor", "model": "composer-2.5", "speed": "regular", "use_for": "default"},
+          {"agent": "cursor", "model": "cursor-grok-4.6-high", "speed": "regular", "use_for": "harder_tasks"}
+        ],
+        "notes": ["Never select fast model variants."]
       }
     }
   }
@@ -53,16 +61,30 @@ selected profile's executable and authority provenance. Adapter and endpoint
 credentials remain in the native CLI, operating-system credential store, or
 another operator-owned secret system; they are not config fields.
 
+`agent_preferences` is ordered, portable guidance for callers and delegated
+agents. Its only supported mode is `advisory`; agentctl reports it through
+`config show`, `config doctor`, and the top-level `doctor`, but never checks a
+native model catalog, blocks a different model, or changes direct CLI argv.
+`agent`, `model`, `speed`, `use_for`, and `notes` are intentionally text fields
+so profiles can describe native tools without agentctl owning their vocabulary.
+
 ## Profile selection
 
 `--profile <name>` selects an exact named profile. If it is omitted, the
 configured `default_profile` is used where a command needs profile-backed
 settings. Commands that do not need a profile continue to operate without one.
+An advisory-guidance-only profile is valid even when it has no adapter or
+Multica entry; it can be selected for callers that need preferences without
+executable provenance checks.
 
 Setting an existing profile merges provided fields by default. Use `--replace`
 only when replacing the entire profile is intentional. Unknown schema versions,
 missing selected profiles, incomplete Multica authority records, credentialed
 URLs, and unsafe paths fail closed.
+
+`config set-profile` does not author or clear `agent_preferences`. When it
+updates adapter or Multica fields on a profile that already has reviewed
+preferences, it preserves those preferences, including with `--replace`.
 
 ## Explicit operator-managed bundles
 
@@ -78,6 +100,12 @@ the local config schema:
     "coordinated": {
       "adapters": {
         "codex": {"executable": "/opt/agent-tools/bin/codex"}
+      },
+      "agent_preferences": {
+        "mode": "advisory",
+        "preferred": [
+          {"agent": "cursor", "model": "composer-2.5", "speed": "regular", "use_for": "default"}
+        ]
       },
       "multica": {
         "executable": "/opt/agent-tools/bin/multica",
@@ -112,8 +140,9 @@ profiles are added after safe built-ins and the selected user config. A profile 
 unless the definitions are identical. A bundle default cannot replace a
 different user-config default.
 
-Bundles can contain only adapter executable expectations and an optional exact
-Multica authority. They cannot add adapter arguments, callback commands,
+Bundles can contain adapter executable expectations, advisory agent
+preferences, and an optional exact Multica authority. They cannot add adapter
+arguments, callback commands,
 installation roots, tokens, or arbitrary fields. An adapter executable in a
 bundle is a profile/doctor expectation; it never rewrites the native argv after
 `agentctl run --`.

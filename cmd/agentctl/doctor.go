@@ -21,14 +21,15 @@ type doctorJournal struct {
 }
 
 type doctorConfig struct {
-	Path        string                   `json:"path"`
-	Status      string                   `json:"status"`
-	Profile     string                   `json:"profile,omitempty"`
-	Bundle      *config.BundleProvenance `json:"bundle,omitempty"`
-	Composition []string                 `json:"composition_order,omitempty"`
-	Provenance  *config.ProvenanceReport `json:"provenance,omitempty"`
-	Source      *config.SourceStatus     `json:"source,omitempty"`
-	SourceError string                   `json:"source_error,omitempty"`
+	Path             string                   `json:"path"`
+	Status           string                   `json:"status"`
+	Profile          string                   `json:"profile,omitempty"`
+	AgentPreferences *config.AgentPreferences `json:"agent_preferences,omitempty"`
+	Bundle           *config.BundleProvenance `json:"bundle,omitempty"`
+	Composition      []string                 `json:"composition_order,omitempty"`
+	Provenance       *config.ProvenanceReport `json:"provenance,omitempty"`
+	Source           *config.SourceStatus     `json:"source,omitempty"`
+	SourceError      string                   `json:"source_error,omitempty"`
 }
 
 type doctorAdapter struct {
@@ -115,7 +116,7 @@ func (a *app) doctorReadiness(ctx context.Context, renderer output.Renderer, c c
 			return mapConfigError("profile is unavailable", resolveErr)
 		}
 		provenance, provenanceErr := config.Doctor(ctx, cfg, c.profile)
-		report.Config = doctorConfig{Path: configPath, Status: "ready", Profile: name, Bundle: resolution.Bundle, Composition: resolution.Composition}
+		report.Config = doctorConfig{Path: configPath, Status: "ready", Profile: name, AgentPreferences: profile.AgentPreferences, Bundle: resolution.Bundle, Composition: resolution.Composition}
 		if full {
 			report.Config.Provenance = &provenance
 		}

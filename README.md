@@ -109,9 +109,11 @@ acceptable. See [State, security, privacy, and retention](docs/state-security-an
 
 Configuration is optional for the standalone native-agent path. When used, it
 is a versioned, owner-only JSON document with named profiles. It records exact
-native executable expectations for `doctor` and an optional
-runtime-effective Multica authority; it does not contain credentials or alter
-the exact argv supplied to `run --`.
+native executable expectations for `doctor`, optional advisory
+agent/model/speed preferences, and an optional runtime-effective Multica
+authority. Preferences are discoverable guidance only: config does not contain
+credentials, enforce a model choice, or alter the exact argv supplied to
+`run --`.
 
 The default path is `$XDG_CONFIG_HOME/agentctl/config.json`, falling back to
 `~/.config/agentctl/config.json`. `AGENTCTL_CONFIG` or the global `--config`
@@ -140,8 +142,9 @@ agentctl config source status
 agentctl config source restore --plan  # only for live-config drift
 ```
 
-The invocation-scoped bundle composes additively. It cannot replace a
-different user profile/default, provide adapter arguments, configure callbacks
+The invocation-scoped bundle composes additively. It can state advisory agent
+preferences, but cannot enforce them or rewrite native argv. It cannot replace
+a different user profile/default, provide adapter arguments, configure callbacks
 or install roots, or contain secrets. The plan reports its SHA-256 provenance
 and does not mutate local config. A configured Git source updates only on the
 explicit `source update` command, accepts fast-forwards only, and fails closed

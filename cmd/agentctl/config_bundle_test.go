@@ -15,7 +15,7 @@ import (
 func cliBundle(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "bundle.json")
-	document := `{"schema_version":1,"default_profile":"private","profiles":{"private":{"adapters":{"codex":{"executable":"/bin/echo"}}}}}`
+	document := `{"schema_version":1,"default_profile":"private","profiles":{"private":{"adapters":{"codex":{"executable":"/bin/echo"}},"agent_preferences":{"mode":"advisory","preferred":[{"agent":"cursor","model":"composer-2.5","speed":"regular","use_for":"default"}],"notes":["Never select fast variants."]}}}}`
 	if err := os.WriteFile(path, []byte(document), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestConfigBundlePlanIsExplicitReadOnlyAndReportsDigest(t *testing.T) {
 func TestConfigShowAndDoctorExposeBundleComposition(t *testing.T) {
 	bundle := cliBundle(t)
 	base := filepath.Join(t.TempDir(), "missing-config.json")
-	for _, command := range [][]string{{"config", "show"}, {"doctor", "--static"}} {
+	for _, command := range [][]string{{"config", "show"}, {"config", "doctor"}, {"doctor", "--static"}} {
 		var stdout, stderr bytes.Buffer
 		a := testApp(&stdout, &stderr)
 		args := append([]string{"--config", base, "--config-bundle", bundle, "--profile", "private"}, command...)
@@ -63,6 +63,9 @@ func TestConfigShowAndDoctorExposeBundleComposition(t *testing.T) {
 		}
 		if !strings.Contains(stdout.String(), `"sha256"`) || !strings.Contains(stdout.String(), `"explicit_additive_bundle"`) {
 			t.Fatalf("%v omitted bundle provenance/composition: %s", command, stdout.String())
+		}
+		if !strings.Contains(stdout.String(), `"agent_preferences"`) || !strings.Contains(stdout.String(), `"composer-2.5"`) {
+			t.Fatalf("%v omitted advisory agent preferences: %s", command, stdout.String())
 		}
 	}
 }
@@ -80,6 +83,33 @@ func TestConfigBundleIsNeverImplicitlyDiscovered(t *testing.T) {
 	}
 	if code := a.run(context.Background(), []string{"--config", base, "config", "show"}); code == 0 || !strings.Contains(stdout.String(), `"code":"not_found"`) {
 		t.Fatalf("implicit bundle discovery occurred: exit=%d output=%s", code, stdout.String())
+	}
+}
+
+func TestConfigSetProfilePreservesReviewedAgentPreferences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	preferences := &config.AgentPreferences{Mode: "advisory", Preferred: []config.AgentPreference{{Agent: "cursor", Model: "composer-2.5", Speed: "regular"}}, Notes: []string{"Never fast."}}
+	cfg := config.Config{SchemaVersion: config.SchemaVersion, DefaultProfile: "fleet", Profiles: map[string]config.Profile{"fleet": {Adapters: map[string]config.Adapter{"cursor": {Executable: "/old/cursor"}}, AgentPreferences: preferences}}}
+	if err := config.Save(path, cfg, false); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--config", path, "config", "set-profile", "--name", "fleet", "--adapter", "cursor=/new/cursor", "--replace"}); code != 0 {
+		t.Fatalf("set-profile exit=%d output=%s", code, stdout.String())
+	}
+	updated, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := updated.Profiles["fleet"]
+	if profile.Adapters["cursor"].Executable != "/new/cursor" || profile.AgentPreferences == nil || profile.AgentPreferences.Preferred[0].Model != "composer-2.5" {
+		t.Fatalf("set-profile did not preserve preferences: %#v", profile)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--config", path, "config", "set-profile", "--name", "fleet", "--adapter", "cursor=/new/cursor"}); code != 0 {
+		t.Fatalf("idempotent set-profile exit=%d output=%s", code, stdout.String())
 	}
 }
 

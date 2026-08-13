@@ -384,6 +384,15 @@ func (a *app) configSetProfile(renderer output.Renderer, path string, args []str
 	} else if err != nil {
 		return mapConfigError("read existing config", err)
 	}
+	// set-profile cannot author or clear advisory preferences. Preserve any
+	// reviewed preferences already attached to the named profile, including
+	// when --replace updates the adapter/Multica fields that this command owns.
+	if existing, ok := cfg.Profiles[name]; ok && existing.AgentPreferences != nil {
+		preferences := *existing.AgentPreferences
+		preferences.Preferred = append([]config.AgentPreference(nil), existing.AgentPreferences.Preferred...)
+		preferences.Notes = append([]string(nil), existing.AgentPreferences.Notes...)
+		profile.AgentPreferences = &preferences
+	}
 	if replace {
 		cfg, err = config.UpsertProfile(cfg, name, profile, true)
 	} else {
@@ -398,7 +407,7 @@ func (a *app) configSetProfile(renderer output.Renderer, path string, args []str
 	if err := config.Save(path, cfg, exists); err != nil {
 		return mapConfigError("write config", err)
 	}
-	if err := renderer.Success(output.Success{Result: map[string]any{"path": path, "name": name, "profile": profile, "default_profile": cfg.DefaultProfile}, Lines: []output.Line{{Lead: "config.profile", Fields: []output.Field{{Name: "name", Value: name}, {Name: "default", Value: cfg.DefaultProfile == name}, {Name: "adapters", Value: len(profile.Adapters)}, {Name: "multica", Value: profile.Multica != nil}}}}}); err != nil {
+	if err := renderer.Success(output.Success{Result: map[string]any{"path": path, "name": name, "profile": profile, "default_profile": cfg.DefaultProfile}, Lines: []output.Line{{Lead: "config.profile", Fields: []output.Field{{Name: "name", Value: name}, {Name: "default", Value: cfg.DefaultProfile == name}, {Name: "adapters", Value: len(profile.Adapters)}, {Name: "multica", Value: profile.Multica != nil}, {Name: "agent_preferences", Value: profile.AgentPreferences != nil}}}}}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil

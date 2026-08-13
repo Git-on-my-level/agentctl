@@ -14,6 +14,14 @@ const validBundle = `{
   "profiles": {
     "private": {
       "adapters": {"codex": {"executable": "/opt/bin/codex"}},
+      "agent_preferences": {
+        "mode": "advisory",
+        "preferred": [
+          {"agent": "cursor", "model": "composer-2.5", "speed": "regular", "use_for": "default"},
+          {"agent": "cursor", "model": "cursor-grok-4.6-high", "speed": "regular", "use_for": "harder_tasks"}
+        ],
+        "notes": ["Never select fast model variants."]
+      },
       "multica": {
         "executable": "/opt/bin/multica",
         "profile": "operator",
@@ -43,9 +51,49 @@ func TestLoadBundleAcceptsReadOnlyGitFileAndReportsDigest(t *testing.T) {
 	if bundle.DefaultProfile != "private" || provenance.SHA256 == "" || provenance.SourcePath != path || provenance.Bytes != int64(len(validBundle)) {
 		t.Fatalf("unexpected bundle/provenance: %#v %#v", bundle, provenance)
 	}
+	preferences := bundle.Profiles["private"].AgentPreferences
+	if preferences == nil || len(preferences.Preferred) != 2 || preferences.Preferred[1].Model != "cursor-grok-4.6-high" {
+		t.Fatalf("agent preferences were not decoded: %#v", preferences)
+	}
 	_, second, err := LoadBundle(path)
 	if err != nil || second.SHA256 != provenance.SHA256 {
 		t.Fatalf("digest not deterministic: %#v %v", second, err)
+	}
+}
+
+func TestAgentPreferencesAreAdvisoryBoundedAndStrict(t *testing.T) {
+	valid := AgentPreferences{Mode: "advisory", Preferred: []AgentPreference{{Agent: "cursor", Model: "composer-2.5", Speed: "regular"}}}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid advisory preferences rejected: %v", err)
+	}
+	for name, preferences := range map[string]AgentPreferences{
+		"enforced mode": {Mode: "enforced", Preferred: valid.Preferred},
+		"empty list":    {Mode: "advisory"},
+		"missing speed": {Mode: "advisory", Preferred: []AgentPreference{{Agent: "cursor", Model: "composer-2.5"}}},
+		"duplicate":     {Mode: "advisory", Preferred: append(valid.Preferred, valid.Preferred...)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := preferences.Validate(); err == nil {
+				t.Fatal("invalid preferences unexpectedly accepted")
+			}
+		})
+	}
+}
+
+func TestLiveConfigRoundTripsAgentPreferences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	preferences := &AgentPreferences{Mode: "advisory", Preferred: []AgentPreference{{Agent: "cursor", Model: "composer-2.5", Speed: "regular"}}, Notes: []string{"Never fast."}}
+	cfg := Config{SchemaVersion: SchemaVersion, DefaultProfile: "guidance", Profiles: map[string]Profile{"guidance": {AgentPreferences: preferences}}}
+	if err := Save(path, cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := loaded.Profiles["guidance"].AgentPreferences
+	if got == nil || got.Preferred[0].Model != "composer-2.5" || got.Notes[0] != "Never fast." {
+		t.Fatalf("agent preferences did not round-trip: %#v", got)
 	}
 }
 
