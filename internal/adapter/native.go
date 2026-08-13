@@ -723,8 +723,8 @@ func (p *processRecord) eventsAfter(cursor string) []Event {
 	defer p.mu.Unlock()
 	start := 0
 	if cursor != "" {
-		if n, err := strconv.ParseInt(cursor, 10, 64); err == nil {
-			start = int(n)
+		if n, err := strconv.Atoi(cursor); err == nil {
+			start = n
 		}
 	}
 	if start < 0 {

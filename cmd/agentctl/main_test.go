@@ -56,6 +56,22 @@ func TestSubscribeCancelRejectsInvalidIDBeforeCreatingJournal(t *testing.T) {
 	}
 }
 
+func TestEventsRejectsLimitOutsideNativeIntRangeBeforeCreatingJournal(t *testing.T) {
+	journal := filepath.Join(t.TempDir(), "journal.db")
+	executionID, err := ids.New(ids.TypeExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--journal", journal, "events", executionID.String(), "--limit", "18446744073709551615"}); code != 2 {
+		t.Fatalf("events exit=%d output=%s", code, stdout.String())
+	}
+	if _, err := os.Stat(journal); !os.IsNotExist(err) {
+		t.Fatalf("invalid pagination created journal: %v", err)
+	}
+}
+
 func TestDoctorRequiresProfileSelectionWhenConfigHasNoDefault(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(configPath, []byte(`{"schema_version":1,"profiles":{"local":{"adapters":{"generic":{"executable":"/bin/echo"}}}}}`), 0o600); err != nil {

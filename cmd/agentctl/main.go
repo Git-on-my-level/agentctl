@@ -410,19 +410,24 @@ func (a *app) events(ctx context.Context, renderer output.Renderer, c common, ar
 		if i+1 >= len(args) {
 			return output.NewError(output.CodeUsage, args[i]+" requires a value", false)
 		}
+		flag := args[i]
 		value := args[i+1]
 		i++
-		number, err := strconv.ParseUint(value, 10, 64)
-		if err != nil {
-			return output.Wrap(output.CodeUsage, "event pagination value must be a non-negative integer", false, err)
-		}
-		switch args[i-1] {
+		switch flag {
 		case "--after-sequence":
+			number, err := strconv.ParseUint(value, 10, 64)
+			if err != nil {
+				return output.Wrap(output.CodeUsage, "event pagination value must be a non-negative integer", false, err)
+			}
 			query.AfterSequence = number
 		case "--limit":
-			query.Limit = int(number)
+			number, err := strconv.Atoi(value)
+			if err != nil || number < 0 {
+				return output.Wrap(output.CodeUsage, "event pagination value must be a non-negative integer", false, err)
+			}
+			query.Limit = number
 		default:
-			return output.NewError(output.CodeUsage, "unknown events flag", false).WithDetail("flag", args[i-1])
+			return output.NewError(output.CodeUsage, "unknown events flag", false).WithDetail("flag", flag)
 		}
 	}
 	journal, problem := a.openRead(c)
