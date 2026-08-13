@@ -989,6 +989,7 @@ func mapAdapterError(message string, err error) *output.Error {
 			code = output.CodeInternal
 		}
 		result := output.Wrap(code, message, adapterErr.Retryable, err)
+		result.WithDetail("reason", adapterErr.Message)
 		for key, value := range adapterErr.Details {
 			result.WithDetail(key, value)
 		}

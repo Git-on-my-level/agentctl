@@ -140,6 +140,9 @@ handles but cannot claim the child model read them.
   reasoning, and user content are never eligible fallback sources.
 - Report `empty_terminal_result` and `assistant_message_fallback` as
   metadata-only diagnostics when that fallback is required.
+- Classify a locked macOS login keychain during the read-only version probe as
+  authentication-required with an actionable diagnostic, without copying raw
+  native stderr into the error envelope.
 - Preserve workspace trust and approval-mode semantics visibly.
 - Retain Cursor session ID for attach/resume.
 

@@ -37,8 +37,9 @@ func TestAdapterProbeErrorsPreserveStableClassification(t *testing.T) {
 	}
 	for _, test := range tests {
 		err := &adapter.AdapterError{Code: test.adapterCode, Message: "probe fixture"}
-		if got := mapAdapterError("adapter probe failed", err).Code; got != test.want {
-			t.Fatalf("adapter code %s mapped to %s; want %s", test.adapterCode, got, test.want)
+		got := mapAdapterError("adapter probe failed", err)
+		if got.Code != test.want || got.Details["reason"] != "probe fixture" {
+			t.Fatalf("adapter code %s mapped to %#v; want %s with reason", test.adapterCode, got, test.want)
 		}
 	}
 }
