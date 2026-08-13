@@ -190,6 +190,17 @@ func TestCursorPlanModeFailsClosedBeforeProbeOrJournal(t *testing.T) {
 	}
 }
 
+func TestAssistantResultSourceAcceptsCursorTerminalAndFallback(t *testing.T) {
+	for _, source := range []string{"assistant", "assistant_terminal_result", "assistant_message_fallback"} {
+		if !resultSourceSatisfies(source, "assistant") {
+			t.Fatalf("assistant requirement rejected %q", source)
+		}
+	}
+	if resultSourceSatisfies("terminal_result", "assistant") {
+		t.Fatal("generic terminal result satisfied assistant requirement")
+	}
+}
+
 func TestRunTimeoutTerminalizesExecution(t *testing.T) {
 	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
 	var stdout, stderr bytes.Buffer

@@ -30,6 +30,12 @@ type cursorParser struct{}
 func (cursorParser) Name() string { return "cursor-stream-json" }
 func (cursorParser) Parse(line []byte, stderr bool) parsedObservation {
 	obs := parseAgentJSON(line, stderr, "cursor", []string{"session_id"}, []string{"result"})
+	if obs.Terminal && strings.TrimSpace(obs.Content) != "" {
+		// Cursor's terminal result field is the final assistant answer, not
+		// generic process output. Preserve both its semantic role and the
+		// native envelope that supplied it.
+		obs.ContentSource = "assistant_terminal_result"
+	}
 	value, ok := decodeLine(line)
 	if !ok {
 		return obs
