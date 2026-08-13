@@ -81,6 +81,16 @@ func TestCursorWorkspaceTrustTextBecomesTypedAttention(t *testing.T) {
 	}
 }
 
+func TestStructuredPermissionAttentionIsTyped(t *testing.T) {
+	obs := (genericParser{}).Parse([]byte(`{"type":"permission.required","message":"secret prompt"}`), false)
+	if obs.Kind != "attention" || obs.State != StateAttention || obs.Data["attention_kind"] != "permission" || obs.Data["diagnostic_code"] != "permission_required" {
+		t.Fatalf("unexpected attention observation: %#v", obs)
+	}
+	if _, present := obs.Data["message"]; present {
+		t.Fatalf("attention message leaked into safe data: %#v", obs.Data)
+	}
+}
+
 func TestGenericToolResultIsNotTerminalOrRetainedAsFinalContent(t *testing.T) {
 	path := fixtureExecutable(t, `printf '%s\n' '{"type":"tool_output","result":"tool secret"}' '{"type":"result","status":"completed","result":"final answer"}'`)
 	got, err := NewGenericProcess().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})

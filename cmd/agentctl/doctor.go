@@ -210,6 +210,9 @@ func (a *app) doctorReadiness(ctx context.Context, renderer output.Renderer, c c
 	}
 	if report.Config.Source != nil && !report.Config.Source.InSync {
 		actions = append(actions, output.NextAction{Label: "Inspect config source drift", Argv: []string{"agentctl", "config", "source", "status"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+		if canRestore, blockers := sourceRestorePlan(*report.Config.Source); canRestore && len(blockers) == 0 {
+			actions = append(actions, output.NextAction{Label: "Plan live config restore", Argv: []string{"agentctl", "config", "source", "restore", "--plan"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+		}
 	}
 	if err := renderer.Success(output.Success{Result: report, Lines: lines, NextActions: actions}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)

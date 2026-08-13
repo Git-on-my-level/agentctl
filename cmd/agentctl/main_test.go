@@ -252,6 +252,115 @@ func TestRunInterruptionTerminalizesExecutionAsCancelled(t *testing.T) {
 	}
 }
 
+func TestNativeAttentionUpdatesExecutionAndStopsAwait(t *testing.T) {
+	root := t.TempDir()
+	journalPath := filepath.Join(root, "state", "journal.db")
+	script := filepath.Join(root, "attention-agent")
+	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"session.started\",\"session_id\":\"attention-fixture\"}' '{\"type\":\"permission.required\",\"message\":\"must-not-persist\"}'\nsleep 2\nprintf '%s\\n' '{\"type\":\"result\",\"status\":\"completed\",\"result\":\"done\"}'\n"
+	if err := os.WriteFile(script, []byte(contents), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rawExecutionID, err := ids.New(ids.TypeExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionID, err := ids.ParseExecutionID(rawExecutionID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runOut, runErr bytes.Buffer
+	runner := testApp(&runOut, &runErr)
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan int, 1)
+	go func() {
+		done <- runner.run(runCtx, []string{"--output", "json", "--journal", journalPath, "run", "--adapter", "generic-process", "--execution-id", executionID.String(), "--", script})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		journal, openErr := store.Open(journalPath, store.Options{ReadOnly: true})
+		if openErr == nil {
+			execution, getErr := journal.GetExecution(context.Background(), executionID)
+			journal.Close()
+			if getErr == nil && execution.State == model.StateAttention {
+				if execution.Liveness != model.LivenessBlocked {
+					t.Fatalf("attention liveness=%s", execution.Liveness)
+				}
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("execution did not reach attention; run_output=%s", runOut.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	var awaitOut, awaitErr bytes.Buffer
+	observer := testApp(&awaitOut, &awaitErr)
+	if code := observer.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "await", executionID.String(), "--timeout", "1s"}); code != output.ExitCodeFor(output.CodeAttentionRequired) {
+		t.Fatalf("await exit=%d output=%s stderr=%s", code, awaitOut.String(), awaitErr.String())
+	}
+	cancel()
+	select {
+	case code := <-done:
+		if code != output.ExitCodeFor(output.CodeExecutionCancelled) {
+			t.Fatalf("attention run cancellation exit=%d output=%s", code, runOut.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("attention run did not terminate after cancellation")
+	}
+	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := journal.GetExecution(context.Background(), executionID)
+	journal.Close()
+	if err != nil || terminal.State != model.StateCancelled {
+		t.Fatalf("cancelled attention execution=%#v err=%v", terminal, err)
+	}
+	raw, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("must-not-persist")) {
+		t.Fatal("attention prompt entered journal")
+	}
+}
+
+func TestAwaitContextCancellationIsNotReportedAsTimeout(t *testing.T) {
+	now := time.Now().UTC()
+	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journal, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, _, err := journal.CreateExecution(context.Background(), model.Execution{Authority: model.AuthorityNative, Adapter: "generic-process", Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateRunning, Liveness: model.LivenessAlive, SourceBindings: []model.SourceBinding{}, Capabilities: model.CapabilitySnapshot{NegotiatedAt: now, AdapterVersion: "test", Items: []model.CapabilityItem{}}, Observation: model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: now}}, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() {
+		done <- a.run(ctx, []string{"--output", "json", "--journal", journalPath, "await", execution.ID.String(), "--timeout", "5s"})
+	}()
+	time.Sleep(25 * time.Millisecond)
+	cancel()
+	select {
+	case code := <-done:
+		if code != output.ExitCodeFor(output.CodeExecutionCancelled) || !strings.Contains(stdout.String(), `"code":"execution_cancelled"`) {
+			t.Fatalf("await exit=%d output=%s", code, stdout.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled await did not return")
+	}
+}
+
 func TestRunCancelledBeforeLaunchDoesNotCreateExecution(t *testing.T) {
 	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
 	var stdout, stderr bytes.Buffer
@@ -441,6 +550,37 @@ func TestNoStoreResultWritesExplicitOutcomeTombstone(t *testing.T) {
 	}
 	if bytes.Contains(raw, []byte(secret)) {
 		t.Fatal("no-store result bytes entered journal")
+	}
+}
+
+func TestFailedRunResultReturnsStoredFailureWithoutAllowEmpty(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	journal := filepath.Join(t.TempDir(), "state", "journal.db")
+	native := `{"type":"result","status":"failed","error":"permission denied"}`
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--adapter", "generic-process", "--", "/bin/echo", native}); code != 0 {
+		t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var runDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &runDoc); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "result", runDoc.Result.ID.String()}); code != 0 {
+		t.Fatalf("result exit=%d output=%s", code, stdout.String())
+	}
+	var resultDoc struct {
+		Result struct {
+			Outcome model.Outcome `json:"outcome"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &resultDoc); err != nil {
+		t.Fatal(err)
+	}
+	if resultDoc.Result.Outcome.Failure == nil || resultDoc.Result.Outcome.Failure.Message != "permission denied" {
+		t.Fatalf("outcome=%#v", resultDoc.Result.Outcome)
 	}
 }
 

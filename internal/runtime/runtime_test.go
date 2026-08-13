@@ -387,6 +387,53 @@ func TestStaleNativeLeaseProbeCannotCorruptTerminalExecution(t *testing.T) {
 	}
 }
 
+func TestBlockedNativeRunnerLeaseRemainsActive(t *testing.T) {
+	leaseSeconds := 5
+	execution := model.Execution{Authority: model.AuthorityNative, State: model.StateAttention, Liveness: model.LivenessBlocked, Observation: model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: fixtureNow, FreshForSeconds: &leaseSeconds}}
+	if !activeNativeRunnerLease(execution, fixtureNow.Add(4*time.Second)) {
+		t.Fatal("fresh blocked runner lease was not active")
+	}
+	if activeNativeRunnerLease(execution, fixtureNow.Add(6*time.Second)) {
+		t.Fatal("expired blocked runner lease remained active")
+	}
+}
+
+func TestSupervisorEchoDoesNotEraseBlockedNativeRunnerLease(t *testing.T) {
+	session := fixtureSession("fixture", "fixture_session", "session-blocked", adapter.StateRunning)
+	fake := &fakeAdapter{name: "fixture", launch: adapter.LaunchResult{Session: session}}
+	registry := NewRegistry()
+	_ = registry.Register("fixture", func(AdapterSpec) (adapter.Adapter, error) { return fake, nil })
+	engine, journal, _ := testEngine(t, registry)
+	execution, err := engine.Launch(context.Background(), LaunchOptions{Adapter: AdapterSpec{Name: "fixture", Executable: "/opt/fixture"}, Request: adapter.LaunchRequest{Argv: []string{"/opt/fixture"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseSeconds := 5
+	execution.State = model.StateAttention
+	execution.Liveness = model.LivenessBlocked
+	execution.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: fixtureNow, FreshForSeconds: &leaseSeconds}
+	execution, err = journal.UpdateExecution(context.Background(), execution, execution.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := execution.Revision
+	bridge := SupervisorExecutions{Engine: engine}
+	probe, err := bridge.Reprobe(context.Background(), supervisor.Execution{ID: execution.ID.String()})
+	if err != nil || probe.State != string(model.StateAttention) || probe.Liveness != string(model.LivenessBlocked) {
+		t.Fatalf("probe=%#v err=%v", probe, err)
+	}
+	if err := bridge.ApplyProbe(context.Background(), execution.ID.String(), probe); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := journal.GetExecution(context.Background(), execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Revision != revision || stored.State != model.StateAttention || stored.Liveness != model.LivenessBlocked || stored.Observation.FreshForSeconds == nil {
+		t.Fatalf("supervisor echo erased blocked lease: %#v", stored)
+	}
+}
+
 func createPromotedIssueExecution(t *testing.T, engine *Engine, journal *fakeJournal, spec AdapterSpec) model.Execution {
 	t.Helper()
 	bindings, err := engine.configBindings(model.AuthorityMultica, spec)

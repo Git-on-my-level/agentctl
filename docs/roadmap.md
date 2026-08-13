@@ -29,7 +29,7 @@ version may use a screened list; v1 order and membership will not change.
   context handles, JSON-first output, and explicit compact text.
 - Known executable names infer adapters; `run` has a bounded timeout and
   result-content preflight. `await` stops on attention by default, and
-  `result` requires stored content unless `--allow-empty` is supplied.
+  `result` requires a stored content or failure body unless `--allow-empty` is supplied.
 
 Native launch supervision is deliberately same-process in v0.1. A new process
 cannot claim it can attach to a native session unless that native CLI exposes a

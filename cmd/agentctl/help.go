@@ -51,11 +51,11 @@ func helpTopics() map[string]commandHelp {
 		},
 		"result": {
 			Name: "result", Summary: "Dereference the bounded final result for a terminal execution.", Usage: "agentctl result <execution-id> [--summary] [--allow-empty]",
-			SideEffectClass: output.ReadOnly, Defaults: []string{"stored content is required", "integrity conflicts fail closed"},
+			SideEffectClass: output.ReadOnly, Defaults: []string{"stored content or a structured failure is required", "integrity conflicts fail closed"},
 			Examples: [][]string{{"agentctl", "result", "exec-..."}, {"agentctl", "result", "exec-...", "--summary"}}, Related: []string{"run", "await", "events"},
 		},
 		"subscribe": {
-			Name: "subscribe", Summary: "Create durable at-least-once callback delivery for execution events.", Usage: "agentctl subscribe create|list|show|cancel ...",
+			Name: "subscribe", Summary: "Create durable at-least-once callback delivery for execution events.", Usage: "agentctl subscribe create --execution ID --destination file|webhook --target target [--authority direct|multica] [--kind kind] [--ttl duration] [--keep-after-terminal] | list | show ID | cancel ID",
 			SideEffectClass: output.LocalOperationalWrite, Defaults: []string{"create filters terminal, attention, and artifact events", "24 hour TTL", "expires after acknowledged terminal delivery"},
 			Examples: [][]string{{"agentctl", "subscribe", "create", "--execution", "exec-...", "--destination", "file", "--target", "/absolute/events.ndjson"}}, Related: []string{"run", "events", "supervisor"},
 		},

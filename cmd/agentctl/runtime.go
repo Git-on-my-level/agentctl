@@ -35,6 +35,7 @@ type runOptions struct {
 const (
 	nativeRunnerLeaseSeconds   = 5
 	nativeRunnerHeartbeatEvery = time.Second
+	nativeEventFreshness       = 15 * time.Second
 	defaultRunTimeout          = 30 * time.Minute
 )
 
@@ -178,9 +179,34 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 				if nativeEvent.Kind == "terminal" {
 					continue
 				}
-				if err := appendNativeEvent(context.Background(), writeJournal, execution, nativeEvent); err != nil && !errors.Is(err, store.ErrTerminalConflict) {
+				updated, appendErr := appendNativeEvent(context.Background(), writeJournal, execution, nativeEvent)
+				if errors.Is(appendErr, store.ErrConflict) {
+					latest, reloadErr := writeJournal.GetExecution(context.Background(), execution.ID)
+					if reloadErr != nil {
+						writeJournal.Close()
+						return mapStoreError("reload execution after native event conflict", reloadErr)
+					}
+					if latest.State.Terminal() {
+						writeJournal.Close()
+						return writeExecution(renderer, latest, "run")
+					}
+					execution = latest
+					updated, appendErr = appendNativeEvent(context.Background(), writeJournal, execution, nativeEvent)
+				}
+				if errors.Is(appendErr, store.ErrTerminalConflict) {
+					latest, reloadErr := writeJournal.GetExecution(context.Background(), execution.ID)
 					writeJournal.Close()
-					return mapStoreError("record native event", err)
+					if reloadErr != nil {
+						return mapStoreError("reload terminal execution", reloadErr)
+					}
+					return writeExecution(renderer, latest, "run")
+				}
+				if appendErr != nil {
+					writeJournal.Close()
+					return mapStoreError("record native event", appendErr)
+				}
+				if appendErr == nil {
+					execution = updated
 				}
 			}
 			writeJournal.Close()
@@ -199,7 +225,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 			if openProblem != nil {
 				return openProblem
 			}
-			execution, err = finalizeResult(context.Background(), writeJournal, current, result, a.now().UTC(), opts.noStoreResult)
+			execution, err = finalizeResultConverging(context.Background(), writeJournal, current, result, a.now().UTC(), opts.noStoreResult)
 			writeJournal.Close()
 			if err != nil {
 				return mapStoreError("record terminal result", err)
@@ -216,9 +242,9 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 				waitCtx, waitCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				waited, waitErr := runtime.Wait(waitCtx, launch.Session.Ref)
 				waitCancel()
-				if waitErr == nil && terminalAdapterState(waited.State) {
+				if terminalAdapterState(waited.State) {
 					last = waited
-				} else {
+				} else if waitErr != nil {
 					last = adapter.Result{Success: false, State: adapter.StateFailed, Error: "agentctl run deadline elapsed", SessionRef: launch.Session.Ref}
 				}
 			}
@@ -226,7 +252,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 			if openProblem != nil {
 				return openProblem
 			}
-			execution, err = finalizeResult(context.Background(), writeJournal, current, last, a.now().UTC(), opts.noStoreResult)
+			execution, err = finalizeResultConverging(context.Background(), writeJournal, current, last, a.now().UTC(), opts.noStoreResult)
 			writeJournal.Close()
 			if err != nil {
 				return mapStoreError("record timed out execution", err)
@@ -453,20 +479,41 @@ func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c comm
 		return mapAdapterError("native cancellation failed", err).WithDetail("execution_id", id.String())
 	}
 	now := a.now().UTC()
-	execution.State = model.StateCancelled
-	execution.Liveness = model.LivenessExited
-	execution.TerminalAt = &now
-	execution.UpdatedAt = now
-	execution.Observation.ObservedAt = now
-	execution.Observation.Integrity = model.IntegrityVerified
-	execution, err = journal.UpdateExecution(ctx, execution, execution.Revision)
+	execution, err = commitCancellation(ctx, journal, execution, now)
 	if err != nil {
-		return mapStoreError("record cancellation", err)
-	}
-	if err := appendSynthetic(ctx, journal, execution, model.EventTerminal, model.StateCancelled, map[string]any{"cancelled": true}, "cancel"); err != nil {
-		return mapStoreError("record cancellation event", err)
+		return mapStoreError("record cancellation outcome", err)
 	}
 	return writeExecution(renderer, execution, "cancel")
+}
+
+func commitCancellation(ctx context.Context, journal *store.Journal, execution model.Execution, now time.Time) (model.Execution, error) {
+	for attempt := 0; attempt < 8; attempt++ {
+		current, err := journal.GetExecution(ctx, execution.ID)
+		if err != nil {
+			return model.Execution{}, err
+		}
+		if current.State.Terminal() {
+			return current, nil
+		}
+		next := current
+		next.State = model.StateCancelled
+		next.Liveness = model.LivenessExited
+		next.TerminalAt = &now
+		next.UpdatedAt = now
+		next.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: now}
+		outcome := model.Outcome{SchemaVersion: model.SchemaVersion, ExecutionID: next.ID, Revision: 1, State: model.StateCancelled, Availability: model.OutcomeStored, RecordedAt: now, Source: next.Adapter, ResultRef: fmt.Sprintf("agentctl://%s/%s", next.OriginHostID, next.ID), Failure: &model.OutcomeFailure{Code: "execution_cancelled", Kind: "cancelled", Source: next.Adapter, Retryable: false, Message: "native execution cancelled"}}
+		payload := map[string]any{"result_available": true, "outcome_execution_id": next.ID.String(), "availability": outcome.Availability, "failure_code": outcome.Failure.Code}
+		event, canonical, err := syntheticEvent(next, model.EventTerminal, model.StateCancelled, payload, "cancel", now)
+		if err != nil {
+			return model.Execution{}, err
+		}
+		stored, _, _, _, err := journal.CommitTerminalOutcome(ctx, next, current.Revision, outcome, event, canonical)
+		if errors.Is(err, store.ErrConflict) {
+			continue
+		}
+		return stored, err
+	}
+	return model.Execution{}, fmt.Errorf("%w: cancellation could not converge", store.ErrConflict)
 }
 
 func (a *app) runtimeAdapter(c common, name, issue, run string) (adapter.Adapter, string, *output.Error) {
@@ -598,10 +645,19 @@ func refreshRunnerLease(journal *store.Journal, execution model.Execution, now t
 		return execution, nil
 	}
 	leaseSeconds := nativeRunnerLeaseSeconds
-	execution.Liveness = model.LivenessAlive
+	execution.Liveness = runnerLeaseLiveness(execution.State)
 	execution.UpdatedAt = now
 	execution.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: now, FreshForSeconds: &leaseSeconds}
 	return journal.UpdateExecution(context.Background(), execution, execution.Revision)
+}
+
+func runnerLeaseLiveness(state model.State) model.Liveness {
+	switch state {
+	case model.StateWaiting, model.StateAttention:
+		return model.LivenessBlocked
+	default:
+		return model.LivenessAlive
+	}
 }
 func finalizeResult(ctx context.Context, journal *store.Journal, execution model.Execution, result adapter.Result, now time.Time, noStoreResult bool) (model.Execution, error) {
 	execution.State = toModelState(result.State)
@@ -625,6 +681,21 @@ func finalizeResult(ctx context.Context, journal *store.Journal, execution model
 	}
 	updated, _, _, _, err := journal.CommitTerminalOutcome(ctx, execution, execution.Revision, outcome, event, canonical)
 	return updated, err
+}
+
+func finalizeResultConverging(ctx context.Context, journal *store.Journal, execution model.Execution, result adapter.Result, now time.Time, noStoreResult bool) (model.Execution, error) {
+	updated, err := finalizeResult(ctx, journal, execution, result, now, noStoreResult)
+	if !errors.Is(err, store.ErrTerminalConflict) {
+		return updated, err
+	}
+	latest, readErr := journal.GetExecution(ctx, execution.ID)
+	if readErr != nil {
+		return model.Execution{}, readErr
+	}
+	if latest.State.Terminal() {
+		return latest, nil
+	}
+	return model.Execution{}, err
 }
 
 func buildOutcome(execution model.Execution, result adapter.Result, now time.Time, noStoreResult bool) model.Outcome {
@@ -718,7 +789,7 @@ func appendSynthetic(ctx context.Context, journal *store.Journal, execution mode
 	_, _, err = journal.AppendEvent(ctx, event, canonical)
 	return err
 }
-func appendNativeEvent(ctx context.Context, journal *store.Journal, execution model.Execution, native adapter.Event) error {
+func appendNativeEvent(ctx context.Context, journal *store.Journal, execution model.Execution, native adapter.Event) (model.Execution, error) {
 	kind := model.EventKind(native.Kind)
 	switch kind {
 	case model.EventStarted, model.EventProgress, model.EventAttention, model.EventArtifact, model.EventHealth, model.EventTerminal, model.EventPromoted, model.EventSuperseded:
@@ -746,11 +817,32 @@ func appendNativeEvent(ctx context.Context, journal *store.Journal, execution mo
 	projection := map[string]any{"authority_scope": execution.Authority, "source_fingerprint": sourceRef(execution).Fingerprint, "kind": kind, "source_state": native.SourceState, "source_position": native.Cursor, "state": state, "payload": payload}
 	key, canonical, err := callback.SemanticDedupeKey(execution.Adapter, 1, projection)
 	if err != nil {
-		return err
+		return model.Execution{}, err
+	}
+	observedAt := native.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
 	}
 	event := model.Event{ExecutionID: execution.ID, OriginHostID: execution.OriginHostID, Ordering: ordering, SourcePosition: position, Kind: kind, State: statePtr, SourceState: stringPointer(native.SourceState), Authority: execution.Authority, Adapter: execution.Adapter, OccurredAt: native.OccurredAt, ObservedAt: native.ObservedAt, DedupeKey: key, DedupeVersion: 1, Payload: payload}
-	_, _, err = journal.AppendEvent(ctx, event, canonical)
-	return err
+	event.ObservedAt = observedAt
+	next := execution
+	if state != "" && !state.Terminal() {
+		next.State = state
+	}
+	if native.SourceState != "" {
+		next.SourceState = stringPointer(native.SourceState)
+	}
+	switch next.State {
+	case model.StateWaiting, model.StateAttention:
+		next.Liveness = model.LivenessBlocked
+	case model.StateStarting, model.StateRunning:
+		next.Liveness = model.LivenessAlive
+	}
+	freshFor := int(nativeEventFreshness / time.Second)
+	next.UpdatedAt = observedAt
+	next.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: observedAt, FreshForSeconds: &freshFor}
+	stored, _, _, err := journal.CommitObservedEvent(ctx, next, execution.Revision, event, canonical)
+	return stored, err
 }
 func safeNativePayload(input map[string]any) map[string]any {
 	output := map[string]any{}

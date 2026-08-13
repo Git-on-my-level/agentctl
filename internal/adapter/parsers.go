@@ -253,7 +253,41 @@ func parseAgentJSON(line []byte, stderr bool, family string, sessionKeys, termin
 	}
 	obs.Terminal, obs.Success = terminal, success
 	obs.Data = safeObservationData(value, obs.SessionID, obs.BackendVersion, typ, family)
+	if obs.State == StateAttention {
+		attentionKind := "unknown"
+		switch {
+		case containsAny(typ, "permission"):
+			attentionKind = "permission"
+		case containsAny(typ, "approval"):
+			attentionKind = "approval"
+		case containsAny(typ, "authentication", "login"):
+			attentionKind = "authentication"
+		case containsAny(typ, "input"):
+			attentionKind = "input"
+		case containsAny(typ, "quota", "rate_limit"):
+			attentionKind = "quota"
+		}
+		obs.Data["attention_kind"] = attentionKind
+		obs.Data["diagnostic_code"] = normalizedDiagnosticCode(typ)
+	}
 	return obs
+}
+
+func normalizedDiagnosticCode(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var out strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			out.WriteRune(r)
+		case out.Len() != 0 && !strings.HasSuffix(out.String(), "_"):
+			out.WriteByte('_')
+		}
+		if out.Len() >= 128 {
+			break
+		}
+	}
+	return strings.Trim(out.String(), "_")
 }
 
 func observationStatus(value map[string]any) string {

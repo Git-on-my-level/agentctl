@@ -114,8 +114,8 @@ Every newly terminalized direct execution records one versioned outcome in the
 same journal transaction as terminal state, the terminal event, and callback
 fan-out. `agentctl status` and events remain metadata-only; the explicit
 `agentctl result <execution-id>` read returns the bounded final content and
-normalized failure details. Stored content is required by default so a
-successful retrieval cannot be mistaken for a successful task with no answer;
+normalized failure details. Stored content or a structured failure is required
+by default so a successful retrieval cannot be mistaken for an empty outcome;
 `--allow-empty` is the explicit metadata-only escape for omission tombstones or
 legacy records. Its `result_ref` is the execution's portable
 `agentctl://host-.../exec-...` URI, so callers never locate native session or

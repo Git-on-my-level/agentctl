@@ -134,6 +134,7 @@ func RestoreSourceWithGit(ctx context.Context, git SourceGit, configPath string)
 		return SourceUpdate{}, fmt.Errorf("%w: managed checkout bundle differs from applied state", ErrConflict)
 	}
 	materialized := MaterializeBundle(bundle)
+	_, beforeLoadErr := Load(cleanConfig)
 	before, _ := fileSHA256(cleanConfig)
 	if err := Save(cleanConfig, materialized, true); err != nil {
 		return SourceUpdate{}, err
@@ -149,7 +150,7 @@ func RestoreSourceWithGit(ctx context.Context, git SourceGit, configPath string)
 	if err != nil {
 		return SourceUpdate{}, err
 	}
-	return SourceUpdate{Changed: before != after, Status: status}, nil
+	return SourceUpdate{Changed: beforeLoadErr != nil || before != after, Status: status}, nil
 }
 
 // SourceGit is argv-based so no config value is ever interpreted by a shell.
@@ -424,6 +425,13 @@ func UpdateSourceWithGit(ctx context.Context, git SourceGit, configPath string, 
 		}
 	}
 	materialized := MaterializeBundle(bundle)
+	if commit == state.AppliedCommit && bundleDigest == state.BundleSHA256 {
+		status, err := SourceStatusWithGit(ctx, git, cleanConfig)
+		if err != nil {
+			return SourceUpdate{}, err
+		}
+		return SourceUpdate{Changed: false, Status: status}, nil
+	}
 	if _, err := git.Run(ctx, state.Spec.CheckoutPath, "checkout", "--detach", "--force", commit); err != nil {
 		return SourceUpdate{}, err
 	}
@@ -475,7 +483,7 @@ func SourceStatusWithGit(ctx context.Context, git SourceGit, configPath string) 
 	if err != nil {
 		return SourceStatus{}, err
 	}
-	result := SourceStatus{ConfigPath: cleanConfig, StatePath: statePath}
+	result := SourceStatus{ConfigPath: cleanConfig, StatePath: statePath, InSync: true}
 	state, err := LoadSourceState(statePath)
 	if errors.Is(err, ErrNotFound) {
 		return result, nil
@@ -489,7 +497,9 @@ func SourceStatusWithGit(ctx context.Context, git SourceGit, configPath string) 
 	result.BundleSHA256 = state.BundleSHA256
 	result.ExpectedLiveSHA = state.LiveSHA256
 	result.LastAppliedAt = &state.AppliedAt
-	if live, digestErr := fileSHA256(cleanConfig); digestErr == nil {
+	if _, loadErr := Load(cleanConfig); loadErr != nil {
+		result.Drift = append(result.Drift, "live_config_unmanaged_or_invalid")
+	} else if live, digestErr := fileSHA256(cleanConfig); digestErr == nil {
 		result.LiveSHA256 = live
 		if live != state.LiveSHA256 {
 			result.Drift = append(result.Drift, "live_config")

@@ -45,7 +45,7 @@ agentctl config set-profile \
 
 agentctl config show
 agentctl config validate
-agentctl config doctor
+agentctl config doctor  # includes Git-source drift when configured
 ```
 
 `config validate` is structural. `config doctor` additionally verifies the
@@ -143,6 +143,8 @@ The default repository file is `config-bundle.json`; override it with
 They ask native Git/SSH to authenticate noninteractively, validate the fetched
 bundle before applying it, materialize a canonical owner-only `0600` live
 config, and record its commit and content digests in an owner-only state file.
+An update reports `changed: true` when the pinned source revision advances,
+even if that commit leaves the materialized bundle bytes unchanged.
 The checkout is a managed cache, not an editing workspace. Dirty checkouts,
 live-config edits, remote changes, invalid bundles, and non-fast-forward Git
 history fail closed. Edit and push through a separate authoring clone.

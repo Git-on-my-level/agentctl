@@ -92,6 +92,9 @@ func TestSourceInitUpdateAndStatusAreDeterministic(t *testing.T) {
 	if third.Changed || !third.Status.InSync {
 		t.Fatalf("idempotent update=%#v", third)
 	}
+	if third.Status.LastAppliedAt == nil || second.Status.LastAppliedAt == nil || !third.Status.LastAppliedAt.Equal(*second.Status.LastAppliedAt) {
+		t.Fatalf("idempotent update changed last_applied_at: second=%#v third=%#v", second.Status.LastAppliedAt, third.Status.LastAppliedAt)
+	}
 }
 
 func TestSourceUpdateFailsClosedOnLiveOrCheckoutDrift(t *testing.T) {
@@ -157,6 +160,44 @@ func TestRestoreSourceRepairsOnlyLiveConfigWithoutFetching(t *testing.T) {
 	}
 }
 
+func TestSourceStatusAndRestoreDetectUnsafeLiveConfigMode(t *testing.T) {
+	remote, _, configPath, checkout := sourceFixture(t)
+	ctx := context.Background()
+	if _, err := InitSource(ctx, configPath, SourceSpec{Remote: remote, CheckoutPath: checkout}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(configPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	status, err := SourceStatusReadOnly(ctx, configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.InSync || !containsString(status.Drift, "live_config_unmanaged_or_invalid") {
+		t.Fatalf("unsafe live config was not reported as drift: %#v", status)
+	}
+	restored, err := RestoreSource(ctx, configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restored.Changed || !restored.Status.InSync || info.Mode().Perm() != ConfigFileMode {
+		t.Fatalf("restore did not repair live mode: status=%#v mode=%o", restored.Status, info.Mode().Perm())
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestSourcePlanAndUnconfiguredStatusDoNotCreatePaths(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "runtime", "config.json")
@@ -175,7 +216,7 @@ func TestSourcePlanAndUnconfiguredStatusDoNotCreatePaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Configured || status.InSync {
+	if status.Configured || !status.InSync {
 		t.Fatalf("status=%#v", status)
 	}
 	if _, err := os.Stat(filepath.Dir(configPath)); !os.IsNotExist(err) {

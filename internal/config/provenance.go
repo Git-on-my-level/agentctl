@@ -46,6 +46,7 @@ type ProvenanceReport struct {
 	Multica     *ExecutableProvenance           `json:"multica,omitempty"`
 	Bundle      *BundleProvenance               `json:"bundle,omitempty"`
 	Composition []string                        `json:"composition_order,omitempty"`
+	Source      *SourceStatus                   `json:"source,omitempty"`
 }
 
 // ProvenanceOptions injects deterministic local functions for tests and

@@ -38,6 +38,17 @@ func (a *app) configCommand(ctx context.Context, renderer output.Renderer, c com
 				}
 				return output.Wrap(output.CodeDependencyUnavailable, "config provenance checks failed", true, err)
 			}
+			if c.configBundle == "" {
+				source, sourceErr := config.SourceStatusReadOnly(ctx, path)
+				if sourceErr != nil {
+					return mapConfigError("read config source status", sourceErr)
+				}
+				report.Source = &source
+				if source.Configured && !source.InSync {
+					report.Valid = false
+					report.Errors = append(report.Errors, "config source drift")
+				}
+			}
 			lines := []output.Line{{Lead: "config.doctor", Fields: []output.Field{{Name: "valid", Value: report.Valid}, {Name: "profile", Value: report.Profile}, {Name: "checks", Value: len(report.Checks)}}}}
 			if err := renderer.Success(output.Success{Result: report, Lines: lines}); err != nil {
 				return output.Wrap(output.CodeInternal, "write output", false, err)
@@ -139,8 +150,9 @@ func (a *app) configSourceCommand(ctx context.Context, renderer output.Renderer,
 			if err != nil {
 				return mapConfigError("plan config source restore", err)
 			}
-			result := map[string]any{"operation": "restore", "network_access": false, "mutates": false, "would_restore": status.Configured && !status.InSync, "status": status}
-			if err := renderer.Success(output.Success{Result: result, Lines: []output.Line{{Lead: "config.source.restore.plan", Fields: []output.Field{{Name: "would_restore", Value: status.Configured && !status.InSync}, {Name: "network", Value: false}, {Name: "mutates", Value: false}}}}}); err != nil {
+			wouldRestore, blockers := sourceRestorePlan(status)
+			result := map[string]any{"operation": "restore", "network_access": false, "mutates": false, "would_restore": wouldRestore, "blocked_by": blockers, "status": status}
+			if err := renderer.Success(output.Success{Result: result, Lines: []output.Line{{Lead: "config.source.restore.plan", Fields: []output.Field{{Name: "would_restore", Value: wouldRestore}, {Name: "network", Value: false}, {Name: "mutates", Value: false}}}}}); err != nil {
 				return output.Wrap(output.CodeInternal, "write output", false, err)
 			}
 			return nil
@@ -220,6 +232,23 @@ func (a *app) configSourceCommand(ctx context.Context, renderer output.Renderer,
 	default:
 		return output.NewError(output.CodeUsage, "config source requires init, status, update, or restore", false)
 	}
+}
+
+func sourceRestorePlan(status config.SourceStatus) (bool, []string) {
+	if !status.Configured {
+		return false, nil
+	}
+	restorable := false
+	blockers := []string{}
+	for _, drift := range status.Drift {
+		switch drift {
+		case "live_config", "live_config_missing_or_unreadable", "live_config_unmanaged_or_invalid":
+			restorable = true
+		default:
+			blockers = append(blockers, drift)
+		}
+	}
+	return restorable && len(blockers) == 0, blockers
 }
 
 func (a *app) currentTime() time.Time {

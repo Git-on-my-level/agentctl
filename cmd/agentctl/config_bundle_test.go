@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Git-on-my-level/agentctl/internal/config"
 )
 
 func cliBundle(t *testing.T) string {
@@ -109,7 +111,29 @@ func TestConfigSourceStatusIsExplicitlyUnconfigured(t *testing.T) {
 	if code := a.run(context.Background(), []string{"--config", configPath, "config", "source", "status"}); code != 0 {
 		t.Fatalf("status exit=%d output=%s", code, stdout.String())
 	}
-	if !strings.Contains(stdout.String(), `"configured":false`) || !strings.Contains(stdout.String(), `"in_sync":false`) {
+	if !strings.Contains(stdout.String(), `"configured":false`) || !strings.Contains(stdout.String(), `"in_sync":true`) {
 		t.Fatalf("unexpected source status: %s", stdout.String())
+	}
+}
+
+func TestSourceRestorePlanDistinguishesLiveDriftFromCheckoutDrift(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     config.SourceStatus
+		want       bool
+		wantBlocks int
+	}{
+		{name: "unconfigured", status: config.SourceStatus{}, want: false},
+		{name: "live only", status: config.SourceStatus{Configured: true, Drift: []string{"live_config"}}, want: true},
+		{name: "checkout only", status: config.SourceStatus{Configured: true, Drift: []string{"checkout_dirty"}}, wantBlocks: 1},
+		{name: "live and checkout", status: config.SourceStatus{Configured: true, Drift: []string{"live_config", "checkout_revision"}}, wantBlocks: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, blockers := sourceRestorePlan(test.status)
+			if got != test.want || len(blockers) != test.wantBlocks {
+				t.Fatalf("would_restore=%v blockers=%v", got, blockers)
+			}
+		})
 	}
 }

@@ -382,7 +382,7 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 	} else if err != nil {
 		return mapStoreError("read execution outcome", err)
 	}
-	if requireContent && outcome.Content == nil {
+	if requireContent && outcome.Content == nil && outcome.Failure == nil {
 		return output.NewError(output.CodeNotFound, "execution has no stored result content", false).WithDetail("execution_id", id.String()).WithDetail("availability", outcome.Availability)
 	}
 	if summary && outcome.Content != nil {
@@ -509,7 +509,7 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return output.Wrap(output.CodeTimeout, "await cancelled", true, ctx.Err()).WithDetail("execution_id", id.String())
+			return output.Wrap(output.CodeExecutionCancelled, "await cancelled", false, ctx.Err()).WithDetail("execution_id", id.String())
 		case <-timer.C:
 		}
 	}

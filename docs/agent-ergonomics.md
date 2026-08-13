@@ -293,8 +293,8 @@ escape for callers that intentionally need weaker or broader behavior:
   timeout, and preflights both `launch` and `result_content`. `--adapter`,
   `--no-timeout`, and `--allow-missing-result` are explicit overrides; exact
   native argv remains everything after `--`.
-- `result` requires bounded stored content, and fails closed on conflicted
-  evidence. `--allow-empty` is for metadata-only inspection; `--summary`
+- `result` requires bounded stored content or a structured failure, and fails
+  closed on conflicted evidence. `--allow-empty` is for metadata-only inspection; `--summary`
   intentionally returns the bounded preview.
 - `await` uses a ten-minute timeout and stops on actionable attention, returning
   `attention_required` with a next action. `--timeout` changes the bound and

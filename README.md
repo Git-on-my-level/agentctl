@@ -137,6 +137,7 @@ agentctl config source init \
   --ref main
 agentctl config source update
 agentctl config source status
+agentctl config source restore --plan  # only for live-config drift
 ```
 
 The invocation-scoped bundle composes additively. It cannot replace a
