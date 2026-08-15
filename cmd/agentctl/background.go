@@ -1,8 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"time"
@@ -14,6 +19,13 @@ import (
 )
 
 const backgroundStartupTimeout = 30 * time.Second
+
+const backgroundReadyTokenEnv = "AGENTCTL_BACKGROUND_READY_TOKEN"
+
+type backgroundReady struct {
+	Token       string `json:"agentctl_background_ready"`
+	ExecutionID string `json:"execution_id"`
+}
 
 func (a *app) runNativeBackground(ctx context.Context, renderer output.Renderer, c common, args []string, opts runOptions) *output.Error {
 	journalPath, err := a.journalPath(c)
@@ -39,44 +51,101 @@ func (a *app) runNativeBackground(ctx context.Context, renderer output.Renderer,
 	workerArgs := backgroundCommandArgs(c, args, executionID, opts.executionID.IsZero())
 	cmd := exec.Command(executable, workerArgs...)
 	cmd.Stdin = nil
-	cmd.Stdout = nil
 	cmd.Stderr = nil
-	cmd.Env = os.Environ()
+	readyToken, err := newBackgroundReadyToken()
+	if err != nil {
+		return output.Wrap(output.CodeInternal, "allocate background readiness token", false, err)
+	}
+	cmd.Env = append(environmentWithout(os.Environ(), backgroundReadyTokenEnv), backgroundReadyTokenEnv+"="+readyToken)
+	workerOutput, err := cmd.StdoutPipe()
+	if err != nil {
+		return output.Wrap(output.CodeInternal, "open background worker readiness pipe", false, err)
+	}
+	defer workerOutput.Close()
 	prepareDetachedCommand(cmd)
 	if err := cmd.Start(); err != nil {
 		return output.Wrap(output.CodeDependencyUnavailable, "start background agentctl worker", true, err)
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
+	line := make(chan []byte, 1)
+	go func() {
+		value, _ := bufio.NewReader(io.LimitReader(workerOutput, 64*1024)).ReadBytes('\n')
+		line <- value
+	}()
 	deadline := time.NewTimer(backgroundStartupTimeout)
 	defer deadline.Stop()
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
 	for {
-		if execution, found, problem := readBackgroundExecution(context.Background(), journalPath, executionID); problem != nil {
-			return problem
-		} else if found {
-			return writeExecution(renderer, execution, "background")
-		}
 		select {
-		case waitErr := <-done:
-			if execution, found, problem := readBackgroundExecution(context.Background(), journalPath, executionID); problem != nil {
-				return problem
-			} else if found {
+		case raw := <-line:
+			var ready backgroundReady
+			if err := json.Unmarshal(raw, &ready); err == nil && ready.Token == readyToken && ready.ExecutionID == executionID.String() {
+				execution, found, problem := readBackgroundExecution(context.Background(), journalPath, executionID)
+				if problem != nil {
+					return problem
+				}
+				if !found {
+					return output.NewError(output.CodeInternal, "background worker acknowledged an execution missing from the journal", false).WithDetail("execution_id", executionID.String())
+				}
 				return writeExecution(renderer, execution, "background")
 			}
-			detail := "worker exited before creating the execution"
-			if waitErr != nil {
-				detail = waitErr.Error()
+			return backgroundWorkerError(raw, executionID, nil)
+		case waitErr := <-done:
+			select {
+			case raw := <-line:
+				return backgroundWorkerError(raw, executionID, waitErr)
+			default:
 			}
-			return output.NewError(output.CodeExecutionFailed, "background agentctl worker failed during startup", false).WithDetail("execution_id", executionID.String()).WithDetail("worker_error", detail)
+			return backgroundWorkerError(nil, executionID, waitErr)
 		case <-ctx.Done():
 			return output.Wrap(output.CodeExecutionCancelled, "background launch observation cancelled; the detached worker may continue", false, ctx.Err()).WithDetail("execution_id", executionID.String()).WithDetail("worker_continues", true)
 		case <-deadline.C:
 			return output.NewError(output.CodeTimeout, "background worker did not acknowledge durable startup before the deadline and may continue", true).WithDetail("execution_id", executionID.String()).WithDetail("timeout", backgroundStartupTimeout.String()).WithDetail("worker_continues", true)
-		case <-ticker.C:
 		}
 	}
+}
+
+func emitBackgroundReady(writer io.Writer, executionID ids.ExecutionID) bool {
+	token := os.Getenv(backgroundReadyTokenEnv)
+	if token == "" {
+		return false
+	}
+	_ = os.Unsetenv(backgroundReadyTokenEnv)
+	_ = json.NewEncoder(writer).Encode(backgroundReady{Token: token, ExecutionID: executionID.String()})
+	return true
+}
+
+func newBackgroundReadyToken() (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+func environmentWithout(values []string, name string) []string {
+	prefix := name + "="
+	filtered := make([]string, 0, len(values))
+	for _, value := range values {
+		if len(value) >= len(prefix) && value[:len(prefix)] == prefix {
+			continue
+		}
+		filtered = append(filtered, value)
+	}
+	return filtered
+}
+
+func backgroundWorkerError(raw []byte, executionID ids.ExecutionID, waitErr error) *output.Error {
+	var document output.ErrorDocument
+	if json.Unmarshal(raw, &document) == nil && document.Error != nil {
+		document.Error.Details["execution_id"] = executionID.String()
+		return document.Error
+	}
+	detail := "worker exited before acknowledging durable startup"
+	if waitErr != nil {
+		detail = waitErr.Error()
+	}
+	return output.NewError(output.CodeExecutionFailed, "background agentctl worker failed during startup", false).WithDetail("execution_id", executionID.String()).WithDetail("worker_error", detail)
 }
 
 func backgroundCommandArgs(c common, runArgs []string, executionID ids.ExecutionID, addExecutionID bool) []string {

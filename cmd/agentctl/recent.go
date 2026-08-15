@@ -62,7 +62,7 @@ func (a *app) recent(ctx context.Context, renderer output.Renderer, c common, ar
 	}
 	lines := make([]output.Line, 0, len(items))
 	for _, item := range items {
-		fields := []output.Field{{Name: "state", Value: item.State}, {Name: "adapter", Value: item.Adapter}, {Name: "liveness", Value: item.Liveness}, {Name: "age", Value: time.Duration(item.DurationSeconds * float64(time.Second)).Round(time.Second)}}
+		fields := []output.Field{{Name: "state", Value: item.State}, {Name: "adapter", Value: item.Adapter}, {Name: "liveness", Value: item.Liveness}, {Name: "duration", Value: time.Duration(item.DurationSeconds * float64(time.Second)).Round(time.Second)}}
 		if len(item.Labels) != 0 {
 			fields = append(fields, output.Field{Name: "labels", Value: item.Labels})
 		}

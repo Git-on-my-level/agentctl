@@ -155,6 +155,11 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		journal.Close()
 		return writeExecution(renderer, execution, "run")
 	}
+	if emitBackgroundReady(renderer.Writer, execution.ID) {
+		// The parent owns the one startup document. Keep the detached worker's
+		// eventual terminal rendering off a pipe that closes when the parent exits.
+		renderer.Writer = io.Discard
+	}
 	// bbolt takes a process-wide writer lock. Do not hold it for the lifetime of
 	// a native child: status/subscription commands and the callback supervisor
 	// must be able to observe the execution while it is running.

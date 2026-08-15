@@ -259,6 +259,43 @@ func TestBackgroundRunLifecycleThroughBuiltBinary(t *testing.T) {
 	if replayErr == nil || !bytes.Contains(replayOutput, []byte(`"code":"conflict"`)) {
 		t.Fatalf("existing execution ID was accepted: %v\n%s", replayErr, replayOutput)
 	}
+	rawRaceID, err := ids.New(ids.TypeExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raceID, err := ids.ParseExecutionID(rawRaceID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	type launchResult struct {
+		output []byte
+		err    error
+	}
+	results := make(chan launchResult, 2)
+	for range 2 {
+		go func() {
+			command := exec.Command(binary, "--journal", journal, "run", "--background", "--execution-id", raceID.String(), "--adapter", "generic-process", "--", "/bin/sh", "-c", native)
+			value, runErr := command.CombinedOutput()
+			results <- launchResult{output: value, err: runErr}
+		}()
+	}
+	succeeded, conflicted := 0, 0
+	for range 2 {
+		value := <-results
+		if value.err == nil && bytes.Contains(value.output, []byte(`"ok":true`)) {
+			succeeded++
+		}
+		if value.err != nil && bytes.Contains(value.output, []byte(`"code":"conflict"`)) {
+			conflicted++
+		}
+	}
+	if succeeded != 1 || conflicted != 1 {
+		t.Fatalf("concurrent claim results succeeded=%d conflicted=%d", succeeded, conflicted)
+	}
+	raceWait := exec.Command(binary, "--journal", journal, "await", raceID.String(), "--no-timeout", "--ignore-attention")
+	if raceOutput, err := raceWait.CombinedOutput(); err != nil {
+		t.Fatalf("await concurrent winner: %v\n%s", err, raceOutput)
+	}
 }
 
 func TestRecentDiscoversNewestExecutionsByExactLabel(t *testing.T) {
