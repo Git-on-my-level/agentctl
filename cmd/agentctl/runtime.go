@@ -28,7 +28,9 @@ type runOptions struct {
 	adapter, cwd, idempotencyKey, issue, run string
 	promptFile, promptDelivery               string
 	executionID                              ids.ExecutionID
+	labels                                   []string
 	plan                                     bool
+	background                               bool
 	noStoreResult                            bool
 	allowMissingResult                       bool
 	allowUnreliableResult                    bool
@@ -56,6 +58,9 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	opts, problem := parseRun(args)
 	if problem != nil {
 		return problem
+	}
+	if opts.background && !opts.plan {
+		return a.runNativeBackground(ctx, renderer, c, args, opts)
 	}
 	prompt, problem := a.loadPrompt(opts)
 	if problem != nil {
@@ -104,7 +109,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		}
 	}
 	if opts.plan {
-		result := map[string]any{"adapter": runtime.Name(), "executable": opts.argv[0], "argument_count": len(opts.argv) - 1, "profile": profileName, "side_effect_class": output.ExternalSideEffect, "probe": probe, "writes_local_state": true, "stores_result": !opts.noStoreResult, "timeout": timeoutDescription(opts)}
+		result := map[string]any{"adapter": runtime.Name(), "executable": opts.argv[0], "argument_count": len(opts.argv) - 1, "profile": profileName, "side_effect_class": output.ExternalSideEffect, "probe": probe, "writes_local_state": true, "stores_result": !opts.noStoreResult, "timeout": timeoutDescription(opts), "background": opts.background, "labels": opts.labels}
 		if prompt != nil {
 			result["prompt"] = map[string]any{"source": prompt.Source, "delivery": prompt.Delivery, "bytes": len(prompt.Bytes), "sha256": prompt.Digest}
 		}
@@ -128,10 +133,10 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	}
 	now := a.now().UTC()
 	fresh := int(probe.FreshFor / time.Second)
-	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Supersedes: []ids.ExecutionID{}, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
+	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Labels: append([]string(nil), opts.labels...), Supersedes: []ids.ExecutionID{}, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
 	mutation := contracts.MutationKey{}
 	if opts.idempotencyKey != "" {
-		digest, dErr := mutationDigest(runtime.Name(), opts.cwd, opts.argv, opts.noStoreResult, prompt)
+		digest, dErr := mutationDigest(runtime.Name(), opts.cwd, opts.argv, opts.labels, opts.noStoreResult, prompt)
 		if dErr != nil {
 			journal.Close()
 			return output.Wrap(output.CodeInternal, "canonicalize run idempotency inputs", false, dErr)
@@ -483,6 +488,24 @@ func parseRun(args []string) (runOptions, *output.Error) {
 			}
 			i++
 			o.promptDelivery = args[i]
+		case "--label":
+			if i+1 >= delimiter {
+				return o, output.NewError(output.CodeUsage, "--label requires a value", false)
+			}
+			i++
+			label := strings.TrimSpace(args[i])
+			if !validRunLabel(label) {
+				return o, output.NewError(output.CodeUsage, "--label must match ^[a-z][a-z0-9_.-]{0,63}$", false).WithDetail("label", label)
+			}
+			if containsArg(o.labels, label) {
+				return o, output.NewError(output.CodeUsage, "--label values must be unique", false).WithDetail("label", label)
+			}
+			o.labels = append(o.labels, label)
+			if len(o.labels) > 16 {
+				return o, output.NewError(output.CodeUsage, "run accepts at most 16 labels", false)
+			}
+		case "--background":
+			o.background = true
 		case "--plan":
 			o.plan = true
 		case "--no-store-result":
@@ -514,6 +537,12 @@ func parseRun(args []string) (runOptions, *output.Error) {
 	if o.promptFile != "" && o.promptStdin {
 		return o, output.NewError(output.CodeUsage, "--prompt-file and --prompt-stdin are mutually exclusive", false)
 	}
+	if o.background && o.promptStdin {
+		return o, output.NewError(output.CodeUsage, "--background cannot use --prompt-stdin; use --prompt-file or native argv", false)
+	}
+	if o.background && o.idempotencyKey != "" {
+		return o, output.NewError(output.CodeUsage, "--background cannot use --idempotency-key because startup must return the exact created execution ID", false)
+	}
 	if o.promptFile == "" && !o.promptStdin && o.promptDelivery != "" {
 		return o, output.NewError(output.CodeUsage, "--prompt-delivery requires --prompt-file or --prompt-stdin", false)
 	}
@@ -527,6 +556,19 @@ func parseRun(args []string) (runOptions, *output.Error) {
 		o.adapter = inferAdapter(o.argv[0])
 	}
 	return o, nil
+}
+
+func validRunLabel(label string) bool {
+	if label == "" || len(label) > 64 || label[0] < 'a' || label[0] > 'z' {
+		return false
+	}
+	for _, ch := range label[1:] {
+		if ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' || ch == '_' || ch == '.' || ch == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (a *app) loadPrompt(opts runOptions) (*promptPayload, *output.Error) {
@@ -876,12 +918,12 @@ func contextInput(c common) *adapter.ContextInput {
 	}
 	return &adapter.ContextInput{Path: c.contextFile, Required: false}
 }
-func mutationDigest(name, cwd string, argv []string, noStoreResult bool, prompt *promptPayload) (string, error) {
+func mutationDigest(name, cwd string, argv, labels []string, noStoreResult bool, prompt *promptPayload) (string, error) {
 	promptDigest, promptDelivery := "", ""
 	if prompt != nil {
 		promptDigest, promptDelivery = prompt.Digest, prompt.Delivery
 	}
-	canonical, err := callback.CanonicalJSON(map[string]any{"adapter": name, "cwd": cwd, "argv": argv, "no_store_result": noStoreResult, "prompt_sha256": promptDigest, "prompt_delivery": promptDelivery})
+	canonical, err := callback.CanonicalJSON(map[string]any{"adapter": name, "cwd": cwd, "argv": argv, "labels": labels, "no_store_result": noStoreResult, "prompt_sha256": promptDigest, "prompt_delivery": promptDelivery})
 	if err != nil {
 		return "", err
 	}

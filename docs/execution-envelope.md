@@ -41,6 +41,7 @@ authoritative in Multica mode.
       {"name": "cancel", "status": "unavailable", "source": "manifest"}
     ]
   },
+  "labels": ["review", "retrieval"],
   "cwd": null,
   "repository": null,
   "parent_execution_id": null,
@@ -69,6 +70,12 @@ attached Multica run contradictory.
 value. It is not a source-authority revision. Paths and opaque source IDs are
 operator-private and omitted or redacted in normal output. Alias IDs and source
 fingerprints follow [Identifiers](identifiers.md).
+
+`labels` are optional exact operator metadata used for host-local discovery.
+An execution accepts at most 16 unique lowercase names matching
+`^[a-z][a-z0-9_.-]{0,63}$`. Labels are visible metadata; callers must not put
+secrets or prompt/result content in them. They never authorize dispatch or
+mutation.
 
 ## State and liveness
 

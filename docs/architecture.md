@@ -125,14 +125,20 @@ guarantees:
 | Behavior | Daemonless process | Managed supervisor |
 | --- | --- | --- |
 | Wrap and observe a foreground child | While the process lives | Yes |
+| Own an explicit background native child | Detached worker until exit | Not owned by callback supervisor |
 | Attach/poll durable backend state | While a command lives | Continuously |
 | Persist journal/outbox before exit | Yes | Yes |
 | Retry automatically after command exit or logout | No | Yes |
 | Wake a remote parent after reboot | No | Yes, after recovery |
 | Recover queued work on the next manual invocation | Yes | Yes |
 
-Backgrounding `agentctl await` is still process-scoped supervision. The MVP
-must not describe it as reboot-, logout-, or crash-surviving delivery. Creating
+`run --background` is also process-scoped supervision: a detached agentctl
+worker owns the native child, while another command observes its journaled
+metadata. It is noninteractive, has no controlling terminal, and is not reboot-
+or crash-surviving authority. A direct adapter does not gain cross-process
+cancellation unless its negotiated capability explicitly provides it. Backgrounding
+`agentctl await` only detaches an observer and does not change ownership.
+Creating
 or enabling a new supervisor service is an explicit host-state mutation owned
 by a host manager when one exists. `agentctl bootstrap update` may reconcile an
 already-managed supervisor during a release update, but never creates a new

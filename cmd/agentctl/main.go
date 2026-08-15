@@ -76,6 +76,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.doctor(ctx, renderer, commonArgs, rest[1:])
 	case "status":
 		err = a.status(ctx, renderer, commonArgs, rest[1:])
+	case "recent":
+		err = a.recent(ctx, renderer, commonArgs, rest[1:])
 	case "events":
 		err = a.events(ctx, renderer, commonArgs, rest[1:])
 	case "result":
@@ -632,6 +634,9 @@ func parseExecutionRef(value string, c common) (ids.ExecutionID, *output.Error) 
 }
 func writeExecution(renderer output.Renderer, e model.Execution, operation string) *output.Error {
 	fields := []output.Field{{Name: "state", Value: e.State}, {Name: "authority", Value: e.Authority}, {Name: "adapter", Value: e.Adapter}, {Name: "liveness", Value: e.Liveness}, {Name: "revision", Value: e.Revision}}
+	if len(e.Labels) != 0 {
+		fields = append(fields, output.Field{Name: "labels", Value: e.Labels})
+	}
 	actions := []output.NextAction{}
 	if !e.State.Terminal() {
 		actions = append(actions, output.NextAction{Label: "Wait for terminal state", Argv: []string{"agentctl", "await", e.ID.String(), "--output", string(renderer.Mode)}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
@@ -642,7 +647,7 @@ func writeExecution(renderer output.Renderer, e model.Execution, operation strin
 	redacted := e
 	redacted.CWD = nil
 	redacted.Repository = nil
-	redacted.SourceBindings = append([]model.SourceBinding(nil), e.SourceBindings...)
+	redacted.SourceBindings = append([]model.SourceBinding{}, e.SourceBindings...)
 	for i := range redacted.SourceBindings {
 		redacted.SourceBindings[i].OpaqueID = nil
 	}
@@ -657,7 +662,7 @@ func writeExecutionOutcome(renderer output.Renderer, e model.Execution, outcome 
 	redacted := e
 	redacted.CWD = nil
 	redacted.Repository = nil
-	redacted.SourceBindings = append([]model.SourceBinding(nil), e.SourceBindings...)
+	redacted.SourceBindings = append([]model.SourceBinding{}, e.SourceBindings...)
 	for i := range redacted.SourceBindings {
 		redacted.SourceBindings[i].OpaqueID = nil
 	}

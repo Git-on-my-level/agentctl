@@ -33,6 +33,30 @@ func TestExecutionSchemaInvariants(t *testing.T) {
 	}
 }
 
+func TestExecutionLabelsAreBoundedUniqueMetadata(t *testing.T) {
+	value := fixtureExecution(t)
+	value.Labels = []string{"review", "model.grok"}
+	if err := value.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	value.Labels = []string{"review", "review"}
+	if err := value.Validate(); err == nil {
+		t.Fatal("duplicate labels accepted")
+	}
+	value.Labels = []string{"Contains Secret Spaces"}
+	if err := value.Validate(); err == nil {
+		t.Fatal("invalid label accepted")
+	}
+	previous := fixtureExecution(t)
+	previous.Labels = []string{"review"}
+	next := previous
+	next.Revision++
+	next.Labels = []string{"changed"}
+	if err := ValidateTransition(previous, next); err == nil {
+		t.Fatal("label mutation accepted")
+	}
+}
+
 func TestTerminalTransitionCannotRegress(t *testing.T) {
 	previous := fixtureExecution(t)
 	terminal := previous.UpdatedAt.Add(time.Second)
