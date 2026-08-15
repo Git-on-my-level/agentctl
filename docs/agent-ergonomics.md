@@ -289,19 +289,34 @@ escape for callers that intentionally need weaker or broader behavior:
   portable skills, but refuses drifted assets, does not delete legacy copies,
   and never creates a new supervisor service implicitly. `--dry-run` previews
   the exact paths and `--harness` narrows detection.
-- `run` infers an adapter from a known executable, applies a thirty-minute
-  timeout, and preflights both `launch` and `result_content`. `--adapter`,
-  `--no-timeout`, and `--allow-missing-result` are explicit overrides; exact
-  native argv remains everything after `--`.
+- `run` infers an adapter from a known executable, has no default wall-clock
+  timeout, and preflights both `launch` and `result_content`. `--timeout` adds
+  a caller-selected bound; `--no-timeout` remains an explicit compatibility
+  spelling. `--adapter` and `--allow-missing-result` are explicit overrides;
+  exact native argv remains everything after `--` unless the caller selects a
+  prompt source and `argv` delivery.
+- `--prompt-file` and `--prompt-stdin` are mutually exclusive, bounded prompt
+  sources. `--prompt-delivery argv|stdin` is explicit and defaults to `argv`
+  only after a source is selected. Prompt bytes are excluded from plan output,
+  the journal, events, and status; only digest, byte count, source, and delivery
+  participate in plan and idempotency metadata.
+- `fanout --manifest` reads one prompt file once and runs explicit child argv
+  vectors with bounded foreground concurrency. It returns per-child execution
+  IDs and states but creates no group authority and performs no synthesis. A
+  v1 manifest requires `schema_version`, `prompt_file`, and `children[].argv`.
+  The prompt file and relative child working directories are manifest-relative;
+  a child with no `cwd` inherits the invoking process directory.
 - `result` requires bounded stored content or a structured failure, and fails
   closed on conflicted evidence. `--allow-empty` is for metadata-only inspection; `--summary`
   intentionally returns the bounded preview.
 - `await` uses a ten-minute timeout and stops on actionable attention, returning
   `attention_required` with a next action. `--timeout` changes the bound and
-  `--ignore-attention` opts into continued waiting.
+  `--no-timeout` removes it; `--ignore-attention` opts into continued waiting.
 - `subscribe create` listens for `terminal`, `attention`, and `artifact` by
   default, expires after acknowledged terminal delivery, and has a bounded
-  twenty-four-hour TTL. `--kind all` is an explicit broad subscription.
+  twenty-four-hour TTL. Transient delivery failures retry with bounded backoff
+  until that TTL; permanent delivery classes still dead-letter. `--kind all`
+  is an explicit broad subscription.
 
 These defaults do not weaken authority boundaries: permission flags such as
 Cursor `--trust`, remote promotion, supervisor service creation, and cleanup

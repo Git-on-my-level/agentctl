@@ -58,9 +58,12 @@ binary and progressive help available:
 - `doctor` discovers harnesses and checks launch, observation, and result
   readiness. `capabilities` returns a concise live summary; `--full` and
   `--static` are explicit manifest/probe escapes.
-- `run` infers known adapters, bounds work to thirty minutes, and preflights
-  `launch,result_content`. `result` requires stored content and `await` stops
-  on attention unless the caller supplies `--ignore-attention`.
+- `run` infers known adapters, has no default wall-clock kill, accepts bounded
+  explicit file/stdin prompt transport, and preflights `launch,result_content`.
+  `fanout` coordinates one prompt across explicit native argv vectors in the
+  foreground without creating a group authority. `result` requires stored
+  content and `await` stops on attention unless the caller supplies
+  `--ignore-attention`.
 - Subscriptions default to terminal/attention/artifact, and
   `bootstrap update` reconciles detected canonical roots while leaving
   unmanaged files, legacy copies, and new supervisor services untouched.
@@ -72,6 +75,9 @@ These are explicit limits, not silently degraded promises:
 - Native adapters generally supervise and reattach only within the launching
   process. On restart, unsupported native sessions become `unreachable` rather
   than being guessed alive or complete.
+- `fanout` has the same foreground ownership boundary. It does not survive the
+  invoking process, logout, or reboot, and the callback supervisor remains a
+  delivery service rather than a native process manager.
 - Live cross-process observation uses a preallocated execution ID. Native
   cross-process cancellation remains unavailable unless the adapter exposes a
   reviewed durable cancel mechanism.

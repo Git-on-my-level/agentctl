@@ -38,6 +38,18 @@ func openTestJournal(t *testing.T) (*Journal, *sequenceGenerator, time.Time) {
 	return journal, generator, now
 }
 
+func TestOpenClassifiesLockTimeoutAsBusy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	first, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	if _, err := Open(path, Options{LockTimeout: 20 * time.Millisecond}); !errors.Is(err, ErrBusy) {
+		t.Fatalf("second open error=%v, want ErrBusy", err)
+	}
+}
+
 func sampleExecution(now time.Time) model.Execution {
 	return model.Execution{Authority: model.AuthorityNative, Adapter: "codex", Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateRunning, Liveness: model.LivenessAlive, SourceBindings: []model.SourceBinding{}, Capabilities: model.CapabilitySnapshot{NegotiatedAt: now, AdapterVersion: "0.1.0", Items: []model.CapabilityItem{}}, Supersedes: []ids.ExecutionID{}, Observation: model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: now}}
 }

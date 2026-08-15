@@ -60,6 +60,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 		"event":             "schemas/event.schema.json",
 		"event-page":        "schemas/event-page.schema.json",
 		"execution":         "schemas/execution.schema.json",
+		"fanout-manifest":   "schemas/fanout-manifest.schema.json",
 		"knowledge-source":  "schemas/knowledge-source.schema.json",
 		"outcome":           "schemas/outcome.schema.json",
 		"subscription":      "schemas/subscription.schema.json",
@@ -88,6 +89,7 @@ func TestNewSchemaDocumentsDeclareDraftAndRequiredShape(t *testing.T) {
 		"callback-envelope.schema.json": {"schema_version", "delivery_id", "subscription_id", "event_id", "event_dedupe_key", "attempt", "sent_at", "expires_at", "nonce", "event"},
 		"context-result.schema.json":    {"bundle_revision", "matches"},
 		"event-page.schema.json":        {"events", "scanned", "filtered", "page_limit"},
+		"fanout-manifest.schema.json":   {"schema_version", "prompt_file", "children"},
 		"outcome.schema.json":           {"schema_version", "execution_id", "revision", "state", "availability", "recorded_at", "source", "result_ref"},
 		"subscription.schema.json":      {"id", "origin_host_id", "filter", "destination", "expires_at", "cursor", "state", "auto_expire_on_terminal"},
 	}

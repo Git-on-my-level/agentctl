@@ -107,6 +107,14 @@ For known executable names, `run` infers the adapter (`codex`, `cursor-agent`,
 executable is ambiguous or the caller has a reviewed authority mapping. The
 argv after `--` is passed unchanged in either case.
 
+When the caller explicitly selects `run --prompt-file` or `--prompt-stdin`,
+prompt transport is a separate reviewed operation. `--prompt-delivery argv`
+appends one exact UTF-8 positional argument; `--prompt-delivery stdin` attaches
+the exact bounded bytes as child stdin. Adapters do not infer the mechanism
+from a backend name, and prompt bytes are not persisted in the execution
+envelope. Without a prompt source, child stdin remains disconnected and argv is
+unchanged.
+
 The adapter may add only the minimum flags required to obtain structured events
 when this is safe and documented. It must report added flags in `--explain`
 output.

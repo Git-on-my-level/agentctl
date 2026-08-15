@@ -27,8 +27,9 @@ version may use a screened list; v1 order and membership will not change.
 - Codex, Cursor, Claude Code, OMP, generic-process, and Multica event adapters.
 - Owner-only journal, normalized source bindings, terminal conflict handling,
   context handles, JSON-first output, and explicit compact text.
-- Known executable names infer adapters; `run` has a bounded timeout and
-  result-content preflight. `await` stops on attention by default, and
+- Known executable names infer adapters; `run` has explicit optional timeout
+  and prompt transport plus result-content preflight. Foreground `fanout` runs
+  one prompt across explicit child argv vectors. `await` stops on attention by default, and
   `result` requires a stored content or failure body unless `--allow-empty` is supplied.
 
 Native launch supervision is deliberately same-process in v0.1. A new process

@@ -95,9 +95,69 @@ agentctl run -- claude --output-format stream-json "review this patch"
 
 Known executable names select their built-in adapter. Use `--adapter` for an
 ambiguous executable or a deliberate override. `run` waits for a terminal
-result, uses a 30-minute timeout, and requires result-content support by
-default. The native CLI's arguments, permissions, and provider authentication
+result, has no default wall-clock timeout, and requires result-content support
+by default. Use `--timeout 2h` when the caller needs a bound. Cancellation sends
+the native process group `TERM`, waits five seconds, and then escalates to
+`KILL`. The native CLI's arguments, permissions, and provider authentication
 remain unchanged.
+
+For a reusable multi-line prompt, select exactly one source and an explicit
+delivery mechanism:
+
+```bash
+agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- \
+  cursor-agent --print --output-format stream-json --trust
+
+agentctl run --prompt-stdin --prompt-delivery stdin -- \
+  codex exec --json - < "$PWD/task.md"
+```
+
+Prompt files must be regular non-symlink files within the selected `--cwd`
+(the current directory by default) and are bounded to 8 MiB. Prompt bytes are
+read once, delivered without content rewriting, and never written to status,
+events, plan output, or the journal; plan and idempotency metadata use only a
+SHA-256 digest, byte count, source, and delivery mode. `argv` delivery appends
+one positional argument. `stdin` delivery attaches only the selected prompt
+bytes to the native child. agentctl never guesses delivery from an adapter
+name.
+
+To run one prompt through several explicit native commands, use a foreground
+fan-out manifest:
+
+```json
+{
+  "schema_version": 1,
+  "prompt_file": "task.md",
+  "prompt_delivery": "argv",
+  "concurrency": 2,
+  "children": [
+    {
+      "argv": ["cursor-agent", "--print", "--output-format", "stream-json", "--trust"]
+    },
+    {
+      "argv": ["codex", "exec", "--json"]
+    }
+  ]
+}
+```
+
+```bash
+agentctl fanout --plan --manifest "$PWD/fanout.json"
+agentctl fanout --manifest "$PWD/fanout.json"
+```
+
+`fanout` reads the prompt once, preallocates one `exec-*` ID per child, runs up
+to two children concurrently by default, and returns every child ID and state.
+The manifest requires `schema_version`, `prompt_file`, and at least one
+`children[].argv`; `prompt_delivery` may be set globally or per child. The
+prompt file and each relative `children[].cwd` resolve from the manifest
+directory. A child with no `cwd` inherits the directory from which agentctl was
+invoked. Use `agentctl schema list` to locate the normative manifest schema.
+Results remain independently retrievable with `agentctl result <exec-id>`;
+agentctl does not concatenate or synthesize answers. Fan-out is intentionally
+foreground-owned: if its invoking process exits, native children are
+terminated. Put explicit execution IDs in the manifest when subscriptions must
+be created before launch.
 
 For Cursor, omitting `--mode` selects its normal Agent behavior; `--mode ask`
 is the read-only Q&A path. Cursor plan mode is rejected by default because its
@@ -125,6 +185,8 @@ agentctl result "$EXEC_ID"
 not the final answer. `result` is the explicit content-retrieval path.
 Callers can require provenance or a task-specific minimum size with
 `result --require-result-source assistant --min-result-bytes N`.
+Use `await --no-timeout` for an intentionally unbounded observer. Await still
+stops on actionable attention unless `--ignore-attention` is explicit.
 
 ## Data-storage disclosure
 

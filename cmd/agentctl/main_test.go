@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -151,7 +152,7 @@ func TestDefaultOutputIsJSONAndTopicHelpIsProgressive(t *testing.T) {
 	}
 }
 
-func TestRunDefaultsInferAdapterAndBoundExecution(t *testing.T) {
+func TestRunDefaultsInferAdapterWithoutWallTimeout(t *testing.T) {
 	tests := []struct{ executable, adapter string }{
 		{"/opt/bin/codex", "codex"}, {"cursor-agent", "cursor"}, {"claude.exe", "claude"}, {"omp", "omp"}, {"/bin/echo", "generic-process"},
 	}
@@ -160,13 +161,245 @@ func TestRunDefaultsInferAdapterAndBoundExecution(t *testing.T) {
 		if problem != nil {
 			t.Fatalf("parse %s: %v", test.executable, problem)
 		}
-		if opts.adapter != test.adapter || opts.timeout != defaultRunTimeout {
+		if opts.adapter != test.adapter || opts.timeout != 0 {
 			t.Fatalf("parse %s adapter=%s timeout=%s", test.executable, opts.adapter, opts.timeout)
 		}
 	}
 	opts, problem := parseRun([]string{"--adapter", "generic-process", "--no-timeout", "--", "codex", "task"})
 	if problem != nil || opts.adapter != "generic-process" || opts.timeout != 0 {
 		t.Fatalf("explicit override=%#v problem=%v", opts, problem)
+	}
+}
+
+func TestRunPromptFilePlanDoesNotExposePromptContent(t *testing.T) {
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "task.md")
+	secret := "private multi-line prompt\nsecond line"
+	if err := os.WriteFile(promptPath, []byte(secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(root, "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--plan", "--cwd", root, "--prompt-file", "task.md", "--prompt-delivery", "argv", "--adapter", "generic-process", "--", "/bin/echo"}); code != 0 {
+		t.Fatalf("plan exit=%d output=%s", code, stdout.String())
+	}
+	if strings.Contains(stdout.String(), secret) || strings.Contains(stdout.String(), "second line") {
+		t.Fatalf("plan leaked prompt content: %s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), promptPath) {
+		t.Fatalf("plan leaked absolute prompt path: %s", stdout.String())
+	}
+	for _, want := range []string{`"delivery":"argv"`, `"bytes":37`, `"sha256":"sha256:`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("plan missing %s: %s", want, stdout.String())
+		}
+	}
+	if _, err := os.Stat(journal); !os.IsNotExist(err) {
+		t.Fatalf("plan created journal: %v", err)
+	}
+}
+
+func TestRunPromptStdinDeliveryStoresResult(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "stdin-agent")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nIFS= read -r prompt\nprintf '%s\\n' \"{\\\"type\\\":\\\"result\\\",\\\"status\\\":\\\"completed\\\",\\\"result\\\":\\\"$prompt\\\"}\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(root, "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	a.stdin = strings.NewReader("PROMPT_STDIN_OK\n")
+	a.stdinIsTerminal = func() bool { return false }
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--adapter", "generic-process", "--prompt-stdin", "--prompt-delivery", "stdin", "--", script}); code != 0 {
+		t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var runDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &runDoc); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "result", runDoc.Result.ID.String()}); code != 0 || !strings.Contains(stdout.String(), "PROMPT_STDIN_OK") {
+		t.Fatalf("result exit=%d output=%s", code, stdout.String())
+	}
+}
+
+func TestRunPromptFlagsFailClosed(t *testing.T) {
+	tests := [][]string{
+		{"--prompt-file", "task.md", "--prompt-stdin", "--", "/bin/echo"},
+		{"--prompt-delivery", "stdin", "--", "/bin/echo"},
+		{"--timeout", "1h", "--no-timeout", "--", "/bin/echo"},
+	}
+	for _, args := range tests {
+		if _, problem := parseRun(args); problem == nil || problem.Code != output.CodeUsage {
+			t.Fatalf("args=%v problem=%#v", args, problem)
+		}
+	}
+}
+
+func TestFanoutRunsOnePromptThroughArgvAndStdin(t *testing.T) {
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "task.md")
+	if err := os.WriteFile(promptPath, []byte("FANOUT_PROMPT_OK"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	argvScript := filepath.Join(root, "argv-agent")
+	stdinScript := filepath.Join(root, "stdin-agent")
+	if err := os.WriteFile(argvScript, []byte("#!/bin/sh\nprintf '%s\\n' \"{\\\"type\\\":\\\"result\\\",\\\"status\\\":\\\"completed\\\",\\\"result\\\":\\\"$1\\\"}\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stdinScript, []byte("#!/bin/sh\nIFS= read -r prompt\nprintf '%s\\n' \"{\\\"type\\\":\\\"result\\\",\\\"status\\\":\\\"completed\\\",\\\"result\\\":\\\"$prompt\\\"}\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(root, "fanout.json")
+	manifest := fmt.Sprintf(`{"schema_version":1,"prompt_file":"task.md","concurrency":2,"children":[{"adapter":"generic-process","prompt_delivery":"argv","argv":[%q]},{"adapter":"generic-process","prompt_delivery":"stdin","argv":[%q]}]}`, argvScript, stdinScript)
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(root, "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "fanout", "--manifest", manifestPath}); code != 0 {
+		t.Fatalf("fanout exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var doc struct {
+		Result fanoutResult `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.Result.Success || len(doc.Result.Children) != 2 {
+		t.Fatalf("fanout result=%#v", doc.Result)
+	}
+	for _, child := range doc.Result.Children {
+		stdout.Reset()
+		if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "result", child.ExecutionID}); code != 0 || !strings.Contains(stdout.String(), "FANOUT_PROMPT_OK") {
+			t.Fatalf("child %s result exit=%d output=%s", child.ExecutionID, code, stdout.String())
+		}
+	}
+}
+
+func TestFanoutManifestRejectsInvalidChildControls(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "task.md"), []byte("prompt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rawID, err := ids.New(ids.TypeExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tooMany := make([]string, 257)
+	for i := range tooMany {
+		tooMany[i] = "x"
+	}
+	tests := []fanoutManifest{
+		{SchemaVersion: 1, PromptFile: "task.md", Children: []fanoutChild{{Argv: tooMany}}},
+		{SchemaVersion: 1, PromptFile: "task.md", Children: []fanoutChild{{Timeout: "later", Argv: []string{"echo"}}}},
+		{SchemaVersion: 1, PromptFile: "task.md", Children: []fanoutChild{{ExecutionID: rawID.String(), Argv: []string{"echo"}}, {ExecutionID: rawID.String(), Argv: []string{"echo"}}}},
+		{SchemaVersion: 1, PromptFile: "task.md", PromptDelivery: "magic", Children: []fanoutChild{{PromptDelivery: "argv", Argv: []string{"echo"}}}},
+	}
+	for i, manifest := range tests {
+		body, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(root, fmt.Sprintf("fanout-%d.json", i))
+		if err := os.WriteFile(path, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, problem := readFanoutManifest(path); problem == nil || problem.Code != output.CodeUsage {
+			t.Fatalf("case %d problem=%#v", i, problem)
+		}
+	}
+}
+
+func TestPromptAndManifestRejectSymlinks(t *testing.T) {
+	root := t.TempDir()
+	realPrompt := filepath.Join(root, "real.md")
+	if err := os.WriteFile(realPrompt, []byte("prompt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkedPrompt := filepath.Join(root, "linked.md")
+	if err := os.Symlink(realPrompt, linkedPrompt); err != nil {
+		t.Fatal(err)
+	}
+	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
+	if _, problem := a.loadPrompt(runOptions{cwd: root, promptFile: "linked.md", promptDelivery: "argv"}); problem == nil || problem.Code != output.CodeAuthorizationDenied {
+		t.Fatalf("prompt symlink problem=%#v", problem)
+	}
+	realManifest := filepath.Join(root, "fanout.json")
+	if err := os.WriteFile(realManifest, []byte(`{"schema_version":1,"prompt_file":"real.md","children":[{"argv":["echo"]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkedManifest := filepath.Join(root, "linked.json")
+	if err := os.Symlink(realManifest, linkedManifest); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, problem := readFanoutManifest(linkedManifest); problem == nil || problem.Code != output.CodeAuthorizationDenied {
+		t.Fatalf("manifest symlink problem=%#v", problem)
+	}
+}
+
+func TestOwnedRunSurvivesJournalLockWhileChildTerminalizes(t *testing.T) {
+	root := t.TempDir()
+	marker := filepath.Join(root, "started")
+	gate := filepath.Join(root, "release")
+	script := filepath.Join(root, "agent")
+	body := fmt.Sprintf("#!/bin/sh\n: > %q\nwhile [ ! -f %q ]; do sleep 0.02; done\nprintf '%%s\\n' '{\"type\":\"result\",\"status\":\"completed\",\"result\":\"LOCK_SURVIVED\"}'\n", marker, gate)
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rawID, err := ids.New(ids.TypeExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalPath := filepath.Join(root, "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	done := make(chan int, 1)
+	go func() {
+		done <- a.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "run", "--execution-id", rawID.String(), "--adapter", "generic-process", "--", script})
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("child did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	lock, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gate, []byte("go"), 0o600); err != nil {
+		lock.Close()
+		t.Fatal(err)
+	}
+	select {
+	case code := <-done:
+		lock.Close()
+		t.Fatalf("run returned under journal contention: exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	case <-time.After(2500 * time.Millisecond):
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+		}
+		stdout.Reset()
+		if code := a.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "result", rawID.String()}); code != 0 || !strings.Contains(stdout.String(), "LOCK_SURVIVED") {
+			t.Fatalf("result exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("run did not commit terminal result after journal lock released")
 	}
 }
 
@@ -367,7 +600,7 @@ func TestNativeAttentionUpdatesExecutionAndStopsAwait(t *testing.T) {
 		if code != output.ExitCodeFor(output.CodeExecutionCancelled) {
 			t.Fatalf("attention run cancellation exit=%d output=%s", code, runOut.String())
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(7 * time.Second):
 		t.Fatal("attention run did not terminate after cancellation")
 	}
 	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
@@ -407,7 +640,7 @@ func TestAwaitContextCancellationIsNotReportedAsTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
 	go func() {
-		done <- a.run(ctx, []string{"--output", "json", "--journal", journalPath, "await", execution.ID.String(), "--timeout", "5s"})
+		done <- a.run(ctx, []string{"--output", "json", "--journal", journalPath, "await", execution.ID.String(), "--no-timeout"})
 	}()
 	time.Sleep(25 * time.Millisecond)
 	cancel()

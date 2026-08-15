@@ -40,14 +40,19 @@ func helpTopics() map[string]commandHelp {
 			Examples: [][]string{{"agentctl", "capabilities", "codex"}, {"agentctl", "capabilities", "cursor", "--require", "launch,result_content"}}, Related: []string{"doctor", "run"},
 		},
 		"run": {
-			Name: "run", Summary: "Launch an exact native argv and persist its normalized execution and final result.", Usage: "agentctl run [--execution-id exec-...] [--adapter name] [--timeout duration|--no-timeout] [--allow-unreliable-result] [flags] -- <native argv>",
-			SideEffectClass: output.ExternalSideEffect, Defaults: []string{"adapter inferred from known executable names", "execution ID generated unless preallocated", "30 minute timeout", "launch and result_content preflight", "bounded final result storage", "Cursor plan mode rejected because its one-shot completion is unreliable"},
-			Examples: [][]string{{"agentctl", "run", "--", "codex", "exec", "--json", "review this change"}, {"agentctl", "run", "--", "cursor-agent", "--print", "--output-format", "stream-json", "--trust", "review this change"}, {"agentctl", "run", "--", "cursor-agent", "--print", "--output-format", "stream-json", "--mode", "ask", "--trust", "explain this code"}}, Related: []string{"capabilities", "await", "result", "subscribe"},
+			Name: "run", Summary: "Launch an exact native argv and persist its normalized execution and final result.", Usage: "agentctl run [--execution-id exec-...] [--adapter name] [--timeout duration|--no-timeout] [--prompt-file path|--prompt-stdin] [--prompt-delivery argv|stdin] [flags] -- <native argv>",
+			SideEffectClass: output.ExternalSideEffect, Defaults: []string{"adapter inferred from known executable names", "execution ID generated unless preallocated", "no wall-clock timeout", "prompt delivery argv when a prompt source is selected", "prompt files are regular non-symlinks within --cwd and at most 8 MiB", "launch and result_content preflight", "bounded final result storage", "Cursor plan mode rejected because its one-shot completion is unreliable"},
+			Examples: [][]string{{"agentctl", "run", "--", "codex", "exec", "--json", "review this change"}, {"agentctl", "run", "--prompt-file", "task.md", "--prompt-delivery", "argv", "--", "cursor-agent", "--print", "--output-format", "stream-json", "--trust"}, {"agentctl", "run", "--prompt-stdin", "--prompt-delivery", "stdin", "--", "codex", "exec", "--json", "-"}}, Related: []string{"fanout", "capabilities", "await", "result", "subscribe"},
+		},
+		"fanout": {
+			Name: "fanout", Summary: "Run one prompt through several explicit native argv vectors with bounded concurrency.", Usage: "agentctl fanout --manifest path [--concurrency n] [--fail-fast] [--plan]",
+			SideEffectClass: output.ExternalSideEffect, Defaults: []string{"manifest v1 requires schema_version, prompt_file, and children[].argv", "prompt_file and relative children[].cwd resolve from the manifest directory", "a child without cwd inherits the invoking process directory", "prompt_delivery is argv or stdin globally or per child", "foreground same-process coordination", "concurrency 2", "one prompt file read once", "per-child execution IDs and results", "no automatic synthesis or detached ownership"},
+			Examples: [][]string{{"agentctl", "schema", "list"}, {"agentctl", "fanout", "--plan", "--manifest", "fanout.json"}, {"agentctl", "fanout", "--manifest", "fanout.json"}}, Related: []string{"schema", "run", "await", "result"},
 		},
 		"await": {
-			Name: "await", Summary: "Wait for terminal state or attention without polling native session files.", Usage: "agentctl await <execution-id> [--timeout duration] [--ignore-attention]",
+			Name: "await", Summary: "Wait for terminal state or attention without polling native session files.", Usage: "agentctl await <execution-id> [--timeout duration|--no-timeout] [--ignore-attention]",
 			SideEffectClass: output.ReadOnly, Defaults: []string{"10 minute timeout", "returns immediately when attention is required"},
-			Examples: [][]string{{"agentctl", "await", "exec-..."}}, Related: []string{"status", "events", "result"},
+			Examples: [][]string{{"agentctl", "await", "exec-..."}, {"agentctl", "await", "exec-...", "--no-timeout", "--ignore-attention"}}, Related: []string{"status", "events", "result"},
 		},
 		"result": {
 			Name: "result", Summary: "Dereference and optionally assert guarantees on a bounded terminal result.", Usage: "agentctl result <execution-id> [--summary] [--allow-empty] [--require-result-source source] [--min-result-bytes n]",

@@ -23,7 +23,7 @@ agentctl doctor
 agentctl help <topic>
 ```
 
-Useful topics include `run`, `result`, `await`, `subscribe`, `capabilities`,
+Useful topics include `run`, `fanout`, `result`, `await`, `subscribe`, `capabilities`,
 `bootstrap update`, `promote`, `knowledge`, and `context`. Follow returned
 read-only `next_actions` for deeper discovery. Do not preload every topic or
 memorize version-specific flags in place of help.
@@ -53,6 +53,30 @@ agentctl run -- cursor-agent --print --output-format stream-json --mode ask --tr
 agentctl run -- omp -p --mode json "<bounded objective>"
 ```
 
+For a reusable multi-line prompt, select an explicit source and delivery
+mechanism. Prompt bytes are bounded and are not persisted by agentctl:
+
+```bash
+agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- codex exec --json
+agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust
+agentctl run --prompt-stdin --prompt-delivery stdin -- codex exec --json - < "$PWD/task.md"
+```
+
+Never infer prompt delivery from an adapter name. Use `argv` only for a native
+form that expects a positional prompt and `stdin` only for a verified
+stdin-reading form. Use `agentctl fanout --manifest <path>` when one prompt must
+run through several explicit native argv vectors; fan-out is foreground-owned,
+returns independent child execution IDs, and does not synthesize their results.
+The v1 manifest requires `schema_version`, `prompt_file`, and `children[].argv`;
+set `prompt_delivery` globally or per child. Prompt files and relative child
+working directories resolve from the manifest directory, while an omitted
+child `cwd` inherits the invoking process directory. Discover the normative
+shape with `agentctl help fanout` and `agentctl schema list`.
+
+`run` has no default wall-clock timeout. Add `--timeout` only when the caller
+requires a bound. Native work remains owned by the foreground agentctl process;
+the callback supervisor does not make it detached or restart-durable.
+
 Retain the returned full `exec-*` ID. `await` stops on attention by default and
 `result` requires stored content by default:
 
@@ -61,6 +85,9 @@ agentctl status <exec-id>
 agentctl await <exec-id>
 agentctl result <exec-id>
 ```
+
+Use `await --no-timeout` for an intentionally unbounded observer. It still
+stops on actionable attention unless `--ignore-attention` is explicit.
 
 Use `agentctl help subscribe` before durable callback setup. Delivery is
 at-least-once, so deduplicate by the full event key. A receipt proves delivery,

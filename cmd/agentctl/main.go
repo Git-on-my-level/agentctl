@@ -24,9 +24,11 @@ import (
 var version = "0.1.0-dev"
 
 type app struct {
-	stdout, stderr io.Writer
-	getenv         func(string) string
-	now            func() time.Time
+	stdout, stderr  io.Writer
+	stdin           io.Reader
+	stdinIsTerminal func() bool
+	getenv          func(string) string
+	now             func() time.Time
 }
 type common struct {
 	mode                                                        output.Mode
@@ -40,7 +42,10 @@ func main() {
 	os.Exit(newApp().run(ctx, os.Args[1:]))
 }
 func newApp() *app {
-	return &app{stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv, now: time.Now}
+	return &app{stdout: os.Stdout, stderr: os.Stderr, stdin: os.Stdin, stdinIsTerminal: func() bool {
+		info, err := os.Stdin.Stat()
+		return err == nil && info.Mode()&os.ModeCharDevice != 0
+	}, getenv: os.Getenv, now: time.Now}
 }
 
 func (a *app) run(ctx context.Context, args []string) int {
@@ -79,6 +84,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.await(ctx, renderer, commonArgs, rest[1:])
 	case "run":
 		err = a.runNative(ctx, renderer, commonArgs, rest[1:])
+	case "fanout":
+		err = a.fanout(ctx, renderer, commonArgs, rest[1:])
 	case "attach":
 		err = a.attachNative(ctx, renderer, commonArgs, rest[1:])
 	case "cancel":
@@ -497,13 +504,15 @@ func (a *app) events(ctx context.Context, renderer output.Renderer, c common, ar
 
 func (a *app) await(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) < 1 {
-		return output.NewError(output.CodeUsage, "usage: agentctl await <execution-id> [--timeout duration] [--ignore-attention]", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl await <execution-id> [--timeout duration | --no-timeout] [--ignore-attention]", false)
 	}
 	id, problem := parseExecutionRef(args[0], c)
 	if problem != nil {
 		return problem
 	}
 	timeout := 10 * time.Minute
+	noTimeout := false
+	timeoutSet := false
 	stopAttention := true
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
@@ -517,6 +526,9 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 				return output.NewError(output.CodeUsage, "timeout must be a positive Go duration", false)
 			}
 			timeout = value
+			timeoutSet = true
+		case "--no-timeout":
+			noTimeout = true
 		case "--stop-on-attention":
 			stopAttention = true
 		case "--ignore-attention":
@@ -525,7 +537,13 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 			return output.NewError(output.CodeUsage, "unknown await flag", false).WithDetail("flag", args[i])
 		}
 	}
-	deadline := a.now().Add(timeout)
+	if timeoutSet && noTimeout {
+		return output.NewError(output.CodeUsage, "--timeout and --no-timeout are mutually exclusive", false)
+	}
+	deadline := time.Time{}
+	if !noTimeout {
+		deadline = a.now().Add(timeout)
+	}
 	for {
 		journal, openErr := a.openRead(c)
 		if openErr != nil {
@@ -553,10 +571,10 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 				return outcomeError(output.CodeAttentionRequired, "execution requires attention", execution)
 			}
 		}
-		if !a.now().Before(deadline) {
+		if !deadline.IsZero() && !a.now().Before(deadline) {
 			return outcomeError(output.CodeTimeout, "await deadline elapsed", execution)
 		}
-		timer := time.NewTimer(100 * time.Millisecond)
+		timer := time.NewTimer(500 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -577,11 +595,27 @@ func (a *app) openRead(c common) (*store.Journal, *output.Error) {
 	if err != nil {
 		return nil, output.Wrap(output.CodeInternal, "resolve journal path", false, err)
 	}
-	journal, err := store.Open(path, store.Options{ReadOnly: true})
+	journal, err := openJournalWithRetry(path, store.Options{ReadOnly: true})
 	if err != nil {
 		return nil, mapStoreError("open journal", err)
 	}
 	return journal, nil
+}
+
+func openJournalWithRetry(path string, options store.Options) (*store.Journal, error) {
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		journal, openErr := store.Open(path, options)
+		if openErr == nil {
+			return journal, nil
+		}
+		err = openErr
+		if !errors.Is(openErr, store.ErrBusy) || attempt == 1 {
+			break
+		}
+		time.Sleep(time.Duration(100+time.Now().UnixNano()%250) * time.Millisecond)
+	}
+	return nil, err
 }
 func parseExecutionRef(value string, c common) (ids.ExecutionID, *output.Error) {
 	if strings.HasPrefix(value, "@") {
@@ -655,6 +689,8 @@ func mapStoreError(message string, err error) *output.Error {
 		return output.Wrap(output.CodeInvalidState, message, false, err)
 	case errors.Is(err, store.ErrCorrupt):
 		return output.Wrap(output.CodeInternal, message, false, err)
+	case errors.Is(err, store.ErrBusy):
+		return output.Wrap(output.CodeDependencyUnavailable, message, true, err).WithDetail("diagnostic_code", "journal_busy")
 	default:
 		return output.Wrap(output.CodeInternal, message, false, err)
 	}

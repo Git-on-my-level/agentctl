@@ -288,10 +288,10 @@ func TestBootstrapUpdateRefusesInvalidManagedMarkerDuringUpgrade(t *testing.T) {
 
 func TestBootstrapStatusMarksSkillOlderThanEmbeddedRelease(t *testing.T) {
 	originalVersion := version
-	version = "v0.1.8"
+	version = "v0.3.0"
 	t.Cleanup(func() { version = originalVersion })
 	home := t.TempDir()
-	writeBootstrapSkill(t, filepath.Join(home, ".agents", "skills"), "tree:v0.1.6", "old portable skill")
+	writeBootstrapSkill(t, filepath.Join(home, ".agents", "skills"), "tree:v0.2.5", "old portable skill")
 	status := buildBootstrapStatus(home, []string{"codex"}, func(string) string { return "" })
 	if status.Healthy || !containsString(status.Problems, "codex_outdated") {
 		t.Fatalf("embedded-release drift was not reported: %#v", status)

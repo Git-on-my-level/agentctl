@@ -155,6 +155,7 @@ func (a *app) schemaCommand(renderer output.Renderer, args []string) *output.Err
 		{"name": "event", "version": 1, "file": "schemas/event.schema.json"},
 		{"name": "event-page", "version": 1, "file": "schemas/event-page.schema.json"},
 		{"name": "execution", "version": 1, "file": "schemas/execution.schema.json"},
+		{"name": "fanout-manifest", "version": 1, "file": "schemas/fanout-manifest.schema.json"},
 		{"name": "knowledge-source", "version": 1, "file": "schemas/knowledge-source.schema.json"},
 		{"name": "outcome", "version": 1, "file": "schemas/outcome.schema.json"},
 		{"name": "subscription", "version": 1, "file": "schemas/subscription.schema.json"},
@@ -176,6 +177,8 @@ func (a *app) examplesCommand(renderer output.Renderer, args []string) *output.E
 	examples := [][]string{
 		{"agentctl", "route", "explain", "--model-family", "gpt", "--needs-pr"},
 		{"agentctl", "run", "--adapter", "codex", "--", "codex", "exec", "..."},
+		{"agentctl", "run", "--prompt-file", "task.md", "--prompt-delivery", "argv", "--", "codex", "exec", "--json"},
+		{"agentctl", "fanout", "--manifest", "fanout.json"},
 		{"agentctl", "subscribe", "create", "--execution", "exec-...", "--kind", "terminal,attention", "--destination", "file", "--target", "/absolute/events.ndjson"},
 		{"agentctl", "knowledge", "compile", "--source", "source.json=/checkout", "--output", "/bundle"},
 		{"agentctl", "context", "--bundle", "/bundle", "--query", "deployment", "--render", "/context.md"},

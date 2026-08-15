@@ -22,7 +22,7 @@ import (
 
 const (
 	defaultOutputLimit         = 2 << 20
-	nativeObservationFreshness = 15 * time.Second
+	nativeObservationFreshness = 30 * time.Second
 )
 
 var (
@@ -446,11 +446,17 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	if len(argv) == 0 || argv[0] == "" {
 		return LaunchResult{}, invalidRequest("launch argv transform returned an empty argv")
 	}
-	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
+	if err := runCtx.Err(); err != nil {
+		return LaunchResult{}, nativeContextError(runCtx, "native process launch")
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
 	if req.Cwd != "" {
 		cmd.Dir = req.Cwd
 	}
 	cmd.Env = append(os.Environ(), req.Env...)
+	if req.Stdin != nil {
+		cmd.Stdin = bytes.NewReader(req.Stdin)
+	}
 	if req.Context != nil {
 		// Handles are intentionally opaque; the child is not assumed to read
 		// them. Required delivery was checked above.
@@ -655,7 +661,7 @@ func (a *NativeAdapter) waitRecord(ctx context.Context, record *processRecord, k
 		return a.currentResult(record), nil
 	case <-ctx.Done():
 		if killOnCancel {
-			a.cancelRecord(record)
+			a.cancelRecord(record, "term", 5*time.Second)
 		}
 		// CommandContext/Process.Kill closes the child; wait for the existing
 		// waiter and pipe readers rather than returning with an orphan.
@@ -668,13 +674,25 @@ func (a *NativeAdapter) waitRecord(ctx context.Context, record *processRecord, k
 	}
 }
 
-func (a *NativeAdapter) cancelRecord(record *processRecord) {
+func (a *NativeAdapter) cancelRecord(record *processRecord, signal string, grace time.Duration) {
 	record.mu.Lock()
 	record.cancelled = true
 	cmd := record.cmd
 	record.mu.Unlock()
 	if cmd != nil && cmd.Process != nil {
-		_ = killProcess(cmd)
+		if signal == "kill" || grace <= 0 {
+			_ = killProcess(cmd)
+			return
+		}
+		_ = terminateProcess(cmd)
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case <-record.done:
+			return
+		case <-timer.C:
+			_ = killProcess(cmd)
+		}
 	}
 }
 
@@ -820,7 +838,7 @@ func (a *NativeAdapter) Cancel(ctx context.Context, req CancelRequest) error {
 			return nil
 		default:
 		}
-		a.cancelRecord(record)
+		a.cancelRecord(record, req.Signal, req.Grace)
 		<-record.done
 		return nil
 	}

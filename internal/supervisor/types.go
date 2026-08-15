@@ -338,7 +338,7 @@ func DefaultConfig() Config {
 		MaxDeliveryAttempts:   5,
 		MaxDeliveriesPerCycle: 64,
 		RetryBase:             time.Second,
-		RetryMax:              time.Minute,
+		RetryMax:              5 * time.Minute,
 		ShutdownTimeout:       10 * time.Second,
 		Clock:                 RealClock{},
 	}

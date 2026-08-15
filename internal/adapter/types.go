@@ -247,6 +247,7 @@ type ContextInput struct {
 
 type LaunchRequest struct {
 	Argv            []string
+	Stdin           []byte
 	Cwd             string
 	Env             []string
 	Context         *ContextInput
