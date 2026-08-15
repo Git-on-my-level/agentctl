@@ -2,15 +2,15 @@
   "schema_version": 1,
   "bundle_kind": "multica_runtime_skill",
   "distribution_id": "agentctl-portable",
-  "revision": "tree:v0.1.8",
+  "revision": "tree:v0.3.0",
   "skill": {
     "path": "agentctl-portable/SKILL.md",
     "source": "skills/agentctl-portable/SKILL.md",
-    "sha256": "4b41b2b2c9773c59a51d7b8eeaeeddcc7cbb15e9f8537a0643cc5d4f4b46991a"
+    "sha256": "dae5f5d51e0b07e1f020a2235814d5c10294beb86712a1bbc8441d0639b91714"
   },
   "runtime": {
     "entrypoint": "agentctl",
-    "commands": ["help", "schema", "capabilities", "doctor", "route", "run", "attach", "status", "events", "subscribe", "await", "result", "cancel", "promote", "knowledge", "context", "config", "bootstrap", "supervisor"],
+    "commands": ["help", "schema", "capabilities", "doctor", "route", "run", "fanout", "attach", "status", "events", "subscribe", "await", "result", "cancel", "promote", "knowledge", "context", "config", "bootstrap", "supervisor"],
     "authority": "native_or_multica_explicit",
     "correctness_owner": "selected_native_authority"
   },

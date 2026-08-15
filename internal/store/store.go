@@ -31,6 +31,7 @@ var (
 	ErrReadOnly         = errors.New("journal is read-only")
 	ErrCorrupt          = errors.New("journal corruption")
 	ErrTerminalConflict = errors.New("contradictory terminal event")
+	ErrBusy             = errors.New("journal busy")
 )
 
 var (
@@ -111,10 +112,13 @@ func Open(path string, options Options) (*Journal, error) {
 	}
 	timeout := options.LockTimeout
 	if timeout == 0 {
-		timeout = 5 * time.Second
+		timeout = 15 * time.Second
 	}
 	db, err := bbolt.Open(absolute, 0o600, &bbolt.Options{ReadOnly: options.ReadOnly, Timeout: timeout, NoFreelistSync: false})
 	if err != nil {
+		if errors.Is(err, bbolt.ErrTimeout) {
+			return nil, fmt.Errorf("%w: %v", ErrBusy, err)
+		}
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, ErrNotFound
 		}

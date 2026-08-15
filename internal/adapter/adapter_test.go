@@ -379,6 +379,51 @@ func TestCallerCancellationKillsAndReapsChild(t *testing.T) {
 	}
 }
 
+func TestExplicitCancelEscalatesAfterGrace(t *testing.T) {
+	path := fixtureExecutable(t, `trap '' TERM; : > "$1"; while :; do :; done`)
+	ready := filepath.Join(t.TempDir(), "ready")
+	a := NewGenericProcess()
+	launch, err := a.Launch(context.Background(), LaunchRequest{Argv: []string{path, ready}, DiscoveryWindow: 10 * time.Millisecond, StartOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("signal fixture did not become ready")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	started := time.Now()
+	if err := a.Cancel(context.Background(), CancelRequest{Ref: launch.Session.Ref, Signal: "term", Grace: 100 * time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed < 75*time.Millisecond || elapsed > 2*time.Second {
+		t.Fatalf("cancel escalation elapsed=%s", elapsed)
+	}
+}
+
+func TestStartOnlyDeadlineCancelsAndReapsChild(t *testing.T) {
+	path := fixtureExecutable(t, `sleep 10`)
+	a := NewGenericProcess()
+	launch, err := a.Launch(context.Background(), LaunchRequest{Argv: []string{path}, Timeout: 100 * time.Millisecond, DiscoveryWindow: 10 * time.Millisecond, StartOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	result, err := a.Wait(waitCtx, launch.Session.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != StateCancelled {
+		t.Fatalf("deadline result = %#v", result)
+	}
+}
+
 func TestBuiltInManifestsHaveSchemaRequiredShapes(t *testing.T) {
 	for _, a := range []Adapter{NewGenericProcess(), NewCodex(), NewCursor(), NewClaudeCode(), NewOMP(), NewMultica(MulticaConfig{Profile: "p", Workspace: "w", Issue: "i", Run: "r"})} {
 		manifest := a.Manifest()

@@ -80,28 +80,18 @@ func (a *app) supervisorRun(ctx context.Context, renderer output.Renderer, c com
 	if err != nil {
 		return output.Wrap(output.CodeInternal, "resolve journal path", false, err)
 	}
-	// bbolt takes an exclusive process lock for a writable Journal. Open the
-	// journal only for one bounded supervisor cycle, then close it before the
-	// next cycle (or any concurrent CLI mutation) can proceed.
+	// Every bridge opens the journal only around one state transition. Callback
+	// transport I/O and authority reprobes must not hold bbolt's process lock.
 	resolvedStateDir := cfg.StateDir
 	factory := supervisor.DependenciesFactoryFunc(func(cycleCtx context.Context) (supervisor.CycleDependencies, error) {
-		journal, err := store.Open(journalPath, store.Options{})
-		if err != nil {
-			return supervisor.CycleDependencies{}, err
-		}
-		engine, err := agentruntime.New(journal, agentruntime.Options{})
-		if err != nil {
-			_ = journal.Close()
-			return supervisor.CycleDependencies{}, err
-		}
-		bridge := agentruntime.SupervisorExecutions{Engine: engine}
+		bridge := pathSupervisorExecutions{path: journalPath}
 		deps := supervisor.Dependencies{
 			Executions: bridge,
 			Reprober:   bridge,
-			Outbox:     agentruntime.OutboxBridge{Store: journalSupervisorOutbox{journal}},
-			Deliverer:  agentruntime.DelivererBridge{Transport: callbackTransport{journal: journal, stateDir: resolvedStateDir}},
+			Outbox:     agentruntime.OutboxBridge{Store: journalSupervisorOutbox{path: journalPath}},
+			Deliverer:  agentruntime.DelivererBridge{Transport: callbackTransport{journalPath: journalPath, stateDir: resolvedStateDir}},
 		}
-		return supervisor.CycleDependencies{Dependencies: deps, Close: journal.Close}, nil
+		return supervisor.CycleDependencies{Dependencies: deps}, nil
 	})
 	deps := supervisor.Dependencies{Factory: factory}
 	service, err := supervisor.New(cfg, deps)
@@ -260,10 +250,61 @@ func (a *app) supervisorPlan(renderer output.Renderer, args []string) *output.Er
 	return nil
 }
 
-type journalSupervisorOutbox struct{ journal *store.Journal }
+type pathSupervisorExecutions struct{ path string }
+
+func (b pathSupervisorExecutions) withBridge(fn func(agentruntime.SupervisorExecutions) error) error {
+	journal, err := openJournalWithRetry(b.path, store.Options{})
+	if err != nil {
+		return err
+	}
+	defer journal.Close()
+	engine, err := agentruntime.New(journal, agentruntime.Options{})
+	if err != nil {
+		return err
+	}
+	return fn(agentruntime.SupervisorExecutions{Engine: engine})
+}
+
+func (b pathSupervisorExecutions) ListNonTerminal(ctx context.Context) (result []supervisor.Execution, err error) {
+	err = b.withBridge(func(bridge agentruntime.SupervisorExecutions) error {
+		result, err = bridge.ListNonTerminal(ctx)
+		return err
+	})
+	return result, err
+}
+
+func (b pathSupervisorExecutions) Reprobe(ctx context.Context, execution supervisor.Execution) (result supervisor.ProbeResult, err error) {
+	err = b.withBridge(func(bridge agentruntime.SupervisorExecutions) error {
+		result, err = bridge.Reprobe(ctx, execution)
+		return err
+	})
+	return result, err
+}
+
+func (b pathSupervisorExecutions) ApplyProbe(ctx context.Context, id string, result supervisor.ProbeResult) error {
+	return b.withBridge(func(bridge agentruntime.SupervisorExecutions) error {
+		return bridge.ApplyProbe(ctx, id, result)
+	})
+}
+
+type journalSupervisorOutbox struct{ path string }
+
+func (b journalSupervisorOutbox) withJournal(fn func(*store.Journal) error) error {
+	journal, err := openJournalWithRetry(b.path, store.Options{})
+	if err != nil {
+		return err
+	}
+	defer journal.Close()
+	return fn(journal)
+}
 
 func (b journalSupervisorOutbox) ListPending(ctx context.Context) ([]agentruntime.OutboxRecord, error) {
-	items, err := b.journal.ListPendingDeliveries(ctx)
+	var items []store.DeliveryRecord
+	err := b.withJournal(func(journal *store.Journal) error {
+		var err error
+		items, err = journal.ListPendingDeliveries(ctx)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -274,17 +315,22 @@ func (b journalSupervisorOutbox) ListPending(ctx context.Context) ([]agentruntim
 	return result, nil
 }
 func (b journalSupervisorOutbox) MarkAcknowledged(ctx context.Context, id string) error {
-	return b.journal.Ack(ctx, id)
+	return b.withJournal(func(journal *store.Journal) error { return journal.Ack(ctx, id) })
 }
 func (b journalSupervisorOutbox) ScheduleRetry(ctx context.Context, id string, next time.Time, reason string) error {
-	return b.journal.Retry(ctx, id, next, reason)
+	return b.withJournal(func(journal *store.Journal) error { return journal.Retry(ctx, id, next, reason) })
 }
 func (b journalSupervisorOutbox) MarkDeadLetter(ctx context.Context, id, reason string) error {
-	return b.journal.DeadLetter(ctx, id, reason)
+	return b.withJournal(func(journal *store.Journal) error { return journal.DeadLetter(ctx, id, reason) })
 }
 
 func (b journalSupervisorOutbox) BeginAttempt(ctx context.Context, id string) (agentruntime.OutboxRecord, error) {
-	item, err := b.journal.BeginDeliveryAttempt(ctx, id)
+	var item store.DeliveryRecord
+	err := b.withJournal(func(journal *store.Journal) error {
+		var err error
+		item, err = journal.BeginDeliveryAttempt(ctx, id)
+		return err
+	})
 	if err != nil {
 		return agentruntime.OutboxRecord{}, err
 	}
@@ -292,12 +338,17 @@ func (b journalSupervisorOutbox) BeginAttempt(ctx context.Context, id string) (a
 }
 
 type callbackTransport struct {
-	journal  *store.Journal
-	stateDir string
+	journalPath string
+	stateDir    string
 }
 
 func (t callbackTransport) Deliver(ctx context.Context, record agentruntime.OutboxRecord) error {
-	value, err := t.journal.GetSubscription(ctx, record.SubscriptionID)
+	journal, err := openJournalWithRetry(t.journalPath, store.Options{ReadOnly: true})
+	if err != nil {
+		return &supervisor.RetryableDeliveryError{Err: err}
+	}
+	value, err := journal.GetSubscription(ctx, record.SubscriptionID)
+	_ = journal.Close()
 	if err != nil {
 		return &supervisor.PermanentDeliveryError{Err: err}
 	}

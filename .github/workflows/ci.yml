@@ -15,7 +15,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: ['1.25.12', '1.26.5']
+        # Keep 1.26.5 as a compatibility-only check because branch protection
+        # still names it. Security scanning and release builds use 1.26.6.
+        go-version: ['1.25.12', '1.26.5', '1.26.6']
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -38,7 +40,7 @@ jobs:
       - name: Set up release Go toolchain
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.5'
+          go-version: '1.26.6'
           cache: true
       - name: Install pinned vulnerability scanner
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
@@ -54,7 +56,7 @@ jobs:
       - name: Set up release Go toolchain
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.5'
+          go-version: '1.26.6'
           cache: true
       - name: Run focused race tests
         run: make test-race

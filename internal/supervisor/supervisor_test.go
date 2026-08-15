@@ -321,6 +321,22 @@ func TestDeliveryRetryLimitIsBounded(t *testing.T) {
 	}
 }
 
+func TestTransientDeliveryRetriesPastAttemptLimitUntilExpiry(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(100, 0)}
+	outbox := &fakeOutbox{entries: map[string]Delivery{"a": {ID: "a", Attempts: 5, ExpiresAt: clock.now.Add(time.Hour)}}}
+	deliverer := &fakeDeliverer{errors: map[string][]error{"a": {&RetryableDeliveryError{Err: errors.New("coordinator offline")}}}}
+	cfg := testConfig(t, clock)
+	cfg.MaxDeliveryAttempts = 5
+	s, err := New(cfg, Dependencies{Outbox: outbox, Deliverer: deliverer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, _ := s.RunOnce(context.Background())
+	if report.Delivery.Retried != 1 || report.Delivery.DeadLettered != 0 || len(outbox.retries) != 1 {
+		t.Fatalf("transient delivery did not remain retryable through TTL: %+v retries=%+v dead=%+v", report.Delivery, outbox.retries, outbox.dead)
+	}
+}
+
 func TestStartSocketOwnerOnlyAndGracefulShutdown(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(100, 0)}
 	cfg := testConfig(t, clock)

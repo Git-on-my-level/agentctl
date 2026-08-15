@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -24,26 +26,51 @@ import (
 
 type runOptions struct {
 	adapter, cwd, idempotencyKey, issue, run string
+	promptFile, promptDelivery               string
 	executionID                              ids.ExecutionID
 	plan                                     bool
 	noStoreResult                            bool
 	allowMissingResult                       bool
 	allowUnreliableResult                    bool
 	timeout                                  time.Duration
+	timeoutSet, noTimeoutSet, promptStdin    bool
 	argv                                     []string
 }
 
+type promptPayload struct {
+	Bytes    []byte
+	Digest   string
+	Delivery string
+	Source   string
+	Path     string
+}
+
 const (
-	nativeRunnerLeaseSeconds   = 5
-	nativeRunnerHeartbeatEvery = time.Second
-	nativeEventFreshness       = 15 * time.Second
-	defaultRunTimeout          = 30 * time.Minute
+	nativeRunnerLeaseSeconds   = 30
+	nativeRunnerHeartbeatEvery = 10 * time.Second
+	nativeEventFreshness       = 30 * time.Second
+	maxPromptBytes             = 8 << 20
 )
 
 func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	opts, problem := parseRun(args)
 	if problem != nil {
 		return problem
+	}
+	prompt, problem := a.loadPrompt(opts)
+	if problem != nil {
+		return problem
+	}
+	if prompt != nil {
+		if prompt.Delivery == "argv" {
+			if !utf8.Valid(prompt.Bytes) || strings.IndexByte(string(prompt.Bytes), 0) >= 0 {
+				return output.NewError(output.CodeUsage, "argv prompt must be valid UTF-8 without NUL bytes", false)
+			}
+			if len(prompt.Bytes) != 0 && prompt.Bytes[0] == '-' && !containsArg(opts.argv, "--") {
+				opts.argv = append(opts.argv, "--")
+			}
+			opts.argv = append(opts.argv, string(prompt.Bytes))
+		}
 	}
 	runtime, profileName, problem := a.runtimeAdapter(c, opts.adapter, opts.issue, opts.run)
 	if problem != nil {
@@ -77,7 +104,10 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		}
 	}
 	if opts.plan {
-		result := map[string]any{"adapter": runtime.Name(), "executable": opts.argv[0], "argument_count": len(opts.argv) - 1, "profile": profileName, "side_effect_class": output.ExternalSideEffect, "probe": probe, "writes_local_state": true, "stores_result": !opts.noStoreResult}
+		result := map[string]any{"adapter": runtime.Name(), "executable": opts.argv[0], "argument_count": len(opts.argv) - 1, "profile": profileName, "side_effect_class": output.ExternalSideEffect, "probe": probe, "writes_local_state": true, "stores_result": !opts.noStoreResult, "timeout": timeoutDescription(opts)}
+		if prompt != nil {
+			result["prompt"] = map[string]any{"source": prompt.Source, "delivery": prompt.Delivery, "bytes": len(prompt.Bytes), "sha256": prompt.Digest}
+		}
 		if !opts.executionID.IsZero() {
 			result["execution_id"] = opts.executionID.String()
 		}
@@ -101,7 +131,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Supersedes: []ids.ExecutionID{}, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
 	mutation := contracts.MutationKey{}
 	if opts.idempotencyKey != "" {
-		digest, dErr := mutationDigest(runtime.Name(), opts.cwd, opts.argv, opts.noStoreResult)
+		digest, dErr := mutationDigest(runtime.Name(), opts.cwd, opts.argv, opts.noStoreResult, prompt)
 		if dErr != nil {
 			journal.Close()
 			return output.Wrap(output.CodeInternal, "canonicalize run idempotency inputs", false, dErr)
@@ -125,7 +155,11 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	// must be able to observe the execution while it is running.
 	journal.Close()
 	launchCtx := operationCtx
-	launch, err := runtime.Launch(launchCtx, adapter.LaunchRequest{Argv: opts.argv, Cwd: opts.cwd, Context: contextInput(c), DiscoveryWindow: 250 * time.Millisecond, StartOnly: true})
+	launchRequest := adapter.LaunchRequest{Argv: opts.argv, Cwd: opts.cwd, Context: contextInput(c), DiscoveryWindow: 250 * time.Millisecond, StartOnly: true}
+	if prompt != nil && prompt.Delivery == "stdin" {
+		launchRequest.Stdin = prompt.Bytes
+	}
+	launch, err := runtime.Launch(launchCtx, launchRequest)
 	if err != nil {
 		writeJournal, current, openProblem := a.openExecutionWrite(context.Background(), c, execution.ID)
 		if openProblem != nil {
@@ -142,7 +176,13 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		}
 		return mapAdapterError("launch failed", err).WithDetail("execution_id", failed.ID.String())
 	}
-	writeJournal, current, openProblem := a.openExecutionWrite(context.Background(), c, execution.ID)
+	// Native launches are same-process owned. Any return path must reap the
+	// child, including journal or renderer failures, so foreground fan-out and
+	// lock contention cannot leak a process group.
+	defer func() {
+		_ = runtime.Cancel(context.Background(), adapter.CancelRequest{Ref: launch.Session.Ref, Signal: "term", Grace: 5 * time.Second})
+	}()
+	writeJournal, current, openProblem := a.openExecutionWriteOwned(c, execution.ID)
 	if openProblem != nil {
 		return openProblem
 	}
@@ -162,7 +202,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	defer ticker.Stop()
 	for {
 		if !a.now().Before(nextRunnerHeartbeat) {
-			writeJournal, current, openProblem = a.openExecutionWrite(context.Background(), c, execution.ID)
+			writeJournal, current, openProblem = a.openExecutionWriteOwned(c, execution.ID)
 			if openProblem != nil {
 				return openProblem
 			}
@@ -183,6 +223,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 			if terminal {
 				return writeExecution(renderer, execution, "run")
 			}
+			nextRunnerHeartbeat = a.now().Add(nativeRunnerHeartbeatEvery)
 		}
 		result, resultErr := runtime.Result(launchCtx, adapter.ResultRequest{Ref: launch.Session.Ref})
 		if resultErr == nil && terminalAdapterState(result.State) {
@@ -214,7 +255,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 					return writeExecution(renderer, execution, "run")
 				}
 			}
-			writeJournal, current, openProblem = a.openExecutionWrite(context.Background(), c, execution.ID)
+			writeJournal, current, openProblem = a.openExecutionWriteOwned(c, execution.ID)
 			if openProblem != nil {
 				return openProblem
 			}
@@ -232,14 +273,8 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		case <-launchCtx.Done():
 			last, _ := runtime.Result(context.Background(), adapter.ResultRequest{Ref: launch.Session.Ref})
 			if !terminalAdapterState(last.State) {
-				waitCtx, waitCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				waited, waitErr := runtime.Wait(waitCtx, launch.Session.Ref)
-				waitCancel()
-				if terminalAdapterState(waited.State) {
-					last = waited
-				} else if waitErr != nil {
-					last = adapter.Result{Success: false, State: adapter.StateFailed, Error: "agentctl run deadline elapsed", SessionRef: launch.Session.Ref}
-				}
+				_ = runtime.Cancel(context.Background(), adapter.CancelRequest{Ref: launch.Session.Ref, Signal: "term", Grace: 5 * time.Second})
+				last, _ = runtime.Result(context.Background(), adapter.ResultRequest{Ref: launch.Session.Ref})
 			}
 			// Cancellation or a deadline can race with the final structured
 			// records. Preserve any assistant/diagnostic events already parsed
@@ -254,7 +289,14 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 					return writeExecution(renderer, execution, "run")
 				}
 			}
-			writeJournal, current, openProblem := a.openExecutionWrite(context.Background(), c, execution.ID)
+			if last.State != adapter.StateCompleted {
+				message := "agentctl run cancelled"
+				if errors.Is(launchCtx.Err(), context.DeadlineExceeded) {
+					message = "agentctl run deadline elapsed"
+				}
+				last = adapter.Result{Success: false, State: adapter.StateCancelled, Error: message, SessionRef: launch.Session.Ref}
+			}
+			writeJournal, current, openProblem := a.openExecutionWriteOwned(c, execution.ID)
 			if openProblem != nil {
 				return openProblem
 			}
@@ -273,7 +315,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 }
 
 func (a *app) recordNativeEvents(c common, execution model.Execution, nativeEvents []adapter.Event, cursor *string) (model.Execution, bool, *output.Error) {
-	journal, current, problem := a.openExecutionWrite(context.Background(), c, execution.ID)
+	journal, current, problem := a.openExecutionWriteOwned(c, execution.ID)
 	if problem != nil {
 		return execution, false, problem
 	}
@@ -336,7 +378,7 @@ func (a *app) waitForNativeExitWithLease(ctx context.Context, c common, runtime 
 		case outcome := <-done:
 			return execution, outcome.result, outcome.err, nil
 		case <-heartbeat.C:
-			journal, current, problem := a.openExecutionWrite(context.Background(), c, execution.ID)
+			journal, current, problem := a.openExecutionWriteOwned(c, execution.ID)
 			if problem != nil {
 				return execution, adapter.Result{}, nil, problem
 			}
@@ -372,7 +414,7 @@ func launchInterrupted(err error) bool {
 }
 
 func parseRun(args []string) (runOptions, *output.Error) {
-	o := runOptions{timeout: defaultRunTimeout}
+	o := runOptions{}
 	delimiter := -1
 	for i, arg := range args {
 		if arg == "--" {
@@ -423,8 +465,24 @@ func parseRun(args []string) (runOptions, *output.Error) {
 				return o, output.NewError(output.CodeUsage, "--timeout must be a positive duration", false)
 			}
 			o.timeout = duration
+			o.timeoutSet = true
 		case "--no-timeout":
 			o.timeout = 0
+			o.noTimeoutSet = true
+		case "--prompt-file":
+			if i+1 >= delimiter {
+				return o, output.NewError(output.CodeUsage, "--prompt-file requires a value", false)
+			}
+			i++
+			o.promptFile = args[i]
+		case "--prompt-stdin":
+			o.promptStdin = true
+		case "--prompt-delivery":
+			if i+1 >= delimiter {
+				return o, output.NewError(output.CodeUsage, "--prompt-delivery requires argv or stdin", false)
+			}
+			i++
+			o.promptDelivery = args[i]
 		case "--plan":
 			o.plan = true
 		case "--no-store-result":
@@ -450,10 +508,105 @@ func parseRun(args []string) (runOptions, *output.Error) {
 		}
 	}
 	o.argv = append([]string(nil), args[delimiter+1:]...)
+	if o.timeoutSet && o.noTimeoutSet {
+		return o, output.NewError(output.CodeUsage, "--timeout and --no-timeout are mutually exclusive", false)
+	}
+	if o.promptFile != "" && o.promptStdin {
+		return o, output.NewError(output.CodeUsage, "--prompt-file and --prompt-stdin are mutually exclusive", false)
+	}
+	if o.promptFile == "" && !o.promptStdin && o.promptDelivery != "" {
+		return o, output.NewError(output.CodeUsage, "--prompt-delivery requires --prompt-file or --prompt-stdin", false)
+	}
+	if o.promptDelivery != "" && o.promptDelivery != "argv" && o.promptDelivery != "stdin" {
+		return o, output.NewError(output.CodeUsage, "--prompt-delivery must be argv or stdin", false)
+	}
+	if (o.promptFile != "" || o.promptStdin) && o.promptDelivery == "" {
+		o.promptDelivery = "argv"
+	}
 	if o.adapter == "" {
 		o.adapter = inferAdapter(o.argv[0])
 	}
 	return o, nil
+}
+
+func (a *app) loadPrompt(opts runOptions) (*promptPayload, *output.Error) {
+	if opts.promptFile == "" && !opts.promptStdin {
+		return nil, nil
+	}
+	var reader io.Reader
+	payload := &promptPayload{Delivery: opts.promptDelivery}
+	if opts.promptStdin {
+		if a.stdinIsTerminal != nil && a.stdinIsTerminal() {
+			return nil, output.NewError(output.CodeUsage, "--prompt-stdin requires piped input", false)
+		}
+		if a.stdin == nil {
+			return nil, output.NewError(output.CodeUsage, "--prompt-stdin has no input stream", false)
+		}
+		reader = a.stdin
+		payload.Source = "stdin"
+	} else {
+		root := opts.cwd
+		if root == "" {
+			var err error
+			root, err = os.Getwd()
+			if err != nil {
+				return nil, output.Wrap(output.CodeInternal, "resolve working directory", false, err)
+			}
+		}
+		root, _ = filepath.Abs(root)
+		path := opts.promptFile
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(root, path)
+		}
+		path, _ = filepath.Abs(filepath.Clean(path))
+		rel, err := filepath.Rel(root, path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return nil, output.NewError(output.CodeAuthorizationDenied, "prompt file must be within the run working root", false).WithDetail("path", path).WithDetail("root", root)
+		}
+		resolvedRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			return nil, output.Wrap(output.CodeAuthorizationDenied, "resolve prompt working root", false, err).WithDetail("root", root)
+		}
+		path = filepath.Join(resolvedRoot, rel)
+		file, err := openRegularBelow(resolvedRoot, path)
+		if err != nil {
+			return nil, output.Wrap(output.CodeAuthorizationDenied, "open prompt file", false, err).WithDetail("path", path)
+		}
+		defer file.Close()
+		reader = file
+		payload.Source = "file"
+		payload.Path = path
+	}
+	content, err := io.ReadAll(io.LimitReader(reader, maxPromptBytes+1))
+	if err != nil {
+		return nil, output.Wrap(output.CodeUsage, "read prompt", false, err)
+	}
+	if len(content) == 0 {
+		return nil, output.NewError(output.CodeUsage, "prompt must not be empty", false)
+	}
+	if len(content) > maxPromptBytes {
+		return nil, output.NewError(output.CodeUsage, "prompt exceeds 8 MiB limit", false).WithDetail("max_bytes", maxPromptBytes)
+	}
+	payload.Bytes = content
+	sum := sha256.Sum256(content)
+	payload.Digest = "sha256:" + hex.EncodeToString(sum[:])
+	return payload, nil
+}
+
+func containsArg(argv []string, value string) bool {
+	for _, arg := range argv {
+		if arg == value {
+			return true
+		}
+	}
+	return false
+}
+
+func timeoutDescription(opts runOptions) any {
+	if opts.timeout <= 0 {
+		return "none"
+	}
+	return opts.timeout.String()
 }
 
 func cursorPlanMode(argv []string) bool {
@@ -658,7 +811,7 @@ func (a *app) openWrite(c common) (*store.Journal, *output.Error) {
 	if err != nil {
 		return nil, output.Wrap(output.CodeInternal, "resolve journal path", false, err)
 	}
-	journal, err := store.Open(path, store.Options{})
+	journal, err := openJournalWithRetry(path, store.Options{})
 	if err != nil {
 		return nil, mapStoreError("open journal", err)
 	}
@@ -676,6 +829,32 @@ func (a *app) openExecutionWrite(ctx context.Context, c common, id ids.Execution
 		return nil, model.Execution{}, mapStoreError("read live execution", err)
 	}
 	return journal, execution, nil
+}
+
+// openExecutionWriteOwned waits through transient process-lock contention. The
+// caller owns a live native child, so returning ErrBusy would trigger cleanup
+// and destroy useful work merely because another agentctl command briefly had
+// the journal open.
+func (a *app) openExecutionWriteOwned(c common, id ids.ExecutionID) (*store.Journal, model.Execution, *output.Error) {
+	path, err := a.journalPath(c)
+	if err != nil {
+		return nil, model.Execution{}, output.Wrap(output.CodeInternal, "resolve journal path", false, err)
+	}
+	for {
+		journal, openErr := store.Open(path, store.Options{LockTimeout: 2 * time.Second})
+		if openErr == nil {
+			execution, getErr := journal.GetExecution(context.Background(), id)
+			if getErr != nil {
+				journal.Close()
+				return nil, model.Execution{}, mapStoreError("read live execution", getErr)
+			}
+			return journal, execution, nil
+		}
+		if !errors.Is(openErr, store.ErrBusy) {
+			return nil, model.Execution{}, mapStoreError("open journal for owned execution", openErr)
+		}
+		time.Sleep(time.Duration(100+time.Now().UnixNano()%250) * time.Millisecond)
+	}
 }
 
 func capabilitySnapshot(probe adapter.ProbeResult) model.CapabilitySnapshot {
@@ -697,8 +876,12 @@ func contextInput(c common) *adapter.ContextInput {
 	}
 	return &adapter.ContextInput{Path: c.contextFile, Required: false}
 }
-func mutationDigest(name, cwd string, argv []string, noStoreResult bool) (string, error) {
-	canonical, err := callback.CanonicalJSON(map[string]any{"adapter": name, "cwd": cwd, "argv": argv, "no_store_result": noStoreResult})
+func mutationDigest(name, cwd string, argv []string, noStoreResult bool, prompt *promptPayload) (string, error) {
+	promptDigest, promptDelivery := "", ""
+	if prompt != nil {
+		promptDigest, promptDelivery = prompt.Digest, prompt.Delivery
+	}
+	canonical, err := callback.CanonicalJSON(map[string]any{"adapter": name, "cwd": cwd, "argv": argv, "no_store_result": noStoreResult, "prompt_sha256": promptDigest, "prompt_delivery": promptDelivery})
 	if err != nil {
 		return "", err
 	}

@@ -552,7 +552,7 @@ func (s *Supervisor) drainOutboxWith(ctx context.Context, deps Dependencies) Del
 			report.Skipped++
 			continue
 		}
-		if entry.Attempts >= s.cfg.MaxDeliveryAttempts && !entry.AttemptInFlight {
+		if entry.ExpiresAt.IsZero() && entry.Attempts >= s.cfg.MaxDeliveryAttempts && !entry.AttemptInFlight {
 			report.DeadLettered++
 			if err := deps.Outbox.DeadLetter(ctx, entry.ID, "retry limit exceeded"); err != nil {
 				report.Failures = append(report.Failures, DeliveryFailure{DeliveryID: entry.ID, Attempt: entry.Attempts, Action: "dead_letter", Error: boundedError(err)})
@@ -579,7 +579,7 @@ func (s *Supervisor) drainOutboxWith(ctx context.Context, deps Dependencies) Del
 				entry = started
 				attempt = entry.Attempts
 				beganAttempt = true
-				if entry.Attempts > s.cfg.MaxDeliveryAttempts {
+				if entry.ExpiresAt.IsZero() && entry.Attempts > s.cfg.MaxDeliveryAttempts {
 					report.DeadLettered++
 					if deadErr := deps.Outbox.DeadLetter(ctx, entry.ID, "retry limit exceeded"); deadErr != nil {
 						report.Failures = append(report.Failures, DeliveryFailure{DeliveryID: entry.ID, Attempt: entry.Attempts, Action: "dead_letter", Error: boundedError(deadErr)})
@@ -603,7 +603,7 @@ func (s *Supervisor) drainOutboxWith(ctx context.Context, deps Dependencies) Del
 			attempt = entry.Attempts + 1
 		}
 		retryable := classifyDeliveryError(err)
-		if !retryable || attempt >= s.cfg.MaxDeliveryAttempts {
+		if !retryable || entry.ExpiresAt.IsZero() && attempt >= s.cfg.MaxDeliveryAttempts {
 			report.DeadLettered++
 			reason := boundedError(err)
 			if !retryable {
