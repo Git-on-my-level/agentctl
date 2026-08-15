@@ -329,6 +329,16 @@ func TestPromptAndManifestRejectSymlinks(t *testing.T) {
 	if _, problem := a.loadPrompt(runOptions{cwd: root, promptFile: "linked.md", promptDelivery: "argv"}); problem == nil || problem.Code != output.CodeAuthorizationDenied {
 		t.Fatalf("prompt symlink problem=%#v", problem)
 	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "escaped.md"), []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "nested")); err != nil {
+		t.Fatal(err)
+	}
+	if _, problem := a.loadPrompt(runOptions{cwd: root, promptFile: filepath.Join("nested", "escaped.md"), promptDelivery: "argv"}); problem == nil || problem.Code != output.CodeAuthorizationDenied {
+		t.Fatalf("nested prompt symlink problem=%#v", problem)
+	}
 	realManifest := filepath.Join(root, "fanout.json")
 	if err := os.WriteFile(realManifest, []byte(`{"schema_version":1,"prompt_file":"real.md","children":[{"argv":["echo"]}]}`), 0o600); err != nil {
 		t.Fatal(err)

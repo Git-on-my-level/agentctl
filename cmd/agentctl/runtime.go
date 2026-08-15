@@ -563,7 +563,12 @@ func (a *app) loadPrompt(opts runOptions) (*promptPayload, *output.Error) {
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 			return nil, output.NewError(output.CodeAuthorizationDenied, "prompt file must be within the run working root", false).WithDetail("path", path).WithDetail("root", root)
 		}
-		file, err := openRegularNoFollow(path)
+		resolvedRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			return nil, output.Wrap(output.CodeAuthorizationDenied, "resolve prompt working root", false, err).WithDetail("root", root)
+		}
+		path = filepath.Join(resolvedRoot, rel)
+		file, err := openRegularBelow(resolvedRoot, path)
 		if err != nil {
 			return nil, output.Wrap(output.CodeAuthorizationDenied, "open prompt file", false, err).WithDetail("path", path)
 		}

@@ -511,6 +511,24 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		}
 		record.finish(err)
 	}()
+	if req.StartOnly {
+		// exec.Command deliberately leaves signal escalation under adapter
+		// control. Preserve the caller/deadline ownership that CommandContext
+		// previously supplied, while using the same TERM-then-KILL policy as an
+		// explicit cancel request.
+		ownedCancel := timeoutCancel
+		timeoutCancel = nil
+		go func() {
+			if ownedCancel != nil {
+				defer ownedCancel()
+			}
+			select {
+			case <-runCtx.Done():
+				a.cancelRecord(record, "term", 5*time.Second)
+			case <-record.done:
+			}
+		}()
+	}
 	window := req.DiscoveryWindow
 	if window <= 0 {
 		window = 250 * time.Millisecond
