@@ -24,6 +24,9 @@ contract.
 - allocates typed, checksum-validated word IDs and portable result references;
 - persists normalized state and bounded final results in an owner-only local
   journal;
+- discovers recent host-local work by state, adapter, and exact metadata label;
+- optionally leaves a detached host-local worker owning a long-running native
+  process after the launching shell exits;
 - supports pre-launch subscriptions and at-least-once file, Unix-socket,
   command, and signed-webhook delivery;
 - installs one allowlisted portable skill into detected supported harnesses;
@@ -100,6 +103,31 @@ by default. Use `--timeout 2h` when the caller needs a bound. Cancellation sends
 the native process group `TERM`, waits five seconds, and then escalates to
 `KILL`. The native CLI's arguments, permissions, and provider authentication
 remain unchanged.
+
+For long-running work, label the execution and explicitly background it:
+
+```bash
+agentctl run --background --label review --label retrieval -- \
+  cursor-agent --print --output-format stream-json --trust "review this change"
+agentctl recent --state nonterminal --label review
+agentctl await exec-... --no-timeout
+agentctl result exec-...
+```
+
+`--background` starts a detached agentctl worker and returns after the execution
+is visible in the local journal. The worker, not the launching shell, owns the
+native process. It survives the caller exiting but is not restart-durable and
+does not turn direct work into a scheduler or remote authority. The worker is
+noninteractive and has no controlling terminal. Direct native adapters do not
+gain a cross-process cancel route merely because they are backgrounded; use an
+explicit `--timeout` when a hard stop is required unless the adapter advertises
+durable cancellation. Background
+prompt delivery supports native argv and `--prompt-file`; it rejects
+`--prompt-stdin`, whose input cannot be replayed safely after detachment.
+Background launch also rejects `--idempotency-key` until its startup handshake
+can return a reused execution's exact ID.
+Labels are exact lowercase metadata names, may be repeated up to 16 times, and
+never contain or derive from prompt text.
 
 For a reusable multi-line prompt, select exactly one source and an explicit
 delivery mechanism:
@@ -180,6 +208,18 @@ agentctl events "$EXEC_ID" --after-sequence 0
 agentctl await "$EXEC_ID"
 agentctl result "$EXEC_ID"
 ```
+
+If an execution ID was not retained, discover it from the host-local journal:
+
+```bash
+agentctl recent
+agentctl recent --state nonterminal --adapter cursor
+agentctl recent --label review --limit 50
+```
+
+`recent` returns newest-first bounded metadata only. It performs no native
+refresh, reads no prompt or result records, and does not merge other hosts.
+Repeating `--label` requires every selected label (AND semantics).
 
 `status`, events, subscriptions, and callbacks contain metadata and references,
 not the final answer. `result` is the explicit content-retrieval path.

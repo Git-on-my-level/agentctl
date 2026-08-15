@@ -59,6 +59,12 @@
       "items": {"$ref": "#/$defs/source_binding"}
     },
     "capabilities": {"$ref": "#/$defs/capability_snapshot"},
+    "labels": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,63}$"}
+    },
     "cwd": {"type": ["string", "null"]},
     "repository": {"type": ["string", "null"]},
     "parent_execution_id": {

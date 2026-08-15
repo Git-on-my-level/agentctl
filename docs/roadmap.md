@@ -23,18 +23,21 @@ version may use a screened list; v1 order and membership will not change.
 
 ## Phase 1 — Daemonless local execution: implemented with adapter constraints
 
-- `run`, local `attach`, `status`, `events`, `await`, `result`, and `cancel`.
+- `run`, `recent`, local `attach`, `status`, `events`, `await`, `result`, and `cancel`.
 - Codex, Cursor, Claude Code, OMP, generic-process, and Multica event adapters.
 - Owner-only journal, normalized source bindings, terminal conflict handling,
   context handles, JSON-first output, and explicit compact text.
 - Known executable names infer adapters; `run` has explicit optional timeout
-  and prompt transport plus result-content preflight. Foreground `fanout` runs
-  one prompt across explicit child argv vectors. `await` stops on attention by default, and
+  and prompt transport plus result-content preflight. Explicit `--background`
+  starts a detached host-local worker, labels support exact discovery, and
+  foreground `fanout` runs one prompt across explicit child argv vectors.
+  `await` stops on attention by default, and
   `result` requires a stored content or failure body unless `--allow-empty` is supplied.
 
-Native launch supervision is deliberately same-process in v0.1. A new process
-cannot claim it can attach to a native session unless that native CLI exposes a
-reviewed durable attach/status API.
+Each native launch remains owned by one agentctl process. Foreground runs use the
+caller; `--background` creates a detached worker that survives the caller but
+not a host restart. Another process cannot claim it can attach to the native
+session unless that CLI exposes a reviewed durable attach/status API.
 
 ## Phase 2 — Optional Multica and promotion: implemented at the authority boundary
 

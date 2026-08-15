@@ -259,6 +259,7 @@ Commands form a predictable grammar:
 
 ```text
 agentctl run
+agentctl recent
 agentctl attach
 agentctl status
 agentctl events
@@ -272,8 +273,8 @@ agentctl context
 agentctl route explain
 ```
 
-`status` observes. `result` retrieves. `await` waits. `cancel` mutates. No command
-name mixes these responsibilities.
+`recent` discovers. `status` observes. `result` retrieves. `await` waits.
+`cancel` mutates. No command name mixes these responsibilities.
 
 ## Safe agent-first defaults
 
@@ -295,6 +296,15 @@ escape for callers that intentionally need weaker or broader behavior:
   spelling. `--adapter` and `--allow-missing-result` are explicit overrides;
   exact native argv remains everything after `--` unless the caller selects a
   prompt source and `argv` delivery.
+- `run --background` starts a detached host-local worker and returns only after
+  the execution is durable. The worker survives the caller but not a host
+  restart, is noninteractive, and does not gain a cross-process cancel route
+  unless the adapter advertises one. It rejects prompt stdin and idempotency
+  keys rather than claiming a replayable startup contract it cannot provide.
+- `--label` records up to 16 exact lowercase metadata names. `recent` returns
+  the newest 20 host-local executions by default and filters by exact state,
+  adapter, or label without reading prompt or result records. Repeated label
+  filters use AND semantics.
 - `--prompt-file` and `--prompt-stdin` are mutually exclusive, bounded prompt
   sources. `--prompt-delivery argv|stdin` is explicit and defaults to `argv`
   only after a source is selected. Prompt bytes are excluded from plan output,

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/ids"
@@ -167,6 +168,7 @@ type Execution struct {
 	SourceState       *string            `json:"source_state,omitempty"`
 	SourceBindings    []SourceBinding    `json:"source_bindings"`
 	Capabilities      CapabilitySnapshot `json:"capabilities"`
+	Labels            []string           `json:"labels,omitempty"`
 	CWD               *string            `json:"cwd,omitempty"`
 	Repository        *string            `json:"repository,omitempty"`
 	ParentExecutionID *ids.ExecutionID   `json:"parent_execution_id"`
@@ -238,6 +240,19 @@ func (e Execution) Validate() error {
 	if e.Capabilities.AdapterVersion == "" || e.Capabilities.NegotiatedAt.IsZero() {
 		return errors.New("invalid capability snapshot")
 	}
+	if len(e.Labels) > 16 {
+		return errors.New("too many labels")
+	}
+	seenLabels := map[string]struct{}{}
+	for _, label := range e.Labels {
+		if !namePattern.MatchString(label) {
+			return errors.New("invalid label")
+		}
+		if _, exists := seenLabels[label]; exists {
+			return errors.New("duplicate label")
+		}
+		seenLabels[label] = struct{}{}
+	}
 	for _, item := range e.Capabilities.Items {
 		if !namePattern.MatchString(item.Name) || !namePattern.MatchString(item.Source) {
 			return errors.New("invalid capability item")
@@ -282,6 +297,9 @@ func ValidateTransition(previous, next Execution) error {
 	}
 	if previous.Authority != next.Authority || previous.Mode != next.Mode || previous.Acquisition != next.Acquisition {
 		return errors.New("execution authority and acquisition are immutable")
+	}
+	if !slices.Equal(previous.Labels, next.Labels) {
+		return errors.New("execution labels are immutable")
 	}
 	if previous.CreatedAt != next.CreatedAt {
 		return errors.New("created_at is immutable")

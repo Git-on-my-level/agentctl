@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -168,6 +169,167 @@ func TestRunDefaultsInferAdapterWithoutWallTimeout(t *testing.T) {
 	opts, problem := parseRun([]string{"--adapter", "generic-process", "--no-timeout", "--", "codex", "task"})
 	if problem != nil || opts.adapter != "generic-process" || opts.timeout != 0 {
 		t.Fatalf("explicit override=%#v problem=%v", opts, problem)
+	}
+}
+
+func TestRunParsesLabelsAndBackground(t *testing.T) {
+	opts, problem := parseRun([]string{"--background", "--label", "review", "--label", "model.grok", "--", "/bin/echo", "done"})
+	if problem != nil {
+		t.Fatal(problem)
+	}
+	if !opts.background || !reflect.DeepEqual(opts.labels, []string{"review", "model.grok"}) {
+		t.Fatalf("opts=%#v", opts)
+	}
+	for _, args := range [][]string{
+		{"--label", "Not-Lowercase", "--", "/bin/echo"},
+		{"--label", "review", "--label", "review", "--", "/bin/echo"},
+		{"--background", "--prompt-stdin", "--", "/bin/echo"},
+		{"--background", "--idempotency-key", "same", "--", "/bin/echo"},
+	} {
+		if _, problem := parseRun(args); problem == nil || problem.Code != output.CodeUsage {
+			t.Fatalf("args=%v problem=%#v", args, problem)
+		}
+	}
+}
+
+func TestBackgroundCommandArgsPreserveSelectorsAndRemoveBackground(t *testing.T) {
+	executionID, err := ids.NewExecutionID(ids.CryptoGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := backgroundCommandArgs(common{profile: "fleet", journalPath: "/tmp/journal.db"}, []string{"--background", "--label", "review", "--", "/bin/echo", "done"}, executionID, true)
+	want := []string{"--output", "json", "--profile", "fleet", "--journal", "/tmp/journal.db", "run", "--label", "review", "--execution-id", executionID.String(), "--", "/bin/echo", "done"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("args=%v want=%v", args, want)
+	}
+	args = backgroundCommandArgs(common{}, []string{"--background", "--", "/bin/echo", "--background"}, executionID, true)
+	want = []string{"--output", "json", "run", "--execution-id", executionID.String(), "--", "/bin/echo", "--background"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("native argv was rewritten: args=%v want=%v", args, want)
+	}
+}
+
+func TestBackgroundRunLifecycleThroughBuiltBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("generic shell fixture is Unix-only")
+	}
+	root := t.TempDir()
+	binary := filepath.Join(root, "agentctl")
+	build := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, ".")
+	buildOutput, err := build.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build fixture binary: %v\n%s", err, buildOutput)
+	}
+	journal := filepath.Join(root, "state", "journal.db")
+	native := `sleep 2; printf '%s\n' '{"type":"result","status":"completed","result":"BACKGROUND_INTEGRATION_OK"}'`
+	started := time.Now()
+	launch := exec.Command(binary, "--journal", journal, "run", "--background", "--label", "integration", "--adapter", "generic-process", "--", "/bin/sh", "-c", native)
+	launchOutput, err := launch.CombinedOutput()
+	if err != nil {
+		t.Fatalf("background launch: %v\n%s", err, launchOutput)
+	}
+	if elapsed := time.Since(started); elapsed >= 1500*time.Millisecond {
+		t.Fatalf("background launch waited for native completion: %s", elapsed)
+	}
+	var launchDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(launchOutput, &launchDoc); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(launchDoc.Result.Labels, []string{"integration"}) || launchDoc.Result.State.Terminal() {
+		t.Fatalf("launch=%#v", launchDoc.Result)
+	}
+	recent := exec.Command(binary, "--journal", journal, "recent", "--label", "integration", "--limit", "1")
+	recentOutput, err := recent.CombinedOutput()
+	if err != nil || !bytes.Contains(recentOutput, []byte(launchDoc.Result.ID.String())) {
+		t.Fatalf("recent: %v\n%s", err, recentOutput)
+	}
+	wait := exec.Command(binary, "--journal", journal, "await", launchDoc.Result.ID.String(), "--no-timeout", "--ignore-attention")
+	if waitOutput, err := wait.CombinedOutput(); err != nil {
+		t.Fatalf("await: %v\n%s", err, waitOutput)
+	}
+	result := exec.Command(binary, "--journal", journal, "result", launchDoc.Result.ID.String(), "--min-result-bytes", "10")
+	resultOutput, err := result.CombinedOutput()
+	if err != nil || !bytes.Contains(resultOutput, []byte("BACKGROUND_INTEGRATION_OK")) {
+		t.Fatalf("result: %v\n%s", err, resultOutput)
+	}
+	replay := exec.Command(binary, "--journal", journal, "run", "--background", "--execution-id", launchDoc.Result.ID.String(), "--adapter", "generic-process", "--", "/bin/echo", native)
+	replayOutput, replayErr := replay.CombinedOutput()
+	if replayErr == nil || !bytes.Contains(replayOutput, []byte(`"code":"conflict"`)) {
+		t.Fatalf("existing execution ID was accepted: %v\n%s", replayErr, replayOutput)
+	}
+	rawRaceID, err := ids.New(ids.TypeExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raceID, err := ids.ParseExecutionID(rawRaceID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	type launchResult struct {
+		output []byte
+		err    error
+	}
+	results := make(chan launchResult, 2)
+	for range 2 {
+		go func() {
+			command := exec.Command(binary, "--journal", journal, "run", "--background", "--execution-id", raceID.String(), "--adapter", "generic-process", "--", "/bin/sh", "-c", native)
+			value, runErr := command.CombinedOutput()
+			results <- launchResult{output: value, err: runErr}
+		}()
+	}
+	succeeded, conflicted := 0, 0
+	for range 2 {
+		value := <-results
+		if value.err == nil && bytes.Contains(value.output, []byte(`"ok":true`)) {
+			succeeded++
+		}
+		if value.err != nil && bytes.Contains(value.output, []byte(`"code":"conflict"`)) {
+			conflicted++
+		}
+	}
+	if succeeded != 1 || conflicted != 1 {
+		t.Fatalf("concurrent claim results succeeded=%d conflicted=%d", succeeded, conflicted)
+	}
+	raceWait := exec.Command(binary, "--journal", journal, "await", raceID.String(), "--no-timeout", "--ignore-attention")
+	if raceOutput, err := raceWait.CombinedOutput(); err != nil {
+		t.Fatalf("await concurrent winner: %v\n%s", err, raceOutput)
+	}
+}
+
+func TestRecentDiscoversNewestExecutionsByExactLabel(t *testing.T) {
+	root := t.TempDir()
+	journal := filepath.Join(root, "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	for _, label := range []string{"first", "review", "review"} {
+		stdout.Reset()
+		native := fmt.Sprintf(`{"type":"result","status":"completed","result":"%s"}`, label)
+		if code := a.run(context.Background(), []string{"--journal", journal, "run", "--adapter", "generic-process", "--label", label, "--", "/bin/echo", native}); code != 0 {
+			t.Fatalf("run %s exit=%d output=%s", label, code, stdout.String())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journal, "recent", "--label", "review", "--limit", "1"}); code != 0 {
+		t.Fatalf("recent exit=%d output=%s", code, stdout.String())
+	}
+	var doc struct {
+		Result struct {
+			Executions []recentExecution `json:"executions"`
+			Count      int               `json:"count"`
+			HasMore    bool              `json:"has_more"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Result.Count != 1 || !doc.Result.HasMore || len(doc.Result.Executions) != 1 || !reflect.DeepEqual(doc.Result.Executions[0].Labels, []string{"review"}) {
+		t.Fatalf("recent=%#v", doc.Result)
+	}
+	if strings.Contains(stdout.String(), root) || strings.Contains(stdout.String(), `"result":"review"`) {
+		t.Fatalf("recent leaked private path or result: %s", stdout.String())
 	}
 }
 

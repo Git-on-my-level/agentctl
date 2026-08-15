@@ -23,7 +23,7 @@ agentctl doctor
 agentctl help <topic>
 ```
 
-Useful topics include `run`, `fanout`, `result`, `await`, `subscribe`, `capabilities`,
+Useful topics include `run`, `recent`, `fanout`, `result`, `await`, `subscribe`, `capabilities`,
 `bootstrap update`, `promote`, `knowledge`, and `context`. Follow returned
 read-only `next_actions` for deeper discovery. Do not preload every topic or
 memorize version-specific flags in place of help.
@@ -74,10 +74,29 @@ child `cwd` inherits the invoking process directory. Discover the normative
 shape with `agentctl help fanout` and `agentctl schema list`.
 
 `run` has no default wall-clock timeout. Add `--timeout` only when the caller
-requires a bound. Native work remains owned by the foreground agentctl process;
-the callback supervisor does not make it detached or restart-durable.
+requires a bound. Native work remains owned by the invoking agentctl process;
+the callback supervisor does not change launch ownership or durability.
 
-Retain the returned full `exec-*` ID. `await` stops on attention by default and
+For long work that should outlive the launching shell, use explicit background
+ownership and exact metadata labels:
+
+```bash
+agentctl run --background --label review --prompt-file "$PWD/task.md" --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust
+agentctl recent --state nonterminal --label review
+```
+
+The detached host-local worker remains the native owner; it is not
+restart-durable authority and has no controlling terminal. A direct adapter
+does not gain cross-process cancellation; add `--timeout` when a hard stop is
+required unless capabilities advertise a durable cancel route. Background mode
+accepts argv or prompt files and rejects prompt stdin. Use `recent` to recover
+execution IDs from the local journal. It is read-only, newest-first,
+prompt/result-record-free, and does not aggregate other hosts. Repeated label
+filters use AND semantics. Labels are visible exact discovery metadata, never
+mutation targets; do not place secrets or prompt/result content in them.
+
+Retain the returned full `exec-*` ID when practical; otherwise recover it with
+`recent`. `await` stops on attention by default and
 `result` requires stored content by default:
 
 ```bash
