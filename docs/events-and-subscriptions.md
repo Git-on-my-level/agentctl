@@ -165,7 +165,9 @@ is an explicit broad subscription, while `--kind <names>` narrows the set.
 labels are insufficient authority identifiers.
 
 Task subscriptions expire after acknowledged terminal delivery by default.
-Broad subscriptions require an explicit scope and retention estimate in plan
+Direct executions use the same acknowledgement idea: `result` and a terminal
+`await` stamp collection so `recent --unreconciled` can name work whose result
+was never dereferenced. Broad subscriptions require an explicit scope and retention estimate in plan
 output. Creating, rotating, acknowledging, pausing, and cancelling a
 subscription are idempotent mutations.
 

@@ -50,17 +50,18 @@ type RetentionInventory struct {
 }
 
 type CleanupRecordCounts struct {
-	Executions      int `json:"executions"`
-	Events          int `json:"events"`
-	EventIndexes    int `json:"event_indexes"`
-	EventDedupe     int `json:"event_dedupe"`
-	TerminalIndexes int `json:"terminal_indexes"`
-	Outcomes        int `json:"outcomes"`
-	IdempotencyKeys int `json:"idempotency_keys"`
+	Executions       int `json:"executions"`
+	Events           int `json:"events"`
+	EventIndexes     int `json:"event_indexes"`
+	EventDedupe      int `json:"event_dedupe"`
+	TerminalIndexes  int `json:"terminal_indexes"`
+	Outcomes         int `json:"outcomes"`
+	IdempotencyKeys  int `json:"idempotency_keys"`
+	Acknowledgements int `json:"acknowledgements,omitempty"`
 }
 
 func (c CleanupRecordCounts) Total() int {
-	return c.Executions + c.Events + c.EventIndexes + c.EventDedupe + c.TerminalIndexes + c.Outcomes + c.IdempotencyKeys
+	return c.Executions + c.Events + c.EventIndexes + c.EventDedupe + c.TerminalIndexes + c.Outcomes + c.IdempotencyKeys + c.Acknowledgements
 }
 
 type CleanupExecution struct {
@@ -249,6 +250,11 @@ func (j *Journal) ApplyCleanup(ctx context.Context, before time.Time, expectedPl
 			}
 			for _, bucket := range [][]byte{bTerminal, bOutcomes, bExecutions} {
 				if err := tx.Bucket(bucket).Delete([]byte(target.ExecutionID)); err != nil {
+					return err
+				}
+			}
+			if acks := tx.Bucket(bAcknowledgements); acks != nil {
+				if err := acks.Delete([]byte(target.ExecutionID)); err != nil {
 					return err
 				}
 			}
@@ -512,6 +518,12 @@ func buildCleanupTarget(tx *bbolt.Tx, execution model.Execution) (cleanupTarget,
 		target.Records.Outcomes++
 		add([]byte(id), outcome)
 	}
+	if acks := tx.Bucket(bAcknowledgements); acks != nil {
+		if raw := acks.Get([]byte(id)); raw != nil {
+			target.Records.Acknowledgements++
+			add([]byte(id), raw)
+		}
+	}
 	if terminal := tx.Bucket(bTerminal).Get([]byte(id)); terminal != nil {
 		target.Records.TerminalIndexes++
 		add([]byte(id), terminal)
@@ -580,4 +592,5 @@ func addCleanupCounts(target *CleanupRecordCounts, value CleanupRecordCounts) {
 	target.TerminalIndexes += value.TerminalIndexes
 	target.Outcomes += value.Outcomes
 	target.IdempotencyKeys += value.IdempotencyKeys
+	target.Acknowledgements += value.Acknowledgements
 }

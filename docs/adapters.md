@@ -174,7 +174,16 @@ handles but cannot claim the child model read them.
 
 ### OMP
 
-- Prefer ACP/session events.
+- Consume `--mode json` session events for direct one-shot runs. Retain bounded
+  assistant text from authoritative `message_end` records and prefer the last
+  assistant message in `agent_end` as the terminal source. Thinking, tool,
+  user, and provider payloads are never eligible result content.
+- Require `--mode json` when stored result content is expected; preserve native
+  argv exactly and fail before launch unless the caller explicitly permits a
+  missing result.
+- Label stored content provenance (`assistant_terminal_result` or
+  `assistant_message_fallback`) so callers can assert an assistant source.
+- Prefer ACP/session events for future attach or resume support.
 - Keep provider/model routing in OMP.
 - Treat OMP statistics commands as potentially mutating local caches and do not
   use them for a read-only probe unless explicitly documented.

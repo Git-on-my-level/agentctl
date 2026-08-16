@@ -193,7 +193,7 @@ func TestGenericToolResultIsNotTerminalOrRetainedAsFinalContent(t *testing.T) {
 }
 
 func TestOMPLiveJSONAgentEndIsTerminalSuccess(t *testing.T) {
-	path := fixtureExecutable(t, `printf '%s\n' '{"type":"session","version":3,"id":"omp-fixture"}' '{"type":"agent_start"}' '{"type":"turn_end"}' '{"type":"agent_end","messages":[]}'`)
+	path := fixtureExecutable(t, `printf '%s\n' '{"type":"session","version":3,"id":"omp-fixture"}' '{"type":"agent_start"}' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"fallback answer"}],"stopReason":"stop"}}' '{"type":"turn_end"}' '{"type":"agent_end","messages":[{"role":"user","content":[{"type":"text","text":"private prompt"}]},{"role":"assistant","content":[{"type":"thinking","thinking":"private reasoning"},{"type":"text","text":"terminal answer"}],"stopReason":"stop"}]}'`)
 	a := NewOMP()
 	got, err := a.Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
 	if err != nil {
@@ -202,6 +202,12 @@ func TestOMPLiveJSONAgentEndIsTerminalSuccess(t *testing.T) {
 	if got.Result == nil || !got.Result.Success || got.Result.State != StateCompleted {
 		t.Fatalf("OMP agent_end result = %#v", got.Result)
 	}
+	if got.Result.Content != "terminal answer" || got.Result.Data["result_content_source"] != "assistant_terminal_result" {
+		t.Fatalf("OMP terminal content = %#v", got.Result)
+	}
+	if strings.Contains(got.Result.Content, "private") || strings.Contains(got.Result.Content, "fallback") {
+		t.Fatalf("OMP retained ineligible or superseded content: %#v", got.Result)
+	}
 	events, err := a.Events(context.Background(), EventsRequest{Ref: got.Session.Ref})
 	if err != nil {
 		t.Fatal(err)
@@ -209,6 +215,97 @@ func TestOMPLiveJSONAgentEndIsTerminalSuccess(t *testing.T) {
 	terminal := events[len(events)-1]
 	if terminal.Kind != "terminal" || terminal.State != StateCompleted || terminal.SourceState != "agent_end" {
 		t.Fatalf("OMP terminal event = %#v", terminal)
+	}
+}
+
+func TestOMPAgentEndFallsBackToLastAuthoritativeAssistantMessage(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"intermediate tool narration"}],"stopReason":"toolUse"}}' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"first answer"}],"stopReason":"stop"}}' '{"type":"message_end","message":{"role":"toolResult","content":[{"type":"text","text":"tool secret"}]}}' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"final answer"}],"stopReason":"stop"}}' '{"type":"agent_end","messages":[]}'`)
+	got, err := NewOMP().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || !got.Result.Success || got.Result.Content != "final answer" {
+		t.Fatalf("OMP fallback result = %#v", got.Result)
+	}
+	if got.Result.Data["diagnostic_code"] != "empty_terminal_result" || got.Result.Data["result_content_source"] != "assistant_message_fallback" {
+		t.Fatalf("OMP fallback provenance = %#v", got.Result.Data)
+	}
+	if strings.Contains(got.Result.Content, "tool secret") || strings.Contains(got.Result.Content, "intermediate") {
+		t.Fatalf("OMP tool content entered result: %#v", got.Result)
+	}
+}
+
+func TestOMPTerminalAssistantStopReasonControlsFailureState(t *testing.T) {
+	for _, test := range []struct {
+		stopReason string
+		wantState  State
+	}{
+		{stopReason: "error", wantState: StateFailed},
+		{stopReason: "aborted", wantState: StateCancelled},
+	} {
+		line := fmt.Sprintf(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"partial answer"}],"stopReason":%q,"errorMessage":"native stopped"}]}`, test.stopReason)
+		obs := (ompParser{}).Parse([]byte(line), false)
+		if !obs.Terminal || obs.Success || obs.State != test.wantState || obs.Error != "native stopped" {
+			t.Fatalf("stopReason=%s observation=%#v", test.stopReason, obs)
+		}
+	}
+}
+
+func TestOMPAssistantTextIsBoundedUTF8AndTextOnly(t *testing.T) {
+	content := strings.Repeat("a", 1<<20) + "界"
+	message := map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "thinking", "thinking": "private"}, map[string]any{"type": "text", "text": content}}}
+	encoded, err := json.Marshal(map[string]any{"type": "agent_end", "messages": []any{message}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs := (ompParser{}).Parse(encoded, false)
+	if len(obs.Content) > 1<<20 || !obs.ContentTruncated || !strings.HasPrefix(obs.Content, "aaa") {
+		t.Fatalf("OMP bounded content bytes=%d truncated=%t", len(obs.Content), obs.ContentTruncated)
+	}
+	if strings.Contains(obs.Content, "private") {
+		t.Fatal("OMP reasoning entered result content")
+	}
+}
+
+func TestOMPTerminalResultSurvivesAggregateStreamLimit(t *testing.T) {
+	path := fixtureExecutable(t, `yes x | tr -d '\n' | head -c 2200000
+printf '\n%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"result after noisy progress"}],"stopReason":"stop"}}' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"result after noisy progress"}],"stopReason":"stop"}]}'`)
+	got, err := NewOMP().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || !got.Result.Success || got.Result.Content != "result after noisy progress" {
+		t.Fatalf("terminal result after stream limit = %#v", got.Result)
+	}
+	if got.Result.Data["diagnostic_code"] != diagnosticStreamLimitExceeded {
+		t.Fatalf("stream limit diagnostic = %#v", got.Result.Data)
+	}
+}
+
+func TestOMPScannerAcceptsAdvertisedMaximumAssistantContent(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"'
+yes a | tr -d '\n' | head -c 1048576
+printf '%s\n' '"}],"stopReason":"stop"}]}'`)
+	got, err := NewOMP().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || !got.Result.Success || len(got.Result.Content) != 1<<20 {
+		t.Fatalf("maximum result bytes=%d result=%#v", len(got.Result.Content), got.Result)
+	}
+	if got.Result.Data["diagnostic_code"] != nil {
+		t.Fatalf("maximum result unexpectedly diagnosed: %#v", got.Result.Data)
+	}
+}
+
+func TestOversizedStructuredRecordReturnsTypedDiagnostic(t *testing.T) {
+	path := fixtureExecutable(t, `yes x | tr -d '\n' | head -c 8400000`)
+	got, err := NewOMP().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || got.Result.Success || got.Result.Data["diagnostic_code"] != diagnosticRecordTooLarge {
+		t.Fatalf("oversized record result = %#v", got.Result)
 	}
 }
 
@@ -443,6 +540,14 @@ func TestBuiltInManifestsHaveSchemaRequiredShapes(t *testing.T) {
 		if manifest.Adapter == "omp" {
 			if _, ok := object["known_failures"].([]any); !ok {
 				t.Fatalf("OMP known_failures is not schema array: %#v", object["known_failures"])
+			}
+			if manifest.AdapterVersion != "0.2.0" {
+				t.Fatalf("OMP adapter version=%s", manifest.AdapterVersion)
+			}
+			for _, declaration := range manifest.Capabilities {
+				if declaration.Name == CapabilityResultContent && (declaration.Implementation != CapabilitySupported || declaration.Constraints["required_output_mode"] != "json") {
+					t.Fatalf("OMP result content declaration=%#v", declaration)
+				}
 			}
 		}
 		for _, declaration := range manifest.Capabilities {

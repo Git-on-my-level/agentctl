@@ -22,8 +22,8 @@ them.
 | Area | Evidence and boundary |
 | --- | --- |
 | IDs | Closed typed registry; frozen BIP-39 v1 list and digest; 60-bit payload + type-bound checksum; typed wrappers and portable URI parsing. Normal output never leads with native UUIDs. |
-| Journal | Owner-only bbolt store; schema validation; CAS execution updates; event sequence; semantic-key recomputation; one terminal event; subscriptions, outbox, receipts, and restart durability. |
-| Native work | `run`, local binding `attach`, `status`, `events`, `await`, `result`, and adapter-dependent `cancel`; preallocated IDs for live observation/subscription; bounded journal transactions and expiring runner leases while children run; exact argv after `--`; deterministic adapter inference for known executables; bounded structured parsers; raw prompts, intermediate output, and transcripts excluded from the journal; final result content stored by default up to 1 MiB. |
+| Journal | Owner-only bbolt store; schema validation; CAS execution updates; event sequence; semantic-key recomputation; one terminal event; subscriptions, outbox, receipts, execution acknowledgements, and restart durability. |
+| Native work | `run`, `recent`, local binding `attach`, `status`, `events`, `await`, `result`, and adapter-dependent `cancel`; preallocated IDs for live observation/subscription; bounded journal transactions and expiring runner leases while children run; exact argv after `--`; deterministic adapter inference for known executables; bounded structured parsers; raw prompts, intermediate output, and transcripts excluded from the journal; final result content stored by default up to 1 MiB. |
 | Routing | Deterministic `route explain` keeps model choice in the native harness and chooses direct versus an explicitly configured optional authority from work properties. It never creates an issue. |
 | Optional promotion | Exact configured Multica binary/profile/workspace/server; plan mode; authority-owned semantic client key; exact retry; changed-input conflict; persisted source/target links; optional supersession; replay returns the same stored issue alias and one lifecycle. |
 | Knowledge | Validated GitHub/Forgejo/generic registrations; explicit noninteractive sync; loose/structured/hybrid ingest; deterministic provenance, bundle, lexical index, verification, atomic install, selection, and bounded render. |
@@ -63,7 +63,8 @@ binary and progressive help available:
   `fanout` coordinates one prompt across explicit native argv vectors in the
   foreground without creating a group authority. `result` requires stored
   content and `await` stops on attention unless the caller supplies
-  `--ignore-attention`.
+  `--ignore-attention`. `recent --unreconciled` recovers terminal work whose
+  result was never acknowledged.
 - Subscriptions default to terminal/attention/artifact, and
   `bootstrap update` reconciles detected canonical roots while leaving
   unmanaged files, legacy copies, and new supervisor services untouched.

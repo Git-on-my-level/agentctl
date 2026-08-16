@@ -102,7 +102,90 @@ type ompParser struct{}
 
 func (ompParser) Name() string { return "omp-acp-json" }
 func (ompParser) Parse(line []byte, stderr bool) parsedObservation {
-	return parseAgentJSON(line, stderr, "omp", []string{"session_id", "session", "id"}, []string{"agent_end", "completed", "failed", "result", "error"})
+	obs := parseAgentJSON(line, stderr, "omp", []string{"session_id", "session", "id"}, []string{"agent_end", "completed", "failed", "result", "error"})
+	value, ok := decodeLine(line)
+	if !ok {
+		return obs
+	}
+	typ := strings.ToLower(firstString(value, "type"))
+	var message map[string]any
+	switch typ {
+	case "message_end":
+		message, _ = value["message"].(map[string]any)
+		if message != nil && !strings.EqualFold(firstString(message, "stopReason", "stop_reason"), "stop") {
+			message = nil
+		}
+	case "agent_end":
+		message = lastOMPAssistantMessage(value["messages"])
+	}
+	if message == nil || !strings.EqualFold(firstString(message, "role"), "assistant") {
+		if typ == "agent_end" && obs.Success {
+			obs.Data["diagnostic_code"] = "empty_terminal_result"
+		}
+		return obs
+	}
+	content := ompAssistantText(message["content"])
+	if content != "" {
+		obs.Content = boundedUTF8(content, 1<<20)
+		obs.ContentType = "text/plain"
+		obs.ContentSource = "assistant"
+		obs.ContentTruncated = len(content) > len(obs.Content)
+		if obs.Terminal {
+			obs.ContentSource = "assistant_terminal_result"
+		}
+	}
+	if obs.Terminal && obs.Success && strings.TrimSpace(obs.Content) == "" {
+		obs.Data["diagnostic_code"] = "empty_terminal_result"
+	}
+	if !obs.Terminal {
+		return obs
+	}
+	switch strings.ToLower(firstString(message, "stopReason", "stop_reason")) {
+	case "error":
+		obs.Success = false
+		obs.State = StateFailed
+		obs.Error = boundedString(firstNonEmpty(firstString(message, "errorMessage", "error_message"), "OMP assistant turn failed"), 1024)
+	case "aborted":
+		obs.Success = false
+		obs.State = StateCancelled
+		obs.Error = boundedString(firstNonEmpty(firstString(message, "errorMessage", "error_message"), "OMP assistant turn aborted"), 1024)
+	}
+	return obs
+}
+
+func lastOMPAssistantMessage(value any) map[string]any {
+	messages, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		message, ok := messages[i].(map[string]any)
+		if ok && strings.EqualFold(firstString(message, "role"), "assistant") {
+			return message
+		}
+	}
+	return nil
+}
+
+func ompAssistantText(value any) string {
+	switch content := value.(type) {
+	case string:
+		return strings.TrimSpace(content)
+	case []any:
+		parts := make([]string, 0, len(content))
+		for _, item := range content {
+			part, ok := item.(map[string]any)
+			if !ok || !strings.EqualFold(firstString(part, "type"), "text") {
+				continue
+			}
+			if text := strings.TrimSpace(firstString(part, "text")); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
 }
 
 type multicaParser struct{}

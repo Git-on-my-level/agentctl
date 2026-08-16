@@ -24,7 +24,7 @@ contract.
 - allocates typed, checksum-validated word IDs and portable result references;
 - persists normalized state and bounded final results in an owner-only local
   journal;
-- discovers recent host-local work by state, adapter, and exact metadata label;
+- discovers recent host-local work by state, adapter, exact metadata label, or unreconciled terminal collection;
 - optionally leaves a detached host-local worker owning a long-running native
   process after the launching shell exits;
 - supports pre-launch subscriptions and at-least-once file, Unix-socket,
@@ -215,14 +215,22 @@ If an execution ID was not retained, discover it from the host-local journal:
 agentctl recent
 agentctl recent --state nonterminal --adapter cursor
 agentctl recent --label review --limit 50
+agentctl recent --unreconciled
 ```
 
 `recent` returns newest-first bounded metadata only. It performs no native
 refresh, reads no prompt or result records, and does not merge other hosts.
 Repeating `--label` requires every selected label (AND semantics).
+`--unreconciled` is the start-of-turn recovery query: terminal executions whose
+result has never been acknowledged by `result` or a terminal `await`. Terminals
+that already existed when acknowledgement tracking first write-opened the
+journal are treated as reconciled so an upgrade does not flood the query with
+history.
 
 `status`, events, subscriptions, and callbacks contain metadata and references,
 not the final answer. `result` is the explicit content-retrieval path.
+A successful `result` or terminal `await` records a small local acknowledgement
+stamp, so those commands are `local_operational_write` rather than read-only.
 Callers can require provenance or a task-specific minimum size with
 `result --require-result-source assistant --min-result-bytes N`.
 Use `await --no-timeout` for an intentionally unbounded observer. Await still

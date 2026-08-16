@@ -83,6 +83,7 @@ ownership and exact metadata labels:
 ```bash
 agentctl run --background --label review --prompt-file "$PWD/task.md" --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust
 agentctl recent --state nonterminal --label review
+agentctl recent --unreconciled
 ```
 
 The detached host-local worker remains the native owner; it is not
@@ -92,17 +93,22 @@ required unless capabilities advertise a durable cancel route. Background mode
 accepts argv or prompt files and rejects prompt stdin. Use `recent` to recover
 execution IDs from the local journal. It is read-only, newest-first,
 prompt/result-record-free, and does not aggregate other hosts. Repeated label
-filters use AND semantics. Labels are visible exact discovery metadata, never
+filters use AND semantics. `--unreconciled` lists terminal executions whose
+result has never been acknowledged by `result` or a terminal `await`. Terminals
+that already existed when acknowledgement tracking first write-opened the
+journal are not unreconciled. Labels are visible exact discovery metadata, never
 mutation targets; do not place secrets or prompt/result content in them.
 
 Retain the returned full `exec-*` ID when practical; otherwise recover it with
 `recent`. `await` stops on attention by default and
-`result` requires stored content by default:
+`result` requires stored content by default. Both stamp collection on a
+successful terminal return, so they are local operational writes:
 
 ```bash
 agentctl status <exec-id>
 agentctl await <exec-id>
 agentctl result <exec-id>
+agentctl recent --unreconciled
 ```
 
 Use `await --no-timeout` for an intentionally unbounded observer. It still
