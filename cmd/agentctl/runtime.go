@@ -88,6 +88,13 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 			WithDetail("diagnostic_code", "cursor_plan_result_unreliable").
 			WithActions(output.NextAction{Label: "Use default Cursor agent mode", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"omit Cursor --plan and --mode plan"}})
 	}
+	if runtime.Name() == "omp" && !ompJSONMode(opts.argv) && !opts.allowMissingResult && !opts.noStoreResult {
+		return output.NewError(output.CodeCapabilityUnavailable, "OMP result content requires structured JSON output", false).
+			WithDetail("adapter", "omp").
+			WithDetail("required_output_mode", "json").
+			WithDetail("diagnostic_code", "omp_result_mode_unreliable").
+			WithActions(output.NextAction{Label: "Use OMP JSON print mode", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"pass --mode json in OMP native argv"}})
+	}
 	operationCtx := ctx
 	var operationCancel context.CancelFunc
 	if opts.timeout > 0 {
@@ -700,6 +707,24 @@ func requireRunCapability(probe adapter.ProbeResult, required adapter.Capability
 	return output.NewError(output.CodeCapabilityUnavailable, "required adapter capability is unavailable", false).WithDetail("capability", required)
 }
 
+func ompJSONMode(argv []string) bool {
+	mode := ""
+	for i := 1; i < len(argv); i++ {
+		if argv[i] == "--" {
+			break
+		}
+		if argv[i] == "--mode" && i+1 < len(argv) {
+			mode = argv[i+1]
+			i++
+			continue
+		}
+		if value, found := strings.CutPrefix(argv[i], "--mode="); found {
+			mode = value
+		}
+	}
+	return strings.EqualFold(mode, "json")
+}
+
 func (a *app) attachNative(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) != 1 {
 		return output.NewError(output.CodeUsage, "usage: agentctl attach <portable-uri>", false)
@@ -996,6 +1021,10 @@ func finalizeResult(ctx context.Context, journal *store.Journal, execution model
 	execution.UpdatedAt = now
 	execution.Observation.ObservedAt = now
 	execution.Observation.Integrity = model.IntegrityVerified
+	if sourceState, ok := result.Data["terminal_source_state"].(string); ok && strings.TrimSpace(sourceState) != "" {
+		sourceState = strings.TrimSpace(sourceState)
+		execution.SourceState = &sourceState
+	}
 	outcome := buildOutcome(execution, result, now, noStoreResult)
 	payload := map[string]any{"result_available": outcome.Availability == model.OutcomeStored, "outcome_execution_id": execution.ID.String(), "availability": outcome.Availability}
 	if outcome.Content != nil {
@@ -1005,7 +1034,7 @@ func finalizeResult(ctx context.Context, journal *store.Journal, execution model
 	if outcome.Failure != nil {
 		payload["failure_code"] = outcome.Failure.Code
 	}
-	for _, key := range []string{"diagnostic_code", "result_content_source"} {
+	for _, key := range []string{"diagnostic_code", "result_content_source", "terminal_source_state"} {
 		if value, ok := result.Data[key].(string); ok && strings.TrimSpace(value) != "" {
 			payload[key] = value
 		}

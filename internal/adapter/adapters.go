@@ -356,8 +356,10 @@ func claudeManifest() Manifest {
 }
 
 func ompManifest() Manifest {
-	m := baseManifest("omp", "0.1.0", "omp_session", "omp-acp-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContentDecl(CapabilityDegraded, "agent_end"), capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+	resultContent := resultContentDecl(CapabilitySupported, "agent_end_or_assistant_message")
+	resultContent.Constraints["required_output_mode"] = "json"
+	m := baseManifest("omp", "0.2.0", "omp_session", "omp-acp-json", []CapabilityDeclaration{
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 	m.KnownFailures = []KnownFailure{{Classifier: "stats_probe", ErrorCode: "local_operational_write"}}
 	return m

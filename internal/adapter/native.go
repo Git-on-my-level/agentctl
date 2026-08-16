@@ -22,7 +22,14 @@ import (
 
 const (
 	defaultOutputLimit         = 2 << 20
+	maxStructuredRecordBytes   = 8 << 20
 	nativeObservationFreshness = 30 * time.Second
+)
+
+const (
+	diagnosticStreamLimitExceeded  = "structured_stream_limit_exceeded"
+	diagnosticRecordTooLarge       = "structured_record_too_large"
+	diagnosticResultFileUnreadable = "result_file_unreadable"
 )
 
 var (
@@ -118,12 +125,9 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 	} else {
 		p.stdoutBytes += len(line)
 	}
-	if p.stdoutBytes+p.stderrBytes > p.maxOutput {
-		if len(p.parseWarnings) == 0 || p.parseWarnings[len(p.parseWarnings)-1] != "structured output exceeded bounded capture limit" {
-			p.parseWarnings = append(p.parseWarnings, "structured output exceeded bounded capture limit")
-		}
-		p.mu.Unlock()
-		return
+	overLimit := p.stdoutBytes+p.stderrBytes > p.maxOutput
+	if overLimit {
+		p.addParseWarningLocked(diagnosticStreamLimitExceeded)
 	}
 	p.mu.Unlock()
 	obs := p.parser.Parse(line, stderr)
@@ -141,7 +145,41 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 		}
 		return
 	}
+	if overLimit && !retainObservationAfterLimit(obs) {
+		return
+	}
 	p.ingestObservation(obs)
+}
+
+func retainObservationAfterLimit(obs parsedObservation) bool {
+	return obs.Terminal || obs.Content != "" || obs.Error != "" || obs.State == StateAttention || obs.State == StateWaiting || obs.Kind == "attention"
+}
+
+func (p *processRecord) addParseWarningLocked(code string) {
+	for _, existing := range p.parseWarnings {
+		if existing == code {
+			return
+		}
+	}
+	p.parseWarnings = append(p.parseWarnings, code)
+}
+
+func (p *processRecord) addParseWarning(code string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.addParseWarningLocked(code)
+}
+
+func applyParseWarning(result *Result, warnings []string) {
+	if result == nil || len(warnings) == 0 {
+		return
+	}
+	if result.Data == nil {
+		result.Data = map[string]any{}
+	}
+	if _, exists := result.Data["diagnostic_code"]; !exists {
+		result.Data["diagnostic_code"] = warnings[0]
+	}
 }
 
 func (p *processRecord) ingestObservation(obs parsedObservation) {
@@ -202,7 +240,14 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 		} else if content != "" {
 			data["result_content_source"] = firstNonEmpty(contentSource, "terminal_result")
 		}
+		if data == nil {
+			data = map[string]any{}
+		}
+		if obs.SourceState != "" {
+			data["terminal_source_state"] = obs.SourceState
+		}
 		result := &Result{Success: obs.Success, State: obs.State, Summary: firstNonEmpty(obs.Summary, boundedString(content, 2048)), Content: content, ContentType: contentType, ContentTruncated: obs.ContentTruncated || p.contentTruncated, Error: obs.Error, SessionRef: p.ref, Data: data}
+		applyParseWarning(result, p.parseWarnings)
 		p.result = result
 	}
 	p.updatedAt = time.Now().UTC()
@@ -229,13 +274,19 @@ func (p *processRecord) finish(err error) {
 			if obs.Terminal {
 				content := firstNonEmpty(obs.Content, p.finalContent)
 				data := cloneMap(obs.Data)
+				if data == nil {
+					data = map[string]any{}
+				}
 				if content != "" {
 					data["result_content_source"] = firstNonEmpty(obs.ContentSource, p.contentSource, "terminal_result")
+				}
+				if obs.SourceState != "" {
+					data["terminal_source_state"] = obs.SourceState
 				}
 				p.result = &Result{Success: obs.Success, State: obs.State, Summary: obs.Summary, Content: content, ContentType: firstNonEmpty(obs.ContentType, p.contentType), ContentTruncated: obs.ContentTruncated || p.contentTruncated, Error: obs.Error, ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
 			}
 		} else if readErr != nil && !os.IsNotExist(readErr) {
-			p.parseWarnings = append(p.parseWarnings, "result file could not be read")
+			p.addParseWarningLocked(diagnosticResultFileUnreadable)
 		}
 	}
 	if p.result == nil {
@@ -249,6 +300,7 @@ func (p *processRecord) finish(err error) {
 			p.result = &Result{Success: false, State: StateFailed, Error: firstNonEmpty(p.lastError, p.stderrDiagnostic, "native process exited without an explicit result"), ExitCode: p.exitCode, SessionRef: p.ref}
 		}
 	}
+	applyParseWarning(p.result, p.parseWarnings)
 	p.updatedAt = time.Now().UTC()
 	select {
 	case <-p.done:
@@ -574,23 +626,23 @@ func (a *NativeAdapter) readPipe(record *processRecord, r io.Reader, stderr bool
 		}
 		document, err := io.ReadAll(io.LimitReader(r, int64(limit)+1))
 		if err != nil {
-			record.mu.Lock()
-			record.parseWarnings = append(record.parseWarnings, "structured output stream was truncated: "+err.Error())
-			record.mu.Unlock()
+			record.addParseWarning(diagnosticRecordTooLarge)
+			return
+		}
+		if len(document) > limit {
+			record.addParseWarning(diagnosticStreamLimitExceeded)
 			return
 		}
 		record.ingest(document, false)
 		return
 	}
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 4096), 1<<20)
+	scanner.Buffer(make([]byte, 4096), maxStructuredRecordBytes)
 	for scanner.Scan() {
 		record.ingest(scanner.Bytes(), stderr)
 	}
 	if err := scanner.Err(); err != nil {
-		record.mu.Lock()
-		record.parseWarnings = append(record.parseWarnings, "structured output stream was truncated: "+err.Error())
-		record.mu.Unlock()
+		record.addParseWarning(diagnosticRecordTooLarge)
 	}
 }
 

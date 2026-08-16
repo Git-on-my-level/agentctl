@@ -254,6 +254,44 @@ func TestBackgroundRunLifecycleThroughBuiltBinary(t *testing.T) {
 	if err != nil || !bytes.Contains(resultOutput, []byte("BACKGROUND_INTEGRATION_OK")) {
 		t.Fatalf("result: %v\n%s", err, resultOutput)
 	}
+	ompFixture := filepath.Join(root, "omp-fixture")
+	ompContents := `#!/bin/sh
+set -eu
+if [ "${1:-}" = "--version" ]; then
+  printf '%s\n' 'omp/17.3.5'
+  exit 0
+fi
+sleep 1
+printf '%s\n' '{"type":"session","version":3,"id":"omp-background-fixture"}' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"OMP_BACKGROUND_RESULT_OK"}],"stopReason":"stop"}}' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"OMP_BACKGROUND_RESULT_OK"}],"stopReason":"stop"}]}'
+`
+	if err := os.WriteFile(ompFixture, []byte(ompContents), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ompLaunch := exec.Command(binary, "--journal", journal, "run", "--background", "--label", "omp-integration", "--adapter", "omp", "--", ompFixture, "-p", "--mode", "json", "probe")
+	ompLaunchOutput, err := ompLaunch.CombinedOutput()
+	if err != nil {
+		t.Fatalf("OMP background launch: %v\n%s", err, ompLaunchOutput)
+	}
+	var ompLaunchDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(ompLaunchOutput, &ompLaunchDoc); err != nil {
+		t.Fatal(err)
+	}
+	ompWait := exec.Command(binary, "--journal", journal, "await", ompLaunchDoc.Result.ID.String(), "--no-timeout", "--ignore-attention")
+	if ompWaitOutput, err := ompWait.CombinedOutput(); err != nil {
+		t.Fatalf("OMP await: %v\n%s", err, ompWaitOutput)
+	}
+	ompStatus := exec.Command(binary, "--journal", journal, "status", ompLaunchDoc.Result.ID.String())
+	ompStatusOutput, err := ompStatus.CombinedOutput()
+	if err != nil || !bytes.Contains(ompStatusOutput, []byte(`"source_state":"agent_end"`)) || !bytes.Contains(ompStatusOutput, []byte(`"label":"Read terminal result"`)) || !bytes.Contains(ompStatusOutput, []byte(`"mutates":true`)) || !bytes.Contains(ompStatusOutput, []byte(`"side_effect_class":"local_operational_write"`)) {
+		t.Fatalf("OMP terminal status metadata: %v\n%s", err, ompStatusOutput)
+	}
+	ompResult := exec.Command(binary, "--journal", journal, "result", ompLaunchDoc.Result.ID.String(), "--require-result-source", "assistant", "--min-result-bytes", "20")
+	ompResultOutput, err := ompResult.CombinedOutput()
+	if err != nil || !bytes.Contains(ompResultOutput, []byte("OMP_BACKGROUND_RESULT_OK")) || !bytes.Contains(ompResultOutput, []byte(`"source":"assistant_terminal_result"`)) {
+		t.Fatalf("OMP result: %v\n%s", err, ompResultOutput)
+	}
 	replay := exec.Command(binary, "--journal", journal, "run", "--background", "--execution-id", launchDoc.Result.ID.String(), "--adapter", "generic-process", "--", "/bin/echo", native)
 	replayOutput, replayErr := replay.CombinedOutput()
 	if replayErr == nil || !bytes.Contains(replayOutput, []byte(`"code":"conflict"`)) {
@@ -744,6 +782,35 @@ func TestCursorPlanModeFailsClosedBeforeProbeOrJournal(t *testing.T) {
 	opts, problem := parseRun([]string{"--allow-unreliable-result", "--", "cursor-agent", "--plan", "review"})
 	if problem != nil || !opts.allowUnreliableResult {
 		t.Fatalf("explicit override was not parsed: opts=%#v problem=%v", opts, problem)
+	}
+}
+
+func TestOMPResultModeFailsClosedBeforeProbeOrJournal(t *testing.T) {
+	for _, native := range [][]string{{"omp", "-p", "review"}, {"omp", "-p", "--mode", "text", "review"}, {"omp", "-p", "--mode=rpc", "review"}} {
+		journal := filepath.Join(t.TempDir(), "journal.db")
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		args := append([]string{"--journal", journal, "run", "--"}, native...)
+		if code := a.run(context.Background(), args); code != output.ExitCodeFor(output.CodeCapabilityUnavailable) || !strings.Contains(stdout.String(), `"diagnostic_code":"omp_result_mode_unreliable"`) {
+			t.Fatalf("OMP mode exit=%d output=%s", code, stdout.String())
+		}
+		if _, err := os.Stat(journal); !os.IsNotExist(err) {
+			t.Fatalf("rejected OMP mode created journal: %v", err)
+		}
+	}
+	for _, argv := range [][]string{{"omp", "-p", "--mode", "json", "review"}, {"omp", "--mode=JSON", "review"}, {"omp", "--mode", "text", "--mode=json", "review"}} {
+		if !ompJSONMode(argv) {
+			t.Fatalf("OMP JSON mode not recognized: %v", argv)
+		}
+	}
+	for _, argv := range [][]string{{"omp", "--mode", "text", "review"}, {"omp", "--mode=json", "--mode", "text", "review"}, {"omp", "--", "--mode", "json"}} {
+		if ompJSONMode(argv) {
+			t.Fatalf("OMP non-JSON mode was accepted as reliable: %v", argv)
+		}
+	}
+	opts, problem := parseRun([]string{"--allow-missing-result", "--", "omp", "-p", "review"})
+	if problem != nil || !opts.allowMissingResult {
+		t.Fatalf("explicit missing-result acceptance was not parsed: opts=%#v problem=%v", opts, problem)
 	}
 }
 
