@@ -323,8 +323,10 @@ printf '%s\n' '{"type":"session","version":3,"id":"omp-background-fixture"}' '{"
 		}()
 	}
 	succeeded, conflicted := 0, 0
+	observed := make([]launchResult, 0, 2)
 	for range 2 {
 		value := <-results
+		observed = append(observed, value)
 		if value.err == nil && bytes.Contains(value.output, []byte(`"ok":true`)) {
 			succeeded++
 		}
@@ -333,7 +335,7 @@ printf '%s\n' '{"type":"session","version":3,"id":"omp-background-fixture"}' '{"
 		}
 	}
 	if succeeded != 1 || conflicted != 1 {
-		t.Fatalf("concurrent claim results succeeded=%d conflicted=%d", succeeded, conflicted)
+		t.Fatalf("concurrent claim results succeeded=%d conflicted=%d observed=%#v", succeeded, conflicted, observed)
 	}
 	raceWait := exec.Command(binary, "--journal", journal, "await", raceID.String(), "--no-timeout", "--ignore-attention")
 	if raceOutput, err := raceWait.CombinedOutput(); err != nil {
