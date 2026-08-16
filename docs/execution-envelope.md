@@ -121,7 +121,14 @@ Every newly terminalized direct execution records one versioned outcome in the
 same journal transaction as terminal state, the terminal event, and callback
 fan-out. `agentctl status` and events remain metadata-only; the explicit
 `agentctl result <execution-id>` read returns the bounded final content and
-normalized failure details. Stored content or a structured failure is required
+normalized failure details. A successful `result`, and `await` when it returns
+a terminal state, write one acknowledgement stamp in a separate journal bucket.
+That stamp is how `recent --unreconciled` decides collection; it does not rewrite
+the execution envelope or bump `revision`. Terminals whose `terminal_at` is
+strictly before the journal's acknowledgement epoch — set on the first write
+open of a build that tracks acknowledgements — are treated as already
+reconciled so existing journals do not require a user-facing migration.
+Stored content or a structured failure is required
 by default so a successful retrieval cannot be mistaken for an empty outcome;
 `--allow-empty` is the explicit metadata-only escape for omission tombstones or
 legacy records. Its `result_ref` is the execution's portable

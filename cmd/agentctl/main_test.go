@@ -122,7 +122,7 @@ func TestHelpSideEffectClassesReflectOptionalWrites(t *testing.T) {
 	for _, command := range doc.Result.Commands {
 		classes[command["name"].(string)] = command["side_effect_class"].(string)
 	}
-	if classes["attach"] != "read_only" || classes["context"] != "local_operational_write" || classes["data"] != "local_operational_write" {
+	if classes["attach"] != "read_only" || classes["recent"] != "read_only" || classes["result"] != "local_operational_write" || classes["await"] != "local_operational_write" || classes["context"] != "local_operational_write" || classes["data"] != "local_operational_write" {
 		t.Fatalf("unexpected side-effect classes: %#v", classes)
 	}
 }
@@ -331,6 +331,158 @@ func TestRecentDiscoversNewestExecutionsByExactLabel(t *testing.T) {
 	if strings.Contains(stdout.String(), root) || strings.Contains(stdout.String(), `"result":"review"`) {
 		t.Fatalf("recent leaked private path or result: %s", stdout.String())
 	}
+}
+
+func TestRecentUnreconciledRequiresResultOrAwaitAcknowledgement(t *testing.T) {
+	root := t.TempDir()
+	journal := filepath.Join(root, "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--journal", journal, "run", "--adapter", "generic-process", "--label", "collect", "--", "/bin/echo", `{"type":"result","status":"completed","result":"COLLECT_ME"}`}); code != 0 {
+		t.Fatalf("run exit=%d output=%s", code, stdout.String())
+	}
+	var runDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &runDoc); err != nil {
+		t.Fatal(err)
+	}
+	id := runDoc.Result.ID.String()
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journal, "recent", "--unreconciled", "--label", "collect"}); code != 0 {
+		t.Fatalf("unreconciled exit=%d output=%s", code, stdout.String())
+	}
+	if !recentJSONContains(t, stdout.Bytes(), id, true) {
+		t.Fatalf("completed run was not unreconciled: %s", stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journal, "status", id}); code != 0 {
+		t.Fatalf("status exit=%d output=%s", code, stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journal, "recent", "--unreconciled", "--label", "collect"}); code != 0 {
+		t.Fatalf("unreconciled after status exit=%d output=%s", code, stdout.String())
+	}
+	if !recentJSONContains(t, stdout.Bytes(), id, true) {
+		t.Fatalf("status collected the result: %s", stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journal, "result", id, "--require-result-source", "missing"}); code == 0 {
+		t.Fatalf("failed result assertion succeeded: %s", stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journal, "recent", "--unreconciled", "--label", "collect"}); code != 0 {
+		t.Fatalf("unreconciled after failed result exit=%d output=%s", code, stdout.String())
+	}
+	if !recentJSONContains(t, stdout.Bytes(), id, true) {
+		t.Fatalf("failed result assertion collected the execution: %s", stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journal, "result", id}); code != 0 {
+		t.Fatalf("result exit=%d output=%s", code, stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journal, "recent", "--unreconciled", "--label", "collect"}); code != 0 {
+		t.Fatalf("unreconciled after result exit=%d output=%s", code, stdout.String())
+	}
+	if recentJSONContains(t, stdout.Bytes(), id, true) {
+		t.Fatalf("result did not acknowledge execution: %s", stdout.String())
+	}
+
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journal, "run", "--adapter", "generic-process", "--label", "awaited", "--", "/bin/echo", `{"type":"result","status":"completed","result":"AWAIT_ME"}`}); code != 0 {
+		t.Fatalf("awaited run exit=%d output=%s", code, stdout.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &runDoc); err != nil {
+		t.Fatal(err)
+	}
+	awaitID := runDoc.Result.ID.String()
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journal, "await", awaitID, "--ignore-attention"}); code != 0 {
+		t.Fatalf("await exit=%d output=%s", code, stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journal, "recent", "--unreconciled", "--label", "awaited"}); code != 0 {
+		t.Fatalf("unreconciled after await exit=%d output=%s", code, stdout.String())
+	}
+	if recentJSONContains(t, stdout.Bytes(), awaitID, true) {
+		t.Fatalf("await did not acknowledge execution: %s", stdout.String())
+	}
+}
+
+func TestRecentUnreconciledHidesTerminalsThatPredateAcknowledgementTracking(t *testing.T) {
+	root := t.TempDir()
+	journalPath := filepath.Join(root, "state", "journal.db")
+	now := time.Now().UTC()
+	past := now.Add(-2 * time.Hour)
+	journal, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := model.Execution{
+		Authority: model.AuthorityNative, Adapter: "generic-process", Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched,
+		State: model.StateCompleted, Liveness: model.LivenessExited, Labels: []string{"legacy"},
+		SourceBindings: []model.SourceBinding{}, Capabilities: model.CapabilitySnapshot{NegotiatedAt: past, AdapterVersion: "test", Items: []model.CapabilityItem{}},
+		CreatedAt: past, UpdatedAt: past, TerminalAt: &past, Observation: model.Observation{Source: model.ObservationProcess, Integrity: model.IntegrityVerified, ObservedAt: past},
+	}
+	created, _, err := journal.CreateExecution(context.Background(), legacy, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal.Close()
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "recent", "--unreconciled"}); code != 0 {
+		t.Fatalf("unreconciled exit=%d output=%s", code, stdout.String())
+	}
+	if recentJSONContains(t, stdout.Bytes(), created.ID.String(), true) {
+		t.Fatalf("pre-epoch terminal appeared unreconciled: %s", stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "run", "--adapter", "generic-process", "--label", "fresh", "--", "/bin/echo", `{"type":"result","status":"completed","result":"FRESH"}`}); code != 0 {
+		t.Fatalf("fresh run exit=%d output=%s", code, stdout.String())
+	}
+	var runDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &runDoc); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "recent", "--unreconciled"}); code != 0 {
+		t.Fatalf("unreconciled after fresh run exit=%d output=%s", code, stdout.String())
+	}
+	if recentJSONContains(t, stdout.Bytes(), created.ID.String(), true) {
+		t.Fatalf("pre-epoch terminal appeared after a later run: %s", stdout.String())
+	}
+	if !recentJSONContains(t, stdout.Bytes(), runDoc.Result.ID.String(), true) {
+		t.Fatalf("fresh terminal was not unreconciled: %s", stdout.String())
+	}
+}
+
+func TestParseRecentRejectsUnreconciledWithNonterminal(t *testing.T) {
+	_, problem := parseRecent([]string{"--unreconciled", "--state", "nonterminal"})
+	if problem == nil || problem.Code != output.CodeUsage {
+		t.Fatalf("problem=%#v", problem)
+	}
+}
+
+func recentJSONContains(t *testing.T, raw []byte, executionID string, unreconciled bool) bool {
+	t.Helper()
+	var doc struct {
+		Result struct {
+			Executions []recentExecution `json:"executions"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range doc.Result.Executions {
+		if item.ID.String() == executionID && item.Unreconciled == unreconciled {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRunPromptFilePlanDoesNotExposePromptContent(t *testing.T) {

@@ -440,6 +440,10 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 		}
 		outcome.Content = &copy
 	}
+	_ = journal.Close()
+	if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementResult); problem != nil {
+		return problem
+	}
 	return writeExecutionOutcome(renderer, execution, outcome)
 }
 
@@ -561,12 +565,24 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		}
 		switch execution.State {
 		case model.StateCompleted:
+			if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementAwait); problem != nil {
+				return problem
+			}
 			return writeExecution(renderer, execution, "await")
 		case model.StateFailed:
+			if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementAwait); problem != nil {
+				return problem
+			}
 			return outcomeError(output.CodeExecutionFailed, "execution failed", execution)
 		case model.StateCancelled:
+			if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementAwait); problem != nil {
+				return problem
+			}
 			return outcomeError(output.CodeExecutionCancelled, "execution was cancelled", execution)
 		case model.StateOrphaned:
+			if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementAwait); problem != nil {
+				return problem
+			}
 			return outcomeError(output.CodeExecutionUnknown, "execution is orphaned", execution)
 		case model.StateAttention:
 			if stopAttention {
@@ -604,6 +620,18 @@ func (a *app) openRead(c common) (*store.Journal, *output.Error) {
 	return journal, nil
 }
 
+func (a *app) acknowledgeExecution(ctx context.Context, c common, id ids.ExecutionID, source string) *output.Error {
+	journal, problem := a.openWrite(c)
+	if problem != nil {
+		return problem
+	}
+	defer journal.Close()
+	if _, _, err := journal.AcknowledgeExecution(ctx, id, source); err != nil {
+		return mapStoreError("acknowledge terminal execution", err)
+	}
+	return nil
+}
+
 func openJournalWithRetry(path string, options store.Options) (*store.Journal, error) {
 	var err error
 	for attempt := 0; attempt < 2; attempt++ {
@@ -639,10 +667,10 @@ func writeExecution(renderer output.Renderer, e model.Execution, operation strin
 	}
 	actions := []output.NextAction{}
 	if !e.State.Terminal() {
-		actions = append(actions, output.NextAction{Label: "Wait for terminal state", Argv: []string{"agentctl", "await", e.ID.String(), "--output", string(renderer.Mode)}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+		actions = append(actions, output.NextAction{Label: "Wait for terminal state", Argv: []string{"agentctl", "await", e.ID.String(), "--output", string(renderer.Mode)}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}})
 	}
 	if e.State.Terminal() && operation != "result" {
-		actions = append(actions, output.NextAction{Label: "Read terminal result", Argv: []string{"agentctl", "result", e.ID.String(), "--output", string(renderer.Mode)}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+		actions = append(actions, output.NextAction{Label: "Read terminal result", Argv: []string{"agentctl", "result", e.ID.String(), "--output", string(renderer.Mode)}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}})
 	}
 	redacted := e
 	redacted.CWD = nil

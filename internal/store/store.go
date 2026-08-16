@@ -43,8 +43,10 @@ var (
 	bTerminal          = []byte("terminal_events")
 	bIdempotency       = []byte("idempotency")
 	bOutcomes          = []byte("outcomes")
+	bAcknowledgements  = []byte("execution_acknowledgements")
 	keySchema          = []byte("schema_version")
 	keyHost            = []byte("origin_host_id")
+	keyAckEpoch        = []byte("acknowledgement_epoch")
 )
 
 type Options struct {
@@ -160,7 +162,7 @@ func (j *Journal) Path() string { return j.path }
 
 func (j *Journal) initialize() error {
 	return j.db.Update(func(tx *bbolt.Tx) error {
-		for _, name := range [][]byte{bMetadata, bExecutions, bEvents, bEventsByExecution, bDedupe, bTerminal, bIdempotency, bOutcomes} {
+		for _, name := range [][]byte{bMetadata, bExecutions, bEvents, bEventsByExecution, bDedupe, bTerminal, bIdempotency, bOutcomes, bAcknowledgements} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return err
 			}
@@ -178,6 +180,11 @@ func (j *Journal) initialize() error {
 				return err
 			}
 			if err := metadata.Put(keyHost, []byte(host)); err != nil {
+				return err
+			}
+		}
+		if metadata.Get(keyAckEpoch) == nil {
+			if err := metadata.Put(keyAckEpoch, []byte(j.clock().UTC().Format(time.RFC3339Nano))); err != nil {
 				return err
 			}
 		}

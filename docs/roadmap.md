@@ -33,6 +33,8 @@ version may use a screened list; v1 order and membership will not change.
   foreground `fanout` runs one prompt across explicit child argv vectors.
   `await` stops on attention by default, and
   `result` requires a stored content or failure body unless `--allow-empty` is supplied.
+  `recent --unreconciled` lists terminal executions whose result has not been
+  acknowledged; `result` and a terminal `await` record that acknowledgement.
 
 Each native launch remains owned by one agentctl process. Foreground runs use the
 caller; `--background` creates a detached worker that survives the caller but

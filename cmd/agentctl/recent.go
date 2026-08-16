@@ -9,13 +9,15 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
+	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
 type recentOptions struct {
-	limit   int
-	state   string
-	adapter string
-	labels  []string
+	limit        int
+	state        string
+	adapter      string
+	labels       []string
+	unreconciled bool
 }
 
 type recentExecution struct {
@@ -31,6 +33,8 @@ type recentExecution struct {
 	UpdatedAt       time.Time       `json:"updated_at"`
 	TerminalAt      *time.Time      `json:"terminal_at,omitempty"`
 	DurationSeconds float64         `json:"duration_seconds"`
+	Unreconciled    bool            `json:"unreconciled"`
+	AcknowledgedAt  *time.Time      `json:"acknowledged_at,omitempty"`
 }
 
 func (a *app) recent(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
@@ -47,22 +51,29 @@ func (a *app) recent(ctx context.Context, renderer output.Renderer, c common, ar
 	if err != nil {
 		return mapStoreError("list recent executions", err)
 	}
+	acks, err := journal.AcknowledgementIndex(ctx)
+	if err != nil {
+		return mapStoreError("list execution acknowledgements", err)
+	}
 	items := make([]recentExecution, 0, opts.limit)
 	matched := 0
 	for i := len(executions) - 1; i >= 0; i-- {
 		execution := executions[i]
-		if !recentMatches(execution, opts) {
+		if !recentMatches(execution, opts, acks) {
 			continue
 		}
 		matched++
 		if len(items) >= opts.limit {
 			continue
 		}
-		items = append(items, projectRecent(execution, a.now().UTC()))
+		items = append(items, projectRecent(execution, a.now().UTC(), acks))
 	}
 	lines := make([]output.Line, 0, len(items))
 	for _, item := range items {
 		fields := []output.Field{{Name: "state", Value: item.State}, {Name: "adapter", Value: item.Adapter}, {Name: "liveness", Value: item.Liveness}, {Name: "duration", Value: time.Duration(item.DurationSeconds * float64(time.Second)).Round(time.Second)}}
+		if item.Unreconciled {
+			fields = append(fields, output.Field{Name: "unreconciled", Value: true})
+		}
 		if len(item.Labels) != 0 {
 			fields = append(fields, output.Field{Name: "labels", Value: item.Labels})
 		}
@@ -78,6 +89,11 @@ func (a *app) recent(ctx context.Context, renderer output.Renderer, c common, ar
 func parseRecent(args []string) (recentOptions, *output.Error) {
 	opts := recentOptions{limit: 20}
 	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--unreconciled":
+			opts.unreconciled = true
+			continue
+		}
 		if i+1 >= len(args) {
 			return opts, output.NewError(output.CodeUsage, args[i]+" requires a value", false)
 		}
@@ -109,6 +125,9 @@ func parseRecent(args []string) (recentOptions, *output.Error) {
 			return opts, output.NewError(output.CodeUsage, "unknown recent flag", false).WithDetail("flag", flag)
 		}
 	}
+	if opts.unreconciled && opts.state == "nonterminal" {
+		return opts, output.NewError(output.CodeUsage, "--unreconciled cannot be combined with --state nonterminal", false)
+	}
 	return opts, nil
 }
 
@@ -121,7 +140,7 @@ func validRecentState(value string) bool {
 	}
 }
 
-func recentMatches(execution model.Execution, opts recentOptions) bool {
+func recentMatches(execution model.Execution, opts recentOptions, acks store.AcknowledgementIndex) bool {
 	if opts.adapter != "" && execution.Adapter != opts.adapter {
 		return false
 	}
@@ -145,10 +164,13 @@ func recentMatches(execution model.Execution, opts recentOptions) bool {
 			return false
 		}
 	}
+	if opts.unreconciled && !acks.Unreconciled(execution) {
+		return false
+	}
 	return true
 }
 
-func projectRecent(execution model.Execution, now time.Time) recentExecution {
+func projectRecent(execution model.Execution, now time.Time, acks store.AcknowledgementIndex) recentExecution {
 	start := execution.CreatedAt
 	if execution.StartedAt != nil {
 		start = *execution.StartedAt
@@ -165,5 +187,10 @@ func projectRecent(execution model.Execution, now time.Time) recentExecution {
 	if labels == nil {
 		labels = []string{}
 	}
-	return recentExecution{ID: execution.ID, Labels: labels, Authority: execution.Authority, Adapter: execution.Adapter, Mode: execution.Mode, State: execution.State, Liveness: execution.Liveness, CreatedAt: execution.CreatedAt, StartedAt: execution.StartedAt, UpdatedAt: execution.UpdatedAt, TerminalAt: execution.TerminalAt, DurationSeconds: duration.Seconds()}
+	item := recentExecution{ID: execution.ID, Labels: labels, Authority: execution.Authority, Adapter: execution.Adapter, Mode: execution.Mode, State: execution.State, Liveness: execution.Liveness, CreatedAt: execution.CreatedAt, StartedAt: execution.StartedAt, UpdatedAt: execution.UpdatedAt, TerminalAt: execution.TerminalAt, DurationSeconds: duration.Seconds(), Unreconciled: acks.Unreconciled(execution)}
+	if ack, ok := acks.ByID[execution.ID]; ok {
+		acknowledgedAt := ack.AcknowledgedAt
+		item.AcknowledgedAt = &acknowledgedAt
+	}
+	return item
 }

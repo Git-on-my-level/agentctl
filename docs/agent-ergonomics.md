@@ -81,8 +81,8 @@ JSON output contains:
     {
       "label": "Wait for terminal state",
       "argv": ["agentctl", "await", "exec-purple-monkey-dragon-river-candle-meadow", "--output", "json"],
-      "mutates": false,
-      "side_effect_class": "read_only",
+      "mutates": true,
+      "side_effect_class": "local_operational_write",
       "preconditions": []
     }
   ]
@@ -198,7 +198,10 @@ object as if it matched.
 
 Read commands perform no hidden refresh, Git fetch, cache synchronization, or
 statistics update. If freshness requires a write, the CLI reports stale state
-and offers an explicit `sync` or `refresh` action.
+and offers an explicit `sync` or `refresh` action. `result` and a terminal
+`await` are the exception that is declared in help: they record one
+acknowledgement stamp, the same idea as subscription delivery acknowledgement,
+and therefore advertise `local_operational_write`.
 
 Mutations support `--plan`, which resolves exact targets, adapters, authority,
 side effects, and callback scope without performing them.
@@ -304,7 +307,9 @@ escape for callers that intentionally need weaker or broader behavior:
 - `--label` records up to 16 exact lowercase metadata names. `recent` returns
   the newest 20 host-local executions by default and filters by exact state,
   adapter, or label without reading prompt or result records. Repeated label
-  filters use AND semantics.
+  filters use AND semantics. `--unreconciled` returns terminal executions whose
+  result has never been acknowledged; terminals that predate acknowledgement
+  tracking on that journal are omitted.
 - `--prompt-file` and `--prompt-stdin` are mutually exclusive, bounded prompt
   sources. `--prompt-delivery argv|stdin` is explicit and defaults to `argv`
   only after a source is selected. Prompt bytes are excluded from plan output,
@@ -318,10 +323,12 @@ escape for callers that intentionally need weaker or broader behavior:
   a child with no `cwd` inherits the invoking process directory.
 - `result` requires bounded stored content or a structured failure, and fails
   closed on conflicted evidence. `--allow-empty` is for metadata-only inspection; `--summary`
-  intentionally returns the bounded preview.
+  intentionally returns the bounded preview. A successful dereference writes an
+  acknowledgement stamp so `recent --unreconciled` can forget the execution.
 - `await` uses a ten-minute timeout and stops on actionable attention, returning
   `attention_required` with a next action. `--timeout` changes the bound and
   `--no-timeout` removes it; `--ignore-attention` opts into continued waiting.
+  A terminal return acknowledges the execution; attention and timeout do not.
 - `subscribe create` listens for `terminal`, `attention`, and `artifact` by
   default, expires after acknowledged terminal delivery, and has a bounded
   twenty-four-hour TTL. Transient delivery failures retry with bounded backoff

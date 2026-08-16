@@ -26,6 +26,7 @@
 - bounded final result bodies, stored by default up to 1 MiB per execution;
 - subscription definitions;
 - callback outbox, acknowledgements, and dead letters;
+- execution result-collection acknowledgements;
 - opaque native resume references;
 - last verified shared-context bundle.
 
@@ -124,7 +125,9 @@ being protected by an output-role system.
 Normalized events contain state and references, not full native output. By
 default, the local journal stores the final UTF-8 outcome body, bounded to 1 MiB
 per execution. The explicit `result` command returns it; status, subscriptions,
-callbacks, and ordinary events do not copy that content. `--no-store-result`
+callbacks, and ordinary events do not copy that content. A successful `result`
+or terminal `await` also records a collection acknowledgement so
+`recent --unreconciled` can name work that finished but was never read. `--no-store-result`
 records an omission tombstone when the caller deliberately does not want result
 content persisted. Artifact events identify kind, authority, digest, and
 retrieval reference without copying content.
@@ -145,7 +148,8 @@ logical byte count, protected execution and protection reason.
 Deletion requires `--apply --plan-digest <sha256:...>`. Apply recomputes the
 plan in one journal write transaction and rejects it if the reviewed digest no
 longer matches. The mutation deletes the execution, outcome, events, event
-indexes/dedupe records, terminal index, and execution idempotency keys together.
+indexes/dedupe records, terminal index, execution idempotency keys, and any
+result-collection acknowledgement together.
 It is idempotent when the caller reviews the resulting empty plan before a
 repeat apply. The logical byte estimate does not promise immediate shrinkage of
 the bbolt file; no physical compaction is performed.
@@ -167,7 +171,8 @@ output.
 - Read-only commands have no hidden refresh/fetch/cache-write behavior. Live
   capability and doctor probes are bounded, declared read-only checks and
   report freshness; a probe that mutates a native cache is not used as
-  readiness evidence.
+  a read. `result` and a terminal `await` declare `local_operational_write`
+  because they stamp collection.
 - Native commands are passed as argv, never reconstructed shell strings.
 - Callback command adapters receive a path to an event document.
 - Mutations use exact IDs/context references and idempotency keys.

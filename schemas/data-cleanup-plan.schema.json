@@ -54,7 +54,8 @@
         "event_dedupe": {"type": "integer", "minimum": 0},
         "terminal_indexes": {"type": "integer", "minimum": 0},
         "outcomes": {"type": "integer", "minimum": 0},
-        "idempotency_keys": {"type": "integer", "minimum": 0}
+        "idempotency_keys": {"type": "integer", "minimum": 0},
+        "acknowledgements": {"type": "integer", "minimum": 0}
       }
     }
   }
