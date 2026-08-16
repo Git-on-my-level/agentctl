@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,6 +22,10 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
 )
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("delivery failed") }
 
 func testApp(stdout, stderr *bytes.Buffer) *app {
 	return &app{stdout: stdout, stderr: stderr, getenv: func(string) string { return "" }, now: time.Now}
@@ -415,6 +420,15 @@ func TestRecentUnreconciledRequiresResultOrAwaitAcknowledgement(t *testing.T) {
 	if !recentJSONContains(t, stdout.Bytes(), id, true) {
 		t.Fatalf("failed result assertion collected the execution: %s", stdout.String())
 	}
+	a.stdout = failingWriter{}
+	if code := a.run(context.Background(), []string{"--journal", journal, "result", id}); code != 70 {
+		t.Fatalf("failed result delivery exit=%d", code)
+	}
+	a.stdout = &stdout
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journal, "recent", "--unreconciled", "--label", "collect"}); code != 0 || !recentJSONContains(t, stdout.Bytes(), id, true) {
+		t.Fatalf("failed result delivery collected execution: exit=%d output=%s", code, stdout.String())
+	}
 	stdout.Reset()
 	if code := a.run(context.Background(), []string{"--journal", journal, "result", id}); code != 0 {
 		t.Fatalf("result exit=%d output=%s", code, stdout.String())
@@ -435,6 +449,15 @@ func TestRecentUnreconciledRequiresResultOrAwaitAcknowledgement(t *testing.T) {
 		t.Fatal(err)
 	}
 	awaitID := runDoc.Result.ID.String()
+	a.stdout = failingWriter{}
+	if code := a.run(context.Background(), []string{"--journal", journal, "await", awaitID, "--ignore-attention"}); code != 70 {
+		t.Fatalf("failed await delivery exit=%d", code)
+	}
+	a.stdout = &stdout
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journal, "recent", "--unreconciled", "--label", "awaited"}); code != 0 || !recentJSONContains(t, stdout.Bytes(), awaitID, true) {
+		t.Fatalf("failed await delivery collected execution: exit=%d output=%s", code, stdout.String())
+	}
 	stdout.Reset()
 	if code := a.run(context.Background(), []string{"--journal", journal, "await", awaitID, "--ignore-attention"}); code != 0 {
 		t.Fatalf("await exit=%d output=%s", code, stdout.String())

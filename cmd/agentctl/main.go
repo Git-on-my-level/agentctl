@@ -83,7 +83,7 @@ func (a *app) run(ctx context.Context, args []string) int {
 	case "result":
 		err = a.result(ctx, renderer, commonArgs, rest[1:])
 	case "await":
-		err = a.await(ctx, renderer, commonArgs, rest[1:])
+		return a.await(ctx, renderer, commonArgs, rest[1:])
 	case "run":
 		err = a.runNative(ctx, renderer, commonArgs, rest[1:])
 	case "fanout":
@@ -441,10 +441,13 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 		outcome.Content = &copy
 	}
 	_ = journal.Close()
-	if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementResult); problem != nil {
+	if problem := writeExecutionOutcome(renderer, execution, outcome); problem != nil {
 		return problem
 	}
-	return writeExecutionOutcome(renderer, execution, outcome)
+	if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementResult); problem != nil {
+		_, _ = fmt.Fprintln(a.stderr, "agentctl: result delivered but acknowledgement failed:", problem)
+	}
+	return nil
 }
 
 func resultSourceSatisfies(actual, required string) bool {
@@ -508,13 +511,13 @@ func (a *app) events(ctx context.Context, renderer output.Renderer, c common, ar
 	return nil
 }
 
-func (a *app) await(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
+func (a *app) await(ctx context.Context, renderer output.Renderer, c common, args []string) int {
 	if len(args) < 1 {
-		return output.NewError(output.CodeUsage, "usage: agentctl await <execution-id> [--timeout duration | --no-timeout] [--ignore-attention]", false)
+		return a.fail(renderer, output.NewError(output.CodeUsage, "usage: agentctl await <execution-id> [--timeout duration | --no-timeout] [--ignore-attention]", false))
 	}
 	id, problem := parseExecutionRef(args[0], c)
 	if problem != nil {
-		return problem
+		return a.fail(renderer, problem)
 	}
 	timeout := 10 * time.Minute
 	noTimeout := false
@@ -524,12 +527,12 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		switch args[i] {
 		case "--timeout":
 			if i+1 >= len(args) {
-				return output.NewError(output.CodeUsage, "--timeout requires a duration", false)
+				return a.fail(renderer, output.NewError(output.CodeUsage, "--timeout requires a duration", false))
 			}
 			i++
 			value, err := time.ParseDuration(args[i])
 			if err != nil || value <= 0 {
-				return output.NewError(output.CodeUsage, "timeout must be a positive Go duration", false)
+				return a.fail(renderer, output.NewError(output.CodeUsage, "timeout must be a positive Go duration", false))
 			}
 			timeout = value
 			timeoutSet = true
@@ -540,11 +543,11 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		case "--ignore-attention":
 			stopAttention = false
 		default:
-			return output.NewError(output.CodeUsage, "unknown await flag", false).WithDetail("flag", args[i])
+			return a.fail(renderer, output.NewError(output.CodeUsage, "unknown await flag", false).WithDetail("flag", args[i]))
 		}
 	}
 	if timeoutSet && noTimeout {
-		return output.NewError(output.CodeUsage, "--timeout and --no-timeout are mutually exclusive", false)
+		return a.fail(renderer, output.NewError(output.CodeUsage, "--timeout and --no-timeout are mutually exclusive", false))
 	}
 	deadline := time.Time{}
 	if !noTimeout {
@@ -553,53 +556,58 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 	for {
 		journal, openErr := a.openRead(c)
 		if openErr != nil {
-			return openErr
+			return a.fail(renderer, openErr)
 		}
 		execution, err := journal.GetExecution(ctx, id)
 		_ = journal.Close()
 		if err != nil {
-			return mapStoreError("read awaited execution", err)
+			return a.fail(renderer, mapStoreError("read awaited execution", err))
 		}
 		if execution.Observation.Integrity == model.IntegrityConflicted {
-			return outcomeError(output.CodeUnknownState, "execution evidence is conflicted", execution)
+			return a.fail(renderer, outcomeError(output.CodeUnknownState, "execution evidence is conflicted", execution))
 		}
 		switch execution.State {
 		case model.StateCompleted:
-			if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementAwait); problem != nil {
-				return problem
+			if problem := writeExecution(renderer, execution, "await"); problem != nil {
+				return a.fail(renderer, problem)
 			}
-			return writeExecution(renderer, execution, "await")
+			if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementAwait); problem != nil {
+				_, _ = fmt.Fprintln(a.stderr, "agentctl: terminal state delivered but acknowledgement failed:", problem)
+			}
+			return 0
 		case model.StateFailed:
-			if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementAwait); problem != nil {
-				return problem
-			}
-			return outcomeError(output.CodeExecutionFailed, "execution failed", execution)
+			return a.deliverAwaitError(ctx, renderer, c, id, store.AcknowledgementAwait, outcomeError(output.CodeExecutionFailed, "execution failed", execution))
 		case model.StateCancelled:
-			if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementAwait); problem != nil {
-				return problem
-			}
-			return outcomeError(output.CodeExecutionCancelled, "execution was cancelled", execution)
+			return a.deliverAwaitError(ctx, renderer, c, id, store.AcknowledgementAwait, outcomeError(output.CodeExecutionCancelled, "execution was cancelled", execution))
 		case model.StateOrphaned:
-			if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementAwait); problem != nil {
-				return problem
-			}
-			return outcomeError(output.CodeExecutionUnknown, "execution is orphaned", execution)
+			return a.deliverAwaitError(ctx, renderer, c, id, store.AcknowledgementAwait, outcomeError(output.CodeExecutionUnknown, "execution is orphaned", execution))
 		case model.StateAttention:
 			if stopAttention {
-				return outcomeError(output.CodeAttentionRequired, "execution requires attention", execution)
+				return a.fail(renderer, outcomeError(output.CodeAttentionRequired, "execution requires attention", execution))
 			}
 		}
 		if !deadline.IsZero() && !a.now().Before(deadline) {
-			return outcomeError(output.CodeTimeout, "await deadline elapsed", execution)
+			return a.fail(renderer, outcomeError(output.CodeTimeout, "await deadline elapsed", execution))
 		}
 		timer := time.NewTimer(500 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return output.Wrap(output.CodeExecutionCancelled, "await cancelled", false, ctx.Err()).WithDetail("execution_id", id.String())
+			return a.fail(renderer, output.Wrap(output.CodeExecutionCancelled, "await cancelled", false, ctx.Err()).WithDetail("execution_id", id.String()))
 		case <-timer.C:
 		}
 	}
+}
+
+func (a *app) deliverAwaitError(ctx context.Context, renderer output.Renderer, c common, id ids.ExecutionID, source string, problem *output.Error) int {
+	exitCode := a.fail(renderer, problem)
+	if exitCode != problem.ExitCode {
+		return exitCode
+	}
+	if acknowledgement := a.acknowledgeExecution(ctx, c, id, source); acknowledgement != nil {
+		_, _ = fmt.Fprintln(a.stderr, "agentctl: terminal state delivered but acknowledgement failed:", acknowledgement)
+	}
+	return exitCode
 }
 
 func (a *app) journalPath(c common) (string, error) {
