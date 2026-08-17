@@ -84,7 +84,8 @@ func ExitCodeFor(code Code) int {
 }
 
 type ErrorDocument struct {
-	OK            bool   `json:"ok"`
-	SchemaVersion int    `json:"schema_version"`
-	Error         *Error `json:"error"`
+	OK            bool      `json:"ok"`
+	SchemaVersion int       `json:"schema_version"`
+	Error         *Error    `json:"error"`
+	Warnings      []Warning `json:"warnings"`
 }

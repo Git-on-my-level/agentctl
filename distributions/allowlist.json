@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "distribution_id": "agentctl-portable",
-  "revision": "tree:v0.3.2",
+  "revision": "tree:v0.3.3",
   "assets": [
     {
       "id": "portable-skill",
