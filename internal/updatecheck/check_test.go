@@ -81,6 +81,41 @@ func TestCheckFailsOpenAndBacksOffNetworkFailure(t *testing.T) {
 	}
 }
 
+func TestCachedNoticeIsNotRepeatedAfterSuccessfulRetry(t *testing.T) {
+	var requests atomic.Int32
+	fail := atomic.Bool{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		if fail.Load() {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v0.3.3"})
+	}))
+	defer server.Close()
+
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	options := Options{CurrentVersion: "v0.3.2", StatePath: filepath.Join(t.TempDir(), "state", "update-check.json"), Endpoint: server.URL, Now: func() time.Time { return now }, Client: server.Client(), Getenv: func(string) string { return "" }}
+	if notice, err := Check(context.Background(), options); err != nil || notice == nil {
+		t.Fatalf("initial notice=%#v err=%v", notice, err)
+	}
+
+	now = now.Add(24 * time.Hour)
+	fail.Store(true)
+	if notice, err := Check(context.Background(), options); err == nil || notice == nil {
+		t.Fatalf("cached notice=%#v err=%v", notice, err)
+	}
+
+	now = now.Add(time.Hour + time.Minute)
+	fail.Store(false)
+	if notice, err := Check(context.Background(), options); err != nil || notice != nil {
+		t.Fatalf("successful retry repeated notice=%#v err=%v", notice, err)
+	}
+	if requests.Load() != 3 {
+		t.Fatalf("requests=%d want=3", requests.Load())
+	}
+}
+
 func TestCheckDoesNotNotifyForCurrentOrOlderRelease(t *testing.T) {
 	for _, latest := range []string{"v0.3.2", "v0.3.1"} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

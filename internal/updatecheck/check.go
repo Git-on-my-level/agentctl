@@ -110,6 +110,9 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 	state.LatestVersion = latest
 	state.ReleaseURL = releaseURL(latest)
 	if parsedLatest, valid := parseVersion(latest); valid && parsedLatest.greaterThan(current) {
+		if state.NotifiedOn == today {
+			return nil, writeState(options.StatePath, state)
+		}
 		state.NotifiedOn = today
 		notice := &Notice{CurrentVersion: options.CurrentVersion, LatestVersion: latest, ReleaseURL: state.ReleaseURL}
 		return notice, writeState(options.StatePath, state)
