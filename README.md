@@ -66,6 +66,14 @@ platform. On Linux, replace `shasum -a 256` with `sha256sum`. The default
 install prefix is `~/.local`; ensure `~/.local/bin` is on `PATH`. The installer
 does not download code and previews its changes with `--dry-run`.
 
+Exact release builds perform one fail-open update check on the first CLI use of
+each UTC day. When a newer release exists, the normal success or error document
+includes an `agentctl_update_available` warning with current/latest versions and
+the canonical release URL; command results and exit codes do not change. The
+owner-only cache lives beside the selected journal, failed checks back off for
+one hour, and `AGENTCTL_UPDATE_CHECK=off` disables the check. The notice never
+installs code: verify `SHA256SUMS` and use the packaged installer above.
+
 ## Build from source
 
 Requirements: a supported platform, the Go version declared in `go.mod` or

@@ -2,11 +2,11 @@
   "schema_version": 1,
   "bundle_kind": "multica_runtime_skill",
   "distribution_id": "agentctl-portable",
-  "revision": "tree:v0.3.2",
+  "revision": "tree:v0.3.3",
   "skill": {
     "path": "agentctl-portable/SKILL.md",
     "source": "skills/agentctl-portable/SKILL.md",
-    "sha256": "046b5280f3c15dd2f9a1de96025a95bf1eed400c56e736837d736755bd4f2e2a"
+    "sha256": "8eedc4b7666c43b4bbff40e5b0ff023cba3788b152f2fc350bcfe56a9ccb9a8f"
   },
   "runtime": {
     "entrypoint": "agentctl",

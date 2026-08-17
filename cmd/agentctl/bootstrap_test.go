@@ -288,7 +288,7 @@ func TestBootstrapUpdateRefusesInvalidManagedMarkerDuringUpgrade(t *testing.T) {
 
 func TestBootstrapStatusMarksSkillOlderThanEmbeddedRelease(t *testing.T) {
 	originalVersion := version
-	version = "v0.3.2"
+	version = "v0.3.3"
 	t.Cleanup(func() { version = originalVersion })
 	home := t.TempDir()
 	writeBootstrapSkill(t, filepath.Join(home, ".agents", "skills"), "tree:v0.2.5", "old portable skill")

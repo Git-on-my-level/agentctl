@@ -29,6 +29,7 @@
 - execution result-collection acknowledgements;
 - opaque native resume references;
 - last verified shared-context bundle.
+- bounded daily release-check timestamps and public release metadata.
 
 This state is namespaced by stable host word ID and local store generation. It
 is not database-replicated between machines. Automatic journal retention is not
@@ -168,11 +169,15 @@ output.
 
 ## Command safety
 
-- Read-only commands have no hidden refresh/fetch/cache-write behavior. Live
-  capability and doctor probes are bounded, declared read-only checks and
-  report freshness; a probe that mutates a native cache is not used as
-  a read. `result` and a terminal `await` declare `local_operational_write`
-  because they stamp collection.
+- Read-only commands have no hidden refresh/fetch/cache-write behavior except
+  the documented fail-open daily release notice. That check performs at most
+  one bounded GitHub metadata read per UTC day, writes only public release
+  metadata and timestamps to a separate owner-only cache, never opens the
+  journal, and can be disabled with `AGENTCTL_UPDATE_CHECK=off`. Live capability
+  and doctor probes are bounded, declared read-only checks and report freshness;
+  a probe that mutates a native cache is not used as a read. `result` and a
+  terminal `await` declare `local_operational_write` because they stamp
+  collection.
 - Native commands are passed as argv, never reconstructed shell strings.
 - Callback command adapters receive a path to an event document.
 - Mutations use exact IDs/context references and idempotency keys.

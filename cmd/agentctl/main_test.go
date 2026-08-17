@@ -31,6 +31,52 @@ func testApp(stdout, stderr *bytes.Buffer) *app {
 	return &app{stdout: stdout, stderr: stderr, getenv: func(string) string { return "" }, now: time.Now}
 }
 
+func TestDailyUpdateNoticeDecoratesSuccessAndErrorEnvelopes(t *testing.T) {
+	warning := &output.Warning{Code: "agentctl_update_available", Message: "update available", Details: map[string]any{"current_version": "v0.3.2", "latest_version": "v0.3.3"}}
+	for _, test := range []struct {
+		args     []string
+		wantCode int
+	}{
+		{args: []string{"version"}, wantCode: 0},
+		{args: []string{"unknown-command"}, wantCode: 2},
+	} {
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		a.updateNotice = func(context.Context, string, common) *output.Warning { return warning }
+		if code := a.run(context.Background(), test.args); code != test.wantCode {
+			t.Fatalf("args=%v exit=%d output=%s", test.args, code, stdout.String())
+		}
+		if !strings.Contains(stdout.String(), `"warnings":[{"code":"agentctl_update_available"`) || !strings.Contains(stdout.String(), `"latest_version":"v0.3.3"`) {
+			t.Fatalf("args=%v missing update notice: %s", test.args, stdout.String())
+		}
+	}
+}
+
+func TestDailyUpdateNoticeDecoratesGlobalParseErrors(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	a.updateNotice = func(context.Context, string, common) *output.Warning {
+		return &output.Warning{Code: "agentctl_update_available", Message: "update available"}
+	}
+	if code := a.run(context.Background(), []string{"--output", "invalid"}); code != 2 {
+		t.Fatalf("exit=%d output=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"code":"usage"`) || !strings.Contains(stdout.String(), `"code":"agentctl_update_available"`) {
+		t.Fatalf("parse error omitted primary error or notice: %s", stdout.String())
+	}
+}
+
+func TestUpdateCheckStatePathFollowsSelectedJournal(t *testing.T) {
+	custom := filepath.Join(t.TempDir(), "isolated", "journal.db")
+	path, err := updateCheckStatePath(common{journalPath: custom})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(filepath.Dir(custom), "update-check.json"); path != want {
+		t.Fatalf("path=%s want=%s", path, want)
+	}
+}
+
 func TestAdapterProbeErrorsPreserveStableClassification(t *testing.T) {
 	tests := []struct {
 		adapterCode adapter.ErrorCode

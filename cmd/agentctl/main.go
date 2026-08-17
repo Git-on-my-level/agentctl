@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -19,6 +20,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/route"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/updatecheck"
 )
 
 var version = "0.1.0-dev"
@@ -29,6 +31,7 @@ type app struct {
 	stdinIsTerminal func() bool
 	getenv          func(string) string
 	now             func() time.Time
+	updateNotice    func(context.Context, string, common) *output.Warning
 }
 type common struct {
 	mode                                                        output.Mode
@@ -42,15 +45,44 @@ func main() {
 	os.Exit(newApp().run(ctx, os.Args[1:]))
 }
 func newApp() *app {
-	return &app{stdout: os.Stdout, stderr: os.Stderr, stdin: os.Stdin, stdinIsTerminal: func() bool {
+	a := &app{stdout: os.Stdout, stderr: os.Stderr, stdin: os.Stdin, stdinIsTerminal: func() bool {
 		info, err := os.Stdin.Stat()
 		return err == nil && info.Mode()&os.ModeCharDevice != 0
 	}, getenv: os.Getenv, now: time.Now}
+	a.updateNotice = func(ctx context.Context, currentVersion string, c common) *output.Warning {
+		statePath, err := updateCheckStatePath(c)
+		if err != nil {
+			return nil
+		}
+		notice, _ := updatecheck.Check(ctx, updatecheck.Options{CurrentVersion: currentVersion, StatePath: statePath, Getenv: os.Getenv})
+		if notice == nil {
+			return nil
+		}
+		return &output.Warning{Code: "agentctl_update_available", Message: "a newer agentctl release is available; verify its published checksum before installing", Details: map[string]any{"current_version": notice.CurrentVersion, "latest_version": notice.LatestVersion, "release_url": notice.ReleaseURL}}
+	}
+	return a
+}
+
+func updateCheckStatePath(c common) (string, error) {
+	journalPath := c.journalPath
+	if journalPath == "" {
+		var err error
+		journalPath, err = store.DefaultPath()
+		if err != nil {
+			return "", err
+		}
+	}
+	return filepath.Join(filepath.Dir(filepath.Clean(journalPath)), "update-check.json"), nil
 }
 
 func (a *app) run(ctx context.Context, args []string) int {
 	commonArgs, rest, parseErr := a.parseCommon(args)
 	renderer := output.Renderer{Mode: commonArgs.mode, Writer: a.stdout}
+	if a.updateNotice != nil {
+		if warning := a.updateNotice(ctx, version, commonArgs); warning != nil {
+			renderer = renderer.WithWarnings(*warning)
+		}
+	}
 	if parseErr != nil {
 		return a.fail(renderer, output.NewError(output.CodeUsage, parseErr.Error(), false))
 	}

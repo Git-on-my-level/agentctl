@@ -58,7 +58,7 @@ test:
 # without imposing the cost on every local `make ci` invocation.
 test-race:
 	@test -f go.mod || { echo 'go.mod is required for race tests' >&2; exit 1; }
-	GOFLAGS='$(GOFLAGS)' $(GO) test -race ./cmd/agentctl ./internal/store ./internal/adapter ./internal/supervisor ./internal/portableasset
+	GOFLAGS='$(GOFLAGS)' $(GO) test -race ./cmd/agentctl ./internal/store ./internal/adapter ./internal/supervisor ./internal/portableasset ./internal/updatecheck
 
 check-ids:
 	$(PYTHON) $(SCRIPTS_DIR)/id-reference.py

@@ -60,6 +60,13 @@ color, localized labels, or explanatory prose unless `--explain` is requested.
 Values requiring escaping use JSON string syntax. Repeated records use one line
 per record; multiline native output is never inlined.
 
+Warnings follow the primary command output as one compact `warning` line. They
+do not change the command result or exit code:
+
+```text
+warning code=agentctl_update_available current_version=v0.3.2 latest_version=v0.3.3 release_url=https://github.com/Git-on-my-level/agentctl/releases/tag/v0.3.3
+```
+
 Errors follow the same compact grammar:
 
 ```text
@@ -98,6 +105,26 @@ document per line and no terminal summary outside the stream. Diagnostics never
 mix with stdout. Text diagnostics go to stderr by default; `--diagnostics json`
 makes each stderr diagnostic one JSON line using a separate diagnostic schema.
 
+Warnings are typed, bounded notices. They may appear on either success or error
+documents and never change `ok`, the primary error, or the process exit code.
+
+## Daily release notice
+
+An exact release build checks GitHub's latest agentctl release on the first CLI
+use of each UTC day. The check has a one-second network timeout, fails open, and
+records only timestamps plus public release metadata in the owner-only
+`update-check.json` cache beside the selected journal, including an explicit
+`--journal` path. Concurrent processes sharing that journal coalesce on a
+separate lock. A failed check backs off for one hour. Development and dirty
+build versions do not check, and `AGENTCTL_UPDATE_CHECK=off` (also `0`, `false`,
+or `disabled`) opts out.
+
+When a newer semantic version is available, that first command receives an
+`agentctl_update_available` warning with the current version, latest version,
+and canonical release URL. The check never downloads or installs an executable.
+The operator or host manager must still verify `SHA256SUMS`, run the packaged
+installer, and verify `agentctl doctor`.
+
 ## Error contract
 
 Errors include:
@@ -106,6 +133,7 @@ Errors include:
 {
   "ok": false,
   "schema_version": 1,
+  "warnings": [],
   "error": {
     "code": "ambiguous_reference",
     "message": "Reference 'purple-monkey' matches two executions.",

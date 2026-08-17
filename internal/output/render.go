@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 type Mode string
@@ -45,8 +46,9 @@ type NextAction struct {
 	Preconditions   []string        `json:"preconditions"`
 }
 type Warning struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
 }
 type SuccessDocument struct {
 	OK            bool         `json:"ok"`
@@ -71,16 +73,25 @@ type Success struct {
 	Lines       []Line
 }
 type Renderer struct {
-	Mode   Mode
-	Writer io.Writer
+	Mode         Mode
+	Writer       io.Writer
+	Warnings     []Warning
+	warningsSent *atomic.Bool
+}
+
+func (r Renderer) WithWarnings(warnings ...Warning) Renderer {
+	r.Warnings = append(append([]Warning{}, r.Warnings...), warnings...)
+	r.warningsSent = &atomic.Bool{}
+	return r
 }
 
 func (r Renderer) Success(value Success) error {
 	if r.Writer == nil {
 		return errors.New("output writer is nil")
 	}
+	warnings := append(r.claimWarnings(), value.Warnings...)
 	if r.Mode == JSON {
-		return writeJSON(r.Writer, SuccessDocument{OK: true, SchemaVersion: 1, Result: value.Result, Warnings: nonNilWarnings(value.Warnings), NextActions: nonNilActions(value.NextActions)})
+		return writeJSON(r.Writer, SuccessDocument{OK: true, SchemaVersion: 1, Result: value.Result, Warnings: nonNilWarnings(warnings), NextActions: nonNilActions(value.NextActions)})
 	}
 	for _, line := range value.Lines {
 		if _, err := fmt.Fprintln(r.Writer, RenderLine(line)); err != nil {
@@ -92,6 +103,9 @@ func (r Renderer) Success(value Success) error {
 			return err
 		}
 	}
+	if err := renderWarnings(r.Writer, warnings); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -102,8 +116,9 @@ func (r Renderer) Failure(err *Error) error {
 	if err == nil {
 		err = NewError(CodeInternal, "internal error", false)
 	}
+	warnings := r.claimWarnings()
 	if r.Mode == JSON {
-		return writeJSON(r.Writer, ErrorDocument{OK: false, SchemaVersion: 1, Error: err})
+		return writeJSON(r.Writer, ErrorDocument{OK: false, SchemaVersion: 1, Error: err, Warnings: nonNilWarnings(warnings)})
 	}
 	fields := []Field{{"code", err.Code}, {"exit", err.ExitCode}, {"retryable", err.Retryable}, {"message", err.Message}}
 	keys := make([]string, 0, len(err.Details))
@@ -120,6 +135,34 @@ func (r Renderer) Failure(err *Error) error {
 	for _, action := range err.NextActions {
 		if _, writeErr := fmt.Fprintln(r.Writer, "next "+renderArgv(action.Argv)); writeErr != nil {
 			return writeErr
+		}
+	}
+	return renderWarnings(r.Writer, warnings)
+}
+
+func (r Renderer) claimWarnings() []Warning {
+	if len(r.Warnings) == 0 {
+		return nil
+	}
+	if r.warningsSent != nil && !r.warningsSent.CompareAndSwap(false, true) {
+		return nil
+	}
+	return append([]Warning{}, r.Warnings...)
+}
+
+func renderWarnings(writer io.Writer, warnings []Warning) error {
+	for _, warning := range warnings {
+		fields := []Field{{"code", warning.Code}, {"message", warning.Message}}
+		keys := make([]string, 0, len(warning.Details))
+		for key := range warning.Details {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			fields = append(fields, Field{key, warning.Details[key]})
+		}
+		if _, err := fmt.Fprintln(writer, RenderLine(Line{Lead: "warning", Fields: fields})); err != nil {
+			return err
 		}
 	}
 	return nil

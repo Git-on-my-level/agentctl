@@ -32,6 +32,12 @@ memorize version-specific flags in place of help.
 detected canonical harness roots. Use `--dry-run` when inspecting another home
 or narrowing an unfamiliar installation.
 
+Exact release builds check once per UTC day for a newer agentctl release and
+attach `agentctl_update_available` to the normal command output when one exists.
+Treat it as an upgrade prompt: verify the published checksum, use the packaged
+installer, then run `agentctl doctor`. The notice never installs automatically;
+`AGENTCTL_UPDATE_CHECK=off` disables the check.
+
 ## Choose authority deliberately
 
 Use direct native work for bounded investigation, scoping, and operations. Use
