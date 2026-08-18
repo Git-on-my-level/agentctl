@@ -170,11 +170,14 @@ output.
 ## Command safety
 
 - Read-only commands have no hidden refresh/fetch/cache-write behavior except
-  the documented fail-open daily release notice. That check performs at most
-  one bounded GitHub metadata read per UTC day, writes only public release
-  metadata and timestamps to a separate owner-only cache, never opens the
-  journal, and can be disabled with `AGENTCTL_UPDATE_CHECK=off`. Live capability
-  and doctor probes are bounded, declared read-only checks and report freshness;
+  the documented invocation-triggered release updater. In default `auto` mode,
+  the foreground command only reads binary-global owner-only state and, when a
+  daily check is due, starts a detached short-lived worker. That worker performs
+  the bounded network and managed-install writes independently and exits; it
+  never opens the journal or creates a service. `notify` limits the exception to
+  public release metadata and timestamps plus a typed warning, and `off`
+  disables it. Live capability and doctor probes are bounded, declared read-only
+  checks and report freshness;
   a probe that mutates a native cache is not used as a read. `result` and a
   terminal `await` declare `local_operational_write` because they stamp
   collection.

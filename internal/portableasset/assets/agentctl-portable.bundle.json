@@ -6,11 +6,11 @@
   "skill": {
     "path": "agentctl-portable/SKILL.md",
     "source": "skills/agentctl-portable/SKILL.md",
-    "sha256": "8eedc4b7666c43b4bbff40e5b0ff023cba3788b152f2fc350bcfe56a9ccb9a8f"
+    "sha256": "8abcfd14ab71d1d15b23e904785ff4e20099d9056e8c74483171cffe2b284deb"
   },
   "runtime": {
     "entrypoint": "agentctl",
-    "commands": ["help", "schema", "capabilities", "doctor", "route", "run", "recent", "fanout", "attach", "status", "events", "subscribe", "await", "result", "cancel", "promote", "knowledge", "context", "config", "bootstrap", "supervisor"],
+    "commands": ["help", "schema", "capabilities", "doctor", "route", "run", "recent", "fanout", "attach", "status", "events", "subscribe", "await", "result", "cancel", "promote", "knowledge", "context", "config", "bootstrap", "supervisor", "update"],
     "authority": "native_or_multica_explicit",
     "correctness_owner": "selected_native_authority"
   },

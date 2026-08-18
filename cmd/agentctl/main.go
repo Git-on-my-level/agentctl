@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -50,11 +49,22 @@ func newApp() *app {
 		return err == nil && info.Mode()&os.ModeCharDevice != 0
 	}, getenv: os.Getenv, now: time.Now}
 	a.updateNotice = func(ctx context.Context, currentVersion string, c common) *output.Warning {
-		statePath, err := updateCheckStatePath(c)
+		statePath, policyPath, err := updatecheck.DefaultPaths(a.getenv)
 		if err != nil {
 			return nil
 		}
-		notice, _ := updatecheck.Check(ctx, updatecheck.Options{CurrentVersion: currentVersion, StatePath: statePath, Getenv: os.Getenv})
+		mode, err := updatecheck.ResolveMode(policyPath, a.getenv)
+		if err != nil || mode == updatecheck.ModeOff {
+			return nil
+		}
+		options := updatecheck.Options{CurrentVersion: currentVersion, StatePath: statePath, Getenv: a.getenv}
+		if mode == updatecheck.ModeAuto {
+			if updatecheck.Due(options) {
+				_ = startUpdateWorker()
+			}
+			return nil
+		}
+		notice, _ := updatecheck.Check(ctx, options)
 		if notice == nil {
 			return nil
 		}
@@ -63,22 +73,17 @@ func newApp() *app {
 	return a
 }
 
-func updateCheckStatePath(c common) (string, error) {
-	journalPath := c.journalPath
-	if journalPath == "" {
-		var err error
-		journalPath, err = store.DefaultPath()
-		if err != nil {
-			return "", err
-		}
-	}
-	return filepath.Join(filepath.Dir(filepath.Clean(journalPath)), "update-check.json"), nil
+func updateCheckStatePath(_ common) (string, error) {
+	statePath, _, err := updatecheck.DefaultPaths(os.Getenv)
+	return statePath, err
 }
 
 func (a *app) run(ctx context.Context, args []string) int {
 	commonArgs, rest, parseErr := a.parseCommon(args)
 	renderer := output.Renderer{Mode: commonArgs.mode, Writer: a.stdout}
-	if a.updateNotice != nil {
+	internalUpdateWorker := len(rest) > 0 && rest[0] == "_update-worker"
+	updateCommand := len(rest) > 0 && rest[0] == "update"
+	if a.updateNotice != nil && !internalUpdateWorker && !updateCommand {
 		if warning := a.updateNotice(ctx, version, commonArgs); warning != nil {
 			renderer = renderer.WithWarnings(*warning)
 		}
@@ -94,6 +99,10 @@ func (a *app) run(ctx context.Context, args []string) int {
 	}
 	var err *output.Error
 	switch rest[0] {
+	case "_update-worker":
+		return a.updateWorker(ctx)
+	case "update":
+		err = a.updateCommand(ctx, renderer, rest[1:])
 	case "help", "--help", "-h":
 		topic := strings.Join(rest[1:], " ")
 		return a.help(renderer, topic)

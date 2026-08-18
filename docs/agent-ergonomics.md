@@ -108,22 +108,31 @@ makes each stderr diagnostic one JSON line using a separate diagnostic schema.
 Warnings are typed, bounded notices. They may appear on either success or error
 documents and never change `ok`, the primary error, or the process exit code.
 
-## Daily release notice
+## Invocation-triggered release updates
 
-An exact release build checks GitHub's latest agentctl release on the first CLI
-use of each UTC day. The check has a one-second network timeout, fails open, and
-records only timestamps plus public release metadata in the owner-only
-`update-check.json` cache beside the selected journal, including an explicit
-`--journal` path. Concurrent processes sharing that journal coalesce on a
-separate lock. A failed check backs off for one hour. Development and dirty
-build versions do not check, and `AGENTCTL_UPDATE_CHECK=off` (also `0`, `false`,
-or `disabled`) opts out.
+An exact release build defaults to `auto`. Before starting a worker, each CLI
+invocation performs one read-only lookup of the binary-global owner-only update
+state. The first invocation due each UTC day starts a detached short-lived
+worker and immediately continues with the requested command. The worker
+coalesces with concurrent workers, checks GitHub's latest release, downloads the
+matching platform archive, verifies its published SHA-256, and invokes the
+packaged installer only for an executable bound to a valid agentctl install
+manifest. Running commands keep their existing executable image; subsequent
+commands use the atomically replaced binary. The worker then exits. There is no
+updater daemon, timer, or dependency on the optional callback supervisor.
 
-When a newer semantic version is available, that first command receives an
-`agentctl_update_available` warning with the current version, latest version,
-and canonical release URL. The check never downloads or installs an executable.
-The operator or host manager must still verify `SHA256SUMS`, run the packaged
-installer, and verify `agentctl doctor`.
+Update state is stored under the platform state home (by default
+`~/.local/state/agentctl`) rather than beside a selected journal, because one
+binary must make one daily check across all journals. Failed discovery attempts
+back off for one hour. Development and dirty builds do not check.
+
+`agentctl update policy notify` checks synchronously at most once per UTC day
+and attaches `agentctl_update_available` without downloading the archive.
+`agentctl update policy off` performs no check. `AGENTCTL_UPDATE_MODE` can
+override the stored `auto`, `notify`, or `off` policy for a process; the legacy
+`AGENTCTL_UPDATE_CHECK=off` values (`0`, `false`, and `disabled` included) remain
+a hard-off compatibility path. `agentctl update status` is read-only and
+`agentctl update now` explicitly performs a foreground check and managed update.
 
 ## Error contract
 

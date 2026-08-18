@@ -35,18 +35,23 @@ type Options struct {
 	CurrentVersion string
 	StatePath      string
 	Endpoint       string
+	Force          bool
 	Now            func() time.Time
 	Client         *http.Client
 	Getenv         func(string) string
 }
 
 type cacheState struct {
-	SchemaVersion int       `json:"schema_version"`
-	LastAttemptAt time.Time `json:"last_attempt_at,omitempty"`
-	CheckedOn     string    `json:"checked_on,omitempty"`
-	LatestVersion string    `json:"latest_version,omitempty"`
-	ReleaseURL    string    `json:"release_url,omitempty"`
-	NotifiedOn    string    `json:"notified_on,omitempty"`
+	SchemaVersion    int       `json:"schema_version"`
+	LastAttemptAt    time.Time `json:"last_attempt_at,omitempty"`
+	CheckedOn        string    `json:"checked_on,omitempty"`
+	LatestVersion    string    `json:"latest_version,omitempty"`
+	ReleaseURL       string    `json:"release_url,omitempty"`
+	NotifiedOn       string    `json:"notified_on,omitempty"`
+	InstalledVersion string    `json:"installed_version,omitempty"`
+	InstalledAt      time.Time `json:"installed_at,omitempty"`
+	LastErrorCode    string    `json:"last_error_code,omitempty"`
+	LastErrorAt      time.Time `json:"last_error_at,omitempty"`
 }
 
 type releaseDocument struct {
@@ -72,10 +77,10 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 	if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
 		return nil, stateErr
 	}
-	if state.CheckedOn == today {
+	if state.CheckedOn == today && !options.Force {
 		return cachedNotice(options.StatePath, state, current, today)
 	}
-	if !state.LastAttemptAt.IsZero() && now.Sub(state.LastAttemptAt) < retryInterval {
+	if !options.Force && !state.LastAttemptAt.IsZero() && now.Sub(state.LastAttemptAt) < retryInterval {
 		return cachedNotice(options.StatePath, state, current, today)
 	}
 
@@ -91,10 +96,10 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 	if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
 		return nil, stateErr
 	}
-	if state.CheckedOn == today {
+	if state.CheckedOn == today && !options.Force {
 		return cachedNotice(options.StatePath, state, current, today)
 	}
-	if !state.LastAttemptAt.IsZero() && now.Sub(state.LastAttemptAt) < retryInterval {
+	if !options.Force && !state.LastAttemptAt.IsZero() && now.Sub(state.LastAttemptAt) < retryInterval {
 		return cachedNotice(options.StatePath, state, current, today)
 	}
 
@@ -110,7 +115,7 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 	state.LatestVersion = latest
 	state.ReleaseURL = releaseURL(latest)
 	if parsedLatest, valid := parseVersion(latest); valid && parsedLatest.greaterThan(current) {
-		if state.NotifiedOn == today {
+		if state.NotifiedOn == today && !options.Force {
 			return nil, writeState(options.StatePath, state)
 		}
 		state.NotifiedOn = today
