@@ -32,11 +32,13 @@ memorize version-specific flags in place of help.
 detected canonical harness roots. Use `--dry-run` when inspecting another home
 or narrowing an unfamiliar installation.
 
-Exact release builds check once per UTC day for a newer agentctl release and
-attach `agentctl_update_available` to the normal command output when one exists.
-Treat it as an upgrade prompt: verify the published checksum, use the packaged
-installer, then run `agentctl doctor`. The notice never installs automatically;
-`AGENTCTL_UPDATE_CHECK=off` disables the check.
+Exact release builds default to automatic updates. The first invocation due on
+each UTC day starts a detached short-lived worker that verifies the matching
+release archive and uses its packaged installer for managed installations; it
+does not delay the foreground command or create a daemon. Use `agentctl update
+status` to inspect it. `agentctl update policy notify` retains the once-daily
+`agentctl_update_available` prompt without installation, and `off` disables all
+checks.
 
 ## Choose authority deliberately
 

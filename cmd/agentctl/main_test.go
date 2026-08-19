@@ -66,14 +66,39 @@ func TestDailyUpdateNoticeDecoratesGlobalParseErrors(t *testing.T) {
 	}
 }
 
-func TestUpdateCheckStatePathFollowsSelectedJournal(t *testing.T) {
+func TestUpdateCheckStatePathIsGlobalAcrossSelectedJournals(t *testing.T) {
+	stateRoot := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateRoot)
 	custom := filepath.Join(t.TempDir(), "isolated", "journal.db")
 	path, err := updateCheckStatePath(common{journalPath: custom})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(filepath.Dir(custom), "update-check.json"); path != want {
+	if want := filepath.Join(stateRoot, "agentctl", "update-state.json"); path != want {
 		t.Fatalf("path=%s want=%s", path, want)
+	}
+}
+
+func TestUpdatePolicyAndStatusCommandsUseOwnerGlobalState(t *testing.T) {
+	root := t.TempDir()
+	getenv := func(name string) string {
+		if name == "XDG_STATE_HOME" {
+			return root
+		}
+		return ""
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	a.getenv = getenv
+	if code := a.run(context.Background(), []string{"update", "policy", "notify"}); code != 0 {
+		t.Fatalf("policy exit=%d output=%s", code, stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"update", "status"}); code != 0 {
+		t.Fatalf("status exit=%d output=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"mode":"notify"`) || !strings.Contains(stdout.String(), filepath.Join(root, "agentctl", "update-state.json")) {
+		t.Fatalf("unexpected status: %s", stdout.String())
 	}
 }
 

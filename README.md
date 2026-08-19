@@ -66,13 +66,20 @@ platform. On Linux, replace `shasum -a 256` with `sha256sum`. The default
 install prefix is `~/.local`; ensure `~/.local/bin` is on `PATH`. The installer
 does not download code and previews its changes with `--dry-run`.
 
-Exact release builds perform one fail-open update check on the first CLI use of
-each UTC day. When a newer release exists, the normal success or error document
-includes an `agentctl_update_available` warning with current/latest versions and
-the canonical release URL; command results and exit codes do not change. The
-owner-only cache lives beside the selected journal, failed checks back off for
-one hour, and `AGENTCTL_UPDATE_CHECK=off` disables the check. The notice never
-installs code: verify `SHA256SUMS` and use the packaged installer above.
+Exact release builds default to automatic updates. On the first CLI use that is
+due each UTC day, agentctl reads its binary-global owner-only state and, when
+needed, starts one detached short-lived worker. The foreground command does not
+wait for release discovery or installation. The worker downloads the matching
+release archive, verifies it against the published `SHA256SUMS`, and runs its
+packaged installer only when the current executable is owned by an agentctl
+install manifest. It then exits; no updater service or persistent daemon is
+created.
+
+Use `agentctl update status`, `agentctl update now`, or `agentctl update policy
+auto|notify|off` to inspect or control this behavior. `notify` retains the
+once-per-UTC-day `agentctl_update_available` warning without installing, while
+`off` performs no check. `AGENTCTL_UPDATE_MODE` overrides the stored policy and
+the legacy `AGENTCTL_UPDATE_CHECK=off` remains a hard-off override.
 
 ## Build from source
 
