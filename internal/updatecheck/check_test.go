@@ -44,6 +44,30 @@ func TestCheckNotifiesOncePerUTCDay(t *testing.T) {
 	}
 }
 
+func TestSuppressedAutoDiscoveryDoesNotConsumeNotification(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v0.3.3"})
+	}))
+	defer server.Close()
+
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "state", "update-state.json")
+	auto := Options{CurrentVersion: "v0.3.2", StatePath: path, Endpoint: server.URL, Now: func() time.Time { return now }, Client: server.Client(), Getenv: func(string) string { return "" }, DiscoveryOnly: true}
+	if notice, err := Check(context.Background(), auto); err != nil || notice == nil {
+		t.Fatalf("auto discovery notice=%#v err=%v", notice, err)
+	}
+	notify := auto
+	notify.DiscoveryOnly = false
+	if notice, err := Check(context.Background(), notify); err != nil || notice == nil {
+		t.Fatalf("notify after auto notice=%#v err=%v", notice, err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("requests=%d want=1 cached notification", requests.Load())
+	}
+}
+
 func TestCheckSkipsCurrentDevelopmentAndDisabledVersions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "update-check.json")
 	for _, test := range []Options{

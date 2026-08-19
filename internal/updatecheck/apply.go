@@ -52,6 +52,7 @@ func (e *ApplyError) Unwrap() error { return e.Cause }
 // owned by the packaged agentctl installer.
 func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	result := ApplyResult{CurrentVersion: options.Check.CurrentVersion}
+	options.Check.DiscoveryOnly = true
 	notice, err := Check(ctx, options.Check)
 	if err != nil || notice == nil {
 		return result, err
@@ -193,11 +194,21 @@ func extractArchive(content []byte, destination string) error {
 		if err != nil {
 			return err
 		}
+		// Archive names are POSIX paths. Reject every occurrence before using a
+		// tainted entry in filesystem operations; release packages never require
+		// a literal double-dot filename.
+		if strings.Contains(header.Name, "..") {
+			return errors.New("release archive contains an unsafe path")
+		}
 		clean := filepath.Clean(header.Name)
 		if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 			return errors.New("release archive contains an unsafe path")
 		}
 		target := filepath.Join(destination, clean)
+		relative, err := filepath.Rel(destination, target)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return errors.New("release archive escapes the staging directory")
+		}
 		switch header.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0o700); err != nil {
@@ -335,12 +346,17 @@ func recordInstalled(path, installed string) error {
 
 func recordApplyError(path, code string, cause error) error {
 	state, err := readState(path)
+	retryable := retryableApplyError(code)
 	if err == nil {
 		state.LastErrorCode = code
 		state.LastErrorAt = time.Now().UTC()
+		if retryable {
+			state.CheckedOn = ""
+			state.LastAttemptAt = state.LastErrorAt
+		}
 		err = writeState(path, state)
 	}
-	return &ApplyError{Code: code, Retryable: retryableApplyError(code), Cause: errors.Join(cause, err)}
+	return &ApplyError{Code: code, Retryable: retryable, Cause: errors.Join(cause, err)}
 }
 
 func retryableApplyError(code string) bool {

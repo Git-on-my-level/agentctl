@@ -36,6 +36,7 @@ type Options struct {
 	StatePath      string
 	Endpoint       string
 	Force          bool
+	DiscoveryOnly  bool
 	Now            func() time.Time
 	Client         *http.Client
 	Getenv         func(string) string
@@ -78,10 +79,10 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 		return nil, stateErr
 	}
 	if state.CheckedOn == today && !options.Force {
-		return cachedNotice(options.StatePath, state, current, today)
+		return cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
 	}
 	if !options.Force && !state.LastAttemptAt.IsZero() && now.Sub(state.LastAttemptAt) < retryInterval {
-		return cachedNotice(options.StatePath, state, current, today)
+		return cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
 	}
 
 	release, acquired, err := acquireLock(options.StatePath+".lock", now)
@@ -97,10 +98,10 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 		return nil, stateErr
 	}
 	if state.CheckedOn == today && !options.Force {
-		return cachedNotice(options.StatePath, state, current, today)
+		return cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
 	}
 	if !options.Force && !state.LastAttemptAt.IsZero() && now.Sub(state.LastAttemptAt) < retryInterval {
-		return cachedNotice(options.StatePath, state, current, today)
+		return cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
 	}
 
 	state.SchemaVersion = stateSchema
@@ -108,17 +109,19 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 	latest, fetchErr := fetchLatest(ctx, options)
 	if fetchErr != nil {
 		writeErr := writeState(options.StatePath, state)
-		notice, noticeErr := cachedNotice(options.StatePath, state, current, today)
+		notice, noticeErr := cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
 		return notice, errors.Join(fetchErr, writeErr, noticeErr)
 	}
 	state.CheckedOn = today
 	state.LatestVersion = latest
 	state.ReleaseURL = releaseURL(latest)
 	if parsedLatest, valid := parseVersion(latest); valid && parsedLatest.greaterThan(current) {
-		if state.NotifiedOn == today && !options.Force {
-			return nil, writeState(options.StatePath, state)
+		if !options.DiscoveryOnly {
+			if state.NotifiedOn == today && !options.Force {
+				return nil, writeState(options.StatePath, state)
+			}
+			state.NotifiedOn = today
 		}
-		state.NotifiedOn = today
 		notice := &Notice{CurrentVersion: options.CurrentVersion, LatestVersion: latest, ReleaseURL: state.ReleaseURL}
 		return notice, writeState(options.StatePath, state)
 	}
@@ -126,10 +129,13 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 	return nil, writeState(options.StatePath, state)
 }
 
-func cachedNotice(path string, state cacheState, current semanticVersion, today string) (*Notice, error) {
+func cachedNotice(path string, state cacheState, current semanticVersion, today string, discoveryOnly bool) (*Notice, error) {
 	latest, valid := parseVersion(state.LatestVersion)
-	if !valid || !latest.greaterThan(current) || state.NotifiedOn == today {
+	if !valid || !latest.greaterThan(current) || (!discoveryOnly && state.NotifiedOn == today) {
 		return nil, nil
+	}
+	if discoveryOnly {
+		return &Notice{CurrentVersion: current.String(), LatestVersion: state.LatestVersion, ReleaseURL: state.ReleaseURL}, nil
 	}
 	state.NotifiedOn = today
 	return &Notice{CurrentVersion: current.String(), LatestVersion: state.LatestVersion, ReleaseURL: state.ReleaseURL}, writeState(path, state)

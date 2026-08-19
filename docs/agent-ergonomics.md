@@ -124,7 +124,8 @@ updater daemon, timer, or dependency on the optional callback supervisor.
 Update state is stored under the platform state home (by default
 `~/.local/state/agentctl`) rather than beside a selected journal, because one
 binary must make one daily check across all journals. Failed discovery attempts
-back off for one hour. Development and dirty builds do not check.
+and retryable download or install failures back off for one hour. Development
+and dirty builds do not check.
 
 `agentctl update policy notify` checks synchronously at most once per UTC day
 and attaches `agentctl_update_available` without downloading the archive.

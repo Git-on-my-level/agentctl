@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestApplyUpdatesManagedInstallFromVerifiedArchive(t *testing.T) {
@@ -94,6 +95,45 @@ func TestApplyRejectsChecksumMismatchBeforeInstaller(t *testing.T) {
 	installed, _ := os.ReadFile(executable)
 	if !bytes.Equal(installed, oldBinary) {
 		t.Fatalf("checksum failure changed executable: %q", installed)
+	}
+}
+
+func TestRetryableApplyFailureBecomesDueAfterBackoff(t *testing.T) {
+	prefix := t.TempDir()
+	executable := filepath.Join(prefix, "bin", "agentctl")
+	writeManagedInstall(t, prefix, executable, []byte("#!/bin/sh\nexit 0\n"))
+	archiveName := fmt.Sprintf("agentctl_v0.3.4_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.URL.Path == "/latest":
+			_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": "v0.3.4"})
+		case strings.HasSuffix(request.URL.Path, "/SHA256SUMS"):
+			fmt.Fprintf(w, "%s  %s\n", strings.Repeat("0", 64), archiveName)
+		default:
+			http.Error(w, "retry later", http.StatusServiceUnavailable)
+		}
+	}))
+	defer server.Close()
+	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	options := Options{CurrentVersion: "v0.3.3", StatePath: statePath, Endpoint: server.URL + "/latest", Client: server.Client(), Getenv: func(string) string { return "" }}
+	_, err := Apply(context.Background(), ApplyOptions{Check: options, Executable: executable, ReleaseBaseURL: server.URL, Client: server.Client()})
+	var applyError *ApplyError
+	if !errors.As(err, &applyError) || applyError.Code != "archive_download_failed" || !applyError.Retryable {
+		t.Fatalf("apply error=%#v err=%v", applyError, err)
+	}
+	state, err := readState(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CheckedOn != "" || Due(options) {
+		t.Fatalf("retry state=%#v due=%v; want one-hour backoff", state, Due(options))
+	}
+	state.LastAttemptAt = time.Now().UTC().Add(-retryInterval - time.Minute)
+	if err := writeState(statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	if !Due(options) {
+		t.Fatal("retryable failure did not become due after backoff")
 	}
 }
 
