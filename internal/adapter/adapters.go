@@ -338,26 +338,36 @@ func genericManifest() Manifest {
 }
 
 func codexManifest() Manifest {
+	resultContent := resultContentDecl(CapabilitySupported, "agent_message")
+	resultContent.Constraints["required_output_mode"] = "json"
+	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--json", "kind": "presence"}
 	return baseManifest("codex", "0.1.0", "codex_thread", "codex-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContentDecl(CapabilitySupported, "agent_message"), capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 }
 
 func cursorManifest() Manifest {
+	resultContent := resultContentDecl(CapabilitySupported, "result_or_assistant_message")
+	resultContent.Constraints["required_output_mode"] = "stream-json"
+	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--output-format", "kind": "value", "value": "stream-json"}
 	return baseManifest("cursor", "0.1.0", "cursor_session", "cursor-stream-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContentDecl(CapabilitySupported, "result_or_assistant_message"), capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 }
 
 func claudeManifest() Manifest {
+	resultContent := resultContentDecl(CapabilitySupported, "result")
+	resultContent.Constraints["required_output_mode"] = "stream-json"
+	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--output-format", "kind": "value", "value": "stream-json"}
 	return baseManifest("claude-code", "0.1.0", "claude_session", "claude-stream-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContentDecl(CapabilitySupported, "result"), capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 }
 
 func ompManifest() Manifest {
 	resultContent := resultContentDecl(CapabilitySupported, "agent_end_or_assistant_message")
 	resultContent.Constraints["required_output_mode"] = "json"
+	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--mode", "kind": "value", "value": "json"}
 	m := baseManifest("omp", "0.2.0", "omp_session", "omp-acp-json", []CapabilityDeclaration{
 		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
@@ -416,4 +426,33 @@ func resultContentDecl(status CapabilityStatus, source string) CapabilityDeclara
 	decl.Constraints["source"] = source
 	decl.Constraints["max_bytes"] = 1 << 20
 	return decl
+}
+
+// NegotiateInvocation resolves one static adapter declaration against the
+// exact native argv. It performs no filesystem or network access and is safe
+// to use before dependency probing or journal creation.
+func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName) Capability {
+	for _, declaration := range manifest.Capabilities {
+		if declaration.Name != name {
+			continue
+		}
+		status := declaration.Implementation
+		if status == CapabilityConditional {
+			status = CapabilityDegraded
+		}
+		if status == "" {
+			status = CapabilitySupported
+		}
+		constraints := cloneMap(declaration.Constraints)
+		reason := ""
+		if len(argv) != 0 && name == CapabilityResultContent && !invocationRequirementSatisfied(argv, constraints) {
+			status = CapabilityUnavailable
+			constraints["invocation_satisfied"] = false
+			reason = "exact invocation does not satisfy the structured-output requirement"
+		} else if len(argv) != 0 && name == CapabilityResultContent {
+			constraints["invocation_satisfied"] = true
+		}
+		return Capability{Name: name, Status: status, Source: "manifest", SemanticsVersion: declaration.SemanticsVersion, Constraints: constraints, Reason: reason}
+	}
+	return Capability{Name: name, Status: CapabilityUnavailable, Source: "manifest", SemanticsVersion: SemanticsVersion, Constraints: map[string]any{}, Reason: "capability is not declared"}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -20,6 +21,8 @@ import (
 
 const backgroundStartupTimeout = 30 * time.Second
 
+const backgroundJournalReadRetry = 2 * time.Second
+
 const backgroundReadyTokenEnv = "AGENTCTL_BACKGROUND_READY_TOKEN"
 
 type backgroundReady struct {
@@ -27,7 +30,7 @@ type backgroundReady struct {
 	ExecutionID string `json:"execution_id"`
 }
 
-func (a *app) runNativeBackground(ctx context.Context, renderer output.Renderer, c common, args []string, opts runOptions) *output.Error {
+func (a *app) runNativeBackground(ctx context.Context, renderer output.Renderer, c common, args []string, opts runOptions, prompt *promptPayload) *output.Error {
 	journalPath, err := a.journalPath(c)
 	if err != nil {
 		return output.Wrap(output.CodeInternal, "resolve background journal", false, err)
@@ -48,9 +51,14 @@ func (a *app) runNativeBackground(ctx context.Context, renderer output.Renderer,
 	if err != nil {
 		return output.Wrap(output.CodeDependencyUnavailable, "resolve agentctl executable for background worker", false, err)
 	}
-	workerArgs := backgroundCommandArgs(c, args, executionID, opts.executionID.IsZero())
+	workerArgs := backgroundCommandArgs(c, args, executionID, opts.executionID.IsZero(), prompt != nil)
 	cmd := exec.Command(executable, workerArgs...)
-	cmd.Stdin = nil
+	if prompt != nil {
+		// The parent materializes bounded prompt bytes before detaching. An
+		// inherited one-shot pipe keeps raw prompts out of argv, repositories, and
+		// the durable journal while allowing the worker to consume stdin safely.
+		cmd.Stdin = bytes.NewReader(prompt.Bytes)
+	}
 	cmd.Stderr = nil
 	readyToken, err := newBackgroundReadyToken()
 	if err != nil {
@@ -148,7 +156,7 @@ func backgroundWorkerError(raw []byte, executionID ids.ExecutionID, waitErr erro
 	return output.NewError(output.CodeExecutionFailed, "background agentctl worker failed during startup", false).WithDetail("execution_id", executionID.String()).WithDetail("worker_error", detail)
 }
 
-func backgroundCommandArgs(c common, runArgs []string, executionID ids.ExecutionID, addExecutionID bool) []string {
+func backgroundCommandArgs(c common, runArgs []string, executionID ids.ExecutionID, addExecutionID bool, materializedPrompt bool) []string {
 	args := []string{"--output", "json"}
 	appendFlag := func(name, value string) {
 		if value != "" {
@@ -162,8 +170,16 @@ func backgroundCommandArgs(c common, runArgs []string, executionID ids.Execution
 	appendFlag("--journal", c.journalPath)
 	args = append(args, "run")
 	beforeDelimiter := true
-	for i, arg := range runArgs {
+	for i := 0; i < len(runArgs); i++ {
+		arg := runArgs[i]
 		if beforeDelimiter && arg == "--background" {
+			continue
+		}
+		if beforeDelimiter && materializedPrompt && arg == "--prompt-file" {
+			if i+1 < len(runArgs) {
+				i++
+			}
+			args = append(args, "--prompt-stdin")
 			continue
 		}
 		if arg == "--" && addExecutionID {
@@ -173,7 +189,7 @@ func backgroundCommandArgs(c common, runArgs []string, executionID ids.Execution
 		if arg == "--" {
 			beforeDelimiter = false
 		}
-		args = append(args, runArgs[i])
+		args = append(args, arg)
 	}
 	return args
 }
@@ -184,8 +200,21 @@ func readBackgroundExecution(ctx context.Context, journalPath string, executionI
 	} else if err != nil {
 		return execution, false, output.Wrap(output.CodeAuthorizationDenied, "inspect background execution journal", false, err).WithDetail("execution_id", executionID.String())
 	}
-	journal, err := store.Open(journalPath, store.Options{ReadOnly: true, LockTimeout: 100 * time.Millisecond})
-	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrBusy) {
+	var journal *store.Journal
+	var err error
+	deadline := time.Now().Add(backgroundJournalReadRetry)
+	for {
+		journal, err = store.Open(journalPath, store.Options{ReadOnly: true, LockTimeout: 100 * time.Millisecond})
+		if !errors.Is(err, store.ErrBusy) || !time.Now().Before(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return execution, false, output.Wrap(output.CodeExecutionCancelled, "inspect background execution journal", false, ctx.Err()).WithDetail("execution_id", executionID.String())
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	if errors.Is(err, store.ErrNotFound) {
 		return execution, false, nil
 	}
 	if err != nil {

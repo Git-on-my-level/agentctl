@@ -77,6 +77,11 @@ An execution accepts at most 16 unique lowercase names matching
 secrets or prompt/result content in them. They never authorize dispatch or
 mutation.
 
+`deadline_at` is the optional absolute UTC deadline negotiated for the native
+execution. It is distinct from an observer's wait budget. Generated continuation
+actions may use `await --through-execution-deadline`, which resolves this durable
+deadline at invocation time and allows bounded terminalization grace.
+
 ## State and liveness
 
 Normalized state is authority outcome, while liveness is observation evidence:
@@ -90,6 +95,9 @@ Terminal states are `completed`, `failed`, `cancelled`, and `orphaned`.
 `orphaned` means the adapter proved that the bound attempt cannot continue and
 no authoritative terminal outcome can be recovered; temporary inability to
 observe is `liveness: unreachable`, not orphaning.
+An exit code of zero without a structured authoritative terminal record is
+`orphaned` with `result_extraction_failed`, not `failed`: process success does
+not prove agent success, while observer failure must not claim agent failure.
 
 `attention` means work may continue but an external decision or intervention is
 currently required. `waiting` is non-actionable waiting on an external event.

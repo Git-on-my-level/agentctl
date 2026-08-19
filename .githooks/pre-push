@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+# Select the Go distribution associated with the executable on PATH. A stale
+# inherited GOROOT can otherwise make an otherwise healthy toolchain fail with
+# a compile-version mismatch before any repository check runs.
+unset GOROOT
+
+exec make pre-push

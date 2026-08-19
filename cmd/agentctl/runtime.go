@@ -59,12 +59,12 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	if problem != nil {
 		return problem
 	}
-	if opts.background && !opts.plan {
-		return a.runNativeBackground(ctx, renderer, c, args, opts)
-	}
 	prompt, problem := a.loadPrompt(opts)
 	if problem != nil {
 		return problem
+	}
+	if opts.background && !opts.plan {
+		return a.runNativeBackground(ctx, renderer, c, args, opts, prompt)
 	}
 	if prompt != nil {
 		if prompt.Delivery == "argv" {
@@ -88,12 +88,12 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 			WithDetail("diagnostic_code", "cursor_plan_result_unreliable").
 			WithActions(output.NextAction{Label: "Use default Cursor agent mode", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"omit Cursor --plan and --mode plan"}})
 	}
-	if runtime.Name() == "omp" && !ompJSONMode(opts.argv) && !opts.allowMissingResult && !opts.noStoreResult {
-		return output.NewError(output.CodeCapabilityUnavailable, "OMP result content requires structured JSON output", false).
-			WithDetail("adapter", "omp").
-			WithDetail("required_output_mode", "json").
-			WithDetail("diagnostic_code", "omp_result_mode_unreliable").
-			WithActions(output.NextAction{Label: "Use OMP JSON print mode", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"pass --mode json in OMP native argv"}})
+	if !opts.allowMissingResult && !opts.noStoreResult {
+		invocation := adapter.NegotiateInvocation(runtime.Manifest(), opts.argv, adapter.CapabilityResultContent)
+		if problem := requireRunCapability(adapter.ProbeResult{Capabilities: []adapter.Capability{invocation}}, adapter.CapabilityResultContent); problem != nil {
+			problem.Message = "exact invocation cannot reliably return result content"
+			return problem.WithDetail("adapter", runtime.Name())
+		}
 	}
 	operationCtx := ctx
 	var operationCancel context.CancelFunc
@@ -101,7 +101,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		operationCtx, operationCancel = context.WithTimeout(ctx, opts.timeout)
 		defer operationCancel()
 	}
-	probe, err := runtime.Probe(operationCtx, adapter.ProbeRequest{Executable: opts.argv[0], Profile: profileName, Timeout: 5 * time.Second, Fresh: true})
+	probe, err := runtime.Probe(operationCtx, adapter.ProbeRequest{Executable: opts.argv[0], Argv: opts.argv, Profile: profileName, Timeout: 5 * time.Second, Fresh: true})
 	if err != nil {
 		return mapAdapterError("adapter probe failed", err)
 	}
@@ -140,7 +140,12 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	}
 	now := a.now().UTC()
 	fresh := int(probe.FreshFor / time.Second)
-	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Labels: append([]string(nil), opts.labels...), Supersedes: []ids.ExecutionID{}, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
+	var deadlineAt *time.Time
+	if deadline, ok := operationCtx.Deadline(); ok {
+		deadline = deadline.UTC()
+		deadlineAt = &deadline
+	}
+	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Labels: append([]string(nil), opts.labels...), Supersedes: []ids.ExecutionID{}, DeadlineAt: deadlineAt, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
 	mutation := contracts.MutationKey{}
 	if opts.idempotencyKey != "" {
 		digest, dErr := mutationDigest(runtime.Name(), opts.cwd, opts.argv, opts.labels, opts.noStoreResult, prompt)
@@ -551,9 +556,6 @@ func parseRun(args []string) (runOptions, *output.Error) {
 	if o.promptFile != "" && o.promptStdin {
 		return o, output.NewError(output.CodeUsage, "--prompt-file and --prompt-stdin are mutually exclusive", false)
 	}
-	if o.background && o.promptStdin {
-		return o, output.NewError(output.CodeUsage, "--background cannot use --prompt-stdin; use --prompt-file or native argv", false)
-	}
 	if o.background && o.idempotencyKey != "" {
 		return o, output.NewError(output.CodeUsage, "--background cannot use --idempotency-key because startup must return the exact created execution ID", false)
 	}
@@ -704,7 +706,16 @@ func requireRunCapability(probe adapter.ProbeResult, required adapter.Capability
 		if capability.Status != adapter.CapabilityUnavailable {
 			return nil
 		}
-		break
+		problem := output.NewError(output.CodeCapabilityUnavailable, "required adapter capability is unavailable", false).WithDetail("capability", required)
+		if capability.Reason != "" {
+			problem = problem.WithDetail("reason", capability.Reason)
+		}
+		if mode, ok := capability.Constraints["required_output_mode"].(string); ok && mode != "" {
+			problem = problem.WithDetail("required_output_mode", mode).
+				WithDetail("diagnostic_code", "invocation_output_mode_required").
+				WithActions(output.NextAction{Label: "Use the adapter's structured output mode", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"pass the required structured-output flag in the exact native argv"}})
+		}
+		return problem
 	}
 	return output.NewError(output.CodeCapabilityUnavailable, "required adapter capability is unavailable", false).WithDetail("capability", required)
 }
@@ -1036,7 +1047,7 @@ func finalizeResult(ctx context.Context, journal *store.Journal, execution model
 	if outcome.Failure != nil {
 		payload["failure_code"] = outcome.Failure.Code
 	}
-	for _, key := range []string{"diagnostic_code", "result_content_source", "terminal_source_state"} {
+	for _, key := range []string{"diagnostic_code", "parse_diagnostic_code", "result_content_source", "terminal_source_state"} {
 		if value, ok := result.Data[key].(string); ok && strings.TrimSpace(value) != "" {
 			payload[key] = value
 		}
@@ -1083,7 +1094,8 @@ func buildOutcome(execution model.Execution, result adapter.Result, now time.Tim
 		}
 		if strings.TrimSpace(result.Error) != "" || execution.State == model.StateFailed {
 			message, _ := boundedOutcomeText(firstNonEmptyString(result.Error, "native execution failed"), model.OutcomeFailureLimit)
-			code, kind, retryable := classifyOutcomeFailure(message)
+			diagnosticCode, _ := result.Data["diagnostic_code"].(string)
+			code, kind, retryable := classifyOutcomeFailure(message, diagnosticCode)
 			outcome.Failure = &model.OutcomeFailure{Code: code, Kind: kind, Source: execution.Adapter, Retryable: retryable, Message: message}
 		}
 		if outcome.Content != nil || outcome.Failure != nil {
@@ -1106,7 +1118,10 @@ func boundedOutcomeText(value string, max int) (string, bool) {
 	return value, true
 }
 
-func classifyOutcomeFailure(message string) (string, string, bool) {
+func classifyOutcomeFailure(message, diagnosticCode string) (string, string, bool) {
+	if diagnosticCode == "result_extraction_failed" {
+		return "result_extraction_failed", "observation", false
+	}
 	lower := strings.ToLower(message)
 	switch {
 	case strings.Contains(lower, "workspace") && strings.Contains(lower, "trust"):

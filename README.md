@@ -129,9 +129,10 @@ does not turn direct work into a scheduler or remote authority. The worker is
 noninteractive and has no controlling terminal. Direct native adapters do not
 gain a cross-process cancel route merely because they are backgrounded; use an
 explicit `--timeout` when a hard stop is required unless the adapter advertises
-durable cancellation. Background
-prompt delivery supports native argv and `--prompt-file`; it rejects
-`--prompt-stdin`, whose input cannot be replayed safely after detachment.
+durable cancellation. Background prompt delivery accepts `--prompt-file` and
+`--prompt-stdin`: the parent reads and bounds the bytes before detaching, then
+hands them to the worker through a one-shot pipe. Raw prompt bytes are not
+placed in argv, the repository, or the durable journal.
 Background launch also rejects `--idempotency-key` until its startup handshake
 can return a reused execution's exact ID.
 Labels are exact lowercase metadata names, may be repeated up to 16 times, and
@@ -243,6 +244,15 @@ Callers can require provenance or a task-specific minimum size with
 `result --require-result-source assistant --min-result-bytes N`.
 Use `await --no-timeout` for an intentionally unbounded observer. Await still
 stops on actionable attention unless `--ignore-attention` is explicit.
+Executions launched with `run --timeout` record an absolute deadline;
+`await --through-execution-deadline` waits through that deadline plus bounded
+terminalization grace. Generated background next actions use this form and
+also point nonblocking callers to durable subscription setup.
+
+JSON callers must inspect the envelope's `.ok` field. In shell pipelines,
+`$?` normally belongs to the final pipeline stage; use `set -o pipefail` or
+capture the agentctl status explicitly rather than treating a downstream
+formatter's zero exit as agentctl success.
 
 ## Data-storage disclosure
 

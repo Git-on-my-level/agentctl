@@ -178,6 +178,7 @@ type Execution struct {
 	TaskContract      *TaskContract      `json:"task_contract,omitempty"`
 	CreatedAt         time.Time          `json:"created_at"`
 	StartedAt         *time.Time         `json:"started_at,omitempty"`
+	DeadlineAt        *time.Time         `json:"deadline_at,omitempty"`
 	UpdatedAt         time.Time          `json:"updated_at"`
 	TerminalAt        *time.Time         `json:"terminal_at"`
 	Observation       Observation        `json:"observation"`
@@ -222,6 +223,9 @@ func (e Execution) Validate() error {
 	}
 	if e.CreatedAt.IsZero() || e.UpdatedAt.IsZero() || e.Observation.ObservedAt.IsZero() {
 		return errors.New("required timestamp is zero")
+	}
+	if e.DeadlineAt != nil && e.DeadlineAt.IsZero() {
+		return errors.New("deadline_at is zero")
 	}
 	if e.UpdatedAt.Before(e.CreatedAt) {
 		return errors.New("updated_at precedes created_at")
