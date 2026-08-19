@@ -2,6 +2,14 @@
 set -eu
 
 repo_root=$(git rev-parse --show-toplevel)
+
+# Git exports repository-local variables to hooks. Clear them before tests
+# create disposable repositories, or their native git commands can remain
+# pinned to this checkout and fail with "must be run in a work tree".
+for variable in $(git rev-parse --local-env-vars); do
+  unset "$variable"
+done
+
 cd "$repo_root"
 
 # Select the Go distribution associated with the executable on PATH. A stale
