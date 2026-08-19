@@ -304,7 +304,7 @@ func TestOversizedStructuredRecordReturnsTypedDiagnostic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Result == nil || got.Result.Success || got.Result.Data["diagnostic_code"] != diagnosticRecordTooLarge {
+	if got.Result == nil || got.Result.Success || got.Result.Data["diagnostic_code"] != "result_extraction_failed" || got.Result.Data["parse_diagnostic_code"] != diagnosticRecordTooLarge {
 		t.Fatalf("oversized record result = %#v", got.Result)
 	}
 }
@@ -321,20 +321,20 @@ func TestStructuredErrorFieldFailsWithoutSeparateErrorFlag(t *testing.T) {
 }
 
 func TestMalformedOutputIsHealthEventAndDoesNotBecomeSuccess(t *testing.T) {
-	path := fixtureExecutable(t, `printf '%s\n' '{truncated' '{"type":"progress","session_id":"malformed-fixture"}'`)
+	path := fixtureExecutable(t, `printf '%s\n' '{truncated' '{"type":"progress","session_id":"malformed-fixture"}' '{truncated-again' '{"type":"progress","session_id":"malformed-fixture"}' '{truncated-once-more'`)
 	a := NewGenericProcess()
 	got, err := a.Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Result == nil || got.Result.Success || got.Result.State != StateFailed {
+	if got.Result == nil || got.Result.Success || got.Result.State != StateOrphaned {
 		t.Fatalf("zero-domain-result interpreted as success: %#v", got.Result)
 	}
 	events, err := a.Events(context.Background(), EventsRequest{Ref: got.Session.Ref})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) < 2 || events[0].Kind != "health" {
+	if len(events) != 3 || events[0].Kind != "health" {
 		t.Fatalf("malformed output was not observable: %#v", events)
 	}
 }
@@ -554,6 +554,49 @@ func TestBuiltInManifestsHaveSchemaRequiredShapes(t *testing.T) {
 			if declaration.Constraints == nil {
 				t.Fatalf("%s capability %s omitted constraints", manifest.Adapter, declaration.Name)
 			}
+		}
+	}
+}
+
+func TestResultContentNegotiationUsesExactInvocation(t *testing.T) {
+	tests := []struct {
+		name                      string
+		manifest                  Manifest
+		good, bad, afterDelimiter []string
+	}{
+		{name: "codex", manifest: codexManifest(), good: []string{"codex", "exec", "--json", "review"}, bad: []string{"codex", "exec", "review"}, afterDelimiter: []string{"--json"}},
+		{name: "cursor", manifest: cursorManifest(), good: []string{"cursor-agent", "--print", "--output-format", "stream-json", "review"}, bad: []string{"cursor-agent", "--print", "review"}, afterDelimiter: []string{"--output-format", "stream-json"}},
+		{name: "claude", manifest: claudeManifest(), good: []string{"claude", "--output-format=stream-json", "review"}, bad: []string{"claude", "review"}, afterDelimiter: []string{"--output-format=stream-json"}},
+		{name: "omp", manifest: ompManifest(), good: []string{"omp", "-p", "--mode=json", "review"}, bad: []string{"omp", "-p", "review"}, afterDelimiter: []string{"--mode=json"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			good := NegotiateInvocation(tt.manifest, tt.good, CapabilityResultContent)
+			if good.Status == CapabilityUnavailable || good.Constraints["invocation_satisfied"] != true {
+				t.Fatalf("good invocation=%#v", good)
+			}
+			bad := NegotiateInvocation(tt.manifest, tt.bad, CapabilityResultContent)
+			if bad.Status != CapabilityUnavailable || bad.Constraints["invocation_satisfied"] != false || bad.Reason == "" {
+				t.Fatalf("bad invocation=%#v", bad)
+			}
+		})
+	}
+	for _, tt := range tests {
+		requirement, _ := NegotiateInvocation(tt.manifest, tt.good, CapabilityResultContent).Constraints["required_argv"].(map[string]any)
+		if requirement["kind"] != "value" {
+			continue
+		}
+		conflicting := append(append([]string(nil), tt.good...), fmt.Sprint(requirement["flag"]), "text")
+		negotiated := NegotiateInvocation(tt.manifest, conflicting, CapabilityResultContent)
+		if negotiated.Status != CapabilityUnavailable {
+			t.Fatalf("%s accepted an earlier structured mode over a later conflict: %#v", tt.name, negotiated)
+		}
+	}
+	for _, tt := range tests {
+		argv := append(append(append([]string(nil), tt.bad...), "--"), tt.afterDelimiter...)
+		negotiated := NegotiateInvocation(tt.manifest, argv, CapabilityResultContent)
+		if negotiated.Status != CapabilityUnavailable {
+			t.Fatalf("%s accepted structured-output text after delimiter: %#v", tt.name, negotiated)
 		}
 	}
 }

@@ -129,6 +129,10 @@ is still trustworthy.
 
 Raw token deltas, chain-of-thought, tool chatter, every stdout line, prompts,
 and transcripts are not normalized events.
+Repeated equivalent unstructured stdout/stderr observations are coalesced into
+one edge-triggered health event. `events --kind terminal` and repeated `--kind`
+filters provide bounded diagnostic projections without turning native streams
+into transcript storage.
 
 ## Cursors and replay
 

@@ -259,7 +259,6 @@ func TestRunParsesLabelsAndBackground(t *testing.T) {
 	for _, args := range [][]string{
 		{"--label", "Not-Lowercase", "--", "/bin/echo"},
 		{"--label", "review", "--label", "review", "--", "/bin/echo"},
-		{"--background", "--prompt-stdin", "--", "/bin/echo"},
 		{"--background", "--idempotency-key", "same", "--", "/bin/echo"},
 	} {
 		if _, problem := parseRun(args); problem == nil || problem.Code != output.CodeUsage {
@@ -273,15 +272,45 @@ func TestBackgroundCommandArgsPreserveSelectorsAndRemoveBackground(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := backgroundCommandArgs(common{profile: "fleet", journalPath: "/tmp/journal.db"}, []string{"--background", "--label", "review", "--", "/bin/echo", "done"}, executionID, true)
+	args := backgroundCommandArgs(common{profile: "fleet", journalPath: "/tmp/journal.db"}, []string{"--background", "--label", "review", "--", "/bin/echo", "done"}, executionID, true, false)
 	want := []string{"--output", "json", "--profile", "fleet", "--journal", "/tmp/journal.db", "run", "--label", "review", "--execution-id", executionID.String(), "--", "/bin/echo", "done"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("args=%v want=%v", args, want)
 	}
-	args = backgroundCommandArgs(common{}, []string{"--background", "--", "/bin/echo", "--background"}, executionID, true)
+	args = backgroundCommandArgs(common{}, []string{"--background", "--", "/bin/echo", "--background"}, executionID, true, false)
 	want = []string{"--output", "json", "run", "--execution-id", executionID.String(), "--", "/bin/echo", "--background"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("native argv was rewritten: args=%v want=%v", args, want)
+	}
+	args = backgroundCommandArgs(common{}, []string{"--background", "--prompt-file", "task.md", "--prompt-delivery", "stdin", "--", "/bin/cat"}, executionID, true, true)
+	want = []string{"--output", "json", "run", "--prompt-stdin", "--prompt-delivery", "stdin", "--execution-id", executionID.String(), "--", "/bin/cat"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("materialized prompt args=%v want=%v", args, want)
+	}
+}
+
+func TestReadBackgroundExecutionRetriesJournalContention(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journalPath := filepath.Join(root, "journal.db")
+	journal, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	execution, _, err := journal.CreateExecution(context.Background(), model.Execution{Authority: model.AuthorityNative, Adapter: "generic-process", Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateRunning, Liveness: model.LivenessAlive, SourceBindings: []model.SourceBinding{}, Capabilities: model.CapabilitySnapshot{NegotiatedAt: now, AdapterVersion: "test", Items: []model.CapabilityItem{}}, Observation: model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: now}}, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		_ = journal.Close()
+	}()
+	read, found, problem := readBackgroundExecution(context.Background(), journalPath, execution.ID)
+	if problem != nil || !found || read.ID != execution.ID {
+		t.Fatalf("read=%#v found=%v problem=%#v", read, found, problem)
 	}
 }
 
@@ -296,10 +325,19 @@ func TestBackgroundRunLifecycleThroughBuiltBinary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build fixture binary: %v\n%s", err, buildOutput)
 	}
+	rejectedJournal := filepath.Join(root, "rejected", "journal.db")
+	rejected := exec.Command(binary, "--journal", rejectedJournal, "run", "--background", "--adapter", "codex", "--", "/bin/echo", "exec", "review")
+	rejectedOutput, rejectedErr := rejected.CombinedOutput()
+	if rejectedErr == nil || !bytes.Contains(rejectedOutput, []byte(`"code":"capability_unavailable"`)) || !bytes.Contains(rejectedOutput, []byte(`"diagnostic_code":"invocation_output_mode_required"`)) {
+		t.Fatalf("background worker accepted invocation without structured output: %v\n%s", rejectedErr, rejectedOutput)
+	}
+	if _, err := os.Stat(rejectedJournal); !os.IsNotExist(err) {
+		t.Fatalf("background preflight rejection created a journal: %v", err)
+	}
 	journal := filepath.Join(root, "state", "journal.db")
 	native := `sleep 2; printf '%s\n' '{"type":"result","status":"completed","result":"BACKGROUND_INTEGRATION_OK"}'`
 	started := time.Now()
-	launch := exec.Command(binary, "--journal", journal, "run", "--background", "--label", "integration", "--adapter", "generic-process", "--", "/bin/sh", "-c", native)
+	launch := exec.Command(binary, "--journal", journal, "run", "--background", "--label", "integration", "--timeout", "30s", "--adapter", "generic-process", "--", "/bin/sh", "-c", native)
 	launchOutput, err := launch.CombinedOutput()
 	if err != nil {
 		t.Fatalf("background launch: %v\n%s", err, launchOutput)
@@ -313,8 +351,11 @@ func TestBackgroundRunLifecycleThroughBuiltBinary(t *testing.T) {
 	if err := json.Unmarshal(launchOutput, &launchDoc); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(launchDoc.Result.Labels, []string{"integration"}) || launchDoc.Result.State.Terminal() {
+	if !reflect.DeepEqual(launchDoc.Result.Labels, []string{"integration"}) || launchDoc.Result.State.Terminal() || launchDoc.Result.DeadlineAt == nil {
 		t.Fatalf("launch=%#v", launchDoc.Result)
+	}
+	if !bytes.Contains(launchOutput, []byte(`"--through-execution-deadline"`)) || !bytes.Contains(launchOutput, []byte(`"agentctl","help","subscribe"`)) {
+		t.Fatalf("background next actions are not supervision-aware: %s", launchOutput)
 	}
 	recent := exec.Command(binary, "--journal", journal, "recent", "--label", "integration", "--limit", "1")
 	recentOutput, err := recent.CombinedOutput()
@@ -329,6 +370,62 @@ func TestBackgroundRunLifecycleThroughBuiltBinary(t *testing.T) {
 	resultOutput, err := result.CombinedOutput()
 	if err != nil || !bytes.Contains(resultOutput, []byte("BACKGROUND_INTEGRATION_OK")) {
 		t.Fatalf("result: %v\n%s", err, resultOutput)
+	}
+	promptNative := `IFS= read -r value; printf '{"type":"result","status":"completed","result":"%s"}\n' "$value"`
+	promptLaunch := exec.Command(binary, "--journal", journal, "run", "--background", "--label", "prompt-stdin", "--prompt-stdin", "--prompt-delivery", "stdin", "--adapter", "generic-process", "--", "/bin/sh", "-c", promptNative)
+	promptLaunch.Stdin = strings.NewReader("BACKGROUND_STDIN_OK\n")
+	promptLaunchOutput, err := promptLaunch.CombinedOutput()
+	if err != nil {
+		t.Fatalf("background prompt stdin launch: %v\n%s", err, promptLaunchOutput)
+	}
+	var promptLaunchDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(promptLaunchOutput, &promptLaunchDoc); err != nil {
+		t.Fatal(err)
+	}
+	promptWait := exec.Command(binary, "--journal", journal, "await", promptLaunchDoc.Result.ID.String(), "--no-timeout", "--ignore-attention")
+	if promptWaitOutput, err := promptWait.CombinedOutput(); err != nil {
+		t.Fatalf("background prompt stdin await: %v\n%s", err, promptWaitOutput)
+	}
+	promptResult := exec.Command(binary, "--journal", journal, "result", promptLaunchDoc.Result.ID.String(), "--min-result-bytes", "10")
+	if promptResultOutput, err := promptResult.CombinedOutput(); err != nil || !bytes.Contains(promptResultOutput, []byte("BACKGROUND_STDIN_OK")) {
+		t.Fatalf("background prompt stdin result: %v\n%s", err, promptResultOutput)
+	}
+	list := exec.Command(binary, "--journal", journal, "list", "--label", "prompt-stdin", "--limit", "1")
+	if listOutput, err := list.CombinedOutput(); err != nil || !bytes.Contains(listOutput, []byte(promptLaunchDoc.Result.ID.String())) {
+		t.Fatalf("list alias: %v\n%s", err, listOutput)
+	}
+	promptFile := filepath.Join(root, "background-task.md")
+	if err := os.WriteFile(promptFile, []byte("PROMPT_FILE_SECRET\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	promptFileNative := `IFS= read -r value; test "$value" = "PROMPT_FILE_SECRET"; printf '%s\n' '{"type":"result","status":"completed","result":"BACKGROUND_FILE_OK"}'`
+	promptFileLaunch := exec.Command(binary, "--journal", journal, "run", "--background", "--cwd", root, "--label", "prompt-file", "--prompt-file", "background-task.md", "--prompt-delivery", "stdin", "--adapter", "generic-process", "--", "/bin/sh", "-c", promptFileNative)
+	promptFileLaunchOutput, err := promptFileLaunch.CombinedOutput()
+	if err != nil {
+		t.Fatalf("background prompt file launch: %v\n%s", err, promptFileLaunchOutput)
+	}
+	var promptFileLaunchDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(promptFileLaunchOutput, &promptFileLaunchDoc); err != nil {
+		t.Fatal(err)
+	}
+	promptFileWait := exec.Command(binary, "--journal", journal, "await", promptFileLaunchDoc.Result.ID.String(), "--no-timeout", "--ignore-attention")
+	if promptFileWaitOutput, err := promptFileWait.CombinedOutput(); err != nil {
+		t.Fatalf("background prompt file await: %v\n%s", err, promptFileWaitOutput)
+	}
+	promptFileResult := exec.Command(binary, "--journal", journal, "result", promptFileLaunchDoc.Result.ID.String(), "--min-result-bytes", "10")
+	if promptFileResultOutput, err := promptFileResult.CombinedOutput(); err != nil || !bytes.Contains(promptFileResultOutput, []byte("BACKGROUND_FILE_OK")) {
+		t.Fatalf("background prompt file result: %v\n%s", err, promptFileResultOutput)
+	}
+	journalBytes, err := os.ReadFile(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(journalBytes, []byte("PROMPT_FILE_SECRET")) || bytes.Contains(journalBytes, []byte(promptFile)) {
+		t.Fatal("background prompt source leaked into durable journal")
 	}
 	ompFixture := filepath.Join(root, "omp-fixture")
 	ompContents := `#!/bin/sh
@@ -887,7 +984,7 @@ func TestOMPResultModeFailsClosedBeforeProbeOrJournal(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		a := testApp(&stdout, &stderr)
 		args := append([]string{"--journal", journal, "run", "--"}, native...)
-		if code := a.run(context.Background(), args); code != output.ExitCodeFor(output.CodeCapabilityUnavailable) || !strings.Contains(stdout.String(), `"diagnostic_code":"omp_result_mode_unreliable"`) {
+		if code := a.run(context.Background(), args); code != output.ExitCodeFor(output.CodeCapabilityUnavailable) || !strings.Contains(stdout.String(), `"diagnostic_code":"invocation_output_mode_required"`) {
 			t.Fatalf("OMP mode exit=%d output=%s", code, stdout.String())
 		}
 		if _, err := os.Stat(journal); !os.IsNotExist(err) {
@@ -907,6 +1004,64 @@ func TestOMPResultModeFailsClosedBeforeProbeOrJournal(t *testing.T) {
 	opts, problem := parseRun([]string{"--allow-missing-result", "--", "omp", "-p", "review"})
 	if problem != nil || !opts.allowMissingResult {
 		t.Fatalf("explicit missing-result acceptance was not parsed: opts=%#v problem=%v", opts, problem)
+	}
+}
+
+func TestKnownAdapterStructuredOutputFailsClosedBeforeProbeOrJournal(t *testing.T) {
+	for _, tc := range []struct {
+		adapter string
+		argv    []string
+	}{
+		{adapter: "codex", argv: []string{"missing-codex-binary", "exec", "review"}},
+		{adapter: "cursor", argv: []string{"missing-cursor-binary", "--print", "review"}},
+		{adapter: "cursor", argv: []string{"missing-cursor-binary", "--print", "--output-format", "stream-json", "--output-format", "text", "review"}},
+		{adapter: "omp", argv: []string{"missing-omp-binary", "-p", "--mode=json", "--mode", "text", "review"}},
+	} {
+		journal := filepath.Join(t.TempDir(), "journal.db")
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		args := []string{"--journal", journal, "run", "--adapter", tc.adapter, "--"}
+		args = append(args, tc.argv...)
+		if code := a.run(context.Background(), args); code != output.ExitCodeFor(output.CodeCapabilityUnavailable) || !strings.Contains(stdout.String(), `"diagnostic_code":"invocation_output_mode_required"`) {
+			t.Fatalf("adapter=%s exit=%d output=%s", tc.adapter, code, stdout.String())
+		}
+		if _, err := os.Stat(journal); !os.IsNotExist(err) {
+			t.Fatalf("adapter=%s rejected invocation created journal: %v", tc.adapter, err)
+		}
+	}
+}
+
+func TestCleanExitWithoutTerminalJournalsExtractionFailure(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journalPath := filepath.Join(root, "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "run", "--adapter", "generic-process", "--", "/bin/echo", "plain output"}); code != 0 {
+		t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var runDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &runDoc); err != nil {
+		t.Fatal(err)
+	}
+	if runDoc.Result.State != model.StateOrphaned {
+		t.Fatalf("state=%s output=%s", runDoc.Result.State, stdout.String())
+	}
+	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := journal.GetOutcome(context.Background(), runDoc.Result.ID)
+	journal.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Failure == nil || outcome.Failure.Code != "result_extraction_failed" || outcome.Failure.Kind != "observation" {
+		t.Fatalf("outcome=%#v", outcome)
 	}
 }
 
@@ -1153,6 +1308,65 @@ func TestRunCancelledBeforeLaunchDoesNotCreateExecution(t *testing.T) {
 	}
 	if _, err := os.Stat(journalPath); !os.IsNotExist(err) {
 		t.Fatalf("pre-launch interruption created a journal: %v", err)
+	}
+}
+
+func TestAwaitThroughExecutionDeadlineUsesRecordedDeadline(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journalPath := filepath.Join(root, "journal.db")
+	journal, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	deadline := now.Add(-11 * time.Second)
+	execution, _, err := journal.CreateExecution(context.Background(), model.Execution{Authority: model.AuthorityNative, Adapter: "generic-process", Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateRunning, Liveness: model.LivenessAlive, SourceBindings: []model.SourceBinding{}, Capabilities: model.CapabilitySnapshot{NegotiatedAt: now, AdapterVersion: "test", Items: []model.CapabilityItem{}}, DeadlineAt: &deadline, Observation: model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: now}}, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	started := time.Now()
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "await", execution.ID.String(), "--through-execution-deadline"}); code != output.ExitCodeFor(output.CodeTimeout) {
+		t.Fatalf("deadline await exit=%d output=%s", code, stdout.String())
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("expired execution deadline waited %s", elapsed)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "await", execution.ID.String(), "--timeout", "1s", "--through-execution-deadline"}); code != output.ExitCodeFor(output.CodeUsage) {
+		t.Fatalf("mutually exclusive await flags exit=%d output=%s", code, stdout.String())
+	}
+}
+
+func TestAwaitThroughExecutionDeadlineRequiresRecordedDeadline(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journalPath := filepath.Join(root, "journal.db")
+	journal, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	execution, _, err := journal.CreateExecution(context.Background(), model.Execution{Authority: model.AuthorityNative, Adapter: "generic-process", Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateRunning, Liveness: model.LivenessAlive, SourceBindings: []model.SourceBinding{}, Capabilities: model.CapabilitySnapshot{NegotiatedAt: now, AdapterVersion: "test", Items: []model.CapabilityItem{}}, Observation: model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: now}}, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "await", execution.ID.String(), "--through-execution-deadline"}); code != output.ExitCodeFor(output.CodeCapabilityUnavailable) || !strings.Contains(stdout.String(), `"diagnostic_code":"execution_deadline_unavailable"`) {
+		t.Fatalf("missing deadline exit=%d output=%s", code, stdout.String())
 	}
 }
 
@@ -1557,7 +1771,7 @@ func TestCursorRunStoresAssistantFallbackAndDrainsFinalEvents(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
-	if code := a.run(context.Background(), []string{"--journal", journalPath, "run", "--adapter", "cursor", "--", script}); code != 0 {
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "run", "--adapter", "cursor", "--", script, "--output-format", "stream-json"}); code != 0 {
 		t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	var runDoc struct {
