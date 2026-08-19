@@ -19,9 +19,16 @@ Use the Go version declared by `go.mod` or a newer supported patch release,
 Python 3 for contract checks, and a POSIX shell. Then run:
 
 ```bash
+make hooks
 make ci
 go test -race ./...
 ```
+
+`make hooks` selects the tracked `.githooks` directory for this checkout. Its
+pre-push gate runs a bounded subset of the same formatting, vet, test, schema,
+link, script, and portable-asset checks used by CI. Distribution validators,
+builds, race tests, and vulnerability scanning remain explicit or hosted CI
+checks.
 
 Live adapter tests are optional because they may consume provider resources or
 alter a native harness cache. State any live testing performed and never commit

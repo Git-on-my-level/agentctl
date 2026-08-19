@@ -96,7 +96,8 @@ The detached host-local worker remains the native owner; it is not
 restart-durable authority and has no controlling terminal. A direct adapter
 does not gain cross-process cancellation; add `--timeout` when a hard stop is
 required unless capabilities advertise a durable cancel route. Background mode
-accepts argv or prompt files and rejects prompt stdin. Use `recent` to recover
+accepts argv, prompt files, and prompt stdin; the parent materializes prompt
+bytes through a one-shot pipe before detaching. Use `recent` to recover
 execution IDs from the local journal. It is read-only, newest-first,
 prompt/result-record-free, and does not aggregate other hosts. Repeated label
 filters use AND semantics. `--unreconciled` lists terminal executions whose
@@ -119,6 +120,9 @@ agentctl recent --unreconciled
 
 Use `await --no-timeout` for an intentionally unbounded observer. It still
 stops on actionable attention unless `--ignore-attention` is explicit.
+For an execution with a recorded run deadline, use
+`await --through-execution-deadline`; generated background next actions select
+that bound and offer subscription discovery for nonblocking callers.
 
 Use `agentctl help subscribe` before durable callback setup. Delivery is
 at-least-once, so deduplicate by the full event key. A receipt proves delivery,

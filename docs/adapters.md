@@ -119,6 +119,14 @@ The adapter may add only the minimum flags required to obtain structured events
 when this is safe and documented. It must report added flags in `--explain`
 output.
 
+Capability negotiation is invocation-scoped. Backend probing establishes what
+an installed adapter can support; the exact argv establishes what this launch
+actually supports. When stored result content is required, Codex requires
+`--json`, Cursor and Claude require `--output-format stream-json`, and OMP
+requires `--mode json`. A missing or conflicting mode fails before dependency
+probing, journal creation, or child launch. agentctl reports the required mode
+but never silently rewrites the caller's argv.
+
 If an existing native flag conflicts with supervision, launch fails with a
 structured explanation instead of overriding the caller silently.
 

@@ -102,6 +102,7 @@ type processRecord struct {
 	lastError        string
 	stderrDiagnostic string
 	parseWarnings    []string
+	healthSeen       map[string]bool
 	stdoutBytes      int
 	stderrBytes      int
 	maxOutput        int
@@ -179,6 +180,8 @@ func applyParseWarning(result *Result, warnings []string) {
 	}
 	if _, exists := result.Data["diagnostic_code"]; !exists {
 		result.Data["diagnostic_code"] = warnings[0]
+	} else {
+		result.Data["parse_diagnostic_code"] = warnings[0]
 	}
 }
 
@@ -200,6 +203,20 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 	}
 	if obs.Error != "" {
 		p.lastError = obs.Error
+	}
+	if obs.Kind == "health" {
+		key := obs.SourceState + "\x00" + string(marshalStable(obs.Data))
+		if p.healthSeen == nil {
+			p.healthSeen = map[string]bool{}
+		}
+		if p.healthSeen[key] {
+			// Unstructured stdout/stderr can contain thousands of interleaved
+			// records. Health is edge-triggered diagnostic state, not a transcript
+			// surrogate.
+			p.updatedAt = time.Now().UTC()
+			return
+		}
+		p.healthSeen[key] = true
 	}
 	if obs.Kind != "" || obs.State != "" || obs.SourceState != "" || obs.Error != "" {
 		p.observations = append(p.observations, obs)
@@ -297,7 +314,7 @@ func (p *processRecord) finish(err error) {
 		} else {
 			// A zero exit code does not establish domain success. Native adapters
 			// require an explicit terminal result in their structured stream.
-			p.result = &Result{Success: false, State: StateFailed, Error: firstNonEmpty(p.lastError, p.stderrDiagnostic, "native process exited without an explicit result"), ExitCode: p.exitCode, SessionRef: p.ref}
+			p.result = &Result{Success: false, State: StateOrphaned, Error: "native process exited cleanly without an explicit structured terminal result", ExitCode: p.exitCode, SessionRef: p.ref, Data: map[string]any{"diagnostic_code": "result_extraction_failed"}}
 		}
 	}
 	applyParseWarning(p.result, p.parseWarnings)
@@ -407,17 +424,57 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 	}
 	capabilities := make([]Capability, 0, len(a.config.Manifest.Capabilities))
 	for _, declaration := range a.config.Manifest.Capabilities {
-		status := declaration.Implementation
-		if status == CapabilityConditional {
-			status = CapabilityDegraded
-		}
-		if status == "" {
-			status = CapabilitySupported
-		}
-		capabilities = append(capabilities, Capability{Name: declaration.Name, Status: status, Source: "manifest", SemanticsVersion: declaration.SemanticsVersion, Constraints: cloneMap(declaration.Constraints)})
+		capabilities = append(capabilities, NegotiateInvocation(a.config.Manifest, req.Argv, declaration.Name))
 	}
-	scope := Fingerprint(a.Name(), backendVersion, digest, req.Profile, req.Endpoint, req.Workspace)
+	invocationFingerprint := ""
+	if len(req.Argv) != 0 {
+		invocationFingerprint = Fingerprint(req.Argv...)
+	}
+	scope := Fingerprint(a.Name(), backendVersion, digest, req.Profile, req.Endpoint, req.Workspace, invocationFingerprint)
 	return ProbeResult{AdapterVersion: a.config.Manifest.AdapterVersion, BackendVersion: backendVersion, Executable: resolved, ExecutableDigest: digest, ScopeFingerprint: scope, ProbedAt: started, FreshFor: time.Minute, ReadOnly: true, Capabilities: capabilities}, nil
+}
+
+func invocationRequirementSatisfied(argv []string, constraints map[string]any) bool {
+	requirement, ok := constraints["required_argv"].(map[string]any)
+	if !ok || len(requirement) == 0 {
+		return true
+	}
+	flag, _ := requirement["flag"].(string)
+	kind, _ := requirement["kind"].(string)
+	want, _ := requirement["value"].(string)
+	matchedPresence := false
+	seenValue := false
+	actualValue := ""
+	for i := 1; i < len(argv); i++ {
+		arg := argv[i]
+		if arg == "--" {
+			break
+		}
+		if kind == "presence" && arg == flag {
+			matchedPresence = true
+			continue
+		}
+		if kind != "value" {
+			continue
+		}
+		if arg == flag {
+			seenValue = true
+			actualValue = ""
+			if i+1 < len(argv) && argv[i+1] != "--" {
+				actualValue = argv[i+1]
+				i++
+			}
+			continue
+		}
+		if value, found := strings.CutPrefix(arg, flag+"="); found {
+			seenValue = true
+			actualValue = value
+		}
+	}
+	if kind == "presence" {
+		return matchedPresence
+	}
+	return seenValue && strings.EqualFold(actualValue, want)
 }
 
 func nativeProbeCommandError(output string, cause error) error {

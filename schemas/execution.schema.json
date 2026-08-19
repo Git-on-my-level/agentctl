@@ -98,6 +98,7 @@
     },
     "created_at": {"type": "string", "format": "date-time"},
     "started_at": {"type": ["string", "null"], "format": "date-time"},
+    "deadline_at": {"type": ["string", "null"], "format": "date-time"},
     "updated_at": {"type": "string", "format": "date-time"},
     "terminal_at": {"type": ["string", "null"], "format": "date-time"},
     "observation": {"$ref": "#/$defs/observation"}

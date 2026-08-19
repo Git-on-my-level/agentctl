@@ -108,7 +108,7 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.doctor(ctx, renderer, commonArgs, rest[1:])
 	case "status":
 		err = a.status(ctx, renderer, commonArgs, rest[1:])
-	case "recent":
+	case "recent", "list":
 		err = a.recent(ctx, renderer, commonArgs, rest[1:])
 	case "events":
 		err = a.events(ctx, renderer, commonArgs, rest[1:])
@@ -493,7 +493,7 @@ func resultSourceSatisfies(actual, required string) bool {
 
 func (a *app) events(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) < 1 {
-		return output.NewError(output.CodeUsage, "usage: agentctl events <execution-id> [--after-sequence n] [--limit n]", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl events <execution-id> [--after-sequence n] [--limit n] [--kind kind]", false)
 	}
 	id, problem := parseExecutionRef(args[0], c)
 	if problem != nil {
@@ -520,6 +520,14 @@ func (a *app) events(ctx context.Context, renderer output.Renderer, c common, ar
 				return output.Wrap(output.CodeUsage, "event pagination value must be a non-negative integer", false, err)
 			}
 			query.Limit = number
+		case "--kind":
+			kind := model.EventKind(strings.ToLower(strings.TrimSpace(value)))
+			switch kind {
+			case model.EventStarted, model.EventProgress, model.EventAttention, model.EventArtifact, model.EventHealth, model.EventTerminal, model.EventPromoted, model.EventSuperseded:
+				query.Kinds = append(query.Kinds, kind)
+			default:
+				return output.NewError(output.CodeUsage, "unknown event kind", false).WithDetail("kind", value)
+			}
 		default:
 			return output.NewError(output.CodeUsage, "unknown events flag", false).WithDetail("flag", flag)
 		}
@@ -545,7 +553,7 @@ func (a *app) events(ctx context.Context, renderer output.Renderer, c common, ar
 
 func (a *app) await(ctx context.Context, renderer output.Renderer, c common, args []string) int {
 	if len(args) < 1 {
-		return a.fail(renderer, output.NewError(output.CodeUsage, "usage: agentctl await <execution-id> [--timeout duration | --no-timeout] [--ignore-attention]", false))
+		return a.fail(renderer, output.NewError(output.CodeUsage, "usage: agentctl await <execution-id> [--timeout duration | --no-timeout | --through-execution-deadline] [--ignore-attention]", false))
 	}
 	id, problem := parseExecutionRef(args[0], c)
 	if problem != nil {
@@ -554,6 +562,7 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 	timeout := 10 * time.Minute
 	noTimeout := false
 	timeoutSet := false
+	throughExecutionDeadline := false
 	stopAttention := true
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
@@ -570,6 +579,8 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 			timeoutSet = true
 		case "--no-timeout":
 			noTimeout = true
+		case "--through-execution-deadline":
+			throughExecutionDeadline = true
 		case "--stop-on-attention":
 			stopAttention = true
 		case "--ignore-attention":
@@ -578,11 +589,11 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 			return a.fail(renderer, output.NewError(output.CodeUsage, "unknown await flag", false).WithDetail("flag", args[i]))
 		}
 	}
-	if timeoutSet && noTimeout {
-		return a.fail(renderer, output.NewError(output.CodeUsage, "--timeout and --no-timeout are mutually exclusive", false))
+	if boolCount(timeoutSet, noTimeout, throughExecutionDeadline) > 1 {
+		return a.fail(renderer, output.NewError(output.CodeUsage, "--timeout, --no-timeout, and --through-execution-deadline are mutually exclusive", false))
 	}
 	deadline := time.Time{}
-	if !noTimeout {
+	if !noTimeout && !throughExecutionDeadline {
 		deadline = a.now().Add(timeout)
 	}
 	for {
@@ -594,6 +605,14 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		_ = journal.Close()
 		if err != nil {
 			return a.fail(renderer, mapStoreError("read awaited execution", err))
+		}
+		if throughExecutionDeadline && deadline.IsZero() {
+			if execution.DeadlineAt == nil {
+				return a.fail(renderer, output.NewError(output.CodeCapabilityUnavailable, "execution has no recorded deadline", false).WithDetail("execution_id", id.String()).WithDetail("diagnostic_code", "execution_deadline_unavailable"))
+			}
+			// Allow bounded cancellation and terminal journaling after the native
+			// execution deadline itself elapses.
+			deadline = execution.DeadlineAt.Add(10 * time.Second)
 		}
 		if execution.Observation.Integrity == model.IntegrityConflicted {
 			return a.fail(renderer, outcomeError(output.CodeUnknownState, "execution evidence is conflicted", execution))
@@ -629,6 +648,16 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		case <-timer.C:
 		}
 	}
+}
+
+func boolCount(values ...bool) int {
+	count := 0
+	for _, value := range values {
+		if value {
+			count++
+		}
+	}
+	return count
 }
 
 func (a *app) deliverAwaitError(ctx context.Context, renderer output.Renderer, c common, id ids.ExecutionID, source string, problem *output.Error) int {
@@ -707,7 +736,16 @@ func writeExecution(renderer output.Renderer, e model.Execution, operation strin
 	}
 	actions := []output.NextAction{}
 	if !e.State.Terminal() {
-		actions = append(actions, output.NextAction{Label: "Wait for terminal state", Argv: []string{"agentctl", "await", e.ID.String(), "--output", string(renderer.Mode)}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}})
+		label := "Wait up to 10 minutes"
+		argv := []string{"agentctl", "await", e.ID.String(), "--output", string(renderer.Mode)}
+		if e.DeadlineAt != nil {
+			label = "Wait through execution deadline"
+			argv = append(argv, "--through-execution-deadline")
+		}
+		actions = append(actions, output.NextAction{Label: label, Argv: argv, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}})
+		if operation == "background" {
+			actions = append(actions, output.NextAction{Label: "Discover durable callback setup", Argv: []string{"agentctl", "help", "subscribe"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"choose an explicit callback destination and target"}})
+		}
 	}
 	if e.State.Terminal() && operation != "result" {
 		actions = append(actions, output.NextAction{Label: "Read terminal result", Argv: []string{"agentctl", "result", e.ID.String(), "--output", string(renderer.Mode)}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}})
@@ -722,7 +760,6 @@ func writeExecution(renderer output.Renderer, e model.Execution, operation strin
 	if err := renderer.Success(output.Success{Result: redacted, Lines: []output.Line{{Lead: e.ID.String(), Fields: fields}}, NextActions: actions}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
-	_ = operation
 	return nil
 }
 
