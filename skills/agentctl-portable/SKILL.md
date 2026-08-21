@@ -28,8 +28,9 @@ Useful topics include `run`, `recent`, `fanout`, `result`, `await`, `subscribe`,
 read-only `next_actions` for deeper discovery. Do not preload every topic or
 memorize version-specific flags in place of help.
 
-`agentctl bootstrap update` reconciles the embedded portable skill across
-detected canonical harness roots. Use `--dry-run` when inspecting another home
+`agentctl bootstrap update` reconciles the embedded portable skill and a short
+delegation pointer in detected, existing harness instruction files; it never
+creates those instruction files. Use `--dry-run` when inspecting another home
 or narrowing an unfamiliar installation.
 
 Exact release builds default to automatic updates. The first invocation due on

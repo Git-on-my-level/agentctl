@@ -354,11 +354,13 @@ agentctl config doctor
 
 ## Portable skill reconciliation
 
-`agentctl bootstrap update` detects supported harnesses and installs or upgrades
-only agentctl's embedded portable skill in canonical locations. It leaves
-unmanaged files, credentials, sessions, settings, caches, and legacy copies
-alone. An existing agentctl-managed supervisor may be reconciled; a new service
-is never created merely because a harness was detected.
+`agentctl bootstrap update` detects supported harnesses, installs or upgrades
+agentctl's embedded portable skill in canonical locations, and reconciles a
+short marked delegation pointer in documented user-global instruction files
+that already exist. It never creates instruction files or changes prose outside
+the marked block. It leaves credentials, sessions, settings, caches, and legacy
+copies alone. An existing agentctl-managed supervisor may be reconciled; a new
+service is never created merely because a harness was detected.
 
 ```bash
 agentctl bootstrap update --dry-run

@@ -248,6 +248,32 @@ func TestRunDefaultsInferAdapterWithoutWallTimeout(t *testing.T) {
 	}
 }
 
+func TestForegroundRunEnvelopeTeachesOwnership(t *testing.T) {
+	executionID, err := ids.NewExecutionID(ids.CryptoGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID, err := ids.NewHostID(ids.CryptoGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := model.Execution{ID: executionID, OriginHostID: hostID, Authority: model.AuthorityNative, Adapter: "codex", State: model.StateCompleted}
+	var stdout bytes.Buffer
+	if problem := writeExecution(output.Renderer{Mode: output.JSON, Writer: &stdout}, execution, "run"); problem != nil {
+		t.Fatal(problem)
+	}
+	if !strings.Contains(stdout.String(), `"code":"foreground_execution_owned"`) || !strings.Contains(stdout.String(), "no default wall-clock timeout") || !strings.Contains(stdout.String(), `"argv":["agentctl","help","run"]`) {
+		t.Fatalf("foreground run envelope omitted ownership guidance: %s", stdout.String())
+	}
+	stdout.Reset()
+	if problem := writeExecution(output.Renderer{Mode: output.JSON, Writer: &stdout}, execution, "background"); problem != nil {
+		t.Fatal(problem)
+	}
+	if strings.Contains(stdout.String(), "foreground_execution_owned") {
+		t.Fatalf("background envelope received foreground warning: %s", stdout.String())
+	}
+}
+
 func TestRunParsesLabelsAndBackground(t *testing.T) {
 	opts, problem := parseRun([]string{"--background", "--label", "review", "--label", "model.grok", "--", "/bin/echo", "done"})
 	if problem != nil {

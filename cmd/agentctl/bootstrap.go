@@ -17,6 +17,9 @@ import (
 
 const minimumPortableVersion = "v0.1.4"
 const bootstrapManagedMarkerName = "agentctl-managed.json"
+const instructionPointerStart = "<!-- agentctl-delegation -->"
+const instructionPointerEnd = "<!-- /agentctl-delegation -->"
+const instructionPointerMetadataPrefix = "<!-- agentctl-delegation-revision "
 
 type bootstrapSkillEntry struct {
 	Path     string `json:"path"`
@@ -25,11 +28,19 @@ type bootstrapSkillEntry struct {
 }
 
 type bootstrapHarness struct {
-	Name      string                `json:"name"`
-	State     string                `json:"state"`
-	Canonical string                `json:"canonical"`
-	Detected  bool                  `json:"detected,omitempty"`
-	Entries   []bootstrapSkillEntry `json:"entries"`
+	Name               string                      `json:"name"`
+	State              string                      `json:"state"`
+	Canonical          string                      `json:"canonical"`
+	Detected           bool                        `json:"detected,omitempty"`
+	Entries            []bootstrapSkillEntry       `json:"entries"`
+	InstructionPointer bootstrapInstructionPointer `json:"instruction_pointer"`
+}
+
+type bootstrapInstructionPointer struct {
+	Path     string `json:"path,omitempty"`
+	State    string `json:"state"`
+	Digest   string `json:"digest,omitempty"`
+	Revision string `json:"revision,omitempty"`
 }
 
 type bootstrapBinary struct {
@@ -61,13 +72,22 @@ type bootstrapAction struct {
 }
 
 type bootstrapUpdateResult struct {
-	Home        string            `json:"home"`
-	Revision    string            `json:"revision"`
-	SkillDigest string            `json:"skill_digest"`
-	Detected    []string          `json:"detected_harnesses"`
-	Actions     []bootstrapAction `json:"actions"`
-	Healthy     bool              `json:"healthy"`
-	DryRun      bool              `json:"dry_run"`
+	Home                string                              `json:"home"`
+	Revision            string                              `json:"revision"`
+	SkillDigest         string                              `json:"skill_digest"`
+	Detected            []string                            `json:"detected_harnesses"`
+	Actions             []bootstrapAction                   `json:"actions"`
+	InstructionPointers []bootstrapInstructionPointerAction `json:"instruction_pointer_actions"`
+	Healthy             bool                                `json:"healthy"`
+	DryRun              bool                                `json:"dry_run"`
+}
+
+type bootstrapInstructionPointerAction struct {
+	Harness string `json:"harness"`
+	Path    string `json:"path,omitempty"`
+	State   string `json:"state"`
+	Reason  string `json:"reason,omitempty"`
+	Changed bool   `json:"changed"`
 }
 
 type bootstrapManifest struct {
@@ -91,19 +111,20 @@ type bootstrapManagedMarker struct {
 }
 
 type bootstrapHarnessSpec struct {
-	Name             string
-	Executables      []string
-	Canonical        func(string) string
-	Compatibility    []func(string) string
-	ConfigCandidates func(string) []string
+	Name                  string
+	Executables           []string
+	Canonical             func(string) string
+	Compatibility         []func(string) string
+	ConfigCandidates      func(string) []string
+	InstructionCandidates func(string) []string
 }
 
 var bootstrapHarnessSpecs = []bootstrapHarnessSpec{
-	{Name: "claude", Executables: []string{"claude"}, Canonical: func(home string) string { return filepath.Join(home, ".claude", "skills") }, ConfigCandidates: configCandidates(".claude", "settings.json", "config.json")},
-	{Name: "codex", Executables: []string{"codex"}, Canonical: func(home string) string { return filepath.Join(home, ".agents", "skills") }, Compatibility: []func(string) string{func(home string) string { return filepath.Join(home, ".codex", "skills") }}, ConfigCandidates: configCandidates(".codex", "config.toml", "config.json")},
+	{Name: "claude", Executables: []string{"claude"}, Canonical: func(home string) string { return filepath.Join(home, ".claude", "skills") }, ConfigCandidates: configCandidates(".claude", "settings.json", "config.json"), InstructionCandidates: configCandidates(".claude", "CLAUDE.md")},
+	{Name: "codex", Executables: []string{"codex"}, Canonical: func(home string) string { return filepath.Join(home, ".agents", "skills") }, Compatibility: []func(string) string{func(home string) string { return filepath.Join(home, ".codex", "skills") }}, ConfigCandidates: configCandidates(".codex", "config.toml", "config.json"), InstructionCandidates: configCandidates(".codex", "AGENTS.override.md", "AGENTS.md")},
 	{Name: "cursor", Executables: []string{"cursor-agent"}, Canonical: func(home string) string { return filepath.Join(home, ".cursor", "skills") }, ConfigCandidates: configCandidates(".cursor", "config.json", "settings.json")},
-	{Name: "hermes", Executables: []string{"hermes"}, Canonical: func(home string) string { return filepath.Join(home, ".hermes", "skills") }, ConfigCandidates: configCandidates(".hermes", "config.json", "config.yaml", "config.yml")},
-	{Name: "omp", Executables: []string{"omp"}, Canonical: func(home string) string { return filepath.Join(home, ".agents", "skills") }, Compatibility: []func(string) string{func(home string) string { return filepath.Join(home, ".omp", "agent", "skills") }}, ConfigCandidates: configCandidates(".omp", "config.json", "config.yaml", "config.yml")},
+	{Name: "hermes", Executables: []string{"hermes"}, Canonical: func(home string) string { return filepath.Join(home, ".hermes", "skills") }, ConfigCandidates: configCandidates(".hermes", "config.json", "config.yaml", "config.yml"), InstructionCandidates: configCandidates(".hermes", "SOUL.md")},
+	{Name: "omp", Executables: []string{"omp"}, Canonical: func(home string) string { return filepath.Join(home, ".agents", "skills") }, Compatibility: []func(string) string{func(home string) string { return filepath.Join(home, ".omp", "agent", "skills") }}, ConfigCandidates: configCandidates(".omp", "config.json", "config.yaml", "config.yml"), InstructionCandidates: configCandidates(".omp", "agent", "AGENTS.md")},
 	// Multica skills are workspace/server scoped.  There is intentionally no
 	// guessed local root; callers must supply an explicit target directory.
 	{Name: "multica", Executables: []string{"multica"}, ConfigCandidates: configCandidates(".multica", "config.json")},
@@ -190,7 +211,7 @@ func (a *app) bootstrapCommand(renderer output.Renderer, args []string) *output.
 func renderBootstrapStatus(renderer output.Renderer, status bootstrapStatus) *output.Error {
 	lines := []output.Line{{Lead: "bootstrap", Fields: []output.Field{{Name: "healthy", Value: status.Healthy}, {Name: "binary", Value: status.Binary.Path}, {Name: "version", Value: status.Binary.Version}, {Name: "skill_digest", Value: status.SkillDigest}}}}
 	for _, harness := range status.Harnesses {
-		lines = append(lines, output.Line{Lead: "harness", Fields: []output.Field{{Name: "name", Value: harness.Name}, {Name: "state", Value: harness.State}, {Name: "canonical", Value: harness.Canonical}, {Name: "detected", Value: harness.Detected}, {Name: "registrations", Value: len(harness.Entries)}}})
+		lines = append(lines, output.Line{Lead: "harness", Fields: []output.Field{{Name: "name", Value: harness.Name}, {Name: "state", Value: harness.State}, {Name: "canonical", Value: harness.Canonical}, {Name: "detected", Value: harness.Detected}, {Name: "registrations", Value: len(harness.Entries)}, {Name: "instruction_pointer_state", Value: harness.InstructionPointer.State}, {Name: "instruction_pointer_path", Value: harness.InstructionPointer.Path}}})
 	}
 	if err := renderer.Success(output.Success{Result: status, Lines: lines}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
@@ -292,6 +313,10 @@ func buildBootstrapStatus(home string, expected []string, getenv func(string) st
 func buildBootstrapStatusAt(home string, expected []string, getenv func(string) string, targetOverride string) bootstrapStatus {
 	status := bootstrapStatus{Healthy: true, Home: home, Binary: resolveAgentctlBinary(home, getenv), Harnesses: []bootstrapHarness{}, Problems: []string{}}
 	embeddedSkill, embeddedErr := portableasset.Skill()
+	expectedPointer := ""
+	if embeddedErr == nil {
+		expectedPointer = instructionPointerBlock(embeddedSkill.Revision, embeddedSkill.Digest)
+	}
 	exactReleaseRevision := "tree:v" + strings.TrimPrefix(strings.SplitN(version, "-", 2)[0], "v")
 	compareEmbeddedRelease := embeddedErr == nil && embeddedSkill.Revision == exactReleaseRevision
 	status.ConfigPresent = regularFile(filepath.Join(home, ".config", "agentctl", "config.json"))
@@ -320,7 +345,7 @@ func buildBootstrapStatusAt(home string, expected []string, getenv func(string) 
 		if canonical == "" {
 			status.Healthy = false
 			status.Problems = append(status.Problems, name+"_root_unavailable")
-			status.Harnesses = append(status.Harnesses, bootstrapHarness{Name: name, State: "unsupported", Canonical: "", Detected: bootstrapContains(expected, name), Entries: []bootstrapSkillEntry{}})
+			status.Harnesses = append(status.Harnesses, bootstrapHarness{Name: name, State: "unsupported", Canonical: "", Detected: bootstrapContains(expected, name), Entries: []bootstrapSkillEntry{}, InstructionPointer: inspectInstructionPointer(spec, home, expectedPointer)})
 			continue
 		}
 		roots := []string{canonical}
@@ -366,7 +391,13 @@ func buildBootstrapStatusAt(home string, expected []string, getenv func(string) 
 				}
 			}
 		}
-		status.Harnesses = append(status.Harnesses, bootstrapHarness{Name: name, State: state, Canonical: canonical, Detected: bootstrapContains(expected, name), Entries: entries})
+		pointer := inspectInstructionPointer(spec, home, expectedPointer)
+		if pointer.State == "stale" {
+			status.Problems = append(status.Problems, name+"_instruction_pointer_stale")
+		} else if pointer.State == "missing" {
+			status.Problems = append(status.Problems, name+"_instruction_pointer_missing")
+		}
+		status.Harnesses = append(status.Harnesses, bootstrapHarness{Name: name, State: state, Canonical: canonical, Detected: bootstrapContains(expected, name), Entries: entries, InstructionPointer: pointer})
 	}
 	if len(digests) == 1 {
 		for digest := range digests {
@@ -391,6 +422,138 @@ func buildBootstrapStatusAt(home string, expected []string, getenv func(string) 
 	sort.Slice(status.Harnesses, func(i, j int) bool { return status.Harnesses[i].Name < status.Harnesses[j].Name })
 	sort.Strings(status.Problems)
 	return status
+}
+
+func instructionPointerBlock(revision, skillDigest string) string {
+	body := strings.Join([]string{
+		"CLI agents (`cursor-agent`, `codex`, `omp`, and similar) go through `agentctl`; load skill `agentctl-portable` or run `agentctl help run`.",
+		"Do not manage native agent work with raw background shells; use `agentctl` foreground/background lifecycle and just-in-time help.",
+	}, "\n") + "\n"
+	return instructionPointerBlockWithBody(body, revision, skillDigest)
+}
+
+func instructionPointerBlockWithBody(body, revision, skillDigest string) string {
+	binding := sha256.Sum256([]byte(revision + "\n" + skillDigest + "\n" + body))
+	bindingDigest := "sha256:" + hex.EncodeToString(binding[:])
+	return instructionPointerStart + "\n" + body + instructionPointerMetadataPrefix + revision + " " + skillDigest + " " + bindingDigest + " -->\n" + instructionPointerEnd + "\n"
+}
+
+type instructionPointerInspection struct {
+	Path        string
+	State       string
+	Digest      string
+	Revision    string
+	SkillDigest string
+	Start       int
+	End         int
+}
+
+func inspectInstructionPointer(spec *bootstrapHarnessSpec, home, expected string) bootstrapInstructionPointer {
+	inspection := inspectInstructionPointerForUpdate(spec, home, expected)
+	state := inspection.State
+	if state == "conflict" {
+		state = "stale"
+	}
+	return bootstrapInstructionPointer{Path: inspection.Path, State: state, Digest: inspection.Digest, Revision: inspection.Revision}
+}
+
+func inspectInstructionPointerForUpdate(spec *bootstrapHarnessSpec, home, expected string) instructionPointerInspection {
+	inspection := instructionPointerInspection{State: "skipped"}
+	if spec == nil || spec.InstructionCandidates == nil {
+		return inspection
+	}
+	for _, candidate := range spec.InstructionCandidates(home) {
+		info, err := os.Lstat(candidate)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return instructionPointerInspection{Path: candidate, State: "conflict"}
+		}
+		inspection.Path = candidate
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			inspection.State = "conflict"
+			return inspection
+		}
+		data, err := os.ReadFile(candidate)
+		if err != nil {
+			inspection.State = "conflict"
+			return inspection
+		}
+		return inspectInstructionPointerBytes(candidate, data, expected)
+	}
+	return inspection
+}
+
+func inspectInstructionPointerBytes(path string, data []byte, expected string) instructionPointerInspection {
+	inspection := instructionPointerInspection{Path: path, State: "missing"}
+	content := string(data)
+	startCount := strings.Count(content, instructionPointerStart)
+	endCount := strings.Count(content, instructionPointerEnd)
+	if startCount == 0 && endCount == 0 {
+		return inspection
+	}
+	if startCount != 1 || endCount != 1 {
+		inspection.State = "conflict"
+		return inspection
+	}
+	start := strings.Index(content, instructionPointerStart)
+	endRelative := strings.Index(content[start:], instructionPointerEnd)
+	if endRelative < 0 {
+		inspection.State = "conflict"
+		return inspection
+	}
+	end := start + endRelative + len(instructionPointerEnd)
+	if end < len(content) && content[end] == '\r' {
+		end++
+	}
+	if end < len(content) && content[end] == '\n' {
+		end++
+	}
+	block := content[start:end]
+	if !strings.HasSuffix(block, "\n") {
+		block += "\n"
+	}
+	inspection.Start, inspection.End = start, end
+	sum := sha256.Sum256([]byte(block))
+	inspection.Digest = "sha256:" + hex.EncodeToString(sum[:])
+	metadataLineStart := strings.Index(block, instructionPointerMetadataPrefix)
+	if metadataLineStart < len(instructionPointerStart)+1 || !strings.HasPrefix(block, instructionPointerStart+"\n") {
+		inspection.State = "conflict"
+		return inspection
+	}
+	body := block[len(instructionPointerStart)+1 : metadataLineStart]
+	metadataStart := metadataLineStart + len(instructionPointerMetadataPrefix)
+	metadataEnd := strings.Index(block[metadataStart:], " -->")
+	if metadataEnd < 0 {
+		inspection.State = "conflict"
+		return inspection
+	}
+	fields := strings.Fields(block[metadataStart : metadataStart+metadataEnd])
+	if len(fields) != 3 || strings.TrimSpace(fields[0]) == "" || !validInstructionPointerDigest(fields[1]) || !validInstructionPointerDigest(fields[2]) {
+		inspection.State = "conflict"
+		return inspection
+	}
+	inspection.Revision, inspection.SkillDigest = fields[0], fields[1]
+	if block != instructionPointerBlockWithBody(body, inspection.Revision, inspection.SkillDigest) {
+		inspection.State = "conflict"
+		return inspection
+	}
+	if expected != "" && block != expected {
+		inspection.State = "stale"
+		return inspection
+	}
+	inspection.State = "present"
+	return inspection
+}
+
+func validInstructionPointerDigest(value string) bool {
+	raw := strings.TrimPrefix(value, "sha256:")
+	if len(raw) != sha256.Size*2 || raw == value {
+		return false
+	}
+	_, err := hex.DecodeString(raw)
+	return err == nil
 }
 
 // Status remains tolerant of the compact v0.1.6 test/install manifest.  The
@@ -552,7 +715,7 @@ func (a *app) bootstrapUpdate(renderer output.Renderer, home string, selected []
 	}
 	manifestSum := sha256.Sum256(manifest)
 	manifestDigest := "sha256:" + hex.EncodeToString(manifestSum[:])
-	result := bootstrapUpdateResult{Home: home, Revision: skill.Revision, SkillDigest: skill.Digest, Detected: append([]string(nil), selected...), Actions: []bootstrapAction{}, Healthy: true, DryRun: dryRun}
+	result := bootstrapUpdateResult{Home: home, Revision: skill.Revision, SkillDigest: skill.Digest, Detected: append([]string(nil), selected...), Actions: []bootstrapAction{}, InstructionPointers: []bootstrapInstructionPointerAction{}, Healthy: true, DryRun: dryRun}
 	groups := map[string][]string{}
 	for _, name := range selected {
 		spec := bootstrapSpec(name)
@@ -627,9 +790,43 @@ func (a *app) bootstrapUpdate(renderer output.Renderer, home string, selected []
 		}
 		result.Actions = append(result.Actions, action)
 	}
+	expectedPointer := instructionPointerBlock(skill.Revision, skill.Digest)
+	for _, name := range selected {
+		spec := bootstrapSpec(name)
+		if spec == nil {
+			continue
+		}
+		inspection := inspectInstructionPointerForUpdate(spec, home, expectedPointer)
+		action := bootstrapInstructionPointerAction{Harness: name, Path: inspection.Path, State: "noop", Changed: false}
+		switch inspection.State {
+		case "skipped":
+			action.State = "skipped"
+			if spec.InstructionCandidates == nil {
+				action.Reason = "harness has no documented user-global instruction file"
+			} else {
+				action.Reason = "instruction file does not exist; bootstrap does not create it"
+			}
+		case "missing":
+			action.State = "append"
+			action.Changed = true
+		case "stale":
+			action.State = "update"
+			action.Changed = true
+		case "conflict":
+			result.Healthy = false
+			action.State = "conflict"
+			action.Reason = "instruction pointer is malformed, duplicated, or modified outside its revision binding"
+		}
+		result.InstructionPointers = append(result.InstructionPointers, action)
+	}
 	for _, action := range result.Actions {
 		if action.State == "conflict" || action.State == "drifted" || action.State == "duplicate" {
 			return output.NewError(output.CodeConflict, "bootstrap update refused a conflicting or drifted managed path", false).WithDetail("actions", result.Actions).WithDetail("home", home)
+		}
+	}
+	for _, action := range result.InstructionPointers {
+		if action.State == "conflict" {
+			return output.NewError(output.CodeConflict, "bootstrap update refused a conflicting instruction pointer", false).WithDetail("instruction_pointer_actions", result.InstructionPointers).WithDetail("home", home)
 		}
 	}
 	if !dryRun {
@@ -641,15 +838,85 @@ func (a *app) bootstrapUpdate(renderer output.Renderer, home string, selected []
 				return output.Wrap(output.CodeConflict, "write portable skill", false, err).WithDetail("canonical", action.Canonical)
 			}
 		}
+		for _, action := range result.InstructionPointers {
+			if !action.Changed {
+				continue
+			}
+			if err := writeInstructionPointer(action.Path, expectedPointer); err != nil {
+				return output.Wrap(output.CodeConflict, "write instruction pointer", false, err).WithDetail("harness", action.Harness).WithDetail("path", action.Path)
+			}
+		}
 	}
 	lines := []output.Line{{Lead: "bootstrap.update", Fields: []output.Field{{Name: "healthy", Value: result.Healthy}, {Name: "dry_run", Value: dryRun}, {Name: "revision", Value: result.Revision}, {Name: "skill_digest", Value: result.SkillDigest}}}}
 	for _, action := range result.Actions {
 		lines = append(lines, output.Line{Lead: "action", Fields: []output.Field{{Name: "harnesses", Value: action.Harnesses}, {Name: "state", Value: action.State}, {Name: "canonical", Value: action.Canonical}, {Name: "changed", Value: action.Changed}}})
 	}
+	for _, action := range result.InstructionPointers {
+		lines = append(lines, output.Line{Lead: "instruction.pointer", Fields: []output.Field{{Name: "harness", Value: action.Harness}, {Name: "state", Value: action.State}, {Name: "path", Value: action.Path}, {Name: "changed", Value: action.Changed}}})
+	}
 	if err := renderer.Success(output.Success{Result: result, Lines: lines}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil
+}
+
+func writeInstructionPointer(path, expected string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("instruction file is not a regular file: %s", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	inspection := inspectInstructionPointerBytes(path, data, expected)
+	content := string(data)
+	switch inspection.State {
+	case "present":
+		return nil
+	case "missing":
+		separator := ""
+		if len(content) != 0 {
+			if strings.HasSuffix(content, "\n\n") {
+				separator = ""
+			} else if strings.HasSuffix(content, "\n") {
+				separator = "\n"
+			} else {
+				separator = "\n\n"
+			}
+		}
+		content += separator + expected
+	case "stale":
+		content = content[:inspection.Start] + expected + content[inspection.End:]
+	default:
+		return fmt.Errorf("instruction pointer is %s", inspection.State)
+	}
+	dir := filepath.Dir(path)
+	stage, err := os.CreateTemp(dir, ".agentctl-instruction-")
+	if err != nil {
+		return err
+	}
+	stagePath := stage.Name()
+	defer os.Remove(stagePath)
+	if err := stage.Chmod(info.Mode().Perm()); err != nil {
+		stage.Close()
+		return err
+	}
+	if _, err := stage.WriteString(content); err != nil {
+		stage.Close()
+		return err
+	}
+	if err := stage.Sync(); err != nil {
+		stage.Close()
+		return err
+	}
+	if err := stage.Close(); err != nil {
+		return err
+	}
+	return os.Rename(stagePath, path)
 }
 
 func managedMarkerValid(root string, harnesses []string, digest, manifestDigest string) bool {
