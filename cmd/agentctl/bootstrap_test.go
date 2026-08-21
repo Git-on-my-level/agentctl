@@ -311,6 +311,167 @@ func TestBootstrapUpdateDoesNotInventMulticaRoot(t *testing.T) {
 	}
 }
 
+func TestBootstrapInstructionPointerLifecycle(t *testing.T) {
+	originalVersion := version
+	version = "v0.3.4"
+	t.Cleanup(func() { version = originalVersion })
+	home := t.TempDir()
+	instructionPath := filepath.Join(home, ".claude", "CLAUDE.md")
+	if err := os.MkdirAll(filepath.Dir(instructionPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := "# Personal instructions\n\nKeep this prose unchanged.\n"
+	if err := os.WriteFile(instructionPath, []byte(original), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
+	renderer := output.Renderer{Mode: output.JSON, Writer: &stdout}
+	if problem := a.bootstrapUpdate(renderer, home, []string{"claude"}, "", true); problem != nil {
+		t.Fatalf("dry-run failed: %v", problem)
+	}
+	data, err := os.ReadFile(instructionPath)
+	if err != nil || string(data) != original {
+		t.Fatalf("dry-run changed instruction file: %q (%v)", data, err)
+	}
+	if !strings.Contains(stdout.String(), `"state":"append"`) || !strings.Contains(stdout.String(), `"changed":true`) {
+		t.Fatalf("dry-run did not report append: %s", stdout.String())
+	}
+
+	stdout.Reset()
+	if problem := a.bootstrapUpdate(renderer, home, []string{"claude"}, "", false); problem != nil {
+		t.Fatalf("append failed: %v", problem)
+	}
+	skill, err := portableasset.Skill()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBlock := instructionPointerBlock(skill.Revision, skill.Digest)
+	data, err = os.ReadFile(instructionPath)
+	if err != nil || !strings.HasPrefix(string(data), original+"\n") || strings.Count(string(data), instructionPointerStart) != 1 || !strings.Contains(string(data), wantBlock) {
+		t.Fatalf("pointer append did not preserve prose: %q (%v)", data, err)
+	}
+	if info, err := os.Stat(instructionPath); err != nil || info.Mode().Perm() != 0o640 {
+		t.Fatalf("instruction file mode changed: %v (%v)", info, err)
+	}
+
+	stdout.Reset()
+	if problem := a.bootstrapUpdate(renderer, home, []string{"claude"}, "", false); problem != nil {
+		t.Fatalf("idempotent update failed: %v", problem)
+	}
+	if !strings.Contains(stdout.String(), `"state":"noop"`) || strings.Contains(stdout.String(), `"changed":true`) {
+		t.Fatalf("fresh pointer was not a no-op: %s", stdout.String())
+	}
+
+	stale := instructionPointerBlockWithBody("Older managed pointer text.\n", "tree:v0.1.4", "sha256:"+strings.Repeat("a", 64))
+	staleContent := "before\n\n" + stale + "\nafter\n"
+	if err := os.WriteFile(instructionPath, []byte(staleContent), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	staleStatus := buildBootstrapStatus(home, []string{"claude"}, func(string) string { return "" })
+	if !staleStatus.Healthy || staleStatus.Harnesses[0].InstructionPointer.State != "stale" {
+		t.Fatalf("stale pointer was not reported without failing health: %#v", staleStatus)
+	}
+	stdout.Reset()
+	if problem := a.bootstrapUpdate(renderer, home, []string{"claude"}, "", false); problem != nil {
+		t.Fatalf("stale replacement failed: %v", problem)
+	}
+	data, err = os.ReadFile(instructionPath)
+	want := "before\n\n" + wantBlock + "\nafter\n"
+	if err != nil || string(data) != want {
+		t.Fatalf("stale replacement changed surrounding prose: %q want %q (%v)", data, want, err)
+	}
+	status := buildBootstrapStatus(home, []string{"claude"}, func(string) string { return "" })
+	if len(status.Harnesses) != 1 || status.Harnesses[0].InstructionPointer.State != "present" || status.Harnesses[0].InstructionPointer.Digest == "" || status.Harnesses[0].InstructionPointer.Revision != skill.Revision {
+		t.Fatalf("fresh pointer status missing provenance: %#v", status.Harnesses)
+	}
+}
+
+func TestBootstrapInstructionPointerSkipsMissingFile(t *testing.T) {
+	home := t.TempDir()
+	var stdout bytes.Buffer
+	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
+	renderer := output.Renderer{Mode: output.JSON, Writer: &stdout}
+	if problem := a.bootstrapUpdate(renderer, home, []string{"claude"}, "", false); problem != nil {
+		t.Fatalf("update failed: %v", problem)
+	}
+	path := filepath.Join(home, ".claude", "CLAUDE.md")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("bootstrap created missing instruction file: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"state":"skipped"`) || !strings.Contains(stdout.String(), "does not create it") {
+		t.Fatalf("missing instruction file was not reported as skipped: %s", stdout.String())
+	}
+}
+
+func TestBootstrapInstructionPointerRefusesDuplicateMarker(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".codex", "AGENTS.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	duplicate := instructionPointerStart + "\n" + instructionPointerEnd + "\n" + instructionPointerStart + "\n" + instructionPointerEnd + "\n"
+	if err := os.WriteFile(path, []byte(duplicate), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
+	problem := a.bootstrapUpdate(output.Renderer{Mode: output.JSON, Writer: &stdout}, home, []string{"codex"}, "", false)
+	if problem == nil || problem.Code != output.CodeConflict {
+		t.Fatalf("duplicate pointer was accepted: %#v", problem)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != duplicate {
+		t.Fatalf("duplicate pointer changed: %q (%v)", data, err)
+	}
+	skill, err := portableasset.Skill()
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifted := strings.Replace(instructionPointerBlock(skill.Revision, skill.Digest), "go through", "bypass", 1)
+	if err := os.WriteFile(path, []byte(drifted), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	problem = a.bootstrapUpdate(output.Renderer{Mode: output.JSON, Writer: &stdout}, home, []string{"codex"}, "", false)
+	if problem == nil || problem.Code != output.CodeConflict {
+		t.Fatalf("drifted pointer was accepted: %#v", problem)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil || string(data) != drifted {
+		t.Fatalf("drifted pointer changed: %q (%v)", data, err)
+	}
+}
+
+func TestBootstrapStatusPointerMissingDoesNotFailHealth(t *testing.T) {
+	originalVersion := version
+	version = "v0.3.4"
+	t.Cleanup(func() { version = originalVersion })
+	home := t.TempDir()
+	skill, err := portableasset.Skill()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeBootstrapSkill(t, filepath.Join(home, ".claude", "skills"), skill.Revision, string(skill.Bytes))
+	writeExecutable(t, filepath.Join(home, ".local", "bin", "agentctl"))
+	path := filepath.Join(home, ".claude", "CLAUDE.md")
+	if err := os.WriteFile(path, []byte("existing instructions\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status := buildBootstrapStatus(home, []string{"claude"}, func(string) string { return "" })
+	if !status.Healthy || len(status.Harnesses) != 1 || status.Harnesses[0].InstructionPointer.State != "missing" {
+		t.Fatalf("missing pointer affected bootstrap health: %#v", status)
+	}
+	if !containsString(status.Problems, "claude_instruction_pointer_missing") {
+		t.Fatalf("missing pointer was not reported: %#v", status.Problems)
+	}
+}
+
+func TestBootstrapUnknownHarnessStillRejected(t *testing.T) {
+	if _, problem := parseBootstrapHarnesses(t.TempDir(), "unknown", "", func(string) string { return "" }); problem == nil || problem.Code != output.CodeUsage {
+		t.Fatalf("unknown harness was accepted: %#v", problem)
+	}
+}
+
 func writeBootstrapSkill(t *testing.T, root, revision, body string) {
 	t.Helper()
 	dir := filepath.Join(root, "agentctl-portable")

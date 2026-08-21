@@ -744,6 +744,11 @@ func writeExecution(renderer output.Renderer, e model.Execution, operation strin
 		fields = append(fields, output.Field{Name: "labels", Value: e.Labels})
 	}
 	actions := []output.NextAction{}
+	warnings := []output.Warning{}
+	if operation == "run" {
+		warnings = append(warnings, output.Warning{Code: "foreground_execution_owned", Message: "foreground run is owned by this process and has no default wall-clock timeout; use --background with recent, await, and result for work that must outlive this shell"})
+		actions = append(actions, output.NextAction{Label: "Review run ownership and lifecycle", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+	}
 	if !e.State.Terminal() {
 		label := "Wait up to 10 minutes"
 		argv := []string{"agentctl", "await", e.ID.String(), "--output", string(renderer.Mode)}
@@ -766,7 +771,7 @@ func writeExecution(renderer output.Renderer, e model.Execution, operation strin
 	for i := range redacted.SourceBindings {
 		redacted.SourceBindings[i].OpaqueID = nil
 	}
-	if err := renderer.Success(output.Success{Result: redacted, Lines: []output.Line{{Lead: e.ID.String(), Fields: fields}}, NextActions: actions}); err != nil {
+	if err := renderer.Success(output.Success{Result: redacted, Lines: []output.Line{{Lead: e.ID.String(), Fields: fields}}, Warnings: warnings, NextActions: actions}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil

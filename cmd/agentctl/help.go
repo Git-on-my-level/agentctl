@@ -26,12 +26,12 @@ func helpTopics() map[string]commandHelp {
 		},
 		"bootstrap": {
 			Name: "bootstrap", Summary: "Inspect or reconcile agentctl across detected local harnesses.", Usage: "agentctl bootstrap status|update [flags]",
-			SideEffectClass: output.LocalOperationalWrite, Defaults: []string{"status is read-only", "update detects supported harnesses and canonical roots", "update refuses drifted or duplicate managed assets"},
+			SideEffectClass: output.LocalOperationalWrite, Defaults: []string{"status is read-only and reports instruction pointer path, state, digest, and revision per harness", "update detects supported harnesses and canonical roots", "update reconciles pointers only in existing documented user-global instruction files", "update refuses drifted or duplicate managed assets"},
 			Examples: [][]string{{"agentctl", "bootstrap", "status"}, {"agentctl", "bootstrap", "update", "--dry-run"}, {"agentctl", "bootstrap", "update"}}, Related: []string{"bootstrap update", "doctor"},
 		},
 		"bootstrap update": {
-			Name: "bootstrap update", Summary: "Install or upgrade the embedded portable skill in every detected canonical harness root.", Usage: "agentctl bootstrap update [--dry-run] [--harness names] [--home path] [--target-dir path]",
-			SideEffectClass: output.LocalOperationalWrite, Defaults: []string{"all detected harnesses", "canonical roots", "managed upgrades and missing installs", "no legacy-copy deletion", "no new supervisor service"},
+			Name: "bootstrap update", Summary: "Reconcile the embedded portable skill and delegation pointers for detected harnesses.", Usage: "agentctl bootstrap update [--dry-run] [--harness names] [--home path] [--target-dir path]",
+			SideEffectClass: output.LocalOperationalWrite, Defaults: []string{"all detected harnesses", "canonical skill roots", "managed skill upgrades and missing installs", "instruction pointers update only marked blocks in existing documented user-global files", "missing instruction files are reported but never created", "no legacy-copy deletion", "no new supervisor service"},
 			Examples: [][]string{{"agentctl", "bootstrap", "update", "--dry-run"}, {"agentctl", "bootstrap", "update"}, {"agentctl", "bootstrap", "update", "--harness", "cursor"}}, Related: []string{"bootstrap", "doctor"},
 		},
 		"capabilities": {
