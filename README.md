@@ -30,6 +30,7 @@ contract.
 - supports pre-launch subscriptions and at-least-once file, Unix-socket,
   command, and signed-webhook delivery;
 - installs one allowlisted portable skill into detected supported harnesses;
+- reconciles reviewed personal skill packs from a pinned Git config source;
 - optionally validates, compiles, and renders context from independently owned
   Git knowledge sources; and
 - optionally promotes direct work into a configured Multica authority.
@@ -371,6 +372,24 @@ agentctl bootstrap status
 The release installer performs the same detected-harness reconciliation by
 default. Use `--binary-only` only when a binary-only installation is
 intentional.
+
+## Managed personal skills
+
+A configured Git source may also contain a separate `skill-pack.json` and
+file-only skill trees. Agentctl reads them only from the exact clean revision
+already pinned by `config source`; ordinary skill inspection and reconciliation
+never fetch.
+
+```bash
+agentctl skills plan
+agentctl skills reconcile
+agentctl skills status
+```
+
+Only marker-bound native skill directories can be upgraded. Unmanaged
+collisions and local drift fail closed, omitted skills are not deleted, and
+Multica remains unsupported until its adapter advertises a reviewed remote
+runtime-bundle installer. See [Managed skill packs](docs/managed-skills.md).
 
 ## Support matrix
 

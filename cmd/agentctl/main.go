@@ -138,6 +138,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.subscribeCommand(ctx, renderer, commonArgs, rest[1:])
 	case "config":
 		err = a.configCommand(ctx, renderer, commonArgs, rest[1:])
+	case "skills":
+		err = a.skillsCommand(ctx, renderer, commonArgs, rest[1:])
 	case "data":
 		err = a.dataCommand(ctx, renderer, commonArgs, rest[1:])
 	case "bootstrap":

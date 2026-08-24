@@ -63,6 +63,8 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 		"fanout-manifest":   "schemas/fanout-manifest.schema.json",
 		"knowledge-source":  "schemas/knowledge-source.schema.json",
 		"outcome":           "schemas/outcome.schema.json",
+		"skill-pack":        "schemas/skill-pack.schema.json",
+		"skill-pack-report": "schemas/skill-pack-report.schema.json",
 		"subscription":      "schemas/subscription.schema.json",
 	}
 	if len(document.Result.Schemas) != len(want) {
@@ -91,6 +93,8 @@ func TestNewSchemaDocumentsDeclareDraftAndRequiredShape(t *testing.T) {
 		"event-page.schema.json":        {"events", "scanned", "filtered", "page_limit"},
 		"fanout-manifest.schema.json":   {"schema_version", "prompt_file", "children"},
 		"outcome.schema.json":           {"schema_version", "execution_id", "revision", "state", "availability", "recorded_at", "source", "result_ref"},
+		"skill-pack.schema.json":        {"schema_version", "skills"},
+		"skill-pack-report.schema.json": {"schema_version", "healthy", "source", "manifest_sha256", "actions", "changed", "applied", "unsupported", "conflicts"},
 		"subscription.schema.json":      {"id", "origin_host_id", "filter", "destination", "expires_at", "cursor", "state", "auto_expire_on_terminal"},
 	}
 	for filename, required := range expected {

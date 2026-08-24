@@ -24,7 +24,7 @@ agentctl help <topic>
 ```
 
 Useful topics include `run`, `recent`, `fanout`, `result`, `await`, `subscribe`, `capabilities`,
-`bootstrap update`, `promote`, `knowledge`, and `context`. Follow returned
+`bootstrap update`, `skills`, `promote`, `knowledge`, and `context`. Follow returned
 read-only `next_actions` for deeper discovery. Do not preload every topic or
 memorize version-specific flags in place of help.
 
@@ -158,6 +158,12 @@ issue. Promotion links work; it does not move or copy the native session.
 Use `agentctl help knowledge` and `agentctl help context` for deterministic
 shared context. Never compile credentials, raw prompts, transcripts, harness
 databases, worktrees, or unreviewed private logs.
+
+Use `agentctl help skills` before personal skill reconciliation. `skills plan`,
+`status`, and `doctor` read only the pinned config-source checkout and never
+fetch; `skills reconcile` writes only valid marker-bound native skill roots.
+Multica skill installation remains authority-owned and must be advertised by a
+reviewed runtime-bundle installer.
 
 ## Identifier and privacy invariants
 
