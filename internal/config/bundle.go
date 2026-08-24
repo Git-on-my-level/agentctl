@@ -34,6 +34,7 @@ type BundleProfile struct {
 	Adapters         map[string]BundleAdapter `json:"adapters,omitempty"`
 	Multica          *Multica                 `json:"multica,omitempty"`
 	AgentPreferences *AgentPreferences        `json:"agent_preferences,omitempty"`
+	Route            *Route                   `json:"route,omitempty"`
 }
 
 type BundleAdapter struct {
@@ -197,7 +198,7 @@ func applyBundle(base Config, bundle Bundle) (Config, error) {
 }
 
 func (p BundleProfile) profile() Profile {
-	result := cloneProfile(Profile{Multica: p.Multica, AgentPreferences: p.AgentPreferences})
+	result := cloneProfile(Profile{Multica: p.Multica, AgentPreferences: p.AgentPreferences, Route: p.Route})
 	if len(p.Adapters) != 0 {
 		result.Adapters = make(map[string]Adapter, len(p.Adapters))
 		for name, adapter := range p.Adapters {

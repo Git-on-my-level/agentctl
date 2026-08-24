@@ -193,5 +193,19 @@ func cloneProfile(in Profile) Profile {
 		preferences.Notes = append([]string(nil), in.AgentPreferences.Notes...)
 		out.AgentPreferences = &preferences
 	}
+	if in.Route != nil {
+		routeCopy := *in.Route
+		if in.Route.Hosts != nil {
+			routeCopy.Hosts = make(map[string]string, len(in.Route.Hosts))
+			for alias, id := range in.Route.Hosts {
+				routeCopy.Hosts[alias] = id
+			}
+		}
+		if in.Route.Placement != nil {
+			placement := *in.Route.Placement
+			routeCopy.Placement = &placement
+		}
+		out.Route = &routeCopy
+	}
 	return out
 }

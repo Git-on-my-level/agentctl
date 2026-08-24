@@ -45,7 +45,9 @@ checks.
 
 Use direct native work for bounded investigation, scoping, and operations. Use
 Multica for durable changes, PRs, multiple owners, review, or work that must
-survive the parent. When uncertain, ask `agentctl route explain`.
+survive the parent. When uncertain, ask `agentctl route explain -- "<host?> <model>"`.
+It returns ranked host and model hits plus a placement mode. Pick among
+the hits; empty lists mean nothing was recognized, not an error.
 
 Never infer a capability from an adapter name. If doctor or capabilities says
 a requirement is unavailable, report it; do not weaken the operation, invent a

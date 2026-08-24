@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/knowledgecmd"
@@ -112,7 +113,7 @@ func (a *app) run(ctx context.Context, args []string) int {
 	case "id":
 		err = a.idCommand(renderer, rest[1:])
 	case "route":
-		err = a.routeCommand(renderer, rest[1:])
+		err = a.routeCommand(renderer, commonArgs, rest[1:])
 	case "doctor":
 		err = a.doctor(ctx, renderer, commonArgs, rest[1:])
 	case "status":
@@ -316,51 +317,79 @@ func (a *app) idCommand(renderer output.Renderer, args []string) *output.Error {
 	return nil
 }
 
-func (a *app) routeCommand(renderer output.Renderer, args []string) *output.Error {
+func (a *app) routeCommand(renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) == 0 || args[0] != "explain" {
-		return output.NewError(output.CodeUsage, "usage: agentctl route explain [flags]", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl route explain [query...]", false)
 	}
-	req := route.Request{}
+	var queryParts []string
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
-		case "--lifecycle":
-			if i+1 >= len(args) {
-				return output.NewError(output.CodeUsage, "--lifecycle requires a value", false)
-			}
-			i++
-			req.ExplicitLifecycle = route.Lifecycle(args[i])
-		case "--model-family":
-			if i+1 >= len(args) {
-				return output.NewError(output.CodeUsage, "--model-family requires a value", false)
-			}
-			i++
-			req.ModelFamily = args[i]
-		case "--needs-pr":
-			req.NeedsPR = true
-		case "--multiple-owners":
-			req.MultipleOwners = true
-		case "--cross-host-handoff":
-			req.CrossHostHandoff = true
-		case "--parent-may-exit":
-			req.ParentMayExit = true
-		case "--review-visibility":
-			req.ReviewVisibility = true
-		case "--multi-stage":
-			req.MultiStage = true
-		case "--long-lived-fix-loop":
-			req.LongLivedFixLoop = true
+		case "--":
+			queryParts = append(queryParts, args[i+1:]...)
+			i = len(args)
 		default:
-			return output.NewError(output.CodeUsage, "unknown route flag", false).WithDetail("flag", args[i])
+			if strings.HasPrefix(args[i], "-") {
+				return output.NewError(output.CodeUsage, "unknown route flag", false).WithDetail("flag", args[i])
+			}
+			queryParts = append(queryParts, args[i])
 		}
 	}
-	decision, err := route.Explain(req)
-	if err != nil {
-		return output.Wrap(output.CodeUsage, "cannot explain route", false, err)
+	return a.routeExplainQuery(renderer, c, strings.TrimSpace(strings.Join(queryParts, " ")))
+}
+
+func (a *app) routeExplainQuery(renderer output.Renderer, c common, query string) *output.Error {
+	catalog := route.NewCatalog("", nil, nil, "")
+	path, err := configPath(c)
+	if err == nil {
+		if resolution, configErr := config.Resolve(path, c.configBundle); configErr == nil {
+			_, profile, resolveErr := resolution.Config.ResolveProfile(c.profile)
+			if resolveErr == nil {
+				catalog = catalogFromProfile(profile)
+			}
+		} else if !errors.Is(configErr, config.ErrNotFound) {
+			return output.Wrap(output.CodeUsage, "invalid config", false, configErr)
+		}
 	}
-	if err := renderer.Success(output.Success{Result: decision, Lines: []output.Line{{Lead: "route", Fields: []output.Field{{Name: "lifecycle", Value: decision.Lifecycle}, {Name: "adapter", Value: decision.Adapter}, {Name: "explicit", Value: decision.Explicit}, {Name: "reasons", Value: decision.Reasons}}}}}); err != nil {
+	if catalog.ThisHost == "" {
+		if host, hostErr := os.Hostname(); hostErr == nil {
+			catalog.ThisHost = host
+		}
+	}
+	result := route.Match(query, catalog)
+	fields := []output.Field{{Name: "placement", Value: result.Placement.Mode}}
+	if result.Placement.Kind != "" {
+		fields = append(fields, output.Field{Name: "kind", Value: result.Placement.Kind})
+	}
+	if result.Placement.Host != "" {
+		fields = append(fields, output.Field{Name: "host", Value: result.Placement.Host})
+	}
+	if err := renderer.Success(output.Success{Result: result, Lines: []output.Line{{Lead: "route", Fields: fields}}}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil
+}
+
+func catalogFromProfile(profile config.Profile) route.Catalog {
+	thisHost, hosts, kind := "", map[string]string(nil), ""
+	if profile.Route != nil {
+		thisHost = profile.Route.ThisHost
+		hosts = profile.Route.Hosts
+		if profile.Route.Placement != nil {
+			kind = profile.Route.Placement.Kind
+		}
+	}
+	var preferred []route.ModelRecord
+	if profile.AgentPreferences != nil {
+		for _, item := range profile.AgentPreferences.Preferred {
+			preferred = append(preferred, route.ModelRecord{
+				Adapter: item.Agent,
+				Model:   item.Model,
+				Speed:   item.Speed,
+				Aliases: route.ParseUseForAliases(item.UseFor),
+			})
+		}
+	}
+	return route.NewCatalog(thisHost, hosts, preferred, kind)
 }
 
 func (a *app) doctor(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
