@@ -177,12 +177,10 @@ issue or launches an agent.
 A selector string such as `studio omp` is ranked against optional config
 keywords (`route.hosts`, `agent_preferences.preferred`, plus built-in adapter
 family aliases). The result is ranked host and model lists plus a placement
-mode (`local`, `remote`, `need_placement`, `ambiguous_host`, or `no_host`).
-Empty lists mean nothing was recognized. The caller chooses among hits.
-
-The legacy flag form (`--model-family`, `--needs-pr`, …) still explains
-direct versus a durable authority. Uncertainty in that form resolves to
-`direct`, because promotion remains available later.
+mode (`local`, `remote`, `need_placement`, `need_this_host`, `ambiguous_host`,
+or `no_host`). Absent lists mean nothing was recognized. The caller chooses
+among hits. JSON omits the query, match scores, glue words, default `speed`,
+and placement reasons the caller can already infer from `mode`.
 
 ## Authority-safe references
 

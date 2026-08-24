@@ -319,44 +319,11 @@ func (a *app) idCommand(renderer output.Renderer, args []string) *output.Error {
 
 func (a *app) routeCommand(renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) == 0 || args[0] != "explain" {
-		return output.NewError(output.CodeUsage, "usage: agentctl route explain [flags] [query...]", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl route explain [query...]", false)
 	}
-	req := route.Request{}
 	var queryParts []string
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
-		case "--lifecycle":
-			if i+1 >= len(args) {
-				return output.NewError(output.CodeUsage, "--lifecycle requires a value", false)
-			}
-			i++
-			req.ExplicitLifecycle = route.Lifecycle(args[i])
-		case "--model-family":
-			if i+1 >= len(args) {
-				return output.NewError(output.CodeUsage, "--model-family requires a value", false)
-			}
-			i++
-			req.ModelFamily = args[i]
-		case "--query":
-			if i+1 >= len(args) {
-				return output.NewError(output.CodeUsage, "--query requires a value", false)
-			}
-			i++
-			queryParts = append(queryParts, args[i])
-		case "--needs-pr":
-			req.NeedsPR = true
-		case "--multiple-owners":
-			req.MultipleOwners = true
-		case "--cross-host-handoff":
-			req.CrossHostHandoff = true
-		case "--parent-may-exit":
-			req.ParentMayExit = true
-		case "--review-visibility":
-			req.ReviewVisibility = true
-		case "--multi-stage":
-			req.MultiStage = true
-		case "--long-lived-fix-loop":
-			req.LongLivedFixLoop = true
 		case "--":
 			queryParts = append(queryParts, args[i+1:]...)
 			i = len(args)
@@ -367,17 +334,7 @@ func (a *app) routeCommand(renderer output.Renderer, c common, args []string) *o
 			queryParts = append(queryParts, args[i])
 		}
 	}
-	if query := strings.TrimSpace(strings.Join(queryParts, " ")); query != "" {
-		return a.routeExplainQuery(renderer, c, query)
-	}
-	decision, err := route.Explain(req)
-	if err != nil {
-		return output.Wrap(output.CodeUsage, "cannot explain route", false, err)
-	}
-	if err := renderer.Success(output.Success{Result: decision, Lines: []output.Line{{Lead: "route", Fields: []output.Field{{Name: "lifecycle", Value: decision.Lifecycle}, {Name: "adapter", Value: decision.Adapter}, {Name: "explicit", Value: decision.Explicit}, {Name: "reasons", Value: decision.Reasons}}}}}); err != nil {
-		return output.Wrap(output.CodeInternal, "write output", false, err)
-	}
-	return nil
+	return a.routeExplainQuery(renderer, c, strings.TrimSpace(strings.Join(queryParts, " ")))
 }
 
 func (a *app) routeExplainQuery(renderer output.Renderer, c common, query string) *output.Error {
@@ -399,7 +356,7 @@ func (a *app) routeExplainQuery(renderer output.Renderer, c common, query string
 		}
 	}
 	result := route.Match(query, catalog)
-	fields := []output.Field{{Name: "query", Value: result.Query}, {Name: "placement", Value: result.Placement.Mode}}
+	fields := []output.Field{{Name: "placement", Value: result.Placement.Mode}}
 	if result.Placement.Kind != "" {
 		fields = append(fields, output.Field{Name: "kind", Value: result.Placement.Kind})
 	}

@@ -62,8 +62,8 @@ func TestMatchKeepsMultipleModels(t *testing.T) {
 	if !adapters["cursor/cursor-grok-4.6-high"] || !adapters["codex/gpt-5.6-sol"] {
 		t.Fatalf("expected grok and sol, got %#v", got.Models)
 	}
-	if !contains(got.Unmatched, "or") {
-		t.Fatalf("glue 'or' should stay in unmatched: %#v", got.Unmatched)
+	if contains(got.Unmatched, "or") {
+		t.Fatalf("glue 'or' should not appear in unmatched: %#v", got.Unmatched)
 	}
 }
 
@@ -135,13 +135,22 @@ func TestMatchJSONOmitsMatchAnnotations(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(raw)
-	for _, waste := range []string{`"kind":"exact"`, `"hit":"studio"`, `"hit":"omp"`, `"score":`, `"tokens":`} {
+	for _, waste := range []string{`"kind":"exact"`, `"hit":"studio"`, `"hit":"omp"`, `"score":`, `"tokens":`, `"query":`, `"reason":`, `"speed":"regular"`} {
 		if strings.Contains(s, waste) {
 			t.Fatalf("wasted annotation %s in %s", waste, s)
 		}
 	}
 	if !strings.Contains(s, `"id":"m1-mac-studio"`) || !strings.Contains(s, `"adapter":"omp"`) {
 		t.Fatalf("missing useful fields: %s", s)
+	}
+
+	raw, err = json.Marshal(Match("glm", testCatalog()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s = string(raw)
+	if strings.Contains(s, `"hosts"`) {
+		t.Fatalf("empty hosts should be omitted: %s", s)
 	}
 }
 

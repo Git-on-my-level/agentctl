@@ -1468,22 +1468,12 @@ func runTestGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
-func TestRouteExplainJSON(t *testing.T) {
+func TestRouteExplainRejectsNeedsPR(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
-	code := a.run(context.Background(), []string{"route", "explain", "--model-family", "gpt", "--needs-pr", "--output", "json"})
-	if code != 0 {
-		t.Fatalf("exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	var doc struct {
-		OK     bool           `json:"ok"`
-		Result map[string]any `json:"result"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
-		t.Fatal(err)
-	}
-	if !doc.OK || doc.Result["lifecycle"] != "multica" || doc.Result["adapter"] != "codex" {
-		t.Fatalf("doc=%#v", doc)
+	code := a.run(context.Background(), []string{"route", "explain", "--needs-pr", "--output", "json"})
+	if code == 0 {
+		t.Fatalf("expected usage error, got %s", stdout.String())
 	}
 }
 
@@ -1501,8 +1491,14 @@ func TestRouteExplainQueryJSON(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
 		t.Fatal(err)
 	}
-	if !doc.OK || doc.Result["query"] != "glm" {
+	if !doc.OK {
 		t.Fatalf("doc=%#v", doc)
+	}
+	if _, ok := doc.Result["query"]; ok {
+		t.Fatalf("query should not be echoed: %#v", doc.Result)
+	}
+	if _, ok := doc.Result["hosts"]; ok {
+		t.Fatalf("empty hosts should be omitted: %#v", doc.Result)
 	}
 	models, _ := doc.Result["models"].([]any)
 	if len(models) == 0 {

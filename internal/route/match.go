@@ -54,16 +54,16 @@ type PlacementAdvice struct {
 	Mode   string `json:"mode"`
 	Kind   string `json:"kind,omitempty"`
 	Host   string `json:"host,omitempty"`
-	Reason string `json:"reason"`
+	Reason string `json:"-"`
 }
 
-// MatchResult is a ranked explanation. Empty lists mean "nothing recognized",
+// MatchResult is a ranked explanation. Absent lists mean "nothing recognized",
 // not an error.
 type MatchResult struct {
-	Query     string          `json:"query"`
+	Query     string          `json:"-"`
 	Tokens    []string        `json:"-"`
-	Hosts     []HostHit       `json:"hosts"`
-	Models    []ModelHit      `json:"models"`
+	Hosts     []HostHit       `json:"hosts,omitempty"`
+	Models    []ModelHit      `json:"models,omitempty"`
 	Unmatched []string        `json:"unmatched,omitempty"`
 	Placement PlacementAdvice `json:"placement"`
 }
@@ -86,26 +86,26 @@ func BuiltinModelCatalog() []ModelRecord {
 	}
 }
 
-func Tokenize(query string) (tokens, unmatched []string) {
+func Tokenize(query string) []string {
 	raw := strings.FieldsFunc(strings.ToLower(query), func(r rune) bool {
 		return unicode.IsSpace(r) || r == ',' || r == '/'
 	})
+	var tokens []string
 	for _, tok := range raw {
 		tok = strings.Trim(tok, ".:;!?\"'`")
 		if tok == "" {
 			continue
 		}
 		if _, glue := glueWords[tok]; glue {
-			unmatched = append(unmatched, tok)
 			continue
 		}
 		tokens = append(tokens, tok)
 	}
-	return tokens, unmatched
+	return tokens
 }
 
 func Match(query string, catalog Catalog) MatchResult {
-	tokens, glue := Tokenize(query)
+	tokens := Tokenize(query)
 	hosts := matchHosts(tokens, catalog.Hosts)
 	models := collapseModels(matchModels(tokens, catalog.Models))
 	consumed := map[string]struct{}{}
@@ -115,7 +115,7 @@ func Match(query string, catalog Catalog) MatchResult {
 	for _, hit := range models {
 		consumed[hit.Hit] = struct{}{}
 	}
-	unmatched := append([]string{}, glue...)
+	var unmatched []string
 	for _, tok := range tokens {
 		if _, ok := consumed[tok]; !ok {
 			unmatched = append(unmatched, tok)
@@ -172,7 +172,7 @@ func matchModels(tokens []string, models []ModelRecord) []ModelHit {
 			k := key{model.Adapter, model.Model}
 			prev, ok := best[k]
 			if !ok || score > prev.Score {
-				best[k] = ModelHit{Adapter: model.Adapter, Model: model.Model, Speed: model.Speed, Score: score, Hit: tok, Kind: kind}
+				best[k] = ModelHit{Adapter: model.Adapter, Model: model.Model, Speed: emitSpeed(model.Speed), Score: score, Hit: tok, Kind: kind}
 			}
 		}
 	}
@@ -219,6 +219,14 @@ func normalizeKeyword(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	value = strings.ReplaceAll(value, "_", "-")
 	return strings.Trim(value, ".:;!?\"'`")
+}
+
+func emitSpeed(speed string) string {
+	speed = strings.TrimSpace(speed)
+	if strings.EqualFold(speed, "regular") {
+		return ""
+	}
+	return speed
 }
 
 func advisePlacement(hosts []HostHit, thisHost, kind string) PlacementAdvice {
