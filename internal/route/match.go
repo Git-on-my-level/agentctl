@@ -36,18 +36,18 @@ type ModelRecord struct {
 
 type HostHit struct {
 	ID    string `json:"id"`
-	Score int    `json:"score"`
-	Hit   string `json:"hit"`
-	Kind  string `json:"kind"`
+	Score int    `json:"-"`
+	Hit   string `json:"-"`
+	Kind  string `json:"-"`
 }
 
 type ModelHit struct {
 	Adapter string `json:"adapter"`
 	Model   string `json:"model,omitempty"`
 	Speed   string `json:"speed,omitempty"`
-	Score   int    `json:"score"`
-	Hit     string `json:"hit"`
-	Kind    string `json:"kind"`
+	Score   int    `json:"-"`
+	Hit     string `json:"-"`
+	Kind    string `json:"-"`
 }
 
 type PlacementAdvice struct {
@@ -61,10 +61,10 @@ type PlacementAdvice struct {
 // not an error.
 type MatchResult struct {
 	Query     string          `json:"query"`
-	Tokens    []string        `json:"tokens"`
+	Tokens    []string        `json:"-"`
 	Hosts     []HostHit       `json:"hosts"`
 	Models    []ModelHit      `json:"models"`
-	Unmatched []string        `json:"unmatched"`
+	Unmatched []string        `json:"unmatched,omitempty"`
 	Placement PlacementAdvice `json:"placement"`
 }
 

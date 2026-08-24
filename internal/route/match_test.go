@@ -1,6 +1,8 @@
 package route
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -24,7 +26,7 @@ func testCatalog() Catalog {
 
 func TestMatchStudioOmpIsObvious(t *testing.T) {
 	got := Match("studio omp", testCatalog())
-	if len(got.Hosts) != 1 || got.Hosts[0].ID != "m1-mac-studio" || got.Hosts[0].Kind != "exact" {
+	if len(got.Hosts) != 1 || got.Hosts[0].ID != "m1-mac-studio" {
 		t.Fatalf("hosts = %#v", got.Hosts)
 	}
 	if len(got.Models) < 1 || got.Models[0].Adapter != "omp" || got.Models[0].Model != "glm-5.3" {
@@ -53,11 +55,11 @@ func TestMatchKeepsMultipleModels(t *testing.T) {
 	if len(got.Hosts) != 1 || got.Hosts[0].ID != "m1-mac-studio" {
 		t.Fatalf("hosts = %#v", got.Hosts)
 	}
-	adapters := map[string]string{}
+	adapters := map[string]bool{}
 	for _, model := range got.Models {
-		adapters[model.Hit] = model.Adapter + "/" + model.Model
+		adapters[model.Adapter+"/"+model.Model] = true
 	}
-	if adapters["grok"] == "" || adapters["sol"] == "" {
+	if !adapters["cursor/cursor-grok-4.6-high"] || !adapters["codex/gpt-5.6-sol"] {
 		t.Fatalf("expected grok and sol, got %#v", got.Models)
 	}
 	if !contains(got.Unmatched, "or") {
@@ -82,7 +84,7 @@ func TestMatchHostnameSubstringWithoutAlias(t *testing.T) {
 		Models:   BuiltinModelCatalog(),
 	}
 	got := Match("studio", catalog)
-	if len(got.Hosts) != 1 || got.Hosts[0].ID != "m1-mac-studio" || got.Hosts[0].Kind != "substring" {
+	if len(got.Hosts) != 1 || got.Hosts[0].ID != "m1-mac-studio" {
 		t.Fatalf("hosts = %#v", got.Hosts)
 	}
 }
@@ -124,6 +126,22 @@ func TestMatchEmptyQueryIsEmpty(t *testing.T) {
 	got := Match("", testCatalog())
 	if len(got.Tokens) != 0 || got.Placement.Mode != "no_host" {
 		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestMatchJSONOmitsMatchAnnotations(t *testing.T) {
+	raw, err := json.Marshal(Match("studio omp", testCatalog()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	for _, waste := range []string{`"kind":"exact"`, `"hit":"studio"`, `"hit":"omp"`, `"score":`, `"tokens":`} {
+		if strings.Contains(s, waste) {
+			t.Fatalf("wasted annotation %s in %s", waste, s)
+		}
+	}
+	if !strings.Contains(s, `"id":"m1-mac-studio"`) || !strings.Contains(s, `"adapter":"omp"`) {
+		t.Fatalf("missing useful fields: %s", s)
 	}
 }
 
