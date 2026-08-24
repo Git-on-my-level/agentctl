@@ -512,3 +512,70 @@ func writeExecutable(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 }
+
+func TestBootstrapInstructionPointerSkipsOmpAgentDirectory(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".omp", "agent"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
+	if problem := a.bootstrapUpdate(output.Renderer{Mode: output.JSON, Writer: &stdout}, home, []string{"omp"}, "", false); problem != nil {
+		t.Fatalf("omp agent directory blocked bootstrap: %v\n%s", problem, stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, ".omp", "agent", "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatalf("bootstrap created omp AGENTS.md: %v", err)
+	}
+}
+
+func TestBootstrapInstructionPointerFollowsSoulSymlink(t *testing.T) {
+	home := t.TempDir()
+	target := filepath.Join(home, "shared", "SOUL.md")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := "# Shared soul\n"
+	if err := os.WriteFile(target, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, ".hermes", "SOUL.md")
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
+	if problem := a.bootstrapUpdate(output.Renderer{Mode: output.JSON, Writer: &stdout}, home, []string{"hermes"}, "", false); problem != nil {
+		t.Fatalf("symlink soul blocked bootstrap: %v\n%s", problem, stdout.String())
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || !strings.Contains(string(data), instructionPointerStart) || !strings.HasPrefix(string(data), original) {
+		t.Fatalf("symlink target not updated: %q (%v)", data, err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("soul symlink was replaced: %v (%v)", info, err)
+	}
+}
+
+func TestBootstrapInstructionPointerWritesCursorAgents(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".cursor", "AGENTS.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("---\nalwaysApply: true\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
+	if problem := a.bootstrapUpdate(output.Renderer{Mode: output.JSON, Writer: &stdout}, home, []string{"cursor"}, "", false); problem != nil {
+		t.Fatalf("cursor AGENTS.md update failed: %v\n%s", problem, stdout.String())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(data), instructionPointerStart) {
+		t.Fatalf("cursor pointer missing: %q (%v)", data, err)
+	}
+}
