@@ -1487,6 +1487,29 @@ func TestRouteExplainJSON(t *testing.T) {
 	}
 }
 
+func TestRouteExplainQueryJSON(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	code := a.run(context.Background(), []string{"route", "explain", "--output", "json", "--", "glm"})
+	if code != 0 {
+		t.Fatalf("exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var doc struct {
+		OK     bool           `json:"ok"`
+		Result map[string]any `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.OK || doc.Result["query"] != "glm" {
+		t.Fatalf("doc=%#v", doc)
+	}
+	models, _ := doc.Result["models"].([]any)
+	if len(models) == 0 {
+		t.Fatalf("expected model hits: %#v", doc.Result)
+	}
+}
+
 func TestCapabilitiesSummaryCanRequireResultContent(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)

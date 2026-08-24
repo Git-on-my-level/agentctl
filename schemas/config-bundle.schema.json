@@ -24,12 +24,14 @@
           "additionalProperties": { "$ref": "#/$defs/adapter" }
         },
         "multica": { "$ref": "#/$defs/multica" },
-        "agent_preferences": { "$ref": "#/$defs/agent_preferences" }
+        "agent_preferences": { "$ref": "#/$defs/agent_preferences" },
+        "route": { "$ref": "#/$defs/route" }
       },
       "anyOf": [
         { "required": ["adapters"] },
         { "required": ["multica"] },
-        { "required": ["agent_preferences"] }
+        { "required": ["agent_preferences"] },
+        { "required": ["route"] }
       ]
     },
     "adapter": {
@@ -69,6 +71,26 @@
         "model": { "type": "string", "minLength": 1, "maxLength": 128 },
         "speed": { "type": "string", "minLength": 1, "maxLength": 128 },
         "use_for": { "type": "string", "maxLength": 128 }
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "this_host": { "type": "string", "maxLength": 128 },
+        "hosts": {
+          "type": "object",
+          "maxProperties": 64,
+          "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "placement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "type": "string", "minLength": 1, "maxLength": 64 }
+          }
+        }
       }
     },
     "multica": {

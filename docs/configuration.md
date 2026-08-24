@@ -68,6 +68,12 @@ native model catalog, blocks a different model, or changes direct CLI argv.
 `agent`, `model`, `speed`, `use_for`, and `notes` are intentionally text fields
 so profiles can describe native tools without agentctl owning their vocabulary.
 
+Optional `route` data feeds `agentctl route explain <query>`. `this_host` is the
+local machine id. `hosts` maps nicknames onto those ids. `placement.kind` names
+whatever remote authority the operator configured (Multica is one kind). None
+of these fields are required; without them the matcher still ranks built-in
+adapter family aliases such as `glm` or `codex`.
+
 ## Profile selection
 
 `--profile <name>` selects an exact named profile. If it is omitted, the

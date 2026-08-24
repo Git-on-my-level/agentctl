@@ -174,23 +174,15 @@ valid revision when the publisher is unavailable.
 `agentctl route explain` is advisory and deterministic. It never creates an
 issue or launches an agent.
 
-The caller explicitly selects `direct` or an optional durable authority. If the
-caller asks for an automatic recommendation, uncertainty resolves to `direct`,
-because promotion is available later and unwanted remote records impose review
-cost.
+A selector string such as `studio omp` is ranked against optional config
+keywords (`route.hosts`, `agent_preferences.preferred`, plus built-in adapter
+family aliases). The result is ranked host and model lists plus a placement
+mode (`local`, `remote`, `need_placement`, `ambiguous_host`, or `no_host`).
+Empty lists mean nothing was recognized. The caller chooses among hits.
 
-Model-family routing is separate from lifecycle routing. An operator-provided
-reviewed policy may map a model family to a native executor, for example:
-
-| Model family | Native executor |
-| --- | --- |
-| OpenAI GPT | Codex |
-| Anthropic Claude | Claude Code |
-| Models supported by Cursor | Cursor |
-| Open-weight models supported by OMP | OMP |
-
-Cross-family routes remain explicit experiments or fallbacks rather than
-default aliases.
+The legacy flag form (`--model-family`, `--needs-pr`, …) still explains
+direct versus a durable authority. Uncertainty in that form resolves to
+`direct`, because promotion remains available later.
 
 ## Authority-safe references
 

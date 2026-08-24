@@ -30,6 +30,7 @@ type Profile struct {
 	Adapters         map[string]Adapter `json:"adapters,omitempty"`
 	Multica          *Multica           `json:"multica,omitempty"`
 	AgentPreferences *AgentPreferences  `json:"agent_preferences,omitempty"`
+	Route            *Route             `json:"route,omitempty"`
 }
 
 type Adapter struct {
@@ -61,6 +62,18 @@ type Multica struct {
 	WorkspaceID string `json:"workspace_id"`
 	ServerURL   string `json:"server_url"`
 	AppURL      string `json:"app_url"`
+}
+
+// Route is optional keyword/placement data for `route explain <query>`.
+// It is not required for single-machine use.
+type Route struct {
+	ThisHost  string            `json:"this_host,omitempty"`
+	Hosts     map[string]string `json:"hosts,omitempty"`
+	Placement *RoutePlacement   `json:"placement,omitempty"`
+}
+
+type RoutePlacement struct {
+	Kind string `json:"kind"`
 }
 
 // DefaultPath returns the documented config location without creating it.
@@ -130,6 +143,11 @@ func (c Config) Validate() error {
 				return fmt.Errorf("profile %q agent_preferences: %w", name, err)
 			}
 		}
+		if profile.Route != nil {
+			if err := profile.Route.Validate(); err != nil {
+				return fmt.Errorf("profile %q route: %w", name, err)
+			}
+		}
 	}
 	return nil
 }
@@ -173,6 +191,30 @@ func (p AgentPreferences) Validate() error {
 		}
 		if len(note) > 1024 {
 			return fmt.Errorf("notes[%d] exceeds 1024-byte limit", i)
+		}
+	}
+	return nil
+}
+
+func (r Route) Validate() error {
+	if len(r.ThisHost) > 128 {
+		return errors.New("this_host exceeds 128-byte limit")
+	}
+	if len(r.Hosts) > 64 {
+		return errors.New("hosts exceeds 64-entry limit")
+	}
+	for alias, id := range r.Hosts {
+		if strings.TrimSpace(alias) == "" || len(alias) > 128 {
+			return errors.New("hosts contains an invalid alias")
+		}
+		if strings.TrimSpace(id) == "" || len(id) > 128 {
+			return fmt.Errorf("hosts[%q] has an invalid id", alias)
+		}
+	}
+	if r.Placement != nil {
+		kind := strings.TrimSpace(r.Placement.Kind)
+		if kind == "" || len(kind) > 64 {
+			return errors.New("placement.kind must be 1-64 characters")
 		}
 	}
 	return nil
