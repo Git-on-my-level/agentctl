@@ -122,9 +122,9 @@ type bootstrapHarnessSpec struct {
 var bootstrapHarnessSpecs = []bootstrapHarnessSpec{
 	{Name: "claude", Executables: []string{"claude"}, Canonical: func(home string) string { return filepath.Join(home, ".claude", "skills") }, ConfigCandidates: configCandidates(".claude", "settings.json", "config.json"), InstructionCandidates: configCandidates(".claude", "CLAUDE.md")},
 	{Name: "codex", Executables: []string{"codex"}, Canonical: func(home string) string { return filepath.Join(home, ".agents", "skills") }, Compatibility: []func(string) string{func(home string) string { return filepath.Join(home, ".codex", "skills") }}, ConfigCandidates: configCandidates(".codex", "config.toml", "config.json"), InstructionCandidates: configCandidates(".codex", "AGENTS.override.md", "AGENTS.md")},
-	{Name: "cursor", Executables: []string{"cursor-agent"}, Canonical: func(home string) string { return filepath.Join(home, ".cursor", "skills") }, ConfigCandidates: configCandidates(".cursor", "config.json", "settings.json")},
+	{Name: "cursor", Executables: []string{"cursor-agent"}, Canonical: func(home string) string { return filepath.Join(home, ".cursor", "skills") }, ConfigCandidates: configCandidates(".cursor", "config.json", "settings.json"), InstructionCandidates: configCandidates(".cursor", "AGENTS.md")},
 	{Name: "hermes", Executables: []string{"hermes"}, Canonical: func(home string) string { return filepath.Join(home, ".hermes", "skills") }, ConfigCandidates: configCandidates(".hermes", "config.json", "config.yaml", "config.yml"), InstructionCandidates: configCandidates(".hermes", "SOUL.md")},
-	{Name: "omp", Executables: []string{"omp"}, Canonical: func(home string) string { return filepath.Join(home, ".agents", "skills") }, Compatibility: []func(string) string{func(home string) string { return filepath.Join(home, ".omp", "agent", "skills") }}, ConfigCandidates: configCandidates(".omp", "config.json", "config.yaml", "config.yml"), InstructionCandidates: configCandidates(".omp", "agent", "AGENTS.md")},
+	{Name: "omp", Executables: []string{"omp"}, Canonical: func(home string) string { return filepath.Join(home, ".agents", "skills") }, Compatibility: []func(string) string{func(home string) string { return filepath.Join(home, ".omp", "agent", "skills") }}, ConfigCandidates: configCandidates(".omp", "config.json", "config.yaml", "config.yml"), InstructionCandidates: configCandidates(".omp/agent", "AGENTS.md")},
 	// Multica skills are workspace/server scoped.  There is intentionally no
 	// guessed local root; callers must supply an explicit target directory.
 	{Name: "multica", Executables: []string{"multica"}, ConfigCandidates: configCandidates(".multica", "config.json")},
@@ -463,26 +463,48 @@ func inspectInstructionPointerForUpdate(spec *bootstrapHarnessSpec, home, expect
 		return inspection
 	}
 	for _, candidate := range spec.InstructionCandidates(home) {
-		info, err := os.Lstat(candidate)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
+		path, state := resolveInstructionCandidate(candidate)
+		if state == "missing" {
+			continue
+		}
+		if state == "conflict" {
 			return instructionPointerInspection{Path: candidate, State: "conflict"}
 		}
-		inspection.Path = candidate
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			inspection.State = "conflict"
-			return inspection
-		}
-		data, err := os.ReadFile(candidate)
+		data, err := os.ReadFile(path)
 		if err != nil {
-			inspection.State = "conflict"
-			return inspection
+			return instructionPointerInspection{Path: path, State: "conflict"}
 		}
-		return inspectInstructionPointerBytes(candidate, data, expected)
+		return inspectInstructionPointerBytes(path, data, expected)
 	}
 	return inspection
+}
+
+// resolveInstructionCandidate picks a regular file to manage.
+// Directories and other non-files are skipped so a later candidate can win.
+// Symlinks to a regular file resolve to that target. Dangling links skip.
+func resolveInstructionCandidate(candidate string) (path string, state string) {
+	info, err := os.Lstat(candidate)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", "missing"
+		}
+		return candidate, "conflict"
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			return "", "missing"
+		}
+		info, err = os.Stat(target)
+		if err != nil || !info.Mode().IsRegular() {
+			return "", "missing"
+		}
+		return target, "ok"
+	}
+	if !info.Mode().IsRegular() {
+		return "", "missing"
+	}
+	return candidate, "ok"
 }
 
 func inspectInstructionPointerBytes(path string, data []byte, expected string) instructionPointerInspection {
