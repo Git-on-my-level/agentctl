@@ -172,7 +172,7 @@ func (a *app) skillsCommand(ctx context.Context, renderer output.Renderer, c com
 		actions = append(actions, output.NextAction{Label: "Reconcile pinned Skill Hub skills", Argv: argv, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{"review the plan actions"}})
 	}
 	for _, action := range report.Actions {
-		if action.State != "drifted" && action.State != "conflict" {
+		if action.State != "drifted" {
 			continue
 		}
 		argv := []string{"agentctl", "skills", "diff", action.Skill}
