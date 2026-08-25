@@ -32,6 +32,10 @@ const (
 var skillNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 var commitPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 
+var reservedSkillNames = map[string]string{
+	"agentctl-portable": "agentctl bootstrap owns and updates this embedded skill",
+}
+
 var (
 	ErrConflict          = errors.New("managed skill conflict")
 	ErrInvalidInput      = errors.New("invalid skill-pack input")
@@ -60,6 +64,7 @@ type Options struct {
 	Source            Source
 	Home              string
 	DetectedHarnesses []string
+	ProposalRoot      string
 }
 
 type Action struct {
@@ -180,6 +185,18 @@ func Plan(options Options) (Report, error) {
 // full before the first write; a later filesystem failure can leave earlier
 // skills applied, and an idempotent retry converges the remaining actions.
 func Reconcile(options Options) (Report, error) {
+	return reconcile(options, false)
+}
+
+// ReconcileAutoClean applies only unambiguous install, upgrade, and metadata
+// actions. Drifted or unmanaged destinations are preserved and remain visible
+// in the returned unhealthy report instead of blocking unrelated clean skills.
+// It is intended only for an explicitly selected auto-clean update policy.
+func ReconcileAutoClean(options Options) (Report, error) {
+	return reconcile(options, true)
+}
+
+func reconcile(options Options, autoClean bool) (Report, error) {
 	lock, err := acquireLock(options.Home)
 	if err != nil {
 		return Report{}, err
@@ -189,7 +206,7 @@ func Reconcile(options Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	if !report.Healthy {
+	if !report.Healthy && !autoClean {
 		return report, fmt.Errorf("%w: reconcile refused unsupported or conflicting actions", ErrConflict)
 	}
 	_, _, _, prepared, err := load(options.Source)
@@ -202,6 +219,9 @@ func Reconcile(options Options) (Report, error) {
 	}
 	for _, action := range report.Actions {
 		if !action.Changed || action.Destination == "" {
+			continue
+		}
+		if autoClean && action.State != "install" && action.State != "upgrade" && action.State != "metadata_update" {
 			continue
 		}
 		skill := byName[action.Skill]
@@ -305,6 +325,9 @@ func validateManifest(manifest Manifest) error {
 		}
 		if seen[skill.Name] {
 			return fmt.Errorf("duplicate skill name %q", skill.Name)
+		}
+		if reason, reserved := reservedSkillNames[skill.Name]; reserved {
+			return fmt.Errorf("skill name %q is reserved: %s", skill.Name, reason)
 		}
 		seen[skill.Name] = true
 		clean, err := cleanRelativePath(skill.Path, "skill path")

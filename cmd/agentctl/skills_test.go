@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
+	"github.com/Git-on-my-level/agentctl/internal/skillpack"
 )
 
 func gitFixtureCommand(t *testing.T, directory string, args ...string) string {
@@ -27,15 +29,33 @@ func gitFixtureCommand(t *testing.T, directory string, args ...string) string {
 func configuredSkillSource(t *testing.T) (configPath, home string) {
 	t.Helper()
 	root := t.TempDir()
+	hub := filepath.Join(root, "hub")
+	if err := os.Mkdir(hub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitFixtureCommand(t, hub, "init", "--quiet")
+	hubFiles := map[string]string{
+		"manifests/fleet-core.json":  `{"schema_version":1,"skills":[{"name":"test-skill","path":"skills/test-skill","targets":["codex"]}]}`,
+		"skills/test-skill/SKILL.md": "---\nname: test-skill\n---\n\n# Test\n",
+	}
+	for relative, content := range hubFiles {
+		path := filepath.Join(hub, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitFixtureCommand(t, hub, "add", ".")
+	gitFixtureCommand(t, hub, "-c", "user.name=Agentctl Test", "-c", "user.email=agentctl@example.test", "commit", "--quiet", "-m", "hub fixture")
 	author := filepath.Join(root, "author")
 	if err := os.Mkdir(author, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	gitFixtureCommand(t, author, "init", "--quiet")
 	files := map[string]string{
-		"config-bundle.json":         `{"schema_version":1,"default_profile":"local","profiles":{"local":{"adapters":{"codex":{"executable":"/bin/echo"}}}}}`,
-		"skill-pack.json":            `{"schema_version":1,"skills":[{"name":"test-skill","path":"skills/test-skill","targets":["codex"]}]}`,
-		"skills/test-skill/SKILL.md": "---\nname: test-skill\n---\n\n# Test\n",
+		"config-bundle.json": `{"schema_version":1,"default_profile":"local","profiles":{"local":{"adapters":{"codex":{"executable":"/bin/echo"}}}},"skills":{"source":{"remote":` + string(mustJSON(t, hub)) + `,"ref":"main","manifest_path":"manifests/fleet-core.json"},"update_policy":"auto-clean"}}`,
 	}
 	for relative, content := range files {
 		path := filepath.Join(author, filepath.FromSlash(relative))
@@ -61,7 +81,19 @@ func configuredSkillSource(t *testing.T) (configPath, home string) {
 	if err := os.WriteFile(filepath.Join(home, ".codex", "config.json"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := skillpack.UpdateHubSource(context.Background(), home, skillpack.HubSelection{Remote: hub, Ref: "main", ManifestPath: "manifests/fleet-core.json"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	return configPath, home
+}
+
+func mustJSON(t *testing.T, value string) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func TestSkillsPlanIsReadOnlyAndReconcileUsesPinnedConfigSource(t *testing.T) {
@@ -98,6 +130,9 @@ func TestSkillsRequiresDurableGitSourceAndRejectsInvocationBundle(t *testing.T) 
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(root, "missing", "config.json")
+	if err := config.Save(configPath, config.Config{SchemaVersion: config.SchemaVersion}, false); err != nil {
+		t.Fatal(err)
+	}
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	if code := a.run(context.Background(), []string{"--config", configPath, "skills", "plan", "--home", home}); code != 5 || !strings.Contains(stdout.String(), `"code":"capability_unavailable"`) {

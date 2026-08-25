@@ -160,8 +160,11 @@ shared context. Never compile credentials, raw prompts, transcripts, harness
 databases, worktrees, or unreviewed private logs.
 
 Use `agentctl help skills` before personal skill reconciliation. `skills plan`,
-`status`, and `doctor` read only the pinned config-source checkout and never
-fetch; `skills reconcile` writes only valid marker-bound native skill roots.
+`status`, `doctor`, and `update --plan` are read-only. `skills update`
+fast-forwards the independently selected Skill Hub and replaces only unchanged
+marker-owned copies. Local edits remain drifted for `skills diff`, plan-first
+`restore`, or plan-first `propose`; publication is always separate. The embedded
+`agentctl-portable` skill is bootstrap-owned and cannot appear in a Hub pack.
 Multica skill installation remains authority-owned and must be advertised by a
 reviewed runtime-bundle installer.
 

@@ -24,6 +24,21 @@ type Config struct {
 	SchemaVersion  int                `json:"schema_version"`
 	DefaultProfile string             `json:"default_profile,omitempty"`
 	Profiles       map[string]Profile `json:"profiles,omitempty"`
+	Skills         *Skills            `json:"skills,omitempty"`
+}
+
+// Skills selects a reviewed pack in a separate Git-backed Skill Hub. The
+// config repository owns only this selection and update policy; the Skill Hub
+// owns all skill bodies and manifests.
+type Skills struct {
+	Source       SkillSource `json:"source"`
+	UpdatePolicy string      `json:"update_policy"`
+}
+
+type SkillSource struct {
+	Remote       string `json:"remote"`
+	Ref          string `json:"ref,omitempty"`
+	ManifestPath string `json:"manifest_path"`
 }
 
 type Profile struct {
@@ -124,6 +139,11 @@ func (c Config) Validate() error {
 			return fmt.Errorf("default profile %q is not defined", c.DefaultProfile)
 		}
 	}
+	if c.Skills != nil {
+		if err := c.Skills.Validate(); err != nil {
+			return fmt.Errorf("skills: %w", err)
+		}
+	}
 	for name, profile := range c.Profiles {
 		if strings.TrimSpace(name) == "" {
 			return errors.New("profile name cannot be empty")
@@ -148,6 +168,37 @@ func (c Config) Validate() error {
 				return fmt.Errorf("profile %q route: %w", name, err)
 			}
 		}
+	}
+	return nil
+}
+
+func (s Skills) Validate() error {
+	s.Source.Remote = strings.TrimSpace(s.Source.Remote)
+	s.Source.Ref = strings.TrimSpace(s.Source.Ref)
+	s.Source.ManifestPath = strings.TrimSpace(s.Source.ManifestPath)
+	if s.Source.Remote == "" {
+		return errors.New("source.remote is required")
+	}
+	if strings.ContainsAny(s.Source.Remote, "\r\n\x00") {
+		return errors.New("source.remote contains forbidden control characters")
+	}
+	if err := validateSourceRemote(s.Source.Remote); err != nil {
+		return fmt.Errorf("source.remote: %w", err)
+	}
+	if s.Source.Ref == "" {
+		s.Source.Ref = "main"
+	}
+	if strings.ContainsAny(s.Source.Ref, "\r\n\x00 ~^:?*[\\") || strings.HasPrefix(s.Source.Ref, "-") || strings.Contains(s.Source.Ref, "..") || strings.HasSuffix(s.Source.Ref, "/") || strings.HasSuffix(s.Source.Ref, ".") {
+		return errors.New("source.ref is not a safe Git ref")
+	}
+	manifest := filepath.ToSlash(filepath.Clean(s.Source.ManifestPath))
+	if s.Source.ManifestPath == "" || filepath.IsAbs(s.Source.ManifestPath) || strings.ContainsAny(s.Source.ManifestPath, "\r\n\x00\\") || manifest == "." || manifest == ".." || strings.HasPrefix(manifest, "../") || manifest == ".git" || strings.HasPrefix(manifest, ".git/") {
+		return errors.New("source.manifest_path must be a repository-relative file outside .git")
+	}
+	switch s.UpdatePolicy {
+	case "manual", "auto-clean":
+	default:
+		return errors.New("update_policy must be manual or auto-clean")
 	}
 	return nil
 }

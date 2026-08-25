@@ -8,6 +8,7 @@
   "properties": {
     "schema_version": { "const": 1 },
     "default_profile": { "type": "string", "minLength": 1 },
+    "skills": { "$ref": "#/$defs/skills" },
     "profiles": {
       "type": "object",
       "minProperties": 1,
@@ -15,6 +16,24 @@
     }
   },
   "$defs": {
+    "skills": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "update_policy"],
+      "properties": {
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["remote", "manifest_path"],
+          "properties": {
+            "remote": { "type": "string", "minLength": 1 },
+            "ref": { "type": "string", "minLength": 1 },
+            "manifest_path": { "type": "string", "minLength": 1 }
+          }
+        },
+        "update_policy": { "enum": ["manual", "auto-clean"] }
+      }
+    },
     "profile": {
       "type": "object",
       "additionalProperties": false,

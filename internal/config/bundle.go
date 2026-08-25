@@ -28,6 +28,7 @@ type Bundle struct {
 	SchemaVersion  int                      `json:"schema_version"`
 	DefaultProfile string                   `json:"default_profile,omitempty"`
 	Profiles       map[string]BundleProfile `json:"profiles"`
+	Skills         *Skills                  `json:"skills,omitempty"`
 }
 
 type BundleProfile struct {
@@ -191,6 +192,13 @@ func applyBundle(base Config, bundle Bundle) (Config, error) {
 		}
 		result.DefaultProfile = bundle.DefaultProfile
 	}
+	if bundle.Skills != nil {
+		if result.Skills != nil && !reflect.DeepEqual(result.Skills, bundle.Skills) {
+			return Config{}, fmt.Errorf("%w: bundle skills would replace user config", ErrConflict)
+		}
+		copy := *bundle.Skills
+		result.Skills = &copy
+	}
 	if err := result.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -231,7 +239,7 @@ func (b Bundle) Validate() error {
 	if len(b.Profiles) == 0 {
 		return errors.New("config bundle requires at least one profile")
 	}
-	config := Config{SchemaVersion: SchemaVersion, DefaultProfile: b.DefaultProfile, Profiles: make(map[string]Profile, len(b.Profiles))}
+	config := Config{SchemaVersion: SchemaVersion, DefaultProfile: b.DefaultProfile, Profiles: make(map[string]Profile, len(b.Profiles)), Skills: b.Skills}
 	for name, profile := range b.Profiles {
 		config.Profiles[name] = profile.profile()
 	}

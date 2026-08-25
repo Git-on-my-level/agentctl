@@ -375,21 +375,22 @@ intentional.
 
 ## Managed personal skills
 
-A configured Git source may also contain a separate `skill-pack.json` and
-file-only skill trees. Agentctl reads them only from the exact clean revision
-already pinned by `config source`; ordinary skill inspection and reconciliation
-never fetch.
+A configured bundle may select a separate Git-backed Skill Hub manifest. The
+config repository owns the source selection and update policy; the Skill Hub
+owns manifests and skill bodies. Agentctl pins the Hub independently.
 
 ```bash
-agentctl skills plan
-agentctl skills reconcile
+agentctl skills update --plan
+agentctl skills update
 agentctl skills status
+agentctl skills diff <name>
 ```
 
-Only marker-bound native skill directories can be upgraded. Unmanaged
-collisions and local drift fail closed, omitted skills are not deleted, and
-Multica remains unsupported until its adapter advertises a reviewed remote
-runtime-bundle installer. See [Managed skill packs](docs/managed-skills.md).
+Auto-clean upgrades unchanged marker-owned copies while preserving unmanaged
+collisions and local drift for explicit review. `agentctl-portable` remains
+bootstrap-owned and is rejected from Hub packs. Omitted skills are not deleted,
+and Multica remains unsupported until its adapter advertises a reviewed remote
+runtime-bundle installer. See [Managed Skill Hub packs](docs/managed-skills.md).
 
 ## Support matrix
 

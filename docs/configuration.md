@@ -194,11 +194,11 @@ validated. Updates are never implicit during `run`, `doctor`, or config reads.
 Repository credentials and SSH configuration remain entirely owned by native
 Git/SSH.
 
-The same pinned checkout may contain a separate `skill-pack.json` and `skills/`
-tree. Those files are not fields in `config-bundle.json` and do not alter config
-composition. `agentctl skills plan|status|doctor` reads them without fetching;
-`agentctl skills reconcile` copies only reviewed, marker-bound skill trees into
-detected native harness roots. See [Managed skill packs](managed-skills.md).
+The bundle may select a separate Git-backed Skill Hub manifest and update
+policy. Skill bodies remain exclusively in that Hub rather than being copied
+into the config repository. `agentctl skills update` pins a fast-forward Hub
+revision and auto-reconciles clean managed copies; read-only projections never
+fetch. See [Managed Skill Hub packs](managed-skills.md).
 
 On a new Mac, verify prerequisites before initialization:
 

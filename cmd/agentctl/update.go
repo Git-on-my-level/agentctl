@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"time"
 
+	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/output"
+	"github.com/Git-on-my-level/agentctl/internal/skillpack"
 	"github.com/Git-on-my-level/agentctl/internal/updatecheck"
 )
 
@@ -31,13 +34,13 @@ func (a *app) updateWorker(parent context.Context) int {
 	if err != nil {
 		return 0
 	}
-	mode, err := updatecheck.ResolveMode(policyPath, a.getenv)
-	if err != nil || mode != updatecheck.ModeAuto {
-		return 0
-	}
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
-	_, _ = updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv}})
+	mode, modeErr := updatecheck.ResolveMode(policyPath, a.getenv)
+	if modeErr == nil && mode == updatecheck.ModeAuto {
+		_, _ = updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv}})
+	}
+	_, _ = a.updateSkillsAutoClean(ctx, common{}, false)
 	return 0
 }
 
@@ -58,7 +61,8 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, args 
 		if err != nil {
 			return output.Wrap(output.CodeInternal, "read update status", false, err)
 		}
-		_ = renderer.Success(output.Success{Result: status, Lines: []output.Line{{Lead: "update", Fields: []output.Field{{Name: "mode", Value: status.Mode}, {Name: "checked_on", Value: status.CheckedOn}, {Name: "latest_version", Value: status.LatestVersion}, {Name: "installed_version", Value: status.InstalledVersion}}}}})
+		skills := a.skillsUpdateStatus(ctx, common{})
+		_ = renderer.Success(output.Success{Result: map[string]any{"binary": status, "skills": skills}, Lines: []output.Line{{Lead: "update.binary", Fields: []output.Field{{Name: "mode", Value: status.Mode}, {Name: "checked_on", Value: status.CheckedOn}, {Name: "latest_version", Value: status.LatestVersion}, {Name: "installed_version", Value: status.InstalledVersion}}}, {Lead: "update.skills", Fields: []output.Field{{Name: "policy", Value: skills["policy"]}, {Name: "configured", Value: skills["configured"]}, {Name: "checked_on", Value: skills["checked_on"]}, {Name: "healthy", Value: skills["healthy"]}}}}})
 		return nil
 	case "policy":
 		if len(args) != 2 {
@@ -82,9 +86,97 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, args 
 			}
 			return output.Wrap(output.CodeInternal, "apply agentctl update", false, err)
 		}
-		_ = renderer.Success(output.Success{Result: result, Lines: []output.Line{{Lead: "update", Fields: []output.Field{{Name: "current_version", Value: result.CurrentVersion}, {Name: "installed_version", Value: result.InstalledVersion}, {Name: "updated", Value: result.Updated}}}}})
+		skills, skillsErr := a.updateSkillsAutoClean(ctx, common{}, true)
+		if skillsErr != nil {
+			return mapSkillpackError("apply Skill Hub update", skills, skillsErr)
+		}
+		_ = renderer.Success(output.Success{Result: map[string]any{"binary": result, "skills": skills}, Lines: []output.Line{{Lead: "update.binary", Fields: []output.Field{{Name: "current_version", Value: result.CurrentVersion}, {Name: "installed_version", Value: result.InstalledVersion}, {Name: "updated", Value: result.Updated}}}, {Lead: "update.skills", Fields: []output.Field{{Name: "healthy", Value: skills.Healthy}, {Name: "applied", Value: skills.Applied}, {Name: "conflicts", Value: skills.Conflicts}}}}})
 		return nil
 	default:
 		return output.NewError(output.CodeUsage, "usage: agentctl update status|now|policy auto|notify|off", false)
 	}
+}
+
+func (a *app) skillsUpdateStatus(ctx context.Context, c common) map[string]any {
+	result := map[string]any{"configured": false, "policy": "unconfigured", "healthy": false}
+	path, err := configPath(c)
+	if err != nil {
+		result["error"] = err.Error()
+		return result
+	}
+	cfg, err := config.Load(path)
+	if err != nil || cfg.Skills == nil {
+		if err != nil {
+			result["error"] = err.Error()
+		}
+		return result
+	}
+	result["policy"] = cfg.Skills.UpdatePolicy
+	home, err := os.UserHomeDir()
+	if err != nil {
+		result["error"] = err.Error()
+		return result
+	}
+	selection := skillpack.HubSelection{Remote: cfg.Skills.Source.Remote, Ref: cfg.Skills.Source.Ref, ManifestPath: cfg.Skills.Source.ManifestPath}
+	status, err := skillpack.HubSourceStatusReadOnly(ctx, home, selection)
+	if err != nil {
+		result["error"] = err.Error()
+		return result
+	}
+	result["configured"], result["healthy"], result["checked_on"], result["commit"], result["drift"] = status.Configured, status.InSync, status.CheckedOn, status.AppliedCommit, status.Drift
+	if status.InSync && status.Configured {
+		detected, problem := parseBootstrapHarnesses(home, "", "", a.getenv)
+		if problem != nil {
+			result["healthy"], result["error"] = false, problem.Message
+			return result
+		}
+		report, planErr := skillpack.Plan(skillpack.Options{Source: skillpack.SourceFromHubStatus(status), Home: home, DetectedHarnesses: detected})
+		if planErr != nil {
+			result["healthy"], result["error"] = false, planErr.Error()
+			return result
+		}
+		result["healthy"], result["conflicts"], result["changed"], result["unsupported"] = report.Healthy, report.Conflicts, report.Changed, report.Unsupported
+	}
+	return result
+}
+
+func (a *app) skillsAutoDue(c common) bool {
+	path, err := configPath(c)
+	if err != nil {
+		return false
+	}
+	cfg, err := config.Load(path)
+	if err != nil || cfg.Skills == nil || cfg.Skills.UpdatePolicy != "auto-clean" {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	return err == nil && skillpack.HubUpdateDue(home, a.currentTime())
+}
+
+func (a *app) updateSkillsAutoClean(ctx context.Context, c common, force bool) (skillpack.Report, error) {
+	path, err := configPath(c)
+	if err != nil {
+		return skillpack.Report{}, err
+	}
+	cfg, err := config.Load(path)
+	if err != nil || cfg.Skills == nil || cfg.Skills.UpdatePolicy != "auto-clean" {
+		return skillpack.Report{}, err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return skillpack.Report{}, err
+	}
+	if !force && !skillpack.HubUpdateDue(home, a.currentTime()) {
+		return skillpack.Report{}, nil
+	}
+	detected, problem := parseBootstrapHarnesses(home, "", "", a.getenv)
+	if problem != nil {
+		return skillpack.Report{}, fmt.Errorf("detect skill harnesses: %s", problem.Message)
+	}
+	selection := skillpack.HubSelection{Remote: cfg.Skills.Source.Remote, Ref: cfg.Skills.Source.Ref, ManifestPath: cfg.Skills.Source.ManifestPath}
+	updated, err := skillpack.UpdateHubSource(ctx, home, selection, a.currentTime())
+	if err != nil {
+		return skillpack.Report{}, err
+	}
+	return skillpack.ReconcileAutoClean(skillpack.Options{Source: skillpack.SourceFromHubStatus(updated.Status), Home: home, DetectedHarnesses: detected})
 }
