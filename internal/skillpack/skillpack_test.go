@@ -194,7 +194,7 @@ func TestReservedBootstrapSkillIsRejected(t *testing.T) {
 
 func TestHubSourceInitializesAndAdvancesOnlyFastForwardCleanCheckout(t *testing.T) {
 	hub := t.TempDir()
-	fixtureGit(t, hub, "init", "--quiet")
+	fixtureGit(t, hub, "init", "--quiet", "-b", "main")
 	writeFixture(t, hub, Manifest{SchemaVersion: SchemaVersion, Skills: []Skill{{Name: "test-skill", Path: "skills/test-skill", Targets: []string{"codex"}}}})
 	manifest := filepath.Join(hub, DefaultManifest)
 	if err := os.Rename(manifest, filepath.Join(hub, "fleet-core.json")); err != nil {
@@ -240,7 +240,7 @@ func TestHubSourceInitializesAndAdvancesOnlyFastForwardCleanCheckout(t *testing.
 
 func TestDriftReviewRestoreAndProposalArePlanFirst(t *testing.T) {
 	repository := t.TempDir()
-	fixtureGit(t, repository, "init", "--quiet")
+	fixtureGit(t, repository, "init", "--quiet", "-b", "main")
 	source := writeFixture(t, repository, Manifest{SchemaVersion: SchemaVersion, Skills: []Skill{{Name: "test-skill", Path: "skills/test-skill", Targets: []string{"codex"}}}})
 	fixtureGit(t, repository, "add", ".")
 	fixtureGit(t, repository, "-c", "user.name=Agentctl Test", "-c", "user.email=agentctl@example.test", "commit", "--quiet", "-m", "initial")

@@ -33,7 +33,7 @@ func configuredSkillSource(t *testing.T) (configPath, home string) {
 	if err := os.Mkdir(hub, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	gitFixtureCommand(t, hub, "init", "--quiet")
+	gitFixtureCommand(t, hub, "init", "--quiet", "-b", "main")
 	hubFiles := map[string]string{
 		"manifests/fleet-core.json":  `{"schema_version":1,"skills":[{"name":"test-skill","path":"skills/test-skill","targets":["codex"]}]}`,
 		"skills/test-skill/SKILL.md": "---\nname: test-skill\n---\n\n# Test\n",
@@ -53,7 +53,7 @@ func configuredSkillSource(t *testing.T) (configPath, home string) {
 	if err := os.Mkdir(author, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	gitFixtureCommand(t, author, "init", "--quiet")
+	gitFixtureCommand(t, author, "init", "--quiet", "-b", "main")
 	files := map[string]string{
 		"config-bundle.json": `{"schema_version":1,"default_profile":"local","profiles":{"local":{"adapters":{"codex":{"executable":"/bin/echo"}}}},"skills":{"source":{"remote":` + string(mustJSON(t, hub)) + `,"ref":"main","manifest_path":"manifests/fleet-core.json"},"update_policy":"auto-clean"}}`,
 	}
