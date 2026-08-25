@@ -688,6 +688,10 @@ func verifyManagedCheckout(ctx context.Context, git SourceGit, spec SourceSpec) 
 
 func MaterializeBundle(bundle Bundle) Config {
 	cfg := Config{SchemaVersion: SchemaVersion, DefaultProfile: bundle.DefaultProfile, Profiles: make(map[string]Profile, len(bundle.Profiles))}
+	if bundle.Skills != nil {
+		copy := *bundle.Skills
+		cfg.Skills = &copy
+	}
 	for name, profile := range bundle.Profiles {
 		cfg.Profiles[name] = profile.profile()
 	}
@@ -709,6 +713,9 @@ func configCanBeEnrichedBy(existing, desired Config) bool {
 		return false
 	}
 	if existing.DefaultProfile != "" && existing.DefaultProfile != desired.DefaultProfile {
+		return false
+	}
+	if existing.Skills != nil && !reflect.DeepEqual(existing.Skills, desired.Skills) {
 		return false
 	}
 	for name, current := range existing.Profiles {

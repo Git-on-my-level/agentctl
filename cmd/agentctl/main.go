@@ -55,14 +55,19 @@ func newApp() *app {
 			return nil
 		}
 		mode, err := updatecheck.ResolveMode(policyPath, a.getenv)
-		if err != nil || mode == updatecheck.ModeOff {
+		if err != nil {
 			return nil
 		}
 		options := updatecheck.Options{CurrentVersion: currentVersion, StatePath: statePath, Getenv: a.getenv}
-		if mode == updatecheck.ModeAuto {
-			if updatecheck.Due(options) {
+		if mode == updatecheck.ModeAuto || a.skillsAutoDue(c) {
+			if (mode == updatecheck.ModeAuto && updatecheck.Due(options)) || a.skillsAutoDue(c) {
 				_ = startUpdateWorker()
 			}
+			if mode == updatecheck.ModeAuto || mode == updatecheck.ModeOff {
+				return nil
+			}
+		}
+		if mode == updatecheck.ModeOff {
 			return nil
 		}
 		notice, _ := updatecheck.Check(ctx, options)

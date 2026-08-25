@@ -1,26 +1,41 @@
-# Managed skill packs
+# Managed Skill Hub packs
 
-Agentctl can reconcile a reviewed, non-secret skill pack from the exact Git
-revision already pinned by `agentctl config source`. Git and SSH continue to own
-network authentication. Native harnesses continue to interpret and execute the
-installed skills.
+Agentctl reconciles reviewed, non-secret skills from an independently pinned
+Git Skill Hub. The config repository selects the source, manifest, and update
+policy; it does not duplicate skill bodies. Git and SSH own authentication, and
+native harnesses continue to interpret and execute installed skills.
 
-Managed skills are separate from `config-bundle.json`. The default repository
-layout is:
+## Configuration
 
-```text
-agentctl-config/
-├── config-bundle.json
-├── skill-pack.json
-└── skills/
-    └── example-skill/
-        ├── SKILL.md
-        └── scripts/
+Add a top-level selection to `config-bundle.json` and every full host bundle:
+
+```json
+{
+  "skills": {
+    "source": {
+      "remote": "https://git.example.test/owner/skill-hub.git",
+      "ref": "main",
+      "manifest_path": "manifests/agentctl/fleet-core.json"
+    },
+    "update_policy": "auto-clean"
+  }
+}
 ```
 
-## Manifest contract
+`update_policy` is `manual` or `auto-clean`. Auto-clean uses the same short-lived
+daily worker as binary update discovery but has independent policy and state.
+It fast-forwards the pinned Skill Hub and applies only unambiguous installs,
+upgrades, and provenance updates. Binary policy `notify` or `off` does not turn
+off Skill Hub auto-clean.
 
-`skill-pack.json` has this v1 shape:
+The managed checkout defaults to
+`~/.local/share/agentctl/skill-source`; its owner-only state is
+`~/.local/state/agentctl/skill-source.json`. It is a derived cache, never an
+authoring checkout.
+
+## Manifest
+
+The selected Skill Hub manifest uses schema v1:
 
 ```json
 {
@@ -28,102 +43,74 @@ agentctl-config/
   "skills": [
     {
       "name": "example-skill",
-      "path": "skills/example-skill",
-      "targets": ["codex", "cursor", "hermes", "omp"]
+      "path": "software-development/example-skill",
+      "targets": ["claude", "codex", "cursor", "hermes", "omp"]
     }
   ]
 }
 ```
 
-`name` is a lowercase hyphenated slug and becomes the native skill-directory
-name. `path` is repository-relative, must stay outside `.git`, and must contain
-a regular `SKILL.md`. `targets` is an exact allowlist containing one or more of
-`claude`, `codex`, `cursor`, `hermes`, `omp`, or `multica`.
-
-The normative machine-readable contract is
-[`schemas/skill-pack.schema.json`](../schemas/skill-pack.schema.json). The
-runtime additionally rejects symlinks, non-regular files, duplicate names,
-reserved marker files, skill trees over 512 files or 16 MiB, manifests over
-1 MiB, and paths that escape the pinned checkout.
-
-Every command returns the same versioned report shape defined by
-[`schemas/skill-pack-report.schema.json`](../schemas/skill-pack-report.schema.json).
-For a read-only command, `changed` is the number of actions reconciliation would
-apply and `applied` is zero. A successful reconcile returns the converged final
-actions, `changed: 0`, and the number of completed writes in `applied`.
+`agentctl-portable` is reserved and rejected in every pack because bootstrap
+owns and updates its embedded copies. Multica remains workspace/server scoped
+and is unsupported until an adapter advertises a reviewed bundle installer.
 
 ## Commands and side effects
 
 ```bash
-agentctl skills plan
-agentctl skills status
-agentctl skills doctor
-agentctl skills reconcile
+agentctl skills update --plan  # no fetch or write
+agentctl skills update         # fast-forward fetch + auto-clean reconcile
+agentctl skills plan           # pinned local projection, read-only
+agentctl skills status         # pinned local projection, read-only
+agentctl skills reconcile      # strict local reconcile, no network
 ```
 
-`plan`, `status`, and `doctor` are equivalent read-only projections in v1.
-They perform no fetch and no filesystem writes. `reconcile` performs no network
-access; use `agentctl config source update` separately to advance the reviewed
-Git revision.
+All Git advances are fast-forward only. A dirty checkout, changed remote,
+invalid fetched manifest, unsafe path, symlink, oversized tree, or unsupported
+file fails closed. Skill replacement is atomic per destination and records the
+source remote, exact commit, manifest digest, and content digest in
+`.agentctl-skill.json`.
 
-All commands require a configured, clean, in-sync config-source checkout.
-`--manifest <repository-relative-path>` selects a non-default manifest.
-`--home <absolute-path>` and `--harness <comma-separated-names>` support an
-explicit host or harness scope. Without `--harness`, only detected native
-harnesses are eligible.
+## Clean upgrades and drift
 
-The canonical native roots are:
+An installed tree that still matches its marker is safe to replace when the Hub
+digest advances. Content that differs from its marker is `drifted` and is never
+overwritten automatically. An unmarked collision is `conflict` and is never
+adopted implicitly. Auto-clean may update unrelated clean skills while reporting
+preserved drift.
 
-| Harness | Skill root |
+Use the plan-first resolution workflow:
+
+```bash
+agentctl skills diff <name> [--harness codex]
+agentctl skills restore <name> [--harness codex]
+agentctl skills restore <name> --apply [--harness codex]
+agentctl skills propose <name> [--harness codex]
+agentctl skills propose <name> --apply [--harness codex]
+```
+
+`diff` reports changed files and both digests. Restore first writes a durable
+backup under `~/.local/share/agentctl/skill-backups/`. Propose creates a local
+Skill Hub branch and linked worktree under `skill-proposals/`, copies the local
+delta without the managed marker, and validates the complete manifest. It never
+commits, pushes, opens a PR, or publishes.
+
+Use `--worktree-root <absolute-path>` on `skills propose`, or set
+`AGENTCTL_SKILL_PROPOSAL_ROOT`, when local Git policy requires linked worktrees
+to live on a particular volume. The override changes only where the review
+worktree is created; the configured Skill Hub checkout remains authoritative.
+
+Skills removed from a manifest are not deleted. Removal remains a separate
+future plan-bound operation.
+
+## Native roots
+
+| Harness | Root |
 | --- | --- |
 | Codex and OMP | `~/.agents/skills` |
 | Cursor | `~/.cursor/skills` |
 | Hermes | `~/.hermes/skills` |
 | Claude Code | `~/.claude/skills` |
 
-Codex and OMP actions for the same skill deduplicate into one filesystem
-operation because they share a canonical root. Multica is workspace/server
-scoped and has no guessed local root. A `multica` target is reported as
-`unsupported` until an adapter advertises a reviewed runtime-bundle installer.
-
-## Ownership, provenance, and drift
-
-Every installed skill contains an owner-only `.agentctl-skill.json` marker
-binding its name, target harnesses, source remote, exact source commit, manifest
-digest, and content-tree digest. Agentctl changes only directories with a valid
-marker whose current content still matches that marker.
-
-An unmanaged collision reports `conflict`. A local edit to a previously managed
-skill reports `drifted`. Either condition causes `reconcile` to fail before its
-first skill write. Agentctl never overwrites or adopts either state implicitly.
-
-Each skill replacement is atomic and rollback-protected. The whole pack is
-preflighted before writes begin, but v1 does not provide a cross-directory
-filesystem transaction: if a later filesystem operation fails, earlier skills
-may already be current. Repeating `reconcile` is idempotent and converges the
-remaining actions. Concurrent reconciles fail with `conflict` through an
-owner-only local lock.
-
-Skills removed from the manifest are not deleted in v1. Removal will require a
-separate explicit, plan-bound operation so manifest edits cannot silently erase
-native skill directories.
-
-## Exit behavior
-
-Read-only commands return a successful document even when their report has
-`healthy: false`; callers inspect action states and counters. `reconcile`
-returns:
-
-- exit 0 after every eligible declared skill is current;
-- `unsupported_schema` / exit 2 for another manifest schema version;
-- `not_found` / exit 3 for a missing manifest or skill source;
-- `capability_unavailable` / exit 5 when no Git config source is initialized;
-- `conflict` / exit 8 for config-source drift, unsupported Multica actions,
-  unmanaged destinations, managed-content drift, or another active reconcile;
-- `usage` / exit 2 for malformed manifests, paths, targets, or flags; and
-- `internal` / exit 70 for unexpected local failures.
-
-Skill repositories remain non-secret inputs. Do not store API tokens, SSH keys,
-cookies, callback secrets, prompts, results, or native session data in a skill
-pack. Agentctl does not execute installation hooks or skill scripts during
-reconciliation.
+Codex and OMP deduplicate because they share a canonical root. Skill packs stay
+non-secret and cannot contain installation hooks, credentials, prompts, results,
+sessions, or symlinks.

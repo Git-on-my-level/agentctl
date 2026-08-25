@@ -97,6 +97,32 @@ func TestLiveConfigRoundTripsAgentPreferences(t *testing.T) {
 	}
 }
 
+func TestSkillHubSelectionRoundTripsAndRejectsUnsafePolicy(t *testing.T) {
+	selection := &Skills{Source: SkillSource{Remote: "https://git.example.test/david/skill-hub.git", Ref: "main", ManifestPath: "manifests/agentctl/fleet-core.json"}, UpdatePolicy: "auto-clean"}
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := Config{SchemaVersion: SchemaVersion, Skills: selection}
+	if err := Save(path, cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil || loaded.Skills == nil || loaded.Skills.Source.ManifestPath != selection.Source.ManifestPath {
+		t.Fatalf("skill selection did not round-trip: %#v %v", loaded.Skills, err)
+	}
+	for name, invalid := range map[string]Skills{
+		"credential remote": {Source: SkillSource{Remote: "https://user:secret@git.example.test/hub.git", ManifestPath: "pack.json"}, UpdatePolicy: "manual"},
+		"relative remote":   {Source: SkillSource{Remote: "../hub.git", ManifestPath: "pack.json"}, UpdatePolicy: "manual"},
+		"malformed remote":  {Source: SkillSource{Remote: "://hub.git", ManifestPath: "pack.json"}, UpdatePolicy: "manual"},
+		"escaping manifest": {Source: SkillSource{Remote: "https://git.example.test/hub.git", ManifestPath: "../pack.json"}, UpdatePolicy: "manual"},
+		"implicit policy":   {Source: SkillSource{Remote: "https://git.example.test/hub.git", ManifestPath: "pack.json"}, UpdatePolicy: "auto"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := invalid.Validate(); err == nil {
+				t.Fatal("unsafe Skill Hub selection was accepted")
+			}
+		})
+	}
+}
+
 func TestLoadBundleFailsClosedForArgumentsCredentialsAndUnknownFields(t *testing.T) {
 	cases := map[string]string{
 		"arguments":    strings.Replace(validBundle, `"executable": "/opt/bin/codex"`, `"executable": "/opt/bin/codex", "arguments": ["--danger"]`, 1),
