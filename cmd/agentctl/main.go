@@ -89,7 +89,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 	renderer := output.Renderer{Mode: commonArgs.mode, Writer: a.stdout}
 	internalUpdateWorker := len(rest) > 0 && rest[0] == "_update-worker"
 	updateCommand := len(rest) > 0 && rest[0] == "update"
-	if a.updateNotice != nil && !internalUpdateWorker && !updateCommand {
+	skillsCommand := len(rest) > 0 && rest[0] == "skills"
+	if a.updateNotice != nil && !internalUpdateWorker && !updateCommand && !skillsCommand {
 		if warning := a.updateNotice(ctx, version, commonArgs); warning != nil {
 			renderer = renderer.WithWarnings(*warning)
 		}

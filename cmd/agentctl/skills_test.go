@@ -143,3 +143,25 @@ func TestSkillsRequiresDurableGitSourceAndRejectsInvocationBundle(t *testing.T) 
 		t.Fatalf("invocation bundle exit=%d output=%s", code, stdout.String())
 	}
 }
+
+func TestSkillsConflictDoesNotSuggestDriftOnlyDiff(t *testing.T) {
+	configPath, home := configuredSkillSource(t)
+	destination := filepath.Join(home, ".agents", "skills", "test-skill")
+	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, ".codex", "skills", "test-skill"), destination); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--config", configPath, "skills", "status", "--home", home}); code != 0 {
+		t.Fatalf("status exit=%d output=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"state":"conflict"`) {
+		t.Fatalf("status omitted conflict: %s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), `"argv":["agentctl","skills","diff"`) {
+		t.Fatalf("conflict advertised drift-only diff: %s", stdout.String())
+	}
+}

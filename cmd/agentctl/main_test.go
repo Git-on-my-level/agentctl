@@ -66,6 +66,22 @@ func TestDailyUpdateNoticeDecoratesGlobalParseErrors(t *testing.T) {
 	}
 }
 
+func TestSkillsCommandsDoNotStartInvocationUpdateWorker(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	called := 0
+	a.updateNotice = func(context.Context, string, common) *output.Warning {
+		called++
+		return nil
+	}
+	if code := a.run(context.Background(), []string{"skills"}); code != 2 {
+		t.Fatalf("exit=%d output=%s", code, stdout.String())
+	}
+	if called != 0 {
+		t.Fatalf("skills command ran invocation update preflight %d times", called)
+	}
+}
+
 func TestUpdateCheckStatePathIsGlobalAcrossSelectedJournals(t *testing.T) {
 	stateRoot := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateRoot)
