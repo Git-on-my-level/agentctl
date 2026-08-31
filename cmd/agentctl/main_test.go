@@ -226,7 +226,7 @@ func TestHelpSideEffectClassesReflectOptionalWrites(t *testing.T) {
 	for _, command := range doc.Result.Commands {
 		classes[command["name"].(string)] = command["side_effect_class"].(string)
 	}
-	if classes["attach"] != "read_only" || classes["recent"] != "read_only" || classes["result"] != "local_operational_write" || classes["await"] != "local_operational_write" || classes["context"] != "local_operational_write" || classes["data"] != "local_operational_write" {
+	if classes["attach"] != "read_only" || classes["recent"] != "read_only" || classes["inbox"] != "read_only" || classes["result"] != "local_operational_write" || classes["await"] != "local_operational_write" || classes["context"] != "local_operational_write" || classes["data"] != "local_operational_write" {
 		t.Fatalf("unexpected side-effect classes: %#v", classes)
 	}
 }

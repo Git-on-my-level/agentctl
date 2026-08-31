@@ -23,7 +23,7 @@ version may use a screened list; v1 order and membership will not change.
 
 ## Phase 1 — Daemonless local execution: implemented with adapter constraints
 
-- `run`, `recent`, local `attach`, `status`, `events`, `await`, `result`, and `cancel`.
+- `run`, `recent`, `inbox`, local `attach`, `status`, `events`, `await`, `result`, and `cancel`.
 - Codex, Cursor, Claude Code, OMP, generic-process, and Multica event adapters.
 - Owner-only journal, normalized source bindings, terminal conflict handling,
   context handles, JSON-first output, and explicit compact text.
@@ -34,7 +34,9 @@ version may use a screened list; v1 order and membership will not change.
   `await` stops on attention by default, and
   `result` requires a stored content or failure body unless `--allow-empty` is supplied.
   `recent --unreconciled` lists terminal executions whose result has not been
-  acknowledged; `result` and a terminal `await` record that acknowledgement.
+  acknowledged; `inbox` combines that collection signal with attention and
+  bounded stale-observation review without probing a native tool; `result` and
+  a terminal `await` record the acknowledgement.
 
 Each native launch remains owned by one agentctl process. Foreground runs use the
 caller; `--background` creates a detached worker that survives the caller but

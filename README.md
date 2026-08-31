@@ -25,6 +25,8 @@ contract.
 - persists normalized state and bounded final results in an owner-only local
   journal;
 - discovers recent host-local work by state, adapter, exact metadata label, or unreconciled terminal collection;
+- explains an actionable host-local inbox while keeping work outcome separate
+  from tool liveness;
 - optionally leaves a detached host-local worker owning a long-running native
   process after the launching shell exits;
 - supports pre-launch subscriptions and at-least-once file, Unix-socket,
@@ -242,6 +244,7 @@ agentctl recent --state nonterminal --liveness alive
 agentctl recent --liveness unreachable
 agentctl recent --label review --limit 50
 agentctl recent --unreconciled
+agentctl inbox --stale-after 2h
 ```
 
 `recent` returns newest-first bounded metadata only. It performs no native
@@ -252,6 +255,16 @@ result has never been acknowledged by `result` or a terminal `await`. Terminals
 that already existed when acknowledgement tracking first write-opened the
 journal are treated as reconciled so an upgrade does not flood the query with
 history.
+
+`inbox` is the read-only start-of-turn summary over the same journal. It names
+terminal results that still need collection, current attention states, and
+running or unreachable executions whose last observation exceeds an explicit
+age bound (one hour by default, configurable from one minute through thirty
+days). Each row includes stable reason codes and separate `work_health` and
+`tool_health` fields: an unreachable tool is review-worthy but is not evidence
+that the work failed. Terminal failures leave the inbox after `result` or a
+terminal `await` acknowledges collection. `inbox` performs no native refresh,
+result read, acknowledgement write, or cross-host merge.
 
 If a command reports `diagnostic_code=journal_busy`, retry the same agentctl
 invocation with bounded backoff. Do not silently switch to a raw native CLI;
