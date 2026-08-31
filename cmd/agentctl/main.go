@@ -126,6 +126,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.status(ctx, renderer, commonArgs, rest[1:])
 	case "recent", "list":
 		err = a.recent(ctx, renderer, commonArgs, rest[1:])
+	case "inbox":
+		err = a.inbox(ctx, renderer, commonArgs, rest[1:])
 	case "events":
 		err = a.events(ctx, renderer, commonArgs, rest[1:])
 	case "result":

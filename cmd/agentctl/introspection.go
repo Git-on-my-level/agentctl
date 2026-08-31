@@ -156,6 +156,7 @@ func (a *app) schemaCommand(renderer output.Renderer, args []string) *output.Err
 		{"name": "event-page", "version": 1, "file": "schemas/event-page.schema.json"},
 		{"name": "execution", "version": 1, "file": "schemas/execution.schema.json"},
 		{"name": "fanout-manifest", "version": 1, "file": "schemas/fanout-manifest.schema.json"},
+		{"name": "inbox-result", "version": 1, "file": "schemas/inbox-result.schema.json"},
 		{"name": "knowledge-source", "version": 1, "file": "schemas/knowledge-source.schema.json"},
 		{"name": "outcome", "version": 1, "file": "schemas/outcome.schema.json"},
 		{"name": "skill-pack", "version": 1, "file": "schemas/skill-pack.schema.json"},

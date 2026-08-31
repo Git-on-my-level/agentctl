@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentctl:schema:inbox-result:v1",
+  "x-agentctl-docs": "../docs/agent-ergonomics.md#actionable-work-inbox",
+  "title": "agentctl inbox result v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["executions", "count", "has_more", "host_local", "as_of", "stale_after_seconds"],
+  "properties": {
+    "executions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/inbox_execution"}
+    },
+    "count": {"type": "integer", "minimum": 0, "maximum": 200},
+    "has_more": {"type": "boolean"},
+    "host_local": {"const": true},
+    "as_of": {"type": "string", "format": "date-time"},
+    "stale_after_seconds": {"type": "number", "minimum": 60, "maximum": 2592000}
+  },
+  "$defs": {
+    "execution_id": {
+      "type": "string",
+      "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "inbox_execution": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id", "labels", "authority", "adapter", "mode", "state", "liveness",
+        "work_health", "tool_health", "created_at", "updated_at",
+        "observation_age_seconds", "unreconciled", "reasons"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/execution_id"},
+        "labels": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "authority": {"enum": ["native", "multica"]},
+        "adapter": {"type": "string", "minLength": 1},
+        "mode": {"enum": ["direct", "multica"]},
+        "state": {"enum": ["created", "starting", "running", "waiting", "attention", "completed", "failed", "cancelled", "orphaned"]},
+        "liveness": {"enum": ["unknown", "alive", "blocked", "exited", "unreachable"]},
+        "work_health": {"enum": ["active", "attention_required", "failed", "orphaned", "result_ready", "observation_stale"]},
+        "tool_health": {"enum": ["unknown", "alive", "blocked", "exited", "unreachable"]},
+        "created_at": {"type": "string", "format": "date-time"},
+        "updated_at": {"type": "string", "format": "date-time"},
+        "observation_age_seconds": {"type": "number", "minimum": 0},
+        "unreconciled": {"type": "boolean"},
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/reason"}
+        }
+      }
+    },
+    "reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "domain", "summary"],
+      "properties": {
+        "code": {"enum": ["attention_required", "execution_failed", "execution_orphaned", "result_unreconciled", "running_observation_stale", "tool_unreachable"]},
+        "domain": {"enum": ["work", "collection", "observation", "tool"]},
+        "summary": {"type": "string", "minLength": 1},
+        "age_seconds": {"type": "number", "minimum": 0}
+      }
+    }
+  }
+}

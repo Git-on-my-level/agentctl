@@ -307,6 +307,7 @@ Commands form a predictable grammar:
 ```text
 agentctl run
 agentctl recent
+agentctl inbox
 agentctl attach
 agentctl status
 agentctl events
@@ -321,7 +322,24 @@ agentctl route explain
 ```
 
 `recent` discovers. `status` observes. `result` retrieves. `await` waits.
-`cancel` mutates. No command name mixes these responsibilities.
+`inbox` explains what needs attention. `cancel` mutates. No command name mixes
+these responsibilities.
+
+## Actionable work inbox
+
+`agentctl inbox` is a read-only projection, not a second issue board. It
+selects current attention, uncollected terminal results, and running or
+unreachable executions whose last normalized observation exceeds a bounded
+age. Stable reason codes say why each execution matched. `work_health` reports
+task or collection state; `tool_health` reports normalized liveness. In
+particular, `tool_unreachable` never claims that the underlying task failed.
+
+The default stale bound is one hour. `--stale-after` accepts one minute through
+thirty days, making the review policy explicit and bounded. The command reads
+neither result bodies nor native session files and performs no adapter status
+call, acknowledgement, fetch, or cache update. A successful `result` or
+terminal `await` is the existing collection boundary that clears a terminal
+item.
 
 ## Safe agent-first defaults
 
@@ -356,6 +374,14 @@ escape for callers that intentionally need weaker or broader behavior:
   filters use AND semantics. `--unreconciled` returns terminal executions whose
   result has never been acknowledged; terminals that predate acknowledgement
   tracking on that journal are omitted.
+- `inbox` returns the newest 20 actionable executions without refreshing an
+  adapter or reading a result. It includes current attention, unreconciled
+  terminals, and running or unreachable work whose observation age is at least
+  `--stale-after` (one hour by default, bounded from one minute to thirty days).
+  `work_health` describes task/collection state while `tool_health` repeats
+  normalized liveness; `tool_unreachable` explicitly does not assert task
+  failure. A collected terminal failure drops out instead of creating a second
+  resolution database.
 - `--prompt-file` and `--prompt-stdin` are mutually exclusive, bounded prompt
   sources. `--prompt-delivery argv|stdin` is explicit and defaults to `argv`
   only after a source is selected. Prompt bytes are excluded from plan output,

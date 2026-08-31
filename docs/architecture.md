@@ -176,6 +176,12 @@ issue, launches an agent, verifies a remote runtime or assignee, or mints an
 execution handle. Work created directly in Multica therefore remains outside
 host-local `recent --unreconciled`.
 
+The host-local `inbox` is also a journal projection, not a new authority. It
+combines unreconciled terminals, attention state, and bounded observation age.
+It never polls a native CLI. Task/collection health and normalized tool
+liveness are separate fields so transport loss is not promoted into a false
+task failure.
+
 A short selector such as `studio omp` is ranked against optional config
 keywords (`route.hosts`, `agent_preferences.preferred`, plus built-in adapter
 family aliases). The result is ranked host and model lists plus a placement
