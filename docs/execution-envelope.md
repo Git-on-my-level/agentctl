@@ -199,8 +199,16 @@ The envelope may contain a bounded summary or reference, not the full prompt:
 ```
 
 For Multica, the issue is authoritative for this contract. For direct work, the
-launching parent supplies it. The summary must be bounded and redacted; prompts,
-reasoning, transcripts, and native session databases are excluded.
+launching parent supplies it with `agentctl run --task-contract <json-file>`.
+The input is strict JSON: unknown fields fail before launch, the file must be a
+regular non-symlink no larger than 64 KiB, and stdin remains available for
+explicit prompt delivery. `objective_summary` is at most 2048 bytes;
+`side_effect_boundary` and up to 16 unique `expected_artifact_kinds` use the
+same bounded lowercase-name vocabulary as labels. The summary must be bounded
+and redacted; prompts, reasoning, transcripts, and native session databases are
+excluded. Status and result retain this metadata, but native terminal state
+always renders acceptance as externally required rather than claiming that an
+artifact or acceptance authority was verified.
 
 ## Parent, child, and supersession
 

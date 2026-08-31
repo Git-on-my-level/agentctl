@@ -25,12 +25,14 @@ const backgroundJournalReadRetry = 2 * time.Second
 
 const backgroundReadyTokenEnv = "AGENTCTL_BACKGROUND_READY_TOKEN"
 
+const backgroundTaskContractDigestEnv = "AGENTCTL_BACKGROUND_TASK_CONTRACT_DIGEST"
+
 type backgroundReady struct {
 	Token       string `json:"agentctl_background_ready"`
 	ExecutionID string `json:"execution_id"`
 }
 
-func (a *app) runNativeBackground(ctx context.Context, renderer output.Renderer, c common, args []string, opts runOptions, prompt *promptPayload) *output.Error {
+func (a *app) runNativeBackground(ctx context.Context, renderer output.Renderer, c common, args []string, opts runOptions, prompt *promptPayload, taskContract *taskContractPayload) *output.Error {
 	journalPath, err := a.journalPath(c)
 	if err != nil {
 		return output.Wrap(output.CodeInternal, "resolve background journal", false, err)
@@ -64,7 +66,13 @@ func (a *app) runNativeBackground(ctx context.Context, renderer output.Renderer,
 	if err != nil {
 		return output.Wrap(output.CodeInternal, "allocate background readiness token", false, err)
 	}
-	cmd.Env = append(environmentWithout(os.Environ(), backgroundReadyTokenEnv), backgroundReadyTokenEnv+"="+readyToken)
+	environment := environmentWithout(os.Environ(), backgroundReadyTokenEnv)
+	environment = environmentWithout(environment, backgroundTaskContractDigestEnv)
+	environment = append(environment, backgroundReadyTokenEnv+"="+readyToken)
+	if taskContract != nil {
+		environment = append(environment, backgroundTaskContractDigestEnv+"="+taskContract.Digest)
+	}
+	cmd.Env = environment
 	workerOutput, err := cmd.StdoutPipe()
 	if err != nil {
 		return output.Wrap(output.CodeInternal, "open background worker readiness pipe", false, err)
@@ -111,6 +119,15 @@ func (a *app) runNativeBackground(ctx context.Context, renderer output.Renderer,
 			return output.NewError(output.CodeTimeout, "background worker did not acknowledge durable startup before the deadline and may continue", true).WithDetail("execution_id", executionID.String()).WithDetail("timeout", backgroundStartupTimeout.String()).WithDetail("worker_continues", true)
 		}
 	}
+}
+
+func backgroundTaskContractDigest() string {
+	if os.Getenv(backgroundReadyTokenEnv) == "" {
+		return ""
+	}
+	value := os.Getenv(backgroundTaskContractDigestEnv)
+	_ = os.Unsetenv(backgroundTaskContractDigestEnv)
+	return value
 }
 
 func emitBackgroundReady(writer io.Writer, executionID ids.ExecutionID) bool {

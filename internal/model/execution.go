@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"slices"
 	"time"
@@ -154,6 +155,48 @@ type TaskContract struct {
 	Provenance            *ExecutionProvenance `json:"provenance,omitempty"`
 }
 
+func (c TaskContract) Validate() error {
+	if c.ObjectiveSummary == "" && c.SideEffectBoundary == "" && c.AcceptanceRef == nil && len(c.ExpectedArtifactKinds) == 0 && c.Continuation == nil && c.Provenance == nil {
+		return errors.New("task contract must contain at least one field")
+	}
+	if len(c.ObjectiveSummary) > 2048 {
+		return errors.New("objective summary exceeds 2048 bytes")
+	}
+	if c.SideEffectBoundary != "" && !namePattern.MatchString(c.SideEffectBoundary) {
+		return errors.New("side effect boundary must match ^[a-z][a-z0-9_.-]{0,63}$")
+	}
+	if c.AcceptanceRef != nil {
+		if _, err := ids.ParseContextID(c.AcceptanceRef.String()); err != nil {
+			return fmt.Errorf("acceptance_ref: %w", err)
+		}
+	}
+	if len(c.ExpectedArtifactKinds) > 16 {
+		return errors.New("expected artifact kinds exceed 16 entries")
+	}
+	seenArtifacts := map[string]struct{}{}
+	for _, kind := range c.ExpectedArtifactKinds {
+		if !namePattern.MatchString(kind) {
+			return fmt.Errorf("invalid expected artifact kind %q", kind)
+		}
+		if _, exists := seenArtifacts[kind]; exists {
+			return fmt.Errorf("duplicate expected artifact kind %q", kind)
+		}
+		seenArtifacts[kind] = struct{}{}
+	}
+	if c.Provenance != nil {
+		for name, digest := range map[string]string{
+			"portable_skill_digest": c.Provenance.PortableSkillDigest,
+			"context_digest":        c.Provenance.ContextDigest,
+			"handoff_digest":        c.Provenance.HandoffDigest,
+		} {
+			if digest != "" && !hashPattern.MatchString(digest) {
+				return fmt.Errorf("invalid task provenance %s", name)
+			}
+		}
+	}
+	return nil
+}
+
 type Execution struct {
 	SchemaVersion     int                `json:"schema_version"`
 	ID                ids.ExecutionID    `json:"id"`
@@ -278,18 +321,9 @@ func (e Execution) Validate() error {
 			return errors.New("invalid promotion state")
 		}
 	}
-	if e.TaskContract != nil && len(e.TaskContract.ObjectiveSummary) > 2048 {
-		return errors.New("objective summary exceeds 2048 bytes")
-	}
-	if e.TaskContract != nil && e.TaskContract.Provenance != nil {
-		for name, digest := range map[string]string{
-			"portable_skill_digest": e.TaskContract.Provenance.PortableSkillDigest,
-			"context_digest":        e.TaskContract.Provenance.ContextDigest,
-			"handoff_digest":        e.TaskContract.Provenance.HandoffDigest,
-		} {
-			if digest != "" && !hashPattern.MatchString(digest) {
-				return fmt.Errorf("invalid task provenance %s", name)
-			}
+	if e.TaskContract != nil {
+		if err := e.TaskContract.Validate(); err != nil {
+			return fmt.Errorf("task_contract: %w", err)
 		}
 	}
 	return nil
@@ -304,6 +338,9 @@ func ValidateTransition(previous, next Execution) error {
 	}
 	if !slices.Equal(previous.Labels, next.Labels) {
 		return errors.New("execution labels are immutable")
+	}
+	if !reflect.DeepEqual(previous.TaskContract, next.TaskContract) {
+		return errors.New("execution task contract is immutable")
 	}
 	if previous.CreatedAt != next.CreatedAt {
 		return errors.New("created_at is immutable")

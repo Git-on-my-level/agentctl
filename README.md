@@ -124,6 +124,31 @@ the native process group `TERM`, waits five seconds, and then escalates to
 `KILL`. The native CLI's arguments, permissions, and provider authentication
 remain unchanged.
 
+For work whose outcome is easy to confuse with native-process completion, pass
+a bounded task contract separately from the prompt:
+
+```json
+{
+  "objective_summary": "Diagnose the failing service",
+  "side_effect_boundary": "read_only",
+  "expected_artifact_kinds": ["root_cause_report"],
+  "continuation": {"same_session_required": true}
+}
+```
+
+```bash
+agentctl run --task-contract task-contract.json -- \
+  codex exec --json "perform the bounded diagnosis"
+```
+
+The file is strict JSON, a regular non-symlink file, and at most 64 KiB.
+`status` and `result` retain the typed contract and report acceptance as
+external-required: native completion does not prove that an expected artifact
+exists or that its actual authority accepted it. Contract files never become
+prompts, transcripts, or event payloads. Multica issues remain authoritative
+for Multica contracts, so `run --adapter multica --task-contract ...` fails
+closed; use the promotion flow instead.
+
 For long-running work, label the execution and explicitly background it:
 
 ```bash

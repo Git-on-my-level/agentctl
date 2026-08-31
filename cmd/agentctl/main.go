@@ -857,6 +857,10 @@ func writeExecution(renderer output.Renderer, e model.Execution, operation strin
 	}
 	actions := []output.NextAction{}
 	warnings := []output.Warning{}
+	if e.TaskContract != nil {
+		fields = append(fields, output.Field{Name: "task_contract", Value: "retained"}, output.Field{Name: "acceptance", Value: "external_required"})
+		warnings = append(warnings, output.Warning{Code: "acceptance_external_required", Message: "the native execution state does not prove the task contract's expected artifacts or acceptance; verify them through their named authority"})
+	}
 	if operation == "run" {
 		warnings = append(warnings, output.Warning{Code: "foreground_execution_owned", Message: "foreground run is owned by this process and has no default wall-clock timeout; use --background with recent, await, and result for work that must outlive this shell"})
 		actions = append(actions, output.NextAction{Label: "Review run ownership and lifecycle", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
@@ -902,7 +906,12 @@ func writeExecutionOutcome(renderer output.Renderer, e model.Execution, outcome 
 		Outcome model.Outcome `json:"outcome"`
 	}{Execution: redacted, Outcome: outcome}
 	fields := []output.Field{{Name: "state", Value: e.State}, {Name: "availability", Value: outcome.Availability}, {Name: "content", Value: outcome.Content != nil}, {Name: "result_ref", Value: outcome.ResultRef}}
-	if err := renderer.Success(output.Success{Result: value, Lines: []output.Line{{Lead: e.ID.String(), Fields: fields}}}); err != nil {
+	warnings := []output.Warning{}
+	if e.TaskContract != nil {
+		fields = append(fields, output.Field{Name: "task_contract", Value: "retained"}, output.Field{Name: "acceptance", Value: "external_required"})
+		warnings = append(warnings, output.Warning{Code: "acceptance_external_required", Message: "the native execution state does not prove the task contract's expected artifacts or acceptance; verify them through their named authority"})
+	}
+	if err := renderer.Success(output.Success{Result: value, Lines: []output.Line{{Lead: e.ID.String(), Fields: fields}}, Warnings: warnings}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil
