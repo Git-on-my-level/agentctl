@@ -288,7 +288,7 @@ func TestBootstrapUpdateRefusesInvalidManagedMarkerDuringUpgrade(t *testing.T) {
 
 func TestBootstrapStatusMarksSkillOlderThanEmbeddedRelease(t *testing.T) {
 	originalVersion := version
-	version = "v0.3.4"
+	version = "v0.3.10"
 	t.Cleanup(func() { version = originalVersion })
 	home := t.TempDir()
 	writeBootstrapSkill(t, filepath.Join(home, ".agents", "skills"), "tree:v0.2.5", "old portable skill")
@@ -313,7 +313,7 @@ func TestBootstrapUpdateDoesNotInventMulticaRoot(t *testing.T) {
 
 func TestBootstrapInstructionPointerLifecycle(t *testing.T) {
 	originalVersion := version
-	version = "v0.3.4"
+	version = "v0.3.10"
 	t.Cleanup(func() { version = originalVersion })
 	home := t.TempDir()
 	instructionPath := filepath.Join(home, ".claude", "CLAUDE.md")
@@ -444,7 +444,7 @@ func TestBootstrapInstructionPointerRefusesDuplicateMarker(t *testing.T) {
 
 func TestBootstrapStatusPointerMissingDoesNotFailHealth(t *testing.T) {
 	originalVersion := version
-	version = "v0.3.4"
+	version = "v0.3.10"
 	t.Cleanup(func() { version = originalVersion })
 	home := t.TempDir()
 	skill, err := portableasset.Skill()

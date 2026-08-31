@@ -580,11 +580,19 @@ func errorCode(err error) ErrorCode {
 }
 
 func (e *Engine) applyObservedState(ctx context.Context, execution model.Execution, state model.State, source *string, observation model.Observation) (model.Execution, error) {
+	return e.applyObservedStateFromRevision(ctx, execution, state, source, observation, 0)
+}
+
+// applyObservedStateFromRevision applies evidence derived from a specific
+// execution revision. If a newer revision terminalizes before the CAS read,
+// that stale observation becomes a no-op instead of conflicting with or
+// downgrading verified terminal evidence.
+func (e *Engine) applyObservedStateFromRevision(ctx context.Context, execution model.Execution, state model.State, source *string, observation model.Observation, sourceRevision uint64) (model.Execution, error) {
 	if execution.State.Terminal() && execution.State != state {
 		execution.Liveness = model.LivenessUnknown
 		execution.Observation = observation
 		execution.Observation.Integrity = model.IntegrityConflicted
-		return e.updateCAS(ctx, execution)
+		return e.updateCASFromRevision(ctx, execution, sourceRevision)
 	}
 	execution.State = state
 	execution.SourceState = source
@@ -598,14 +606,21 @@ func (e *Engine) applyObservedState(ctx context.Context, execution model.Executi
 		}
 	}
 	execution.UpdatedAt = observation.ObservedAt
-	return e.updateCAS(ctx, execution)
+	return e.updateCASFromRevision(ctx, execution, sourceRevision)
 }
 
 func (e *Engine) updateCAS(ctx context.Context, desired model.Execution) (model.Execution, error) {
+	return e.updateCASFromRevision(ctx, desired, 0)
+}
+
+func (e *Engine) updateCASFromRevision(ctx context.Context, desired model.Execution, sourceRevision uint64) (model.Execution, error) {
 	for range 3 {
 		current, err := e.journal.GetExecution(ctx, desired.ID)
 		if err != nil {
 			return model.Execution{}, wrapError("get_execution", desired.Adapter, err)
+		}
+		if sourceRevision != 0 && current.State.Terminal() && current.Revision > sourceRevision {
+			return current, nil
 		}
 		desired.Revision = current.Revision
 		desired.CreatedAt = current.CreatedAt

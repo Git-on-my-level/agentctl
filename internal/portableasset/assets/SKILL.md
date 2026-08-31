@@ -33,10 +33,11 @@ delegation pointer in detected, existing harness instruction files; it never
 creates those instruction files. Use `--dry-run` when inspecting another home
 or narrowing an unfamiliar installation.
 
-Exact release builds default to automatic updates. The first invocation due on
-each UTC day starts a detached short-lived worker that verifies the matching
+Exact release builds default to automatic updates. The first work-creating
+invocation due on each UTC day starts a detached short-lived worker that verifies the matching
 release archive and uses its packaged installer for managed installations; it
-does not delay the foreground command or create a daemon. Use `agentctl update
+does not delay the foreground command or create a daemon. Commands advertised
+as read-only never trigger this maintenance. Use `agentctl update
 status` to inspect it. `agentctl update policy notify` retains the once-daily
 `agentctl_update_available` prompt without installation, and `off` disables all
 checks.
@@ -46,8 +47,14 @@ checks.
 Use direct native work for bounded investigation, scoping, and operations. Use
 Multica for durable changes, PRs, multiple owners, review, or work that must
 survive the parent. When uncertain, ask `agentctl route explain -- "<host?> <model>"`.
-It returns ranked host and model hits plus a placement mode. Pick among
-the hits; empty lists mean nothing was recognized, not an error.
+Pass only the short host/model selector, not task prose or nested delegation
+instructions. It returns ranked reviewed hits plus a placement mode; empty
+lists mean nothing was recognized, not an error. It never launches work,
+verifies a remote runtime or Multica assignee, or creates an `exec-*` handle.
+If `this_host` is not configured, local versus remote placement remains unknown.
+Work created directly in Multica is not visible to host-local `recent
+--unreconciled`; observe it through Multica until an explicit tracked bridge is
+available.
 
 Never infer a capability from an adapter name. If doctor or capabilities says
 a requirement is unavailable, report it; do not weaken the operation, invent a
@@ -70,6 +77,7 @@ mechanism. Prompt bytes are bounded and are not persisted by agentctl:
 ```bash
 agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- codex exec --json
 agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust
+agentctl run --background --prompt-stdin --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust < "/absolute/path/task.md"
 agentctl run --prompt-stdin --prompt-delivery stdin -- codex exec --json - < "$PWD/task.md"
 ```
 
@@ -93,7 +101,8 @@ ownership and exact metadata labels:
 
 ```bash
 agentctl run --background --label review --prompt-file "$PWD/task.md" --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust
-agentctl recent --state nonterminal --label review
+agentctl recent --state nonterminal --liveness alive --label review
+agentctl recent --liveness unreachable
 agentctl recent --unreconciled
 ```
 
@@ -120,8 +129,15 @@ successful terminal return, so they are local operational writes:
 agentctl status <exec-id>
 agentctl await <exec-id>
 agentctl result <exec-id>
+agentctl result <exec-id> --content
 agentctl recent --unreconciled
 ```
+
+Foreground `run` reports the normalized execution envelope; a successful
+agentctl invocation is not a claim that the native task completed successfully.
+Inspect `result.state`, or use `await` when outcome-sensitive exit behavior is
+required. `result --content` writes the exact stored UTF-8 text without a JSON
+envelope or an added newline.
 
 Use `await --no-timeout` for an intentionally unbounded observer. It still
 stops on actionable attention unless `--ignore-attention` is explicit.
@@ -148,6 +164,12 @@ For automation that needs stronger answer guarantees, inspect
 `agentctl help result` and use `--require-result-source assistant` and/or
 `--min-result-bytes`. These are caller-selected assertions, not universal
 quality heuristics.
+
+If an operation returns `diagnostic_code=journal_busy`, retry the same agentctl
+invocation with bounded backoff. Do not silently fall back to a raw native CLI:
+that changes process-group supervision, journaling, callbacks, and result
+recovery. Keep structured-output requirements exactly as reported by
+`required_argv`.
 
 ## Promotion and shared context
 

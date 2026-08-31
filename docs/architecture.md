@@ -172,15 +172,22 @@ valid revision when the publisher is unavailable.
 ## Routing policy
 
 `agentctl route explain` is advisory and deterministic. It never creates an
-issue or launches an agent.
+issue, launches an agent, verifies a remote runtime or assignee, or mints an
+execution handle. Work created directly in Multica therefore remains outside
+host-local `recent --unreconciled`.
 
-A selector string such as `studio omp` is ranked against optional config
+A short selector such as `studio omp` is ranked against optional config
 keywords (`route.hosts`, `agent_preferences.preferred`, plus built-in adapter
 family aliases). The result is ranked host and model lists plus a placement
 mode (`local`, `remote`, `need_placement`, `need_this_host`, `ambiguous_host`,
 or `no_host`). Absent lists mean nothing was recognized. The caller chooses
 among hits. JSON omits the query, match scores, glue words, default `speed`,
 and placement reasons the caller can already infer from `mode`.
+Task prose, lifecycle intent, and nested delegation are deliberately not
+inferred. If `route.this_host` is absent, agentctl returns `need_this_host`
+rather than treating the operating-system hostname as reviewed fleet identity.
+Any unmatched tokens are returned with `route_unmatched_tokens` and have no
+effect on the ranked advice.
 
 ## Authority-safe references
 

@@ -215,11 +215,26 @@ func (b SupervisorExecutions) ApplyProbe(ctx context.Context, id string, result 
 	if err != nil {
 		return wrapError("get_execution", "", err)
 	}
+	sourceRevision := result.Revision
+	if sourceRevision == 0 {
+		// Runtime reprobes always carry a revision. Preserve the same CAS-race
+		// safety for callers that omit it by binding this observation to the
+		// envelope ApplyProbe actually read.
+		sourceRevision = execution.Revision
+	}
 	// Reprobe and ApplyProbe are separated by adapter work and a journal read.
-	// A live native runner may renew its lease in that gap. Never let an
+	// Once a newer revision has terminalized, a probe computed from the older
+	// envelope cannot add current authority evidence. In particular, never let
+	// an old restart-recovery failure replace verified terminal liveness and
+	// integrity with unreachable/unknown uncertainty.
+	staleProbe := result.Revision != 0 && result.Revision < execution.Revision
+	if staleProbe && execution.State.Terminal() {
+		return nil
+	}
+	// A live native runner may renew its lease in the same gap. Never let an
 	// unreachable/unknown conclusion computed from an older revision overwrite
 	// the newer verified runner lease.
-	staleNativeProbe := execution.Authority == model.AuthorityNative && result.Revision != 0 && result.Revision < execution.Revision && activeNativeRunnerLease(execution, b.Engine.now())
+	staleNativeProbe := execution.Authority == model.AuthorityNative && staleProbe && activeNativeRunnerLease(execution, b.Engine.now())
 	if staleNativeProbe {
 		return nil
 	}
@@ -252,8 +267,17 @@ func (b SupervisorExecutions) ApplyProbe(ctx context.Context, id string, result 
 	if result.Liveness == string(model.LivenessUnreachable) || source == model.ObservationUnknown {
 		integrity = model.IntegrityDegraded
 	}
-	execution.Liveness = normalizeLiveness(result.Liveness, execution.Liveness)
-	updated, err := b.Engine.applyObservedState(ctx, execution, state, sourceState(result.State), model.Observation{Source: source, Integrity: integrity, ObservedAt: observedAt})
+	targetLiveness := normalizeLiveness(result.Liveness, execution.Liveness)
+	targetSourceState := sourceState(result.State)
+	if unchangedUnreachableUnknown(execution, state, targetLiveness, targetSourceState, source, integrity) {
+		// Reprobing an authority that cannot be observed after restart adds no new
+		// evidence once the normalized envelope already records that uncertainty.
+		// In particular, a later observation timestamp alone must not churn the
+		// execution revision on every supervisor cycle.
+		return nil
+	}
+	execution.Liveness = targetLiveness
+	updated, err := b.Engine.applyObservedStateFromRevision(ctx, execution, state, sourceState(result.State), model.Observation{Source: source, Integrity: integrity, ObservedAt: observedAt}, sourceRevision)
 	if err != nil {
 		return err
 	}
@@ -262,9 +286,29 @@ func (b SupervisorExecutions) ApplyProbe(ctx context.Context, id string, result 
 	if result.Liveness == string(model.LivenessUnreachable) || result.Liveness == string(model.LivenessUnknown) {
 		updated.Liveness = normalizeLiveness(result.Liveness, updated.Liveness)
 		updated.Observation.Integrity = integrity
-		_, err = b.Engine.updateCAS(ctx, updated)
+		_, err = b.Engine.updateCASFromRevision(ctx, updated, sourceRevision)
 	}
 	return err
+}
+
+func unchangedUnreachableUnknown(execution model.Execution, state model.State, liveness model.Liveness, sourceStateValue *string, source model.ObservationSource, integrity model.Integrity) bool {
+	return !state.Terminal() &&
+		execution.State == state &&
+		execution.Liveness == model.LivenessUnreachable &&
+		liveness == model.LivenessUnreachable &&
+		execution.Observation.Source == model.ObservationUnknown &&
+		source == model.ObservationUnknown &&
+		execution.Observation.Integrity == model.IntegrityDegraded &&
+		integrity == model.IntegrityDegraded &&
+		execution.Observation.FreshForSeconds == nil &&
+		equalOptionalString(execution.SourceState, sourceStateValue)
+}
+
+func equalOptionalString(left, right *string) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func normalizeLiveness(value string, fallback model.Liveness) model.Liveness {

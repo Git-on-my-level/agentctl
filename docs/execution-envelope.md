@@ -142,6 +142,9 @@ by default so a successful retrieval cannot be mistaken for an empty outcome;
 legacy records. Its `result_ref` is the execution's portable
 `agentctl://host-.../exec-...` URI, so callers never locate native session or
 rollout files.
+`agentctl result <execution-id> --content` is the shell-friendly dereference:
+it writes the exact stored UTF-8 text, without a JSON envelope or an added
+newline, and stamps the same acknowledgement only after successful delivery.
 
 Availability is explicit: `stored`, `omitted_by_policy`,
 `unavailable_at_source`, or `legacy_not_recorded`. `--no-store-result` writes

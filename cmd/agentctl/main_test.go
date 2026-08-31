@@ -31,38 +31,50 @@ func testApp(stdout, stderr *bytes.Buffer) *app {
 	return &app{stdout: stdout, stderr: stderr, getenv: func(string) string { return "" }, now: time.Now}
 }
 
-func TestDailyUpdateNoticeDecoratesSuccessAndErrorEnvelopes(t *testing.T) {
+func TestAutomaticMaintenanceRunsOnlyWithExternalWork(t *testing.T) {
 	warning := &output.Warning{Code: "agentctl_update_available", Message: "update available", Details: map[string]any{"current_version": "v0.3.2", "latest_version": "v0.3.3"}}
 	for _, test := range []struct {
-		args     []string
-		wantCode int
+		args       []string
+		wantCode   int
+		wantCalled bool
 	}{
 		{args: []string{"version"}, wantCode: 0},
 		{args: []string{"unknown-command"}, wantCode: 2},
+		{args: []string{"run", "--plan", "--allow-missing-result", "--", "/bin/true"}, wantCode: 6},
+		{args: []string{"run", "--allow-missing-result", "--", "/bin/true"}, wantCode: 6, wantCalled: true},
 	} {
 		var stdout, stderr bytes.Buffer
 		a := testApp(&stdout, &stderr)
-		a.updateNotice = func(context.Context, string, common) *output.Warning { return warning }
+		called := false
+		a.updateNotice = func(context.Context, string, common) *output.Warning { called = true; return warning }
 		if code := a.run(context.Background(), test.args); code != test.wantCode {
 			t.Fatalf("args=%v exit=%d output=%s", test.args, code, stdout.String())
 		}
-		if !strings.Contains(stdout.String(), `"warnings":[{"code":"agentctl_update_available"`) || !strings.Contains(stdout.String(), `"latest_version":"v0.3.3"`) {
+		if called != test.wantCalled {
+			t.Fatalf("args=%v update hook called=%v want=%v", test.args, called, test.wantCalled)
+		}
+		if test.wantCalled && (!strings.Contains(stdout.String(), `"warnings":[{"code":"agentctl_update_available"`) || !strings.Contains(stdout.String(), `"latest_version":"v0.3.3"`)) {
 			t.Fatalf("args=%v missing update notice: %s", test.args, stdout.String())
+		}
+		if !test.wantCalled && strings.Contains(stdout.String(), `agentctl_update_available`) {
+			t.Fatalf("args=%v read-only command included update notice: %s", test.args, stdout.String())
 		}
 	}
 }
 
-func TestDailyUpdateNoticeDecoratesGlobalParseErrors(t *testing.T) {
+func TestAutomaticMaintenanceSkipsGlobalParseErrors(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
+	called := false
 	a.updateNotice = func(context.Context, string, common) *output.Warning {
+		called = true
 		return &output.Warning{Code: "agentctl_update_available", Message: "update available"}
 	}
 	if code := a.run(context.Background(), []string{"--output", "invalid"}); code != 2 {
 		t.Fatalf("exit=%d output=%s", code, stdout.String())
 	}
-	if !strings.Contains(stdout.String(), `"code":"usage"`) || !strings.Contains(stdout.String(), `"code":"agentctl_update_available"`) {
-		t.Fatalf("parse error omitted primary error or notice: %s", stdout.String())
+	if !strings.Contains(stdout.String(), `"code":"usage"`) || strings.Contains(stdout.String(), `agentctl_update_available`) || called {
+		t.Fatalf("parse error ran automatic maintenance: called=%v output=%s", called, stdout.String())
 	}
 }
 
@@ -683,6 +695,44 @@ func TestRecentUnreconciledRequiresResultOrAwaitAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestResultContentWritesExactStoredTextAndAcknowledges(t *testing.T) {
+	root := t.TempDir()
+	journal := filepath.Join(root, "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--journal", journal, "run", "--adapter", "generic-process", "--label", "raw-content", "--", "/bin/echo", `{"type":"result","status":"completed","result":"exact content without added newline"}`}); code != 0 {
+		t.Fatalf("run exit=%d output=%s", code, stdout.String())
+	}
+	var runDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &runDoc); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journal, "result", runDoc.Result.ID.String(), "--content"}); code != 0 {
+		t.Fatalf("content exit=%d output=%q stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if got, want := stdout.String(), "exact content without added newline"; got != want {
+		t.Fatalf("content=%q want=%q", got, want)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journal, "recent", "--unreconciled", "--label", "raw-content"}); code != 0 {
+		t.Fatalf("recent exit=%d output=%s", code, stdout.String())
+	}
+	if recentJSONContains(t, stdout.Bytes(), runDoc.Result.ID.String(), true) {
+		t.Fatalf("content delivery did not acknowledge result: %s", stdout.String())
+	}
+}
+
+func TestResultContentRejectsSummaryCombination(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"result", "exec-amber-willow-orbit-tiger-harbor-gentle", "--content", "--summary"}); code != output.ExitCodeFor(output.CodeUsage) {
+		t.Fatalf("exit=%d output=%s", code, stdout.String())
+	}
+}
+
 func TestRecentUnreconciledHidesTerminalsThatPredateAcknowledgementTracking(t *testing.T) {
 	root := t.TempDir()
 	journalPath := filepath.Join(root, "state", "journal.db")
@@ -737,6 +787,22 @@ func TestParseRecentRejectsUnreconciledWithNonterminal(t *testing.T) {
 	_, problem := parseRecent([]string{"--unreconciled", "--state", "nonterminal"})
 	if problem == nil || problem.Code != output.CodeUsage {
 		t.Fatalf("problem=%#v", problem)
+	}
+}
+
+func TestRecentLivenessFilterSeparatesActiveFromUnreachable(t *testing.T) {
+	acks := store.AcknowledgementIndex{}
+	alive := model.Execution{Adapter: "codex", State: model.StateRunning, Liveness: model.LivenessAlive}
+	unreachable := model.Execution{Adapter: "codex", State: model.StateRunning, Liveness: model.LivenessUnreachable}
+	opts, problem := parseRecent([]string{"--state", "nonterminal", "--liveness", "alive"})
+	if problem != nil {
+		t.Fatal(problem)
+	}
+	if !recentMatches(alive, opts, acks) || recentMatches(unreachable, opts, acks) {
+		t.Fatalf("liveness filter did not isolate active work: opts=%#v", opts)
+	}
+	if _, problem := parseRecent([]string{"--liveness", "stale"}); problem == nil || problem.Code != output.CodeUsage {
+		t.Fatalf("invalid liveness problem=%#v", problem)
 	}
 }
 
@@ -920,6 +986,9 @@ func TestPromptAndManifestRejectSymlinks(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(outside, "escaped.md"), []byte("outside"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if _, problem := a.loadPrompt(runOptions{cwd: root, promptFile: filepath.Join(outside, "escaped.md"), promptDelivery: "argv"}); problem == nil || problem.Code != output.CodeAuthorizationDenied || problem.Details["recommended_prompt_source"] != "stdin" || len(problem.NextActions) == 0 {
+		t.Fatalf("cross-root prompt did not explain the stdin remedy: %#v", problem)
+	}
 	if err := os.Symlink(outside, filepath.Join(root, "nested")); err != nil {
 		t.Fatal(err)
 	}
@@ -1026,7 +1095,7 @@ func TestOMPResultModeFailsClosedBeforeProbeOrJournal(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		a := testApp(&stdout, &stderr)
 		args := append([]string{"--journal", journal, "run", "--"}, native...)
-		if code := a.run(context.Background(), args); code != output.ExitCodeFor(output.CodeCapabilityUnavailable) || !strings.Contains(stdout.String(), `"diagnostic_code":"invocation_output_mode_required"`) {
+		if code := a.run(context.Background(), args); code != output.ExitCodeFor(output.CodeCapabilityUnavailable) || !strings.Contains(stdout.String(), `"diagnostic_code":"invocation_output_mode_required"`) || !strings.Contains(stdout.String(), `"required_argv"`) {
 			t.Fatalf("OMP mode exit=%d output=%s", code, stdout.String())
 		}
 		if _, err := os.Stat(journal); !os.IsNotExist(err) {
@@ -1064,7 +1133,7 @@ func TestKnownAdapterStructuredOutputFailsClosedBeforeProbeOrJournal(t *testing.
 		a := testApp(&stdout, &stderr)
 		args := []string{"--journal", journal, "run", "--adapter", tc.adapter, "--"}
 		args = append(args, tc.argv...)
-		if code := a.run(context.Background(), args); code != output.ExitCodeFor(output.CodeCapabilityUnavailable) || !strings.Contains(stdout.String(), `"diagnostic_code":"invocation_output_mode_required"`) {
+		if code := a.run(context.Background(), args); code != output.ExitCodeFor(output.CodeCapabilityUnavailable) || !strings.Contains(stdout.String(), `"diagnostic_code":"invocation_output_mode_required"`) || !strings.Contains(stdout.String(), `"required_argv"`) {
 			t.Fatalf("adapter=%s exit=%d output=%s", tc.adapter, code, stdout.String())
 		}
 		if _, err := os.Stat(journal); !os.IsNotExist(err) {
@@ -1493,6 +1562,17 @@ func TestRouteExplainRejectsNeedsPR(t *testing.T) {
 	}
 }
 
+func TestRouteExplainRejectsEmptySelector(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"route", "explain"}); code != output.ExitCodeFor(output.CodeUsage) {
+		t.Fatalf("exit=%d output=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"code":"usage"`) || !strings.Contains(stdout.String(), `requires a host or model selector`) {
+		t.Fatalf("empty selector did not fail explicitly: %s", stdout.String())
+	}
+}
+
 func TestRouteExplainQueryJSON(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
@@ -1519,6 +1599,50 @@ func TestRouteExplainQueryJSON(t *testing.T) {
 	models, _ := doc.Result["models"].([]any)
 	if len(models) == 0 {
 		t.Fatalf("expected model hits: %#v", doc.Result)
+	}
+}
+
+func TestRouteExplainWarnsWhenTaskProseIsIgnored(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"route", "explain", "--", "open", "a", "PR", "with", "grok"}); code != 0 {
+		t.Fatalf("exit=%d output=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"code":"route_unmatched_tokens"`) || !strings.Contains(stdout.String(), `"tokens":["open","pr"]`) || !strings.Contains(stdout.String(), `"adapter":"cursor"`) {
+		t.Fatalf("mixed selector did not make ignored prose explicit: %s", stdout.String())
+	}
+}
+
+func TestRouteExplainFailsClosedForExplicitMissingConfigAndProfile(t *testing.T) {
+	for _, args := range [][]string{
+		{"--config", filepath.Join(t.TempDir(), "missing.json"), "route", "explain", "m5", "grok"},
+		{"--profile", "missing", "route", "explain", "m5", "grok"},
+	} {
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		if code := a.run(context.Background(), args); code == 0 {
+			t.Fatalf("args=%v unexpectedly succeeded: %s", args, stdout.String())
+		}
+		if !strings.Contains(stdout.String(), `"ok":false`) {
+			t.Fatalf("args=%v missing structured error: %s", args, stdout.String())
+		}
+	}
+}
+
+func TestRouteExplainRemoteIsExplicitlyNotDispatched(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config.json")
+	raw := `{"schema_version":1,"default_profile":"fleet","profiles":{"fleet":{"agent_preferences":{"mode":"advisory","preferred":[{"agent":"codex","model":"gpt-5.6-sol","speed":"regular","use_for":"alias:sol"}]},"route":{"this_host":"m4-air","hosts":{"m5":"m5-mbp"},"placement":{"kind":"multica"}}}}}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--config", configPath, "route", "explain", "m5", "sol"}); code != 0 {
+		t.Fatalf("exit=%d output=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"code":"route_not_dispatched"`) || !strings.Contains(stdout.String(), `"tracked_execution":false`) || !strings.Contains(stdout.String(), `"agentctl","help","route"`) {
+		t.Fatalf("remote advice looked dispatched: %s", stdout.String())
 	}
 }
 
