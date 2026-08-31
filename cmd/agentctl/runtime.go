@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -718,6 +718,9 @@ func loadTaskContract(path string) (*taskContractPayload, *output.Error) {
 	if len(body) > maxTaskContractBytes {
 		return nil, output.NewError(output.CodeUsage, "task contract exceeds 64 KiB limit", false).WithDetail("max_bytes", maxTaskContractBytes)
 	}
+	if !utf8.Valid(body) {
+		return nil, output.NewError(output.CodeUsage, "task contract must be valid UTF-8", false)
+	}
 	var contract model.TaskContract
 	decoder := json.NewDecoder(strings.NewReader(string(body)))
 	decoder.DisallowUnknownFields()
@@ -734,10 +737,12 @@ func loadTaskContract(path string) (*taskContractPayload, *output.Error) {
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return nil, output.Wrap(output.CodeUsage, "decode task contract fields", false, err)
 	}
-	for name, raw := range fields {
-		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-			return nil, output.NewError(output.CodeUsage, "task contract fields must not be null", false).WithDetail("field", name)
-		}
+	var rawValue any
+	if err := json.Unmarshal(body, &rawValue); err != nil {
+		return nil, output.Wrap(output.CodeUsage, "decode task contract value", false, err)
+	}
+	if path, found := jsonNullPath(rawValue, ""); found {
+		return nil, output.NewError(output.CodeUsage, "task contract fields must not be null", false).WithDetail("field", path)
 	}
 	if _, present := fields["objective_summary"]; present && contract.ObjectiveSummary == "" {
 		return nil, output.NewError(output.CodeUsage, "objective_summary must not be empty when present", false)
@@ -763,6 +768,39 @@ func loadTaskContract(path string) (*taskContractPayload, *output.Error) {
 	}
 	sum := sha256.Sum256(canonical)
 	return &taskContractPayload{Contract: contract, Digest: "sha256:" + hex.EncodeToString(sum[:])}, nil
+}
+
+func jsonNullPath(value any, path string) (string, bool) {
+	switch typed := value.(type) {
+	case nil:
+		if path == "" {
+			path = "$"
+		}
+		return path, true
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			childPath := key
+			if path != "" {
+				childPath = path + "." + key
+			}
+			if foundPath, found := jsonNullPath(typed[key], childPath); found {
+				return foundPath, true
+			}
+		}
+	case []any:
+		for i, item := range typed {
+			childPath := fmt.Sprintf("%s[%d]", path, i)
+			if foundPath, found := jsonNullPath(item, childPath); found {
+				return foundPath, true
+			}
+		}
+	}
+	return "", false
 }
 
 func taskContractValue(payload *taskContractPayload) *model.TaskContract {
