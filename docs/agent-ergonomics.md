@@ -362,6 +362,11 @@ escape for callers that intentionally need weaker or broader behavior:
   spelling. `--adapter` and `--allow-missing-result` are explicit overrides;
   exact native argv remains everything after `--` unless the caller selects a
   prompt source and `argv` delivery.
+- `run --task-contract <json-file>` validates a bounded strict metadata
+  contract before launch and retains it in status and result. It never injects
+  the contract into the native prompt, and native completion remains separate
+  from externally verified artifacts or acceptance. Multica issue authority is
+  not replaced by a direct-run contract file.
 - `run --background` starts a detached host-local worker and returns only after
   the execution is durable. The worker survives the caller but not a host
   restart, is noninteractive, and does not gain a cross-process cancel route

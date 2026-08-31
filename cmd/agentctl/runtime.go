@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,7 @@ import (
 type runOptions struct {
 	adapter, cwd, idempotencyKey, issue, run string
 	promptFile, promptDelivery               string
+	taskContractFile                         string
 	executionID                              ids.ExecutionID
 	labels                                   []string
 	plan                                     bool
@@ -47,11 +49,17 @@ type promptPayload struct {
 	Path     string
 }
 
+type taskContractPayload struct {
+	Contract model.TaskContract
+	Digest   string
+}
+
 const (
 	nativeRunnerLeaseSeconds   = 30
 	nativeRunnerHeartbeatEvery = 10 * time.Second
 	nativeEventFreshness       = 30 * time.Second
 	maxPromptBytes             = 8 << 20
+	maxTaskContractBytes       = 64 << 10
 )
 
 func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
@@ -63,8 +71,24 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	if problem != nil {
 		return problem
 	}
+	taskContract, problem := loadTaskContract(opts.taskContractFile)
+	if problem != nil {
+		return problem
+	}
+	if expected := backgroundTaskContractDigest(); expected != "" {
+		if taskContract == nil || taskContract.Digest != expected {
+			return output.NewError(output.CodeConflict, "background task contract changed before durable launch", false).
+				WithDetail("expected_digest", expected).
+				WithDetail("observed_digest", taskContractDigest(taskContract))
+		}
+	}
+	if taskContract != nil && opts.adapter == "multica" {
+		return output.NewError(output.CodeCapabilityUnavailable, "--task-contract is a direct/native launch contract; Multica issues remain authoritative for Multica work", false).
+			WithDetail("adapter", "multica").
+			WithActions(output.NextAction{Label: "Review promotion into Multica authority", Argv: []string{"agentctl", "help", "promote"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+	}
 	if opts.background && !opts.plan {
-		return a.runNativeBackground(ctx, renderer, c, args, opts, prompt)
+		return a.runNativeBackground(ctx, renderer, c, args, opts, prompt, taskContract)
 	}
 	if prompt != nil {
 		if prompt.Delivery == "argv" {
@@ -123,6 +147,11 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		if !opts.executionID.IsZero() {
 			result["execution_id"] = opts.executionID.String()
 		}
+		if taskContract != nil {
+			result["task_contract"] = taskContract.Contract
+			result["task_contract_digest"] = taskContract.Digest
+			result["acceptance"] = "external_required"
+		}
 		if err := renderer.Success(output.Success{Result: result, Lines: []output.Line{{Lead: "plan", Fields: []output.Field{{Name: "command", Value: "run"}, {Name: "adapter", Value: runtime.Name()}, {Name: "executable", Value: opts.argv[0]}, {Name: "arguments", Value: len(opts.argv) - 1}, {Name: "side_effect_class", Value: output.ExternalSideEffect}}}}}); err != nil {
 			return output.Wrap(output.CodeInternal, "write output", false, err)
 		}
@@ -145,10 +174,10 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		deadline = deadline.UTC()
 		deadlineAt = &deadline
 	}
-	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Labels: append([]string(nil), opts.labels...), Supersedes: []ids.ExecutionID{}, DeadlineAt: deadlineAt, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
+	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Labels: append([]string(nil), opts.labels...), Supersedes: []ids.ExecutionID{}, TaskContract: taskContractValue(taskContract), DeadlineAt: deadlineAt, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
 	mutation := contracts.MutationKey{}
 	if opts.idempotencyKey != "" {
-		digest, dErr := mutationDigest(runtime.Name(), opts.cwd, opts.argv, opts.labels, opts.noStoreResult, prompt)
+		digest, dErr := mutationDigest(runtime.Name(), opts.cwd, opts.argv, opts.labels, opts.noStoreResult, prompt, taskContract)
 		if dErr != nil {
 			journal.Close()
 			return output.Wrap(output.CodeInternal, "canonicalize run idempotency inputs", false, dErr)
@@ -507,6 +536,15 @@ func parseRun(args []string) (runOptions, *output.Error) {
 			}
 			i++
 			o.promptDelivery = args[i]
+		case "--task-contract":
+			if i+1 >= delimiter {
+				return o, output.NewError(output.CodeUsage, "--task-contract requires a JSON file", false)
+			}
+			i++
+			o.taskContractFile = strings.TrimSpace(args[i])
+			if o.taskContractFile == "" || o.taskContractFile == "-" {
+				return o, output.NewError(output.CodeUsage, "--task-contract requires a file path; stdin is reserved for prompt delivery", false)
+			}
 		case "--label":
 			if i+1 >= delimiter {
 				return o, output.NewError(output.CodeUsage, "--label requires a value", false)
@@ -653,6 +691,65 @@ func (a *app) loadPrompt(opts runOptions) (*promptPayload, *output.Error) {
 	sum := sha256.Sum256(content)
 	payload.Digest = "sha256:" + hex.EncodeToString(sum[:])
 	return payload, nil
+}
+
+func loadTaskContract(path string) (*taskContractPayload, *output.Error) {
+	if path == "" {
+		return nil, nil
+	}
+	absolute, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return nil, output.Wrap(output.CodeUsage, "resolve task contract", false, err)
+	}
+	file, err := openRegularNoFollow(absolute)
+	if err != nil {
+		return nil, output.Wrap(output.CodeAuthorizationDenied, "open task contract", false, err)
+	}
+	defer file.Close()
+	body, err := io.ReadAll(io.LimitReader(file, maxTaskContractBytes+1))
+	if err != nil {
+		return nil, output.Wrap(output.CodeUsage, "read task contract", false, err)
+	}
+	if len(body) > maxTaskContractBytes {
+		return nil, output.NewError(output.CodeUsage, "task contract exceeds 64 KiB limit", false).WithDetail("max_bytes", maxTaskContractBytes)
+	}
+	var contract model.TaskContract
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&contract); err != nil {
+		return nil, output.Wrap(output.CodeUsage, "decode task contract", false, err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			err = errors.New("multiple JSON values")
+		}
+		return nil, output.Wrap(output.CodeUsage, "decode task contract", false, err)
+	}
+	if err := contract.Validate(); err != nil {
+		return nil, output.Wrap(output.CodeUsage, "invalid task contract", false, err)
+	}
+	canonical, err := callback.CanonicalJSON(contract)
+	if err != nil {
+		return nil, output.Wrap(output.CodeInternal, "canonicalize task contract", false, err)
+	}
+	sum := sha256.Sum256(canonical)
+	return &taskContractPayload{Contract: contract, Digest: "sha256:" + hex.EncodeToString(sum[:])}, nil
+}
+
+func taskContractValue(payload *taskContractPayload) *model.TaskContract {
+	if payload == nil {
+		return nil
+	}
+	value := payload.Contract
+	value.ExpectedArtifactKinds = append([]string(nil), value.ExpectedArtifactKinds...)
+	return &value
+}
+
+func taskContractDigest(payload *taskContractPayload) string {
+	if payload == nil {
+		return ""
+	}
+	return payload.Digest
 }
 
 func containsArg(argv []string, value string) bool {
@@ -968,12 +1065,12 @@ func contextInput(c common) *adapter.ContextInput {
 	}
 	return &adapter.ContextInput{Path: c.contextFile, Required: false}
 }
-func mutationDigest(name, cwd string, argv, labels []string, noStoreResult bool, prompt *promptPayload) (string, error) {
+func mutationDigest(name, cwd string, argv, labels []string, noStoreResult bool, prompt *promptPayload, taskContract *taskContractPayload) (string, error) {
 	promptDigest, promptDelivery := "", ""
 	if prompt != nil {
 		promptDigest, promptDelivery = prompt.Digest, prompt.Delivery
 	}
-	canonical, err := callback.CanonicalJSON(map[string]any{"adapter": name, "cwd": cwd, "argv": argv, "labels": labels, "no_store_result": noStoreResult, "prompt_sha256": promptDigest, "prompt_delivery": promptDelivery})
+	canonical, err := callback.CanonicalJSON(map[string]any{"adapter": name, "cwd": cwd, "argv": argv, "labels": labels, "no_store_result": noStoreResult, "prompt_sha256": promptDigest, "prompt_delivery": promptDelivery, "task_contract_sha256": taskContractDigest(taskContract)})
 	if err != nil {
 		return "", err
 	}
