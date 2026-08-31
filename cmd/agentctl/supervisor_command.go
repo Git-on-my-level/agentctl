@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/callback"
+	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	agentruntime "github.com/Git-on-my-level/agentctl/internal/runtime"
 	"github.com/Git-on-my-level/agentctl/internal/store"
@@ -252,8 +253,33 @@ func (a *app) supervisorPlan(renderer output.Renderer, args []string) *output.Er
 
 type pathSupervisorExecutions struct{ path string }
 
-func (b pathSupervisorExecutions) withBridge(fn func(agentruntime.SupervisorExecutions) error) error {
-	journal, err := openJournalWithRetry(b.path, store.Options{})
+func (a *app) reprobeAwaitedMultica(ctx context.Context, c common, execution model.Execution) *output.Error {
+	journalPath, err := a.journalPath(c)
+	if err != nil {
+		return output.Wrap(output.CodeInternal, "resolve journal path for Multica await", false, err)
+	}
+	bridge := pathSupervisorExecutions{path: journalPath}
+	probe, err := bridge.Reprobe(ctx, supervisor.Execution{ID: execution.ID.String(), State: string(execution.State), Liveness: string(execution.Liveness), Revision: execution.Revision, UpdatedAt: execution.UpdatedAt})
+	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return output.Wrap(output.CodeExecutionCancelled, "await cancelled", false, ctx.Err()).WithDetail("execution_id", execution.ID.String())
+		}
+		problem := output.Wrap(output.CodeRemoteFailure, "refresh Multica execution while awaiting", false, err).WithDetail("execution_id", execution.ID.String())
+		var runtimeErr *agentruntime.Error
+		if errors.As(err, &runtimeErr) {
+			problem.Retryable = runtimeErr.Retryable
+			problem.WithDetail("diagnostic_code", runtimeErr.Code).WithDetail("operation", runtimeErr.Operation).WithDetail("diagnostic_message", runtimeErr.Message)
+		}
+		return problem
+	}
+	if err := bridge.ApplyProbe(ctx, execution.ID.String(), probe); err != nil {
+		return output.Wrap(output.CodeRemoteFailure, "record refreshed Multica execution while awaiting", true, err).WithDetail("execution_id", execution.ID.String())
+	}
+	return nil
+}
+
+func (b pathSupervisorExecutions) withBridge(ctx context.Context, fn func(agentruntime.SupervisorExecutions) error) error {
+	journal, err := openJournalWithRetryContext(ctx, b.path, store.Options{})
 	if err != nil {
 		return err
 	}
@@ -266,7 +292,7 @@ func (b pathSupervisorExecutions) withBridge(fn func(agentruntime.SupervisorExec
 }
 
 func (b pathSupervisorExecutions) ListNonTerminal(ctx context.Context) (result []supervisor.Execution, err error) {
-	err = b.withBridge(func(bridge agentruntime.SupervisorExecutions) error {
+	err = b.withBridge(ctx, func(bridge agentruntime.SupervisorExecutions) error {
 		result, err = bridge.ListNonTerminal(ctx)
 		return err
 	})
@@ -274,7 +300,7 @@ func (b pathSupervisorExecutions) ListNonTerminal(ctx context.Context) (result [
 }
 
 func (b pathSupervisorExecutions) Reprobe(ctx context.Context, execution supervisor.Execution) (result supervisor.ProbeResult, err error) {
-	err = b.withBridge(func(bridge agentruntime.SupervisorExecutions) error {
+	err = b.withBridge(ctx, func(bridge agentruntime.SupervisorExecutions) error {
 		result, err = bridge.Reprobe(ctx, execution)
 		return err
 	})
@@ -282,7 +308,7 @@ func (b pathSupervisorExecutions) Reprobe(ctx context.Context, execution supervi
 }
 
 func (b pathSupervisorExecutions) ApplyProbe(ctx context.Context, id string, result supervisor.ProbeResult) error {
-	return b.withBridge(func(bridge agentruntime.SupervisorExecutions) error {
+	return b.withBridge(ctx, func(bridge agentruntime.SupervisorExecutions) error {
 		return bridge.ApplyProbe(ctx, id, result)
 	})
 }

@@ -182,6 +182,7 @@ func (a *app) examplesCommand(renderer output.Renderer, args []string) *output.E
 	examples := [][]string{
 		{"agentctl", "orient"},
 		{"agentctl", "route", "explain", "--", "glm"},
+		{"agentctl", "dispatch", "--route", "m5 sol", "--title", "Review change", "--prompt-file", "task.md", "--idempotency-key", "review-change-v1", "--plan"},
 		{"agentctl", "run", "--adapter", "codex", "--", "codex", "exec", "..."},
 		{"agentctl", "run", "--prompt-file", "task.md", "--prompt-delivery", "argv", "--", "codex", "exec", "--json"},
 		{"agentctl", "fanout", "--manifest", "fanout.json"},

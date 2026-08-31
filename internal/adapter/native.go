@@ -361,6 +361,11 @@ type nativeConfig struct {
 	// document after EOF. Use this for finite CLIs that pretty-print a page
 	// across several lines rather than emitting JSONL observations.
 	WholeStdout bool
+	// HardOneShotDeadline makes finite probe commands kill their process group
+	// and return as soon as the caller context expires. The background waiter
+	// still owns reaping; this avoids extending a read deadline with the normal
+	// five-second graceful-cancellation window.
+	HardOneShotDeadline bool
 }
 
 // NativeAdapter implements the common process/session behavior. Constructors
@@ -677,7 +682,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		// stdout/stderr pipes attached and guarantees Wait reaps the process
 		// before the caller can return. Callers that intentionally supervise a
 		// live process in-process must opt into StartOnly explicitly.
-		if _, err := a.waitRecord(runCtx, record, true); err != nil {
+		if _, err := a.waitRecord(runCtx, record, true, req.hardContextDeadline); err != nil {
 			return LaunchResult{Session: a.session(record), Result: a.currentResult(record)}, err
 		}
 	}
@@ -790,7 +795,7 @@ func (a *NativeAdapter) Wait(ctx context.Context, ref SourceRef) (Result, error)
 	if record == nil {
 		return Result{}, &AdapterError{Code: ErrNotFound, Message: "native session is not known to this adapter"}
 	}
-	if _, err := a.waitRecord(ctx, record, true); err != nil {
+	if _, err := a.waitRecord(ctx, record, true, false); err != nil {
 		return Result{}, err
 	}
 	result := a.currentResult(record)
@@ -800,17 +805,24 @@ func (a *NativeAdapter) Wait(ctx context.Context, ref SourceRef) (Result, error)
 	return *result, nil
 }
 
-func (a *NativeAdapter) waitRecord(ctx context.Context, record *processRecord, killOnCancel bool) (*Result, error) {
+func (a *NativeAdapter) waitRecord(ctx context.Context, record *processRecord, killOnCancel, hardContextDeadline bool) (*Result, error) {
 	select {
 	case <-record.done:
 		return a.currentResult(record), nil
 	case <-ctx.Done():
 		if killOnCancel {
-			a.cancelRecord(record, "term", 5*time.Second)
+			if hardContextDeadline {
+				a.cancelRecord(record, "kill", 0)
+			} else {
+				a.cancelRecord(record, "term", 5*time.Second)
+			}
 		}
-		// CommandContext/Process.Kill closes the child; wait for the existing
-		// waiter and pipe readers rather than returning with an orphan.
-		<-record.done
+		// A hard finite-probe deadline returns after killing the process group;
+		// the existing waiter continues to reap it. Normal native work preserves
+		// the graceful cancel-and-reap contract.
+		if !hardContextDeadline {
+			<-record.done
+		}
 		code, message := ErrExecutionCancelled, "native process cancelled while waiting"
 		if ctx.Err() == context.DeadlineExceeded {
 			code, message = ErrTimeout, "native process timed out while waiting"
@@ -1003,7 +1015,7 @@ func (a *NativeAdapter) runOneShot(ctx context.Context, argv []string, ref Sourc
 	if len(argv) == 0 || argv[0] == "" {
 		return LaunchResult{}, invalidRequest("native command route returned empty argv")
 	}
-	return a.Launch(ctx, LaunchRequest{Argv: argv, DiscoveryWindow: 250 * time.Millisecond, StartOnly: false})
+	return a.Launch(ctx, LaunchRequest{Argv: argv, DiscoveryWindow: 250 * time.Millisecond, StartOnly: false, hardContextDeadline: a.config.HardOneShotDeadline})
 }
 
 func isTerminal(state State) bool {

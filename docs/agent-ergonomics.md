@@ -316,6 +316,7 @@ agentctl subscribe
 agentctl await
 agentctl result
 agentctl promote
+agentctl dispatch
 agentctl cancel
 agentctl doctor
 agentctl context
@@ -324,7 +325,8 @@ agentctl route explain
 
 `orient` establishes local work context. `recent` discovers. `status` observes.
 `result` retrieves. `await` waits. `inbox` explains what needs attention.
-`cancel` mutates. No command name mixes these responsibilities.
+`dispatch` creates and tracks a Multica-owned task. `cancel` mutates. No
+command name mixes these responsibilities.
 
 ## Actionable work inbox
 

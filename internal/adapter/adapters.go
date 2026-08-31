@@ -94,7 +94,7 @@ func NewMultica(config MulticaConfig) Adapter {
 	}
 	base := newNativeAdapter(nativeConfig{
 		Manifest: multicaManifest(), Binary: config.Binary, Parser: multicaPageParser{},
-		LaunchKind: "multica_event", WholeStdout: true,
+		LaunchKind: "multica_event", WholeStdout: true, HardOneShotDeadline: true,
 	})
 	return &multicaAdapter{NativeAdapter: base, config: config}
 }
@@ -222,7 +222,7 @@ func (m *multicaAdapter) EventsPage(ctx context.Context, req EventsRequest) (Mul
 	record.mu.Unlock()
 	if pageData == nil {
 		if launch.Result != nil && launch.Result.Error != "" {
-			return MulticaEventPage{}, &AdapterError{Code: ErrExecutionFailed, Message: "Multica event list did not return a structured page", Details: map[string]any{"reason": launch.Result.Error}}
+			return MulticaEventPage{}, &AdapterError{Code: ErrExecutionFailed, Message: "Multica event list did not return a structured page", Retryable: true, Details: map[string]any{"reason": launch.Result.Error}}
 		}
 		return MulticaEventPage{}, &AdapterError{Code: ErrExecutionUnknown, Message: "Multica event list returned no structured page", Retryable: true}
 	}

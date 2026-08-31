@@ -107,12 +107,22 @@ func (b SupervisorExecutions) reprobeFromEvents(ctx context.Context, execution m
 		stateEventCount = len(page.Events)
 		observedCount = len(stored)
 		if page.NextCursor != "" && page.NextCursor != cursor {
-			checkpoint, checkpointErr := b.Engine.recordWorkspaceCursor(ctx, execution.ID, page.NextCursor, page.Scanned, page.Filtered)
-			if checkpointErr != nil {
-				return supervisor.ProbeResult{}, true, checkpointErr
+			current, currentErr := b.Engine.journal.GetExecution(ctx, execution.ID)
+			if currentErr != nil {
+				return supervisor.ProbeResult{}, true, wrapError("get_execution", execution.Adapter, currentErr)
 			}
-			if checkpoint != nil {
-				observedCount++
+			// A terminal authority event is already a complete recovery boundary.
+			// Appending a later health checkpoint would violate the journal's
+			// terminal-event invariant, and no future page is needed for this
+			// execution anyway.
+			if !current.State.Terminal() {
+				checkpoint, checkpointErr := b.Engine.recordWorkspaceCursor(ctx, execution.ID, page.NextCursor, page.Scanned, page.Filtered)
+				if checkpointErr != nil {
+					return supervisor.ProbeResult{}, true, checkpointErr
+				}
+				if checkpoint != nil {
+					observedCount++
+				}
 			}
 		}
 	} else {

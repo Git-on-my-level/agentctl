@@ -25,6 +25,7 @@ them.
 | Journal | Owner-only bbolt store; schema validation; CAS execution updates; event sequence; semantic-key recomputation; one terminal event; subscriptions, outbox, receipts, execution acknowledgements, and restart durability. |
 | Native work | `run`, `recent`, read-only actionable `inbox`, local binding `attach`, `status`, `events`, `await`, `result`, and adapter-dependent `cancel`; inbox separates task outcome from tool liveness, uses a bounded caller-visible observation age, and keeps conflicted evidence actionable after collection; preallocated IDs for live observation/subscription; bounded journal transactions and expiring runner leases while children run; exact argv after `--`; deterministic adapter inference for known executables; bounded structured parsers; raw prompts, intermediate output, and transcripts excluded from the journal; final result content stored by default up to 1 MiB. |
 | Routing | Deterministic `route explain` ranks reviewed host/model selectors and reports local versus explicitly configured remote placement. It never interprets task prose, creates an issue, dispatches work, or returns an execution handle. |
+| Optional dispatch | Live Multica agent/runtime join by exact runtime binding; one online routed host/provider/concrete-model match; private exact assignee ID; required caller idempotency key; prompt stdin with digest-only journal retention; tracked Multica execution; foreground `await` event reconciliation; review/blocked attention mapping; no local fallback. |
 | Optional promotion | Exact configured Multica binary/profile/workspace/server; plan mode; authority-owned semantic client key; exact retry; changed-input conflict; persisted source/target links; optional supersession; replay returns the same stored issue alias and one lifecycle. |
 | Knowledge | Validated GitHub/Forgejo/generic registrations; explicit noninteractive sync; loose/structured/hybrid ingest; deterministic provenance, bundle, lexical index, verification, atomic install, selection, and bounded render. |
 | Callbacks | Atomic event fanout; file, acknowledged Unix, command, and HMAC webhook transports; TTL, retry, pause, receipt, and dead-letter state; SSRF, DNS rebinding, redirect, expiry, and replay controls. |
@@ -41,10 +42,12 @@ them.
    lifecycle or silently promote direct work.
 4. One promotion key identifies one semantic source/destination handoff. Exact
    retries reuse it; changed semantics conflict.
-5. A callback receipt proves delivery only. It never marks work successful.
-6. Shared knowledge is derived from explicit Git authorities. The compiled
+5. One dispatch key identifies one workspace-scoped task intent. Exact retries
+   recover the same Multica issue and local execution; changed semantics conflict.
+6. A callback receipt proves delivery only. It never marks work successful.
+7. Shared knowledge is derived from explicit Git authorities. The compiled
    bundle is immutable data, not shared session state.
-7. Credentials, raw transcripts, native databases, and worktrees remain local.
+8. Credentials, raw transcripts, native databases, and worktrees remain local.
 
 ## Agent-first defaults
 

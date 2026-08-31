@@ -755,16 +755,19 @@ func TestReprobePromotedMulticaUsesDurableEventsAndAdvancesScopedCursor(t *testi
 		}
 	}
 	storedEvents, err := journal.ListEvents(context.Background(), execution.ID, contracts.EventQuery{})
-	if err != nil || len(storedEvents) != 8 || storedEvents[2].Kind != model.EventProgress || storedEvents[2].State == nil || *storedEvents[2].State != model.StateWaiting || storedEvents[4].Kind != model.EventHealth || storedEvents[4].Payload["reason"] != "out_of_scope_event" || storedEvents[6].Kind != model.EventTerminal {
+	if err != nil || len(storedEvents) != 7 || storedEvents[2].Kind != model.EventProgress || storedEvents[2].State == nil || *storedEvents[2].State != model.StateWaiting || storedEvents[4].Kind != model.EventHealth || storedEvents[4].Payload["reason"] != "out_of_scope_event" || storedEvents[6].Kind != model.EventTerminal {
 		t.Fatalf("stored events=%#v err=%v", storedEvents, err)
 	}
 	if storedEvents[0].SourcePosition == nil || storedEvents[0].SourcePosition.Kind != "native_sequence" || storedEvents[0].SourcePosition.Value != "api-seq-1" {
 		t.Fatalf("matching event source position = %#v", storedEvents[0].SourcePosition)
 	}
-	for _, index := range []int{1, 3, 5, 7} {
+	for _, index := range []int{1, 3, 5} {
 		if storedEvents[index].SourcePosition == nil || storedEvents[index].SourcePosition.Kind != "multica_workspace_cursor" {
 			t.Fatalf("event %d missing workspace cursor checkpoint: %#v", index, storedEvents[index])
 		}
+	}
+	if storedEvents[6].Kind != model.EventTerminal {
+		t.Fatalf("terminal authority event was not the recovery boundary: %#v", storedEvents[6])
 	}
 }
 

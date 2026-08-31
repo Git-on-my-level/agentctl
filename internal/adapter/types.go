@@ -259,6 +259,9 @@ type LaunchRequest struct {
 	// daemonless caller owns the child only while it remains alive, so normal
 	// launches wait and reap the child before returning.
 	StartOnly bool
+	// hardContextDeadline is reserved for finite adapter probes whose caller
+	// deadline must not inherit native work's graceful cancellation window.
+	hardContextDeadline bool
 }
 
 type AttachRequest struct {

@@ -175,6 +175,12 @@ was never dereferenced. Broad subscriptions require an explicit scope and retent
 output. Creating, rotating, acknowledging, pausing, and cancelling a
 subscription are idempotent mutations.
 
+A dispatched Multica execution is immediately eligible for the same exact-ID
+subscription surface. The managed supervisor continuously reconciles workspace
+events for unattended callback delivery; foreground `await` performs bounded
+reconciliation itself and stops when Multica reports review or blocked
+attention. Without either path, cached read commands do not fetch remote state.
+
 Promotion does not mutate a subscription target in place. Rotation creates a
 new subscription for the promoted execution, links `replaces`/`replaced_by`,
 and stops the old subscription only after the new one is durable. Until then,
