@@ -10,7 +10,7 @@
   },
   "runtime": {
     "entrypoint": "agentctl",
-    "commands": ["help", "schema", "capabilities", "doctor", "route", "run", "recent", "list", "fanout", "attach", "status", "events", "subscribe", "await", "result", "cancel", "promote", "knowledge", "context", "config", "skills", "bootstrap", "supervisor", "update"],
+    "commands": ["help", "schema", "capabilities", "doctor", "route", "run", "recent", "list", "workspace", "fanout", "attach", "status", "events", "subscribe", "await", "result", "cancel", "promote", "knowledge", "context", "config", "skills", "bootstrap", "supervisor", "update"],
     "authority": "native_or_multica_explicit",
     "correctness_owner": "selected_native_authority"
   },

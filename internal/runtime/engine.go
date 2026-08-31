@@ -628,6 +628,7 @@ func (e *Engine) updateCASFromRevision(ctx context.Context, desired model.Execut
 		// relationships. Preserve concurrent edits to those fields across a CAS
 		// retry instead of replaying a stale whole-envelope copy.
 		desired.Repository = current.Repository
+		desired.Workspace = current.Workspace
 		desired.ParentExecutionID = current.ParentExecutionID
 		desired.Supersedes = current.Supersedes
 		desired.SupersededBy = current.SupersededBy

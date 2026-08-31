@@ -67,6 +67,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 		"skill-pack":        "schemas/skill-pack.schema.json",
 		"skill-pack-report": "schemas/skill-pack-report.schema.json",
 		"subscription":      "schemas/subscription.schema.json",
+		"workspace-owners":  "schemas/workspace-owners.schema.json",
 	}
 	if len(document.Result.Schemas) != len(want) {
 		t.Fatalf("schema count=%d want=%d: %#v", len(document.Result.Schemas), len(want), document.Result.Schemas)
@@ -98,6 +99,7 @@ func TestNewSchemaDocumentsDeclareDraftAndRequiredShape(t *testing.T) {
 		"skill-pack.schema.json":        {"schema_version", "skills"},
 		"skill-pack-report.schema.json": {"schema_version", "healthy", "source", "manifest_sha256", "actions", "changed", "applied", "unsupported", "conflicts"},
 		"subscription.schema.json":      {"id", "origin_host_id", "filter", "destination", "expires_at", "cursor", "state", "auto_expire_on_terminal"},
+		"workspace-owners.schema.json":  {"schema_version", "authority", "ownership_semantics", "exclusive", "host_local", "owners", "unattributed_nonterminal_count", "evidence_complete"},
 	}
 	for filename, required := range expected {
 		data, err := os.ReadFile(filepath.Join(root, "schemas", filename))

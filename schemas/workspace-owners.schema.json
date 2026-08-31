@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentctl:schema:workspace-owners:v1",
+  "x-agentctl-docs": "../docs/execution-envelope.md#workspace-provenance-and-active-owners",
+  "title": "agentctl active workspace execution owners v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "authority",
+    "ownership_semantics",
+    "exclusive",
+    "host_local",
+    "owners",
+    "unattributed_nonterminal_count",
+    "evidence_complete"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "authority": {"const": "agentctl_execution_journal"},
+    "ownership_semantics": {"const": "nonterminal_execution_launch_provenance"},
+    "exclusive": {"const": false},
+    "host_local": {"const": true},
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested_path", "workspace"],
+      "properties": {
+        "requested_path": {"type": "string", "minLength": 1},
+        "workspace": {"$ref": "#/$defs/workspace"}
+      }
+    },
+    "owners": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["execution_id", "adapter", "state", "liveness", "created_at", "updated_at", "workspace"],
+        "properties": {
+          "execution_id": {"type": "string", "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"},
+          "adapter": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{1,31}$"},
+          "state": {"enum": ["created", "starting", "running", "waiting", "attention"]},
+          "liveness": {"enum": ["unknown", "alive", "blocked", "exited", "unreachable"]},
+          "created_at": {"type": "string", "format": "date-time"},
+          "started_at": {"type": "string", "format": "date-time"},
+          "updated_at": {"type": "string", "format": "date-time"},
+          "workspace": {"$ref": "#/$defs/workspace"}
+        }
+      }
+    },
+    "unattributed_nonterminal_count": {"type": "integer", "minimum": 0},
+    "evidence_complete": {"type": "boolean"}
+  },
+  "$defs": {
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "root", "git_dir", "git_common_dir"],
+      "properties": {
+        "kind": {"const": "git_worktree"},
+        "root": {"type": "string", "minLength": 1},
+        "git_dir": {"type": "string", "minLength": 1},
+        "git_common_dir": {"type": "string", "minLength": 1},
+        "head_oid": {"type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"},
+        "head_ref": {"type": "string", "maxLength": 1024},
+        "operation_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["bisect", "cherry_pick", "merge", "rebase", "revert"]}
+        }
+      }
+    }
+  }
+}

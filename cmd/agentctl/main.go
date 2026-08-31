@@ -130,6 +130,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.recent(ctx, renderer, commonArgs, rest[1:])
 	case "inbox":
 		err = a.inbox(ctx, renderer, commonArgs, rest[1:])
+	case "workspace":
+		err = a.workspaceCommand(ctx, renderer, commonArgs, rest[1:])
 	case "events":
 		err = a.events(ctx, renderer, commonArgs, rest[1:])
 	case "result":
@@ -885,6 +887,7 @@ func writeExecution(renderer output.Renderer, e model.Execution, operation strin
 	redacted := e
 	redacted.CWD = nil
 	redacted.Repository = nil
+	redacted.Workspace = nil
 	redacted.SourceBindings = append([]model.SourceBinding{}, e.SourceBindings...)
 	for i := range redacted.SourceBindings {
 		redacted.SourceBindings[i].OpaqueID = nil
@@ -899,6 +902,7 @@ func writeExecutionOutcome(renderer output.Renderer, e model.Execution, outcome 
 	redacted := e
 	redacted.CWD = nil
 	redacted.Repository = nil
+	redacted.Workspace = nil
 	redacted.SourceBindings = append([]model.SourceBinding{}, e.SourceBindings...)
 	for i := range redacted.SourceBindings {
 		redacted.SourceBindings[i].OpaqueID = nil

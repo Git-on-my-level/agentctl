@@ -160,6 +160,37 @@ accepts both Cursor assistant sources. Failed outcomes may
 carry one bounded, secret-redacted native diagnostic when structured failure
 data is absent; terminal events expose only its normalized failure code.
 
+## Workspace provenance and active owners
+
+A direct native launch records `cwd` and, when Git can identify the launch
+directory, an immutable `workspace` snapshot in the host-local execution
+journal. The snapshot contains the repository root, the per-worktree Git
+directory, the shared Git common directory, HEAD object/ref, and any launch-time
+merge, rebase, cherry-pick, revert, or bisect markers. The per-worktree Git
+directory distinguishes linked worktrees; a clean index is deliberately not
+treated as evidence that no execution is using one.
+
+Paths remain omitted from ordinary `run`, `status`, and `result` output. The
+explicit read-only query is:
+
+```bash
+agentctl workspace owners
+agentctl workspace owners --path /absolute/path/to/worktree
+```
+
+The v1 machine document is described by
+`schemas/workspace-owners.schema.json`. Its authority is only the local
+agentctl execution journal. An owner means a nonterminal execution was launched
+from the recorded worktree; it is not an exclusive lease, does not prove the
+native process is currently alive, and does not cover work started outside
+agentctl. Consumers must inspect execution `state` and `liveness` separately.
+`exclusive` is therefore always false.
+
+Executions written before workspace provenance was introduced remain valid.
+Active legacy rows are counted as `unattributed_nonterminal_count`, making
+`evidence_complete` false. A cleanup tool can fail closed on that incomplete
+evidence instead of converting missing metadata into an unsafe all-clear.
+
 ## Source bindings and authority
 
 `source_bindings` retain exact local adapter bindings. A direct execution
