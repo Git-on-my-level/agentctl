@@ -41,7 +41,7 @@
         "mode": {"enum": ["direct", "multica"]},
         "state": {"enum": ["created", "starting", "running", "waiting", "attention", "completed", "failed", "cancelled", "orphaned"]},
         "liveness": {"enum": ["unknown", "alive", "blocked", "exited", "unreachable"]},
-        "work_health": {"enum": ["active", "attention_required", "failed", "orphaned", "result_ready", "observation_stale"]},
+        "work_health": {"enum": ["active", "attention_required", "failed", "orphaned", "result_ready", "observation_stale", "integrity_conflicted"]},
         "tool_health": {"enum": ["unknown", "alive", "blocked", "exited", "unreachable"]},
         "created_at": {"type": "string", "format": "date-time"},
         "updated_at": {"type": "string", "format": "date-time"},
@@ -59,8 +59,8 @@
       "additionalProperties": false,
       "required": ["code", "domain", "summary"],
       "properties": {
-        "code": {"enum": ["attention_required", "execution_failed", "execution_orphaned", "result_unreconciled", "running_observation_stale", "tool_unreachable"]},
-        "domain": {"enum": ["work", "collection", "observation", "tool"]},
+        "code": {"enum": ["attention_required", "execution_failed", "execution_orphaned", "result_unreconciled", "running_observation_stale", "tool_unreachable", "observation_integrity_conflicted"]},
+        "domain": {"enum": ["work", "collection", "observation", "tool", "integrity"]},
         "summary": {"type": "string", "minLength": 1},
         "age_seconds": {"type": "number", "minimum": 0}
       }

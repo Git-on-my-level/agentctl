@@ -172,8 +172,12 @@ func projectInbox(execution model.Execution, now time.Time, staleAfter time.Dura
 		observationAge = 0
 	}
 	unreconciled := acks.Unreconciled(execution)
-	reasons := make([]inboxReason, 0, 3)
+	reasons := make([]inboxReason, 0, 4)
 	workHealth := "active"
+	integrityConflicted := execution.Observation.Integrity == model.IntegrityConflicted
+	if integrityConflicted {
+		reasons = append(reasons, inboxReason{Code: "observation_integrity_conflicted", Domain: "integrity", Summary: "normalized execution evidence conflicts; outcome-dependent commands remain unavailable until the authority is reconciled"})
+	}
 	if execution.State == model.StateAttention {
 		workHealth = "attention_required"
 		reasons = append(reasons, inboxReason{Code: "attention_required", Domain: "work", Summary: "the execution authority requires a decision or intervention"})
@@ -201,6 +205,9 @@ func projectInbox(execution model.Execution, now time.Time, staleAfter time.Dura
 	if !execution.State.Terminal() && execution.Liveness == model.LivenessUnreachable && observationAge >= staleAfter {
 		age := observationAge.Seconds()
 		reasons = append(reasons, inboxReason{Code: "tool_unreachable", Domain: "tool", Summary: "the runtime is unreachable; this does not prove the work failed", AgeSeconds: &age})
+	}
+	if integrityConflicted {
+		workHealth = "integrity_conflicted"
 	}
 	labels := append([]string(nil), execution.Labels...)
 	if labels == nil {
