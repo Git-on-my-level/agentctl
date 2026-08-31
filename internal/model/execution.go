@@ -157,11 +157,32 @@ type TaskContract struct {
 }
 
 func (c TaskContract) Validate() error {
-	if c.ObjectiveSummary == "" && c.SideEffectBoundary == "" && c.AcceptanceRef == nil && len(c.ExpectedArtifactKinds) == 0 && c.Continuation == nil && c.Provenance == nil {
-		return errors.New("task contract must contain at least one field")
-	}
 	if len(c.ObjectiveSummary) > 2048 {
 		return errors.New("objective summary exceeds 2048 bytes")
+	}
+	if c.Provenance != nil {
+		for name, digest := range map[string]string{
+			"portable_skill_digest": c.Provenance.PortableSkillDigest,
+			"context_digest":        c.Provenance.ContextDigest,
+			"handoff_digest":        c.Provenance.HandoffDigest,
+		} {
+			if digest != "" && !hashPattern.MatchString(digest) {
+				return fmt.Errorf("invalid task provenance %s", name)
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateInput applies the stricter contract for a new --task-contract file.
+// Validate intentionally remains tolerant because execution schema v1 was
+// already writable before direct task-contract input existed.
+func (c TaskContract) ValidateInput() error {
+	if c.ObjectiveSummary == "" && c.SideEffectBoundary == "" && c.AcceptanceRef == nil && c.ExpectedArtifactKinds == nil && c.Continuation == nil && c.Provenance == nil {
+		return errors.New("task contract must contain at least one field")
+	}
+	if err := c.Validate(); err != nil {
+		return err
 	}
 	if c.SideEffectBoundary != "" && !namePattern.MatchString(c.SideEffectBoundary) {
 		return errors.New("side effect boundary must match ^[a-z][a-z0-9_.-]{0,63}$")
@@ -170,6 +191,9 @@ func (c TaskContract) Validate() error {
 		if _, err := ids.ParseContextID(c.AcceptanceRef.String()); err != nil {
 			return fmt.Errorf("acceptance_ref: %w", err)
 		}
+	}
+	if c.ExpectedArtifactKinds != nil && len(c.ExpectedArtifactKinds) == 0 {
+		return errors.New("expected artifact kinds must not be empty when present")
 	}
 	if len(c.ExpectedArtifactKinds) > 16 {
 		return errors.New("expected artifact kinds exceed 16 entries")
@@ -184,16 +208,8 @@ func (c TaskContract) Validate() error {
 		}
 		seenArtifacts[kind] = struct{}{}
 	}
-	if c.Provenance != nil {
-		for name, digest := range map[string]string{
-			"portable_skill_digest": c.Provenance.PortableSkillDigest,
-			"context_digest":        c.Provenance.ContextDigest,
-			"handoff_digest":        c.Provenance.HandoffDigest,
-		} {
-			if digest != "" && !hashPattern.MatchString(digest) {
-				return fmt.Errorf("invalid task provenance %s", name)
-			}
-		}
+	if c.Provenance != nil && c.Provenance.PortableSkillDigest == "" && c.Provenance.ContextDigest == "" && c.Provenance.HandoffDigest == "" {
+		return errors.New("provenance must contain at least one digest when present")
 	}
 	return nil
 }

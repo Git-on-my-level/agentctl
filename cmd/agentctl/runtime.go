@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -729,7 +730,31 @@ func loadTaskContract(path string) (*taskContractPayload, *output.Error) {
 		}
 		return nil, output.Wrap(output.CodeUsage, "decode task contract", false, err)
 	}
-	if err := contract.Validate(); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, output.Wrap(output.CodeUsage, "decode task contract fields", false, err)
+	}
+	for name, raw := range fields {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return nil, output.NewError(output.CodeUsage, "task contract fields must not be null", false).WithDetail("field", name)
+		}
+	}
+	if _, present := fields["objective_summary"]; present && contract.ObjectiveSummary == "" {
+		return nil, output.NewError(output.CodeUsage, "objective_summary must not be empty when present", false)
+	}
+	if _, present := fields["side_effect_boundary"]; present && contract.SideEffectBoundary == "" {
+		return nil, output.NewError(output.CodeUsage, "side_effect_boundary must not be empty when present", false)
+	}
+	if raw, present := fields["continuation"]; present {
+		var continuationFields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &continuationFields); err != nil {
+			return nil, output.Wrap(output.CodeUsage, "decode task contract continuation", false, err)
+		}
+		if _, present := continuationFields["same_session_required"]; !present {
+			return nil, output.NewError(output.CodeUsage, "continuation requires same_session_required", false)
+		}
+	}
+	if err := contract.ValidateInput(); err != nil {
 		return nil, output.Wrap(output.CodeUsage, "invalid task contract", false, err)
 	}
 	canonical, err := callback.CanonicalJSON(contract)

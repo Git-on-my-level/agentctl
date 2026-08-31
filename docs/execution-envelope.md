@@ -237,9 +237,16 @@ explicit prompt delivery. `objective_summary` is at most 2048 bytes;
 `side_effect_boundary` and up to 16 unique `expected_artifact_kinds` use the
 same bounded lowercase-name vocabulary as labels. The summary must be bounded
 and redacted; prompts, reasoning, transcripts, and native session databases are
-excluded. Status and result retain this metadata, but native terminal state
+excluded. Status and result retain this metadata, but execution terminal state
 always renders acceptance as externally required rather than claiming that an
 artifact or acceptance authority was verified.
+
+The strict launch-file contract is published as
+`schemas/task-contract-input.schema.json`. It does not retroactively tighten
+the stored execution-envelope v1 schema: v1 readers continue to accept empty
+task-contract objects, empty legacy artifact arrays, and unknown extension
+fields written by an older or newer compatible producer. New launch files fail
+on those no-op shapes and on unknown fields before any execution is created.
 
 ## Parent, child, and supersession
 
