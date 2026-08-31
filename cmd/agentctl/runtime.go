@@ -67,6 +67,10 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	if problem != nil {
 		return problem
 	}
+	launchCWD, repository, workspace, workspaceErr := captureLaunchWorkspace(ctx, opts.cwd)
+	if workspaceErr != nil {
+		return output.Wrap(output.CodeUsage, "resolve run working directory", false, workspaceErr).WithDetail("cwd", opts.cwd)
+	}
 	prompt, problem := a.loadPrompt(opts)
 	if problem != nil {
 		return problem
@@ -174,7 +178,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		deadline = deadline.UTC()
 		deadlineAt = &deadline
 	}
-	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Labels: append([]string(nil), opts.labels...), Supersedes: []ids.ExecutionID{}, TaskContract: taskContractValue(taskContract), DeadlineAt: deadlineAt, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
+	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Labels: append([]string(nil), opts.labels...), CWD: launchCWD, Repository: repository, Workspace: workspace, Supersedes: []ids.ExecutionID{}, TaskContract: taskContractValue(taskContract), DeadlineAt: deadlineAt, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
 	mutation := contracts.MutationKey{}
 	if opts.idempotencyKey != "" {
 		digest, dErr := mutationDigest(runtime.Name(), opts.cwd, opts.argv, opts.labels, opts.noStoreResult, prompt, taskContract)

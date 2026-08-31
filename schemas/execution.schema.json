@@ -67,6 +67,12 @@
     },
     "cwd": {"type": ["string", "null"]},
     "repository": {"type": ["string", "null"]},
+    "workspace": {
+      "anyOf": [
+        {"$ref": "#/$defs/workspace_identity"},
+        {"type": "null"}
+      ]
+    },
     "parent_execution_id": {
       "anyOf": [
         {"$ref": "#/$defs/execution_id"},
@@ -235,6 +241,24 @@
             "context_digest": {"$ref": "#/$defs/sha256"},
             "handoff_digest": {"$ref": "#/$defs/sha256"}
           }
+        }
+      }
+    },
+    "workspace_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "root", "git_dir", "git_common_dir"],
+      "properties": {
+        "kind": {"const": "git_worktree"},
+        "root": {"type": "string", "minLength": 1},
+        "git_dir": {"type": "string", "minLength": 1},
+        "git_common_dir": {"type": "string", "minLength": 1},
+        "head_oid": {"type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"},
+        "head_ref": {"type": "string", "maxLength": 1024},
+        "operation_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["bisect", "cherry_pick", "merge", "rebase", "revert"]}
         }
       }
     },

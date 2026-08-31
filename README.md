@@ -173,6 +173,7 @@ agentctl recent --state nonterminal --liveness alive --label review
 agentctl await exec-... --no-timeout
 agentctl result exec-...
 agentctl result exec-... --content
+agentctl workspace owners --path "$PWD"
 ```
 
 `--background` starts a detached agentctl worker and returns after the execution
@@ -190,6 +191,14 @@ Background launch also rejects `--idempotency-key` until its startup handshake
 can return a reused execution's exact ID.
 Labels are exact lowercase metadata names, may be repeated up to 16 times, and
 never contain or derive from prompt text.
+
+Direct launches also record a local Git worktree identity when `--cwd` (or the
+current directory) is inside a repository. `agentctl workspace owners` is the
+explicit path-bearing query for those records. With `--path`, it reports only
+nonterminal executions launched from that exact linked worktree. This is
+cleanup evidence, not an exclusive lock: `exclusive` is always false, and old
+nonterminal journal rows without workspace metadata are counted separately so
+absence is never silently presented as proof that a worktree is unused.
 
 For a reusable multi-line prompt, select exactly one source and an explicit
 delivery mechanism:

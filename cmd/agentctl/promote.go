@@ -364,6 +364,7 @@ func promotionStringPointer(value string) *string { return &value }
 func redactedExecution(value model.Execution) model.Execution {
 	value.CWD = nil
 	value.Repository = nil
+	value.Workspace = nil
 	value.SourceBindings = append([]model.SourceBinding(nil), value.SourceBindings...)
 	for i := range value.SourceBindings {
 		value.SourceBindings[i].OpaqueID = nil

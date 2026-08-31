@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/ids"
@@ -197,6 +198,24 @@ func (c TaskContract) Validate() error {
 	return nil
 }
 
+type WorkspaceKind string
+
+const WorkspaceGitWorktree WorkspaceKind = "git_worktree"
+
+// WorkspaceIdentity is launch-time provenance for a direct execution. It is
+// evidence about where the native process started, not a lock or a claim that
+// the process still owns the worktree. GitDir distinguishes linked worktrees;
+// GitCommonDir groups worktrees belonging to the same repository.
+type WorkspaceIdentity struct {
+	Kind          WorkspaceKind `json:"kind"`
+	Root          string        `json:"root"`
+	GitDir        string        `json:"git_dir"`
+	GitCommonDir  string        `json:"git_common_dir"`
+	HeadOID       string        `json:"head_oid,omitempty"`
+	HeadRef       string        `json:"head_ref,omitempty"`
+	OperationRefs []string      `json:"operation_refs,omitempty"`
+}
+
 type Execution struct {
 	SchemaVersion     int                `json:"schema_version"`
 	ID                ids.ExecutionID    `json:"id"`
@@ -214,6 +233,7 @@ type Execution struct {
 	Labels            []string           `json:"labels,omitempty"`
 	CWD               *string            `json:"cwd,omitempty"`
 	Repository        *string            `json:"repository,omitempty"`
+	Workspace         *WorkspaceIdentity `json:"workspace,omitempty"`
 	ParentExecutionID *ids.ExecutionID   `json:"parent_execution_id"`
 	Supersedes        []ids.ExecutionID  `json:"supersedes"`
 	SupersededBy      *ids.ExecutionID   `json:"superseded_by"`
@@ -231,6 +251,7 @@ var (
 	adapterPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,31}$`)
 	namePattern    = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
 	hashPattern    = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+	gitOIDPattern  = regexp.MustCompile(`^(?:[a-f0-9]{40}|[a-f0-9]{64})$`)
 )
 
 func (e Execution) Validate() error {
@@ -326,6 +347,11 @@ func (e Execution) Validate() error {
 			return fmt.Errorf("task_contract: %w", err)
 		}
 	}
+	if e.Workspace != nil {
+		if err := validateWorkspace(*e.Workspace); err != nil {
+			return fmt.Errorf("workspace: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -342,6 +368,9 @@ func ValidateTransition(previous, next Execution) error {
 	if !reflect.DeepEqual(previous.TaskContract, next.TaskContract) {
 		return errors.New("execution task contract is immutable")
 	}
+	if !workspaceIdentityEqual(previous.Workspace, next.Workspace) {
+		return errors.New("execution workspace is immutable")
+	}
 	if previous.CreatedAt != next.CreatedAt {
 		return errors.New("created_at is immutable")
 	}
@@ -352,6 +381,53 @@ func ValidateTransition(previous, next Execution) error {
 		return errors.New("superseded_by is assigned once")
 	}
 	return next.Validate()
+}
+
+func validateWorkspace(v WorkspaceIdentity) error {
+	if v.Kind != WorkspaceGitWorktree {
+		return errors.New("invalid kind")
+	}
+	if v.Root == "" || v.GitDir == "" || v.GitCommonDir == "" {
+		return errors.New("root, git_dir, and git_common_dir are required")
+	}
+	for _, path := range []string{v.Root, v.GitDir, v.GitCommonDir} {
+		if len(path) > 32768 || strings.ContainsAny(path, "\x00\r\n") {
+			return errors.New("invalid workspace path")
+		}
+	}
+	if v.HeadOID != "" {
+		if !gitOIDPattern.MatchString(v.HeadOID) {
+			return errors.New("invalid head_oid")
+		}
+	}
+	if strings.ContainsAny(v.HeadRef, "\r\n") || len(v.HeadRef) > 1024 {
+		return errors.New("invalid head_ref")
+	}
+	seen := map[string]struct{}{}
+	for _, operation := range v.OperationRefs {
+		switch operation {
+		case "bisect", "cherry_pick", "merge", "rebase", "revert":
+		default:
+			return errors.New("invalid operation_ref")
+		}
+		if _, ok := seen[operation]; ok {
+			return errors.New("duplicate operation_ref")
+		}
+		seen[operation] = struct{}{}
+	}
+	if !slices.IsSorted(v.OperationRefs) {
+		return errors.New("operation_refs must be sorted")
+	}
+	return nil
+}
+
+func workspaceIdentityEqual(a, b *WorkspaceIdentity) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Kind == b.Kind && a.Root == b.Root && a.GitDir == b.GitDir &&
+		a.GitCommonDir == b.GitCommonDir && a.HeadOID == b.HeadOID &&
+		a.HeadRef == b.HeadRef && slices.Equal(a.OperationRefs, b.OperationRefs)
 }
 
 func validState(v State) bool {
