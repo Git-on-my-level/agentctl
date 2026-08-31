@@ -161,7 +161,8 @@ agentctl run --task-contract task-contract.json -- \
   codex exec --json "perform the bounded diagnosis"
 ```
 
-The file is strict JSON, a regular non-symlink file, and at most 64 KiB.
+The file is strict UTF-8 JSON with no null typed fields, a regular non-symlink
+file, and at most 64 KiB.
 `status` and `result` retain the typed contract and report acceptance as
 external-required: native completion does not prove that an expected artifact
 exists or that its actual authority accepted it. Contract files never become

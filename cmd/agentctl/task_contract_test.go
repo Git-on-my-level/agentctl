@@ -163,7 +163,7 @@ func TestBackgroundCommandPreservesTaskContractAndPinsDigest(t *testing.T) {
 	}
 }
 
-func TestBackgroundRunRetainsTaskContractThroughBuiltBinary(t *testing.T) {
+func TestBuiltBinaryRejectsInvalidTaskContractsAndRetainsBackgroundContract(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("generic shell fixture is Unix-only")
 	}
@@ -172,6 +172,35 @@ func TestBackgroundRunRetainsTaskContractThroughBuiltBinary(t *testing.T) {
 	build := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, ".")
 	if outputBytes, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build fixture binary: %v\n%s", err, outputBytes)
+	}
+	invalidUTF8 := append([]byte(`{"objective_summary":"`), byte(0xff))
+	invalidUTF8 = append(invalidUTF8, []byte(`"}`)...)
+	invalidInputs := []struct {
+		name       string
+		body       []byte
+		wantDetail string
+	}{
+		{name: "continuation-null", body: []byte(`{"continuation":{"same_session_required":null}}`), wantDetail: `"field":"continuation.same_session_required"`},
+		{name: "provenance-null", body: []byte(`{"provenance":{"portable_skill_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","context_digest":null}}`), wantDetail: `"field":"provenance.context_digest"`},
+		{name: "artifact-null", body: []byte(`{"expected_artifact_kinds":["report",null]}`), wantDetail: `"field":"expected_artifact_kinds[1]"`},
+		{name: "invalid-utf8", body: invalidUTF8, wantDetail: "task contract must be valid UTF-8"},
+	}
+	invalidJournal := filepath.Join(root, "invalid", "journal.db")
+	for _, test := range invalidInputs {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(root, test.name+".json")
+			if err := os.WriteFile(path, test.body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command(binary, "--journal", invalidJournal, "run", "--plan", "--task-contract", path, "--adapter", "generic-process", "--", "/bin/echo", "done")
+			commandOutput, err := command.CombinedOutput()
+			if err == nil || !bytes.Contains(commandOutput, []byte(`"code":"usage"`)) || !bytes.Contains(commandOutput, []byte(test.wantDetail)) {
+				t.Fatalf("invalid contract was not rejected: %v\n%s", err, commandOutput)
+			}
+		})
+	}
+	if _, err := os.Stat(invalidJournal); !os.IsNotExist(err) {
+		t.Fatalf("invalid task contracts created a journal: %v", err)
 	}
 	contractPath := writeTaskContractFixture(t, root)
 	journal := filepath.Join(root, "state", "journal.db")
@@ -259,6 +288,20 @@ func TestTaskContractInputSchemaIsStrictWhileExecutionV1IsTolerant(t *testing.T)
 	inputArtifacts := input["properties"].(map[string]any)["expected_artifact_kinds"].(map[string]any)
 	if inputArtifacts["minItems"] != float64(1) {
 		t.Fatalf("task contract input does not reject empty artifact arrays: %#v", inputArtifacts)
+	}
+	if inputArtifacts["items"].(map[string]any)["type"] != "string" {
+		t.Fatalf("task contract artifact items permit schema-null values: %#v", inputArtifacts)
+	}
+	inputProperties := input["properties"].(map[string]any)
+	continuation := inputProperties["continuation"].(map[string]any)
+	continuationFields := continuation["properties"].(map[string]any)
+	if continuationFields["same_session_required"].(map[string]any)["type"] != "boolean" {
+		t.Fatalf("task contract continuation permits schema-null values: %#v", continuation)
+	}
+	provenance := inputProperties["provenance"].(map[string]any)
+	provenanceFields := provenance["properties"].(map[string]any)
+	if provenanceFields["context_digest"].(map[string]any)["$ref"] != "#/$defs/sha256" {
+		t.Fatalf("task contract provenance permits schema-null digests: %#v", provenance)
 	}
 }
 
