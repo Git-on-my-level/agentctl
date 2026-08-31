@@ -318,7 +318,9 @@ days). Each row includes stable reason codes and separate `work_health` and
 `tool_health` fields: an unreachable tool is review-worthy but is not evidence
 that the work failed. Terminal failures leave the inbox after `result` or a
 terminal `await` acknowledges collection. `inbox` performs no native refresh,
-result read, acknowledgement write, or cross-host merge.
+result read, acknowledgement write, or cross-host merge. Conflicted normalized
+evidence remains actionable even after collection, because acknowledging a
+result does not reconcile contradictory authority observations.
 
 If a command reports `diagnostic_code=journal_busy`, retry the same agentctl
 invocation with bounded backoff. Do not silently switch to a raw native CLI;

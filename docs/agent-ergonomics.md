@@ -334,6 +334,9 @@ unreachable executions whose last normalized observation exceeds a bounded
 age. Stable reason codes say why each execution matched. `work_health` reports
 task or collection state; `tool_health` reports normalized liveness. In
 particular, `tool_unreachable` never claims that the underlying task failed.
+An `observation_integrity_conflicted` item outranks collection state and remains
+visible after acknowledgement; collection cannot make contradictory evidence
+safe for outcome-dependent commands.
 
 The default stale bound is one hour. `--stale-after` accepts one minute through
 thirty days, making the review policy explicit and bounded. The command reads
@@ -397,7 +400,8 @@ escape for callers that intentionally need weaker or broader behavior:
   `work_health` describes task/collection state while `tool_health` repeats
   normalized liveness; `tool_unreachable` explicitly does not assert task
   failure. A collected terminal failure drops out instead of creating a second
-  resolution database.
+  resolution database unless its normalized evidence is conflicted; integrity
+  conflict remains visible until the execution authority is reconciled.
 - `--prompt-file` and `--prompt-stdin` are mutually exclusive, bounded prompt
   sources. `--prompt-delivery argv|stdin` is explicit and defaults to `argv`
   only after a source is selected. Prompt bytes are excluded from plan output,

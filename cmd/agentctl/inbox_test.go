@@ -53,6 +53,80 @@ func TestInboxCommandExplainsWithoutReadingResultContent(t *testing.T) {
 	}
 }
 
+func TestInboxCommandKeepsConflictedTerminalVisibleAfterAcknowledgement(t *testing.T) {
+	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	native := `{"type":"result","status":"completed","result":"CONFLICTED_PRIVATE_RESULT"}`
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "run", "--adapter", "generic-process", "--", "/bin/echo", native}); code != 0 {
+		t.Fatalf("run exit=%d output=%s", code, stdout.String())
+	}
+	var runDocument struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &runDocument); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := journal.GetExecution(context.Background(), runDocument.Result.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution.Observation.Integrity = model.IntegrityConflicted
+	execution.UpdatedAt = execution.UpdatedAt.Add(time.Second)
+	execution.Observation.ObservedAt = execution.UpdatedAt
+	if _, err := journal.UpdateExecution(context.Background(), execution, execution.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "result", execution.ID.String()}); code != 13 || !strings.Contains(stdout.String(), `"code":"unknown_state"`) {
+		t.Fatalf("conflicted result exit=%d output=%s", code, stdout.String())
+	}
+	journal, err = store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := journal.AcknowledgeExecution(context.Background(), execution.ID, store.AcknowledgementResult); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "inbox"}); code != 0 {
+		t.Fatalf("inbox exit=%d output=%s", code, stdout.String())
+	}
+	if strings.Contains(stdout.String(), "CONFLICTED_PRIVATE_RESULT") {
+		t.Fatalf("inbox leaked conflicted result content: %s", stdout.String())
+	}
+	var inboxDocument struct {
+		Result struct {
+			Executions []inboxExecution `json:"executions"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &inboxDocument); err != nil {
+		t.Fatal(err)
+	}
+	if len(inboxDocument.Result.Executions) != 1 {
+		t.Fatalf("inbox=%s", stdout.String())
+	}
+	item := inboxDocument.Result.Executions[0]
+	if item.WorkHealth != "integrity_conflicted" || item.Unreconciled {
+		t.Fatalf("item=%#v", item)
+	}
+	if got, want := inboxReasonCodes(item.Reasons), []string{"observation_integrity_conflicted"}; !equalStrings(got, want) {
+		t.Fatalf("reasons=%v want=%v", got, want)
+	}
+}
+
 func TestInboxSeparatesWorkFromToolHealth(t *testing.T) {
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	execution := model.Execution{
@@ -101,6 +175,54 @@ func TestInboxTerminalFailureClearsOnCollection(t *testing.T) {
 	acks.ByID[execution.ID] = store.ExecutionAcknowledgement{ExecutionID: execution.ID, AcknowledgedAt: now, Source: store.AcknowledgementResult}
 	if _, actionable := projectInbox(execution, now, time.Hour, acks); actionable {
 		t.Fatal("acknowledged terminal failure remained in the inbox")
+	}
+}
+
+func TestInboxConflictedTerminalRemainsActionableAfterCollection(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	terminalAt := now.Add(-time.Minute)
+	execution := model.Execution{
+		State: model.StateCompleted, Liveness: model.LivenessExited,
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: terminalAt, TerminalAt: &terminalAt,
+		Observation: model.Observation{ObservedAt: terminalAt, Integrity: model.IntegrityConflicted},
+	}
+	acks := store.AcknowledgementIndex{Epoch: now.Add(-2 * time.Hour), ByID: map[ids.ExecutionID]store.ExecutionAcknowledgement{}}
+
+	item, actionable := projectInbox(execution, now, time.Hour, acks)
+	if !actionable || item.WorkHealth != "integrity_conflicted" || !item.Unreconciled {
+		t.Fatalf("uncollected conflicted terminal=%#v actionable=%v", item, actionable)
+	}
+	if got, want := inboxReasonCodes(item.Reasons), []string{"observation_integrity_conflicted", "result_unreconciled"}; !equalStrings(got, want) {
+		t.Fatalf("uncollected reasons=%v want=%v", got, want)
+	}
+	if item.Reasons[0].Domain != "integrity" {
+		t.Fatalf("integrity reason=%#v", item.Reasons[0])
+	}
+
+	acks.ByID[execution.ID] = store.ExecutionAcknowledgement{ExecutionID: execution.ID, AcknowledgedAt: now, Source: store.AcknowledgementResult}
+	item, actionable = projectInbox(execution, now, time.Hour, acks)
+	if !actionable || item.WorkHealth != "integrity_conflicted" || item.Unreconciled {
+		t.Fatalf("acknowledged conflicted terminal=%#v actionable=%v", item, actionable)
+	}
+	if got, want := inboxReasonCodes(item.Reasons), []string{"observation_integrity_conflicted"}; !equalStrings(got, want) {
+		t.Fatalf("acknowledged reasons=%v want=%v", got, want)
+	}
+}
+
+func TestInboxIntegrityConflictOutranksStalenessAndKeepsToolReason(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	execution := model.Execution{
+		State: model.StateRunning, Liveness: model.LivenessUnreachable,
+		CreatedAt: now.Add(-3 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour),
+		Observation: model.Observation{ObservedAt: now.Add(-2 * time.Hour), Integrity: model.IntegrityConflicted},
+	}
+	item, actionable := projectInbox(execution, now, time.Hour, store.AcknowledgementIndex{})
+	if !actionable || item.WorkHealth != "integrity_conflicted" || item.ToolHealth != "unreachable" {
+		t.Fatalf("conflicted stale work=%#v actionable=%v", item, actionable)
+	}
+	want := []string{"observation_integrity_conflicted", "running_observation_stale", "tool_unreachable"}
+	if got := inboxReasonCodes(item.Reasons); !equalStrings(got, want) {
+		t.Fatalf("reasons=%v want=%v", got, want)
 	}
 }
 
