@@ -178,6 +178,7 @@ func (a *app) examplesCommand(renderer output.Renderer, args []string) *output.E
 		return output.NewError(output.CodeUsage, "examples takes no arguments", false)
 	}
 	examples := [][]string{
+		{"agentctl", "orient"},
 		{"agentctl", "route", "explain", "--", "glm"},
 		{"agentctl", "run", "--adapter", "codex", "--", "codex", "exec", "..."},
 		{"agentctl", "run", "--prompt-file", "task.md", "--prompt-delivery", "argv", "--", "codex", "exec", "--json"},

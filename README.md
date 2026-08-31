@@ -24,6 +24,9 @@ contract.
 - allocates typed, checksum-validated word IDs and portable result references;
 - persists normalized state and bounded final results in an owner-only local
   journal;
+- orients an agent in the current repository/worktree, configured authority,
+  static adapter availability, and workspace-scoped execution state with one
+  read-only command;
 - discovers recent host-local work by state, adapter, exact metadata label, or unreconciled terminal collection;
 - explains an actionable host-local inbox while keeping work outcome separate
   from tool liveness;
@@ -99,13 +102,25 @@ make ci
 go build -o build/agentctl ./cmd/agentctl
 
 build/agentctl help
+build/agentctl orient
 build/agentctl doctor
 build/agentctl capabilities codex --require launch,result_content
 ```
 
-`doctor` reports detected adapters, journal readiness, optional configuration,
-portable-skill state, and supervisor state. Use `--output text` when a compact
-human projection is preferable to the default JSON.
+`orient` is the compact first call in an unfamiliar checkout. It reports the
+current Git worktree/branch/HEAD/dirty/upstream state, selected profile and
+authority, static executable availability, and active/recent journal records
+whose stored workspace path is inside this checkout. It never fetches Git,
+launches an adapter, probes remote authentication, or creates a missing journal.
+Executions without stored workspace metadata are counted as `unscoped` instead
+of being guessed into the current checkout. Static `healthy` adapter status
+means only that its executable is locally runnable; configured Multica authority
+health remains `unknown` because `orient` does not probe its remote service or
+authentication.
+
+`doctor` performs the broader readiness inspection and can live-probe adapters;
+use `doctor --static` when launches are not appropriate. Use `--output text`
+when a compact human projection is preferable to the default JSON.
 
 Launch a native CLI by placing its exact argv after `--`:
 

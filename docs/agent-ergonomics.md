@@ -306,6 +306,7 @@ Commands form a predictable grammar:
 
 ```text
 agentctl run
+agentctl orient
 agentctl recent
 agentctl inbox
 agentctl attach
@@ -321,9 +322,9 @@ agentctl context
 agentctl route explain
 ```
 
-`recent` discovers. `status` observes. `result` retrieves. `await` waits.
-`inbox` explains what needs attention. `cancel` mutates. No command name mixes
-these responsibilities.
+`orient` establishes local work context. `recent` discovers. `status` observes.
+`result` retrieves. `await` waits. `inbox` explains what needs attention.
+`cancel` mutates. No command name mixes these responsibilities.
 
 ## Actionable work inbox
 
@@ -350,6 +351,13 @@ escape for callers that intentionally need weaker or broader behavior:
   observed, and return a result. It includes bootstrap, journal, configuration,
   supervisor, and live adapter readiness; `--adapter` narrows the check and
   `--static` skips live probes.
+- `orient` is read-only orientation rather than a repository manager. It uses
+  only the local Git object database and working tree, never fetches, never
+  launches an adapter, and never creates journal state. Its adapter health is
+  explicitly executable-only; remote service and authentication health remain
+  unknown until a command with that authority performs a live check. It matches
+  executions only from stored absolute `cwd` or `repository` paths and counts
+  missing path metadata as `unscoped` rather than inferring from recency.
 - `bootstrap update` detects supported harnesses and reconciles their
   canonical skill roots. It upgrades managed assets and installs missing
   portable skills, but refuses drifted assets, does not delete legacy copies,
