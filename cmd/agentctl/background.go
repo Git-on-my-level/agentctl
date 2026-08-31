@@ -107,17 +107,29 @@ func (a *app) runNativeBackground(ctx context.Context, renderer output.Renderer,
 			}
 			return backgroundWorkerError(raw, executionID, nil)
 		case waitErr := <-done:
-			select {
-			case raw := <-line:
-				return backgroundWorkerError(raw, executionID, waitErr)
-			default:
-			}
-			return backgroundWorkerError(nil, executionID, waitErr)
+			// A short-lived worker can write its structured error and exit before
+			// this process's line-reader goroutine is scheduled. Once Wait returns,
+			// the stdout pipe is closed and the bounded read must finish. Wait for
+			// that evidence within the original startup deadline instead of racing
+			// it with a non-blocking receive and replacing the real error with a
+			// generic startup failure.
+			return backgroundWorkerExited(ctx, deadline.C, line, executionID, waitErr)
 		case <-ctx.Done():
 			return output.Wrap(output.CodeExecutionCancelled, "background launch observation cancelled; the detached worker may continue", false, ctx.Err()).WithDetail("execution_id", executionID.String()).WithDetail("worker_continues", true)
 		case <-deadline.C:
 			return output.NewError(output.CodeTimeout, "background worker did not acknowledge durable startup before the deadline and may continue", true).WithDetail("execution_id", executionID.String()).WithDetail("timeout", backgroundStartupTimeout.String()).WithDetail("worker_continues", true)
 		}
+	}
+}
+
+func backgroundWorkerExited(ctx context.Context, deadline <-chan time.Time, line <-chan []byte, executionID ids.ExecutionID, waitErr error) *output.Error {
+	select {
+	case raw := <-line:
+		return backgroundWorkerError(raw, executionID, waitErr)
+	case <-ctx.Done():
+		return output.Wrap(output.CodeExecutionCancelled, "background launch observation cancelled after worker exit", false, ctx.Err()).WithDetail("execution_id", executionID.String())
+	case <-deadline:
+		return output.NewError(output.CodeTimeout, "background worker output did not close before the startup deadline", true).WithDetail("execution_id", executionID.String()).WithDetail("timeout", backgroundStartupTimeout.String())
 	}
 }
 

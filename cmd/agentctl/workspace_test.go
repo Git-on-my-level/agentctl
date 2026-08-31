@@ -18,11 +18,7 @@ import (
 
 func TestDiscoverGitWorkspaceDistinguishesLinkedWorktreesAndOperations(t *testing.T) {
 	repository := initWorkspaceRepository(t)
-	siblingRoot, err := os.MkdirTemp("/Volumes/scratch/worktrees", "agentctl-workspace-test-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(siblingRoot) })
+	siblingRoot := t.TempDir()
 	sibling := filepath.Join(siblingRoot, "sibling")
 	runGit(t, repository, "worktree", "add", "-b", "sibling", sibling)
 
