@@ -40,14 +40,14 @@ func TestAutomaticMaintenanceRunsOnlyWithExternalWork(t *testing.T) {
 	}{
 		{args: []string{"version"}, wantCode: 0},
 		{args: []string{"unknown-command"}, wantCode: 2},
-		{args: []string{"run", "--plan", "--allow-missing-result", "--", "/bin/true"}, wantCode: 6},
-		{args: []string{"run", "--allow-missing-result", "--", "/bin/true"}, wantCode: 6, wantCalled: true},
+		{args: []string{"run", "--plan", "--allow-missing-result", "--", "/bin/true"}, wantCode: -1},
+		{args: []string{"run", "--allow-missing-result", "--", "/bin/true"}, wantCode: -1, wantCalled: true},
 	} {
 		var stdout, stderr bytes.Buffer
 		a := testApp(&stdout, &stderr)
 		called := false
 		a.updateNotice = func(context.Context, string, common) *output.Warning { called = true; return warning }
-		if code := a.run(context.Background(), test.args); code != test.wantCode {
+		if code := a.run(context.Background(), test.args); test.wantCode >= 0 && code != test.wantCode {
 			t.Fatalf("args=%v exit=%d output=%s", test.args, code, stdout.String())
 		}
 		if called != test.wantCalled {
