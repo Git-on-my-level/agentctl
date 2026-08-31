@@ -92,7 +92,7 @@ func Tokenize(query string) []string {
 	})
 	var tokens []string
 	for _, tok := range raw {
-		tok = strings.Trim(tok, ".:;!?\"'`")
+		tok = normalizeKeyword(tok)
 		if tok == "" {
 			continue
 		}
@@ -107,14 +107,18 @@ func Tokenize(query string) []string {
 func Match(query string, catalog Catalog) MatchResult {
 	tokens := Tokenize(query)
 	hosts := matchHosts(tokens, catalog.Hosts)
-	models := collapseModels(matchModels(tokens, catalog.Models))
+	modelHits := matchModels(tokens, catalog.Models)
 	consumed := map[string]struct{}{}
 	for _, hit := range hosts {
 		consumed[hit.Hit] = struct{}{}
 	}
-	for _, hit := range models {
+	// A generic adapter hit can be collapsed when an exact concrete model for
+	// that adapter is also present. It was still a recognized selector and must
+	// not reappear as unmatched merely because the compact result omits it.
+	for _, hit := range modelHits {
 		consumed[hit.Hit] = struct{}{}
 	}
+	models := collapseModels(modelHits)
 	var unmatched []string
 	for _, tok := range tokens {
 		if _, ok := consumed[tok]; !ok {
@@ -150,6 +154,7 @@ func matchHosts(tokens []string, hosts []HostRecord) []HostHit {
 	for _, hit := range best {
 		out = append(out, hit)
 	}
+	out = filterHostHitsByTokenQuality(out)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Score != out[j].Score {
 			return out[i].Score > out[j].Score
@@ -163,9 +168,23 @@ func matchModels(tokens []string, models []ModelRecord) []ModelHit {
 	type key struct{ adapter, model string }
 	best := map[key]ModelHit{}
 	for _, model := range models {
-		keywords := append([]string{model.Adapter, model.Model}, model.Aliases...)
+		keywords := append([]string(nil), model.Aliases...)
+		if model.Model == "" {
+			// Family records own adapter/family vocabulary. Keep that reviewed
+			// vocabulary exact so ordinary prose such as "open" or "code" does
+			// not become an OpenAI/Codex selector.
+			keywords = append([]string{model.Adapter}, keywords...)
+		} else {
+			// A concrete preference is selected by its model slug or explicit
+			// aliases, never merely because it shares an adapter with another
+			// preferred model.
+			keywords = append([]string{model.Model}, keywords...)
+		}
 		for _, tok := range tokens {
 			score, kind := scoreToken(tok, keywords)
+			if model.Model == "" && kind != "exact" {
+				continue
+			}
 			if score == 0 {
 				continue
 			}
@@ -180,6 +199,7 @@ func matchModels(tokens []string, models []ModelRecord) []ModelHit {
 	for _, hit := range best {
 		out = append(out, hit)
 	}
+	out = filterModelHitsByTokenQuality(out)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Score != out[j].Score {
 			return out[i].Score > out[j].Score
@@ -189,6 +209,38 @@ func matchModels(tokens []string, models []ModelRecord) []ModelHit {
 		}
 		return out[i].Model < out[j].Model
 	})
+	return out
+}
+
+func filterHostHitsByTokenQuality(hits []HostHit) []HostHit {
+	bestByToken := map[string]int{}
+	for _, hit := range hits {
+		if hit.Score > bestByToken[hit.Hit] {
+			bestByToken[hit.Hit] = hit.Score
+		}
+	}
+	out := hits[:0]
+	for _, hit := range hits {
+		if hit.Score == bestByToken[hit.Hit] {
+			out = append(out, hit)
+		}
+	}
+	return out
+}
+
+func filterModelHitsByTokenQuality(hits []ModelHit) []ModelHit {
+	bestByToken := map[string]int{}
+	for _, hit := range hits {
+		if hit.Score > bestByToken[hit.Hit] {
+			bestByToken[hit.Hit] = hit.Score
+		}
+	}
+	out := hits[:0]
+	for _, hit := range hits {
+		if hit.Score == bestByToken[hit.Hit] {
+			out = append(out, hit)
+		}
+	}
 	return out
 }
 
@@ -329,10 +381,10 @@ func NewCatalog(thisHost string, hosts map[string]string, preferred []ModelRecor
 
 func ParseUseForAliases(useFor string) []string {
 	useFor = strings.TrimSpace(useFor)
-	useFor = strings.TrimPrefix(useFor, "alias:")
-	if useFor == "" {
+	if !strings.HasPrefix(useFor, "alias:") {
 		return nil
 	}
+	useFor = strings.TrimPrefix(useFor, "alias:")
 	var out []string
 	for _, part := range strings.Split(useFor, ",") {
 		part = strings.TrimSpace(part)

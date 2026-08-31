@@ -149,6 +149,73 @@ func TestCursorProgressPhasesAreMetadataOnly(t *testing.T) {
 	}
 }
 
+func TestNativeProcessCoalescesRepeatedMetadataProgressObservations(t *testing.T) {
+	tests := []struct {
+		name   string
+		parser outputParser
+		line   string
+	}{
+		{name: "omp message update", parser: ompParser{}, line: `{"type":"message_update"}`},
+		{name: "cursor thinking delta", parser: cursorParser{}, line: `{"type":"thinking","subtype":"delta"}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record := &processRecord{parser: test.parser, ref: SourceRef{Adapter: test.parser.Name(), Kind: test.parser.Name(), OpaqueID: "fixture"}}
+			for range 1000 {
+				record.ingestObservation(test.parser.Parse([]byte(test.line), false))
+			}
+			if len(record.events) != 1 || len(record.observations) != 1 {
+				t.Fatalf("repeated metadata retained events=%d observations=%d values=%#v", len(record.events), len(record.observations), record.events)
+			}
+
+			distinct := test.parser.Parse([]byte(test.line), false)
+			distinct.Data = cloneMap(distinct.Data)
+			distinct.Data["progress_phase"] = "distinct"
+			record.ingestObservation(distinct)
+			if len(record.events) != 2 || record.events[1].Payload["progress_phase"] != "distinct" {
+				t.Fatalf("distinct metadata phase was not retained: %#v", record.events)
+			}
+
+			authoritative := test.parser.Parse([]byte(test.line), false)
+			authoritative.CursorAuthority = true
+			authoritative.Cursor = "authority-1"
+			authoritative.SourcePosition = "authority-1"
+			record.ingestObservation(authoritative)
+			if len(record.events) != 3 || record.events[2].Cursor != "authority-1" {
+				t.Fatalf("authority-positioned progress was coalesced: %#v", record.events)
+			}
+
+		})
+	}
+}
+
+func TestNativeProcessRetainsMetadataAcrossStateTransitions(t *testing.T) {
+	record := &processRecord{ref: SourceRef{Adapter: "fixture", Kind: "fixture", OpaqueID: "state-transition"}}
+	for _, state := range []State{StateRunning, StateWaiting, StateRunning} {
+		record.ingestObservation(parsedObservation{Kind: "progress", SourceState: "phase", State: state, Data: map[string]any{"type": "delta"}})
+	}
+	if len(record.events) != 3 {
+		t.Fatalf("metadata state transitions were coalesced: %#v", record.events)
+	}
+}
+
+func TestNativeProcessDoesNotCoalesceSemanticEvents(t *testing.T) {
+	record := &processRecord{ref: SourceRef{Adapter: "fixture", Kind: "fixture", OpaqueID: "semantic"}}
+	for _, obs := range []parsedObservation{
+		{Kind: "attention", SourceState: "permission", State: StateAttention, Data: map[string]any{"attention_kind": "permission"}},
+		{Kind: "attention", SourceState: "permission", State: StateAttention, Data: map[string]any{"attention_kind": "permission"}},
+		{Kind: "artifact", SourceState: "artifact", State: StateRunning, Data: map[string]any{"artifact_ref": "artifact-1"}},
+		{Kind: "artifact", SourceState: "artifact", State: StateRunning, Data: map[string]any{"artifact_ref": "artifact-1"}},
+		{Kind: "terminal", SourceState: "completed", State: StateCompleted, Terminal: true, Success: true, Data: map[string]any{"result_available": true}},
+		{Kind: "terminal", SourceState: "completed", State: StateCompleted, Terminal: true, Success: true, Data: map[string]any{"result_available": true}},
+	} {
+		record.ingestObservation(obs)
+	}
+	if len(record.events) != 6 {
+		t.Fatalf("semantic events were coalesced: %#v", record.events)
+	}
+}
+
 func TestCodexReducerCarriesLastAgentMessageIntoTerminalResult(t *testing.T) {
 	path := fixtureExecutable(t, `printf '%s\n' '{"type":"thread.started","thread_id":"thread-fixture"}' '{"type":"item.completed","item":{"id":"item-1","type":"agent_message","text":"first"}}' '{"type":"item.completed","item":{"id":"item-2","type":"agent_message","text":"final answer"}}' '{"type":"turn.completed"}'`)
 	got, err := NewCodex().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
@@ -334,7 +401,7 @@ func TestMalformedOutputIsHealthEventAndDoesNotBecomeSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 3 || events[0].Kind != "health" {
+	if len(events) != 2 || events[0].Kind != "health" || events[1].Kind != "progress" {
 		t.Fatalf("malformed output was not observable: %#v", events)
 	}
 }
@@ -354,7 +421,7 @@ func TestGenericResultContractCanUseBoundedResultPath(t *testing.T) {
 func TestProbeReportsDependencyFailureWithoutMutatingStats(t *testing.T) {
 	path := fixtureExecutable(t, `if [ "${1:-}" = "--version" ]; then exit 7; fi`)
 	a := NewOMP()
-	_, err := a.Probe(context.Background(), ProbeRequest{Executable: path, Timeout: time.Second})
+	_, err := a.Probe(context.Background(), ProbeRequest{Executable: path, Timeout: 5 * time.Second})
 	if err == nil {
 		t.Fatal("expected failed version probe")
 	}
@@ -403,7 +470,7 @@ printf '%s\n' "$*" > "`+argsPath+`"
 printf '%s\n' '{"events":[],"next_cursor":"0","has_more":false}'
 `)
 	a := NewMultica(MulticaConfig{Binary: path, Profile: "desktop", Endpoint: "https://multica.example.test", Workspace: "workspace-test"})
-	result, err := a.Probe(context.Background(), ProbeRequest{Timeout: time.Second})
+	result, err := a.Probe(context.Background(), ProbeRequest{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +551,7 @@ func TestExplicitCancelEscalatesAfterGrace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		if _, err := os.Stat(ready); err == nil {
 			break

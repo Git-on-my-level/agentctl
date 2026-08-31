@@ -114,9 +114,9 @@ documents and never change `ok`, the primary error, or the process exit code.
 
 ## Invocation-triggered release updates
 
-An exact release build defaults to `auto`. Before starting a worker, each CLI
-invocation performs one read-only lookup of the binary-global owner-only update
-state. The first invocation due each UTC day starts a detached short-lived
+An exact release build defaults to `auto`. Before starting a worker, each
+work-creating CLI invocation performs one read-only lookup of the binary-global
+owner-only update state. The first eligible invocation due each UTC day starts a detached short-lived
 worker and immediately continues with the requested command. The worker
 coalesces with concurrent workers, checks GitHub's latest release, downloads the
 matching platform archive, verifies its published SHA-256, and invokes the
@@ -124,6 +124,8 @@ packaged installer only for an executable bound to a valid agentctl install
 manifest. Running commands keep their existing executable image; subsequent
 commands use the atomically replaced binary. The worker then exits. There is no
 updater daemon, timer, or dependency on the optional callback supervisor.
+Commands advertised as read-only never trigger the worker or managed-skill
+maintenance as a hidden side effect.
 
 Update state is stored under the platform state home (by default
 `~/.local/state/agentctl`) rather than beside a selected journal, because one

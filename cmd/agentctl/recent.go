@@ -15,6 +15,7 @@ import (
 type recentOptions struct {
 	limit        int
 	state        string
+	liveness     string
 	adapter      string
 	labels       []string
 	unreconciled bool
@@ -111,6 +112,11 @@ func parseRecent(args []string) (recentOptions, *output.Error) {
 				return opts, output.NewError(output.CodeUsage, "--state must be terminal, nonterminal, or an execution state", false).WithDetail("state", value)
 			}
 			opts.state = value
+		case "--liveness":
+			if !validRecentLiveness(value) {
+				return opts, output.NewError(output.CodeUsage, "--liveness must be unknown, alive, blocked, exited, or unreachable", false).WithDetail("liveness", value)
+			}
+			opts.liveness = value
 		case "--adapter":
 			if value == "" {
 				return opts, output.NewError(output.CodeUsage, "--adapter cannot be empty", false)
@@ -131,6 +137,15 @@ func parseRecent(args []string) (recentOptions, *output.Error) {
 	return opts, nil
 }
 
+func validRecentLiveness(value string) bool {
+	switch model.Liveness(value) {
+	case model.LivenessUnknown, model.LivenessAlive, model.LivenessBlocked, model.LivenessExited, model.LivenessUnreachable:
+		return true
+	default:
+		return false
+	}
+}
+
 func validRecentState(value string) bool {
 	switch value {
 	case "terminal", "nonterminal", string(model.StateCreated), string(model.StateStarting), string(model.StateRunning), string(model.StateWaiting), string(model.StateAttention), string(model.StateCompleted), string(model.StateFailed), string(model.StateCancelled), string(model.StateOrphaned):
@@ -142,6 +157,9 @@ func validRecentState(value string) bool {
 
 func recentMatches(execution model.Execution, opts recentOptions, acks store.AcknowledgementIndex) bool {
 	if opts.adapter != "" && execution.Adapter != opts.adapter {
+		return false
+	}
+	if opts.liveness != "" && string(execution.Liveness) != opts.liveness {
 		return false
 	}
 	switch opts.state {

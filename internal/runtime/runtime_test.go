@@ -108,13 +108,15 @@ func (f *fakeAdapter) Cancel(context.Context, adapter.CancelRequest) error { ret
 var fixtureNow = time.Date(2026, 8, 10, 18, 0, 0, 0, time.UTC)
 
 type fakeJournal struct {
-	mu         sync.Mutex
-	host       ids.HostID
-	generator  ids.Generator
-	executions map[ids.ExecutionID]model.Execution
-	events     map[ids.ExecutionID][]model.Event
-	dedupe     map[string]model.Event
-	projection map[string]string
+	mu               sync.Mutex
+	host             ids.HostID
+	generator        ids.Generator
+	executions       map[ids.ExecutionID]model.Execution
+	events           map[ids.ExecutionID][]model.Event
+	dedupe           map[string]model.Event
+	projection       map[string]string
+	getExecutionCall int
+	beforeGetReturn  func(*fakeJournal, ids.ExecutionID, int)
 }
 
 func newFakeJournal(t *testing.T, generator ids.Generator) *fakeJournal {
@@ -152,6 +154,10 @@ func (j *fakeJournal) CreateExecution(_ context.Context, value model.Execution, 
 func (j *fakeJournal) GetExecution(_ context.Context, id ids.ExecutionID) (model.Execution, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	j.getExecutionCall++
+	if j.beforeGetReturn != nil {
+		j.beforeGetReturn(j, id, j.getExecutionCall)
+	}
 	value, ok := j.executions[id]
 	if !ok {
 		return model.Execution{}, errors.New("not found")
@@ -344,6 +350,56 @@ func TestRestartMarksUnreprobeableNativeSessionUnreachable(t *testing.T) {
 	}
 }
 
+func TestRepeatedUnreachableUnknownProbeIsWriteIdempotent(t *testing.T) {
+	session := fixtureSession("fixture", "fixture_session", "session-restart-idempotent", adapter.StateRunning)
+	firstAdapter := &fakeAdapter{name: "fixture", launch: adapter.LaunchResult{Session: session}}
+	firstRegistry := NewRegistry()
+	_ = firstRegistry.Register("fixture", func(AdapterSpec) (adapter.Adapter, error) { return firstAdapter, nil })
+	engine, journal, generator := testEngine(t, firstRegistry)
+	execution, err := engine.Launch(context.Background(), LaunchOptions{Adapter: AdapterSpec{Name: "fixture", Executable: "/opt/fixture"}, Request: adapter.LaunchRequest{Argv: []string{"/opt/fixture"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshAdapter := &fakeAdapter{name: "fixture", snapshotErr: &adapter.AdapterError{Code: adapter.ErrNotFound, Message: "session absent"}}
+	freshRegistry := NewRegistry()
+	_ = freshRegistry.Register("fixture", func(AdapterSpec) (adapter.Adapter, error) { return freshAdapter, nil })
+	probeTime := fixtureNow.Add(time.Minute)
+	restarted, _ := New(journal, Options{Registry: freshRegistry, Generator: generator, Clock: func() time.Time { return probeTime }})
+	bridge := SupervisorExecutions{Engine: restarted}
+
+	first, err := bridge.Reprobe(context.Background(), supervisor.Execution{ID: execution.ID.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bridge.ApplyProbe(context.Background(), execution.ID.String(), first); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := journal.GetExecution(context.Background(), execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRevision, firstUpdatedAt, firstObservedAt := stored.Revision, stored.UpdatedAt, stored.Observation.ObservedAt
+
+	probeTime = probeTime.Add(time.Hour)
+	repeated, err := bridge.Reprobe(context.Background(), supervisor.Execution{ID: execution.ID.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bridge.ApplyProbe(context.Background(), execution.ID.String(), repeated); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = journal.GetExecution(context.Background(), execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Revision != firstRevision || !stored.UpdatedAt.Equal(firstUpdatedAt) || !stored.Observation.ObservedAt.Equal(firstObservedAt) {
+		t.Fatalf("repeated unreachable probe churned envelope: before revision=%d updated=%s observed=%s after=%#v", firstRevision, firstUpdatedAt, firstObservedAt, stored)
+	}
+	if stored.State != model.StateRunning || stored.Liveness != model.LivenessUnreachable || stored.Observation.Source != model.ObservationUnknown || stored.Observation.Integrity != model.IntegrityDegraded {
+		t.Fatalf("repeated unreachable probe changed uncertainty semantics: %#v", stored)
+	}
+}
+
 func TestStaleNativeLeaseProbeCannotCorruptTerminalExecution(t *testing.T) {
 	session := fixtureSession("fixture", "fixture_session", "session-live", adapter.StateRunning)
 	fake := &fakeAdapter{name: "fixture", launch: adapter.LaunchResult{Session: session}}
@@ -426,6 +482,77 @@ func TestStaleUnreachableProbeCannotOverwriteRenewedNativeLease(t *testing.T) {
 	}
 }
 
+func TestStaleUnreachableProbeCannotDowngradeNativeTerminalEvidence(t *testing.T) {
+	session := fixtureSession("fixture", "fixture_session", "session-terminal-race", adapter.StateRunning)
+	fake := &fakeAdapter{name: "fixture", launch: adapter.LaunchResult{Session: session}}
+	registry := NewRegistry()
+	_ = registry.Register("fixture", func(AdapterSpec) (adapter.Adapter, error) { return fake, nil })
+	engine, journal, _ := testEngine(t, registry)
+	execution, err := engine.Launch(context.Background(), LaunchOptions{Adapter: AdapterSpec{Name: "fixture", Executable: "/opt/fixture"}, Request: adapter.LaunchRequest{Argv: []string{"/opt/fixture"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := unreachableProbe(execution, fixtureNow)
+	terminalAt := fixtureNow.Add(time.Second)
+	execution.State = model.StateCompleted
+	execution.Liveness = model.LivenessExited
+	execution.TerminalAt = &terminalAt
+	execution.UpdatedAt = terminalAt
+	execution.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: terminalAt}
+	terminal, err := journal.UpdateExecution(context.Background(), execution, execution.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (SupervisorExecutions{Engine: engine}).ApplyProbe(context.Background(), execution.ID.String(), stale); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := journal.GetExecution(context.Background(), execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Revision != terminal.Revision || stored.State != model.StateCompleted || stored.Liveness != model.LivenessExited || stored.Observation.Source != model.ObservationNativeStream || stored.Observation.Integrity != model.IntegrityVerified {
+		t.Fatalf("stale unreachable probe downgraded native terminal evidence: %#v", stored)
+	}
+}
+
+func TestProbeTerminalizationRacePreservesNativeTerminalEvidence(t *testing.T) {
+	session := fixtureSession("fixture", "fixture_session", "session-terminal-cas-race", adapter.StateRunning)
+	fake := &fakeAdapter{name: "fixture", launch: adapter.LaunchResult{Session: session}}
+	registry := NewRegistry()
+	_ = registry.Register("fixture", func(AdapterSpec) (adapter.Adapter, error) { return fake, nil })
+	engine, journal, _ := testEngine(t, registry)
+	execution, err := engine.Launch(context.Background(), LaunchOptions{Adapter: AdapterSpec{Name: "fixture", Executable: "/opt/fixture"}, Request: adapter.LaunchRequest{Argv: []string{"/opt/fixture"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := unreachableProbe(execution, fixtureNow)
+	terminalAt := fixtureNow.Add(time.Second)
+	journal.getExecutionCall = 0
+	journal.beforeGetReturn = func(j *fakeJournal, id ids.ExecutionID, call int) {
+		if call != 2 || id != execution.ID {
+			return
+		}
+		current := j.executions[id]
+		current.Revision++
+		current.State = model.StateCompleted
+		current.Liveness = model.LivenessExited
+		current.TerminalAt = &terminalAt
+		current.UpdatedAt = terminalAt
+		current.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: terminalAt}
+		j.executions[id] = current
+	}
+	if err := (SupervisorExecutions{Engine: engine}).ApplyProbe(context.Background(), execution.ID.String(), stale); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := journal.GetExecution(context.Background(), execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Revision != execution.Revision+1 || stored.State != model.StateCompleted || stored.Liveness != model.LivenessExited || stored.Observation.Source != model.ObservationNativeStream || stored.Observation.Integrity != model.IntegrityVerified {
+		t.Fatalf("CAS race downgraded native terminal evidence: %#v", stored)
+	}
+}
+
 func TestBlockedNativeRunnerLeaseRemainsActive(t *testing.T) {
 	leaseSeconds := 5
 	execution := model.Execution{Authority: model.AuthorityNative, State: model.StateAttention, Liveness: model.LivenessBlocked, Observation: model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: fixtureNow, FreshForSeconds: &leaseSeconds}}
@@ -497,6 +624,67 @@ func createPromotedIssueExecution(t *testing.T, engine *Engine, journal *fakeJou
 		t.Fatal(err)
 	}
 	return created
+}
+
+func TestStaleUnreachableProbeCannotDowngradeMulticaTerminalEvidence(t *testing.T) {
+	config := adapter.MulticaConfig{Binary: "/opt/multica", Profile: "private", Endpoint: "https://multica.internal", Workspace: "workspace-1", Issue: "issue-terminal-race"}
+	spec := AdapterSpec{Name: "multica", Executable: config.Binary, Multica: &config}
+	engine, journal, _ := testEngine(t, NewRegistry())
+	execution := createPromotedIssueExecution(t, engine, journal, spec)
+	stale := unreachableProbe(execution, fixtureNow)
+	terminalAt := fixtureNow.Add(time.Second)
+	execution.State = model.StateCompleted
+	execution.Liveness = model.LivenessExited
+	execution.TerminalAt = &terminalAt
+	execution.UpdatedAt = terminalAt
+	execution.Observation = model.Observation{Source: model.ObservationDurableOutbox, Integrity: model.IntegrityVerified, ObservedAt: terminalAt}
+	terminal, err := journal.UpdateExecution(context.Background(), execution, execution.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (SupervisorExecutions{Engine: engine}).ApplyProbe(context.Background(), execution.ID.String(), stale); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := journal.GetExecution(context.Background(), execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Revision != terminal.Revision || stored.State != model.StateCompleted || stored.Liveness != model.LivenessExited || stored.Observation.Source != model.ObservationDurableOutbox || stored.Observation.Integrity != model.IntegrityVerified {
+		t.Fatalf("stale unreachable probe downgraded Multica terminal evidence: %#v", stored)
+	}
+}
+
+func TestProbeTerminalizationRacePreservesMulticaTerminalEvidence(t *testing.T) {
+	config := adapter.MulticaConfig{Binary: "/opt/multica", Profile: "private", Endpoint: "https://multica.internal", Workspace: "workspace-1", Issue: "issue-terminal-cas-race"}
+	spec := AdapterSpec{Name: "multica", Executable: config.Binary, Multica: &config}
+	engine, journal, _ := testEngine(t, NewRegistry())
+	execution := createPromotedIssueExecution(t, engine, journal, spec)
+	stale := unreachableProbe(execution, fixtureNow)
+	terminalAt := fixtureNow.Add(time.Second)
+	journal.getExecutionCall = 0
+	journal.beforeGetReturn = func(j *fakeJournal, id ids.ExecutionID, call int) {
+		if call != 2 || id != execution.ID {
+			return
+		}
+		current := j.executions[id]
+		current.Revision++
+		current.State = model.StateCompleted
+		current.Liveness = model.LivenessExited
+		current.TerminalAt = &terminalAt
+		current.UpdatedAt = terminalAt
+		current.Observation = model.Observation{Source: model.ObservationDurableOutbox, Integrity: model.IntegrityVerified, ObservedAt: terminalAt}
+		j.executions[id] = current
+	}
+	if err := (SupervisorExecutions{Engine: engine}).ApplyProbe(context.Background(), execution.ID.String(), stale); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := journal.GetExecution(context.Background(), execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Revision != execution.Revision+1 || stored.State != model.StateCompleted || stored.Liveness != model.LivenessExited || stored.Observation.Source != model.ObservationDurableOutbox || stored.Observation.Integrity != model.IntegrityVerified {
+		t.Fatalf("CAS race downgraded Multica terminal evidence: %#v", stored)
+	}
 }
 
 func TestReprobePromotedMulticaUsesDurableEventsAndAdvancesScopedCursor(t *testing.T) {

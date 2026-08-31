@@ -619,7 +619,11 @@ func (a *app) loadPrompt(opts runOptions) (*promptPayload, *output.Error) {
 		path, _ = filepath.Abs(filepath.Clean(path))
 		rel, err := filepath.Rel(root, path)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-			return nil, output.NewError(output.CodeAuthorizationDenied, "prompt file must be within the run working root", false).WithDetail("path", path).WithDetail("root", root)
+			return nil, output.NewError(output.CodeAuthorizationDenied, "prompt file must be within the run working root", false).
+				WithDetail("path", path).
+				WithDetail("root", root).
+				WithDetail("recommended_prompt_source", "stdin").
+				WithActions(output.NextAction{Label: "Use piped prompt stdin for an external scratch file", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"select --prompt-stdin and an explicit --prompt-delivery supported by the native argv"}})
 		}
 		resolvedRoot, err := filepath.EvalSymlinks(root)
 		if err != nil {
@@ -714,6 +718,9 @@ func requireRunCapability(probe adapter.ProbeResult, required adapter.Capability
 			problem = problem.WithDetail("required_output_mode", mode).
 				WithDetail("diagnostic_code", "invocation_output_mode_required").
 				WithActions(output.NextAction{Label: "Use the adapter's structured output mode", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"pass the required structured-output flag in the exact native argv"}})
+		}
+		if requiredArgv, ok := capability.Constraints["required_argv"]; ok {
+			problem = problem.WithDetail("required_argv", requiredArgv)
 		}
 		return problem
 	}

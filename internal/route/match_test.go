@@ -29,11 +29,75 @@ func TestMatchStudioOmpIsObvious(t *testing.T) {
 	if len(got.Hosts) != 1 || got.Hosts[0].ID != "m1-mac-studio" {
 		t.Fatalf("hosts = %#v", got.Hosts)
 	}
-	if len(got.Models) < 1 || got.Models[0].Adapter != "omp" || got.Models[0].Model != "glm-5.3" {
+	if len(got.Models) != 1 || got.Models[0].Adapter != "omp" || got.Models[0].Model != "glm-5.3" {
 		t.Fatalf("models = %#v", got.Models)
 	}
 	if got.Placement.Mode != "remote" || got.Placement.Kind != "multica" || got.Placement.Host != "m1-mac-studio" {
 		t.Fatalf("placement = %#v", got.Placement)
+	}
+}
+
+func TestMatchModelSelectorsDoNotConsumeOrdinaryProse(t *testing.T) {
+	tests := []struct {
+		name          string
+		query         string
+		want          []string
+		wantUnmatched []string
+	}{
+		{name: "claude code", query: "claude code on m5", want: []string{"claude/"}, wantUnmatched: []string{"code"}},
+		{name: "open a PR", query: "open a PR", want: nil, wantUnmatched: []string{"open", "pr"}},
+		{name: "cursor refines to grok", query: "cursor grok", want: []string{"cursor/cursor-grok-4.6-high"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Match(tt.query, testCatalog())
+			var models []string
+			for _, hit := range got.Models {
+				models = append(models, hit.Adapter+"/"+hit.Model)
+			}
+			if len(models) != len(tt.want) {
+				t.Fatalf("models = %#v, want %#v", models, tt.want)
+			}
+			for i := range models {
+				if models[i] != tt.want[i] {
+					t.Fatalf("models = %#v, want %#v", models, tt.want)
+				}
+			}
+			if len(got.Unmatched) != len(tt.wantUnmatched) {
+				t.Fatalf("unmatched = %#v, want %#v", got.Unmatched, tt.wantUnmatched)
+			}
+			for i := range got.Unmatched {
+				if got.Unmatched[i] != tt.wantUnmatched[i] {
+					t.Fatalf("unmatched = %#v, want %#v", got.Unmatched, tt.wantUnmatched)
+				}
+			}
+		})
+	}
+}
+
+func TestMatchNormalizesUnderscoreSelectors(t *testing.T) {
+	got := Match("open_weight", Catalog{Models: BuiltinModelCatalog()})
+	if len(got.Models) != 1 || got.Models[0].Adapter != "omp" {
+		t.Fatalf("models = %#v", got.Models)
+	}
+	if len(got.Unmatched) != 0 {
+		t.Fatalf("unmatched = %#v", got.Unmatched)
+	}
+}
+
+func TestParseUseForAliasesRequiresExplicitSyntax(t *testing.T) {
+	if got := ParseUseForAliases("code review"); got != nil {
+		t.Fatalf("prose use_for became aliases: %#v", got)
+	}
+	got := ParseUseForAliases("alias:grok, grok-4.6")
+	if len(got) != 2 || got[0] != "grok" || got[1] != "grok-4.6" {
+		t.Fatalf("aliases = %#v", got)
+	}
+
+	catalog := NewCatalog("", nil, []ModelRecord{{Adapter: "cursor", Model: "cursor-pro", Aliases: ParseUseForAliases("review")}}, "")
+	matched := Match("review", catalog)
+	if len(matched.Models) != 0 {
+		t.Fatalf("configured prose use_for matched as an alias: %#v", matched.Models)
 	}
 }
 

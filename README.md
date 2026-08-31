@@ -67,14 +67,16 @@ platform. On Linux, replace `shasum -a 256` with `sha256sum`. The default
 install prefix is `~/.local`; ensure `~/.local/bin` is on `PATH`. The installer
 does not download code and previews its changes with `--dry-run`.
 
-Exact release builds default to automatic updates. On the first CLI use that is
-due each UTC day, agentctl reads its binary-global owner-only state and, when
+Exact release builds default to automatic updates. On the first work-creating
+CLI use that is due each UTC day, agentctl reads its binary-global owner-only state and, when
 needed, starts one detached short-lived worker. The foreground command does not
 wait for release discovery or installation. The worker downloads the matching
 release archive, verifies it against the published `SHA256SUMS`, and runs its
 packaged installer only when the current executable is owned by an agentctl
 install manifest. It then exits; no updater service or persistent daemon is
 created.
+Commands advertised as read-only never trigger update discovery or managed-skill
+maintenance as a hidden side effect.
 
 Use `agentctl update status`, `agentctl update now`, or `agentctl update policy
 auto|notify|off` to inspect or control this behavior. `notify` retains the
@@ -125,9 +127,10 @@ For long-running work, label the execution and explicitly background it:
 ```bash
 agentctl run --background --label review --label retrieval -- \
   cursor-agent --print --output-format stream-json --trust "review this change"
-agentctl recent --state nonterminal --label review
+agentctl recent --state nonterminal --liveness alive --label review
 agentctl await exec-... --no-timeout
 agentctl result exec-...
+agentctl result exec-... --content
 ```
 
 `--background` starts a detached agentctl worker and returns after the execution
@@ -152,6 +155,9 @@ delivery mechanism:
 ```bash
 agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- \
   cursor-agent --print --output-format stream-json --trust
+
+agentctl run --background --prompt-stdin --prompt-delivery argv -- \
+  cursor-agent --print --output-format stream-json --trust < "/absolute/path/task.md"
 
 agentctl run --prompt-stdin --prompt-delivery stdin -- \
   codex exec --json - < "$PWD/task.md"
@@ -199,6 +205,7 @@ prompt file and each relative `children[].cwd` resolve from the manifest
 directory. A child with no `cwd` inherits the directory from which agentctl was
 invoked. Use `agentctl schema list` to locate the normative manifest schema.
 Results remain independently retrievable with `agentctl result <exec-id>`;
+`--content` writes exact stored UTF-8 text without an envelope or added newline.
 agentctl does not concatenate or synthesize answers. Fan-out is intentionally
 foreground-owned: if its invoking process exits, native children are
 terminated. Put explicit execution IDs in the manifest when subscriptions must
@@ -231,6 +238,8 @@ If an execution ID was not retained, discover it from the host-local journal:
 ```bash
 agentctl recent
 agentctl recent --state nonterminal --adapter cursor
+agentctl recent --state nonterminal --liveness alive
+agentctl recent --liveness unreachable
 agentctl recent --label review --limit 50
 agentctl recent --unreconciled
 ```
@@ -243,6 +252,10 @@ result has never been acknowledged by `result` or a terminal `await`. Terminals
 that already existed when acknowledgement tracking first write-opened the
 journal are treated as reconciled so an upgrade does not flood the query with
 history.
+
+If a command reports `diagnostic_code=journal_busy`, retry the same agentctl
+invocation with bounded backoff. Do not silently switch to a raw native CLI;
+that drops agentctl's supervision, journal, callbacks, and result recovery.
 
 `status`, events, subscriptions, and callbacks contain metadata and references,
 not the final answer. `result` is the explicit content-retrieval path.

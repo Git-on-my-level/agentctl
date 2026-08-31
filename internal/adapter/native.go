@@ -102,7 +102,8 @@ type processRecord struct {
 	lastError        string
 	stderrDiagnostic string
 	parseWarnings    []string
-	healthSeen       map[string]bool
+	metadataSeen     map[string]bool
+	metadataState    State
 	stdoutBytes      int
 	stderrBytes      int
 	maxOutput        int
@@ -204,19 +205,28 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 	if obs.Error != "" {
 		p.lastError = obs.Error
 	}
-	if obs.Kind == "health" {
-		key := obs.SourceState + "\x00" + string(marshalStable(obs.Data))
-		if p.healthSeen == nil {
-			p.healthSeen = map[string]bool{}
+	if obs.State != "" && p.metadataState != "" && obs.State != p.metadataState {
+		// The same metadata signature after a real state transition is new
+		// evidence, so start a fresh coalescing window.
+		p.metadataSeen = nil
+	}
+	if obs.State != "" {
+		p.metadataState = obs.State
+	}
+	if key, eligible := metadataObservationKey(obs); eligible {
+		if p.metadataSeen == nil {
+			p.metadataSeen = map[string]bool{}
 		}
-		if p.healthSeen[key] {
-			// Unstructured stdout/stderr can contain thousands of interleaved
-			// records. Health is edge-triggered diagnostic state, not a transcript
-			// surrogate.
+		if p.metadataSeen[key] {
+			// Native token and thinking streams can emit many thousands of observations
+			// with the same bounded metadata. Retain one semantic event for each
+			// distinct phase instead of turning the journal into a transcript-shaped
+			// counter. Terminal, attention, artifact, state changes, and authority-
+			// positioned events are deliberately ineligible for this coalescing.
 			p.updatedAt = time.Now().UTC()
 			return
 		}
-		p.healthSeen[key] = true
+		p.metadataSeen[key] = true
 	}
 	if obs.Kind != "" || obs.State != "" || obs.SourceState != "" || obs.Error != "" {
 		p.observations = append(p.observations, obs)
@@ -268,6 +278,14 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 		p.result = result
 	}
 	p.updatedAt = time.Now().UTC()
+}
+
+func metadataObservationKey(obs parsedObservation) (string, bool) {
+	if (obs.Kind != "health" && obs.Kind != "progress") || obs.Terminal || obs.Content != "" || obs.Error != "" || obs.CursorAuthority || obs.SourcePosition != "" {
+		return "", false
+	}
+	key := strings.Join([]string{obs.Kind, obs.SourceState, string(obs.State), string(obs.Liveness), string(marshalStable(obs.Data))}, "\x00")
+	return key, true
 }
 
 func (p *processRecord) finish(err error) {
@@ -923,8 +941,13 @@ func (a *NativeAdapter) Result(ctx context.Context, req ResultRequest) (Result, 
 		return Result{}, invalidRequest("result requires a source reference")
 	}
 	if record := a.recordFor(req.Ref); record != nil {
-		if result := a.currentResult(record); result != nil {
-			return *result, nil
+		record.mu.Lock()
+		defer record.mu.Unlock()
+		if record.result != nil {
+			result := *record.result
+			result.SessionRef = record.ref
+			result.Data = cloneMap(record.result.Data)
+			return result, nil
 		}
 		return Result{Success: false, State: StateRunning, SessionRef: record.ref}, nil
 	}

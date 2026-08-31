@@ -87,16 +87,16 @@ func updateCheckStatePath(_ common) (string, error) {
 func (a *app) run(ctx context.Context, args []string) int {
 	commonArgs, rest, parseErr := a.parseCommon(args)
 	renderer := output.Renderer{Mode: commonArgs.mode, Writer: a.stdout}
+	if parseErr != nil {
+		return a.fail(renderer, output.NewError(output.CodeUsage, parseErr.Error(), false))
+	}
 	internalUpdateWorker := len(rest) > 0 && rest[0] == "_update-worker"
 	updateCommand := len(rest) > 0 && rest[0] == "update"
 	skillsCommand := len(rest) > 0 && rest[0] == "skills"
-	if a.updateNotice != nil && !internalUpdateWorker && !updateCommand && !skillsCommand {
+	if a.updateNotice != nil && !internalUpdateWorker && !updateCommand && !skillsCommand && invocationAllowsAutomaticMaintenance(rest) {
 		if warning := a.updateNotice(ctx, version, commonArgs); warning != nil {
 			renderer = renderer.WithWarnings(*warning)
 		}
-	}
-	if parseErr != nil {
-		return a.fail(renderer, output.NewError(output.CodeUsage, parseErr.Error(), false))
 	}
 	if len(rest) == 0 {
 		return a.help(renderer, "")
@@ -173,6 +173,28 @@ func (a *app) run(ctx context.Context, args []string) int {
 		return a.fail(renderer, err)
 	}
 	return 0
+}
+
+// Automatic release and managed-skill maintenance is separately authorized by
+// operator policy, but it still must not make a command advertised as read-only
+// perform hidden network or filesystem writes. Run it only alongside commands
+// that are about to create external work. Explicit maintenance commands own
+// their own side effects and therefore do not need this hook.
+func invocationAllowsAutomaticMaintenance(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	for _, arg := range args[1:] {
+		if arg == "--plan" || arg == "--help" || arg == "-h" {
+			return false
+		}
+	}
+	switch args[0] {
+	case "run", "fanout", "promote":
+		return true
+	default:
+		return false
+	}
 }
 
 func inlineHelpTopic(args []string) (string, bool) {
@@ -327,7 +349,7 @@ func (a *app) idCommand(renderer output.Renderer, args []string) *output.Error {
 
 func (a *app) routeCommand(renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) == 0 || args[0] != "explain" {
-		return output.NewError(output.CodeUsage, "usage: agentctl route explain [query...]", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl route explain <selector...>", false)
 	}
 	var queryParts []string
 	for i := 1; i < len(args); i++ {
@@ -342,26 +364,28 @@ func (a *app) routeCommand(renderer output.Renderer, c common, args []string) *o
 			queryParts = append(queryParts, args[i])
 		}
 	}
-	return a.routeExplainQuery(renderer, c, strings.TrimSpace(strings.Join(queryParts, " ")))
+	query := strings.TrimSpace(strings.Join(queryParts, " "))
+	if query == "" {
+		return output.NewError(output.CodeUsage, "route explain requires a host or model selector", false)
+	}
+	return a.routeExplainQuery(renderer, c, query)
 }
 
 func (a *app) routeExplainQuery(renderer output.Renderer, c common, query string) *output.Error {
 	catalog := route.NewCatalog("", nil, nil, "")
 	path, err := configPath(c)
-	if err == nil {
-		if resolution, configErr := config.Resolve(path, c.configBundle); configErr == nil {
-			_, profile, resolveErr := resolution.Config.ResolveProfile(c.profile)
-			if resolveErr == nil {
-				catalog = catalogFromProfile(profile)
-			}
-		} else if !errors.Is(configErr, config.ErrNotFound) {
-			return output.Wrap(output.CodeUsage, "invalid config", false, configErr)
-		}
+	if err != nil {
+		return output.Wrap(output.CodeInternal, "resolve route config path", false, err)
 	}
-	if catalog.ThisHost == "" {
-		if host, hostErr := os.Hostname(); hostErr == nil {
-			catalog.ThisHost = host
+	resolution, configErr := config.Resolve(path, c.configBundle)
+	if configErr == nil {
+		_, profile, resolveErr := resolution.Config.ResolveProfile(c.profile)
+		if resolveErr != nil {
+			return mapConfigError("resolve route profile", resolveErr)
 		}
+		catalog = catalogFromProfile(profile)
+	} else if !errors.Is(configErr, config.ErrNotFound) || c.configPath != "" || c.configBundle != "" || c.profile != "" {
+		return mapConfigError("read route config", configErr)
 	}
 	result := route.Match(query, catalog)
 	fields := []output.Field{{Name: "placement", Value: result.Placement.Mode}}
@@ -371,7 +395,39 @@ func (a *app) routeExplainQuery(renderer output.Renderer, c common, query string
 	if result.Placement.Host != "" {
 		fields = append(fields, output.Field{Name: "host", Value: result.Placement.Host})
 	}
-	if err := renderer.Success(output.Success{Result: result, Lines: []output.Line{{Lead: "route", Fields: fields}}}); err != nil {
+	lines := []output.Line{{Lead: "route", Fields: fields}}
+	for _, host := range result.Hosts {
+		lines = append(lines, output.Line{Lead: "host", Fields: []output.Field{{Name: "id", Value: host.ID}}})
+	}
+	for _, modelHit := range result.Models {
+		modelFields := []output.Field{{Name: "adapter", Value: modelHit.Adapter}}
+		if modelHit.Model != "" {
+			modelFields = append(modelFields, output.Field{Name: "model", Value: modelHit.Model})
+		}
+		if modelHit.Speed != "" {
+			modelFields = append(modelFields, output.Field{Name: "speed", Value: modelHit.Speed})
+		}
+		lines = append(lines, output.Line{Lead: "model", Fields: modelFields})
+	}
+	if len(result.Unmatched) != 0 {
+		lines = append(lines, output.Line{Lead: "unmatched", Fields: []output.Field{{Name: "tokens", Value: result.Unmatched}}})
+	}
+	var warnings []output.Warning
+	var actions []output.NextAction
+	if len(result.Unmatched) != 0 {
+		warnings = append(warnings, output.Warning{Code: "route_unmatched_tokens", Message: "unmatched tokens do not influence routing; pass only a short reviewed host/model selector", Details: map[string]any{"tokens": result.Unmatched}})
+	}
+	switch result.Placement.Mode {
+	case "remote":
+		warnings = append(warnings, output.Warning{Code: "route_not_dispatched", Message: "route advice is read-only: no Multica issue, remote task, or agentctl execution handle was created", Details: map[string]any{"runtime_verified": false, "tracked_execution": false}})
+		actions = append(actions, output.NextAction{Label: "Review routing and remote-authority boundaries", Argv: []string{"agentctl", "help", "route"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+	case "need_this_host":
+		warnings = append(warnings, output.Warning{Code: "route_this_host_unset", Message: "the configured route catalog does not identify this machine; local versus remote placement is unknown"})
+		actions = append(actions, output.NextAction{Label: "Inspect route configuration", Argv: []string{"agentctl", "config", "show"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+	case "local":
+		actions = append(actions, output.NextAction{Label: "Discover direct run", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+	}
+	if err := renderer.Success(output.Success{Result: result, Lines: lines, Warnings: warnings, NextActions: actions}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil
@@ -425,15 +481,17 @@ func (a *app) status(ctx context.Context, renderer output.Renderer, c common, ar
 }
 func (a *app) result(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) < 1 {
-		return output.NewError(output.CodeUsage, "usage: agentctl result <execution-id> [--summary] [--allow-empty] [--require-result-source source] [--min-result-bytes n]", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl result <execution-id> [--content|--summary] [--allow-empty] [--require-result-source source] [--min-result-bytes n]", false)
 	}
-	summary, requireContent := false, true
+	summary, contentOnly, requireContent := false, false, true
 	requireSource := ""
 	minResultBytes := 0
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--summary":
 			summary = true
+		case "--content":
+			contentOnly = true
 		case "--require-content":
 			requireContent = true
 		case "--allow-empty":
@@ -460,6 +518,9 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 		default:
 			return output.NewError(output.CodeUsage, "unknown result flag", false).WithDetail("flag", args[i])
 		}
+	}
+	if summary && contentOnly {
+		return output.NewError(output.CodeUsage, "--content and --summary are mutually exclusive", false)
 	}
 	id, problem := parseExecutionRef(args[0], c)
 	if problem != nil {
@@ -519,6 +580,18 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 		outcome.Content = &copy
 	}
 	_ = journal.Close()
+	if contentOnly {
+		if outcome.Content == nil {
+			return output.NewError(output.CodeNotFound, "execution has no stored text content", false).WithDetail("execution_id", id.String()).WithDetail("availability", outcome.Availability)
+		}
+		if _, err := io.WriteString(a.stdout, outcome.Content.Text); err != nil {
+			return output.Wrap(output.CodeInternal, "write result content", false, err)
+		}
+		if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementResult); problem != nil {
+			_, _ = fmt.Fprintln(a.stderr, "agentctl: result delivered but acknowledgement failed:", problem)
+		}
+		return nil
+	}
 	if problem := writeExecutionOutcome(renderer, execution, outcome); problem != nil {
 		return problem
 	}

@@ -73,6 +73,10 @@ local machine id. `hosts` maps nicknames onto those ids. `placement.kind` names
 whatever remote authority the operator configured (Multica is one kind). None
 of these fields are required; without them the matcher still ranks built-in
 adapter family aliases such as `glm` or `codex`.
+Without `this_host`, a matched host produces `need_this_host`; agentctl does not
+guess fleet identity from an operating-system hostname. `use_for` contributes
+route aliases only in the explicit `alias:name,other-name` form; ordinary prose
+remains advisory text rather than executable routing policy.
 
 ## Profile selection
 
