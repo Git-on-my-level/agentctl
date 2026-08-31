@@ -267,6 +267,14 @@ func (a *app) promoteCommand(ctx context.Context, renderer output.Renderer, c co
 var errMulticaIssueConflict = errors.New("Multica issue client key conflict")
 
 func runMulticaIssueCreate(ctx context.Context, argv []string, stdin []byte) (map[string]any, error) {
+	return runMulticaIssueMutation(ctx, "create", argv, stdin)
+}
+
+func runMulticaIssueUpdate(ctx context.Context, argv []string) (map[string]any, error) {
+	return runMulticaIssueMutation(ctx, "update", argv, nil)
+}
+
+func runMulticaIssueMutation(ctx context.Context, operation string, argv []string, stdin []byte) (map[string]any, error) {
 	if len(argv) == 0 {
 		return nil, errors.New("Multica argv is empty")
 	}
@@ -283,7 +291,7 @@ func runMulticaIssueCreate(ctx context.Context, argv []string, stdin []byte) (ma
 		if strings.Contains(message, "conflicts with the current state") || strings.Contains(message, "client key conflict") || strings.Contains(message, "issue_client_key_conflict") {
 			return nil, fmt.Errorf("%w: Multica rejected changed semantics", errMulticaIssueConflict)
 		}
-		return nil, fmt.Errorf("Multica issue create failed (%T)", err)
+		return nil, fmt.Errorf("Multica issue %s failed (%T)", operation, err)
 	}
 	var result map[string]any
 	dec := json.NewDecoder(bytes.NewReader(stdout.Bytes()))

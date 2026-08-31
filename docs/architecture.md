@@ -176,6 +176,22 @@ issue, launches an agent, verifies a remote runtime or assignee, or mints an
 execution handle. Work created directly in Multica therefore remains outside
 host-local `recent --unreconciled`.
 
+`agentctl dispatch` is the explicit mutating bridge from one reviewed host and
+concrete model selector to Multica. It joins the workspace's live agents to
+their authoritative runtimes, verifies one online host/provider/model match,
+creates or recovers an idempotent issue assignment, and records a
+Multica-authority execution handle. Agent display names are never mutation
+selectors. The client-key mutation first creates or recovers the assigned issue
+in backlog and persists its binding while the execution remains `starting`.
+Activation follows only when a fresh exact-issue read still reports backlog; a
+replay that observes a later status skips activation. Multica has no conditional
+status update, so concurrent external status changes remain an authority-level
+race. A local `starting` execution reserves the exact assignee/runtime before the
+remote call; semantic replay recovers that reservation instead of depending on
+mutable fleet discovery. `await` may
+reconcile durable Multica events into that handle;
+`status`, `events`, and `recent` remain cached local reads.
+
 The host-local `inbox` is also a journal projection, not a new authority. It
 combines unreconciled terminals, attention state, and bounded observation age.
 It never polls a native CLI. Task/collection health and normalized tool

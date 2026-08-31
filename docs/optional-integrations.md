@@ -35,7 +35,40 @@ agentctl --profile coordinated promote exec-... \
   --plan
 ```
 
-Remove `--plan` only after reviewing the remote side effect. Promotion support
+New routed work can instead be dispatched directly after a live read-only
+target check:
+
+```bash
+agentctl --profile coordinated dispatch \
+  --route "m5 sol" \
+  --title "Review the release" \
+  --prompt-file task.md \
+  --idempotency-key release-review-v1 \
+  --plan
+```
+
+Remove `--plan` to create or recover the Multica issue and receive a tracked
+`exec-*` handle. The route must identify one configured host and concrete model;
+the joined Multica runtime must be online and the unarchived agent must be idle
+or working. Dispatch passes only the exact resolved assignee ID to Multica,
+never a display name, and never falls back to a local native run. The prompt is
+sent on Multica stdin and only its digest is journaled.
+
+For replay safety, the remote mutation is a bounded saga: create or recover the
+exact assigned issue in `backlog` using Multica's client key, persist its exact
+issue binding while the execution is still `starting`, then read that issue and
+activate only when it still reports backlog. A replay that observes a later
+Multica status skips activation. Multica has no conditional status-update flag,
+so a concurrent external status change can still race the activation call and
+remains an authority-level concern rather than a false agentctl guarantee.
+
+Agentctl first reserves a local `starting` execution with the exact resolved
+assignee and runtime IDs. If the remote response or later local binding is lost,
+the same semantic invocation recovers that record before consulting live fleet
+state. Once the issue binding exists, replay reads the exact issue rather than
+re-running assignment discovery.
+
+Remove `--plan` only after reviewing the remote side effect. Dispatch, promotion,
 and durable event observation require a compatible Multica deployment; consult
 `capabilities multica` rather than assuming compatibility from the executable
 name.

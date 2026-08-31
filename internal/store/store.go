@@ -307,6 +307,42 @@ func (j *Journal) CreateExecution(ctx context.Context, execution model.Execution
 	return result, reused, err
 }
 
+// GetExecutionByMutation returns the execution already reserved for an exact
+// semantic mutation key. It is read-only and lets a caller recover prepared
+// work without re-running mutable external discovery first.
+func (j *Journal) GetExecutionByMutation(ctx context.Context, mutation contracts.MutationKey) (model.Execution, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return model.Execution{}, false, err
+	}
+	if !mutation.Enabled() {
+		return model.Execution{}, false, errors.New("idempotency key is required")
+	}
+	var result model.Execution
+	found := false
+	err := j.db.View(func(tx *bbolt.Tx) error {
+		record, err := lookupMutation(tx, mutation)
+		if err != nil {
+			return err
+		}
+		if record == nil {
+			return nil
+		}
+		if record.ObjectType != "execution" {
+			return fmt.Errorf("%w: idempotency target is not an execution", ErrCorrupt)
+		}
+		raw := tx.Bucket(bExecutions).Get([]byte(record.ObjectID))
+		if raw == nil {
+			return fmt.Errorf("%w: idempotency target missing", ErrCorrupt)
+		}
+		if err := json.Unmarshal(raw, &result); err != nil {
+			return corrupt(err)
+		}
+		found = true
+		return nil
+	})
+	return result, found, err
+}
+
 func (j *Journal) GetExecution(ctx context.Context, id ids.ExecutionID) (model.Execution, error) {
 	if err := ctx.Err(); err != nil {
 		return model.Execution{}, err

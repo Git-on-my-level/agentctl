@@ -95,6 +95,24 @@ func TestExecutionCRUDIdempotencyAndCAS(t *testing.T) {
 	}
 }
 
+func TestGetExecutionByMutationRecoversExactPreparedExecution(t *testing.T) {
+	ctx := context.Background()
+	journal, _, now := openTestJournal(t)
+	mutation := contracts.MutationKey{Scope: "dispatch:create", Key: "stable", InputDigest: hash('r')}
+	created, _, err := journal.CreateExecution(ctx, sampleExecution(now), mutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, found, err := journal.GetExecutionByMutation(ctx, mutation)
+	if err != nil || !found || recovered.ID != created.ID {
+		t.Fatalf("recovered=%#v found=%v err=%v", recovered, found, err)
+	}
+	_, _, err = journal.GetExecutionByMutation(ctx, contracts.MutationKey{Scope: mutation.Scope, Key: mutation.Key, InputDigest: hash('x')})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("changed digest did not conflict: %v", err)
+	}
+}
+
 func TestEventAppendIsAtomicContiguousAndDeduplicated(t *testing.T) {
 	ctx := context.Background()
 	journal, _, now := openTestJournal(t)

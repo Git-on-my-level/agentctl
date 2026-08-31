@@ -25,6 +25,11 @@ import (
 
 var version = "0.1.0-dev"
 
+const (
+	awaitMulticaReprobeInterval      = 2 * time.Second
+	awaitMulticaMaxConsecutiveErrors = 3
+)
+
 type app struct {
 	stdout, stderr  io.Writer
 	stdin           io.Reader
@@ -140,6 +145,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		return a.await(ctx, renderer, commonArgs, rest[1:])
 	case "run":
 		err = a.runNative(ctx, renderer, commonArgs, rest[1:])
+	case "dispatch":
+		err = a.dispatchCommand(ctx, renderer, commonArgs, rest[1:])
 	case "fanout":
 		err = a.fanout(ctx, renderer, commonArgs, rest[1:])
 	case "attach":
@@ -196,7 +203,7 @@ func invocationAllowsAutomaticMaintenance(args []string) bool {
 		}
 	}
 	switch args[0] {
-	case "run", "fanout", "promote":
+	case "run", "fanout", "promote", "dispatch":
 		return true
 	default:
 		return false
@@ -426,7 +433,7 @@ func (a *app) routeExplainQuery(renderer output.Renderer, c common, query string
 	switch result.Placement.Mode {
 	case "remote":
 		warnings = append(warnings, output.Warning{Code: "route_not_dispatched", Message: "route advice is read-only: no Multica issue, remote task, or agentctl execution handle was created", Details: map[string]any{"runtime_verified": false, "tracked_execution": false}})
-		actions = append(actions, output.NextAction{Label: "Review routing and remote-authority boundaries", Argv: []string{"agentctl", "help", "route"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+		actions = append(actions, output.NextAction{Label: "Plan tracked Multica dispatch", Argv: []string{"agentctl", "dispatch", "--route", result.Placement.Host + " <model>", "--title", "<title>", "--prompt-file", "<path>", "--idempotency-key", "<stable-key>", "--plan"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"replace placeholders with one reviewed concrete model, title, prompt file, and stable task key"}})
 	case "need_this_host":
 		warnings = append(warnings, output.Warning{Code: "route_this_host_unset", Message: "the configured route catalog does not identify this machine; local versus remote placement is unknown"})
 		actions = append(actions, output.NextAction{Label: "Inspect route configuration", Argv: []string{"agentctl", "config", "show"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
@@ -553,7 +560,11 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 		if execution.TerminalAt != nil {
 			recordedAt = *execution.TerminalAt
 		}
-		outcome = model.Outcome{SchemaVersion: model.SchemaVersion, ExecutionID: id, Revision: 1, State: execution.State, Availability: model.OutcomeLegacyNotRecorded, RecordedAt: recordedAt, Source: execution.Adapter, ResultRef: fmt.Sprintf("agentctl://%s/%s", execution.OriginHostID, execution.ID)}
+		availability := model.OutcomeLegacyNotRecorded
+		if execution.Authority == model.AuthorityMultica {
+			availability = model.OutcomeUnavailableAtSource
+		}
+		outcome = model.Outcome{SchemaVersion: model.SchemaVersion, ExecutionID: id, Revision: 1, State: execution.State, Availability: availability, RecordedAt: recordedAt, Source: execution.Adapter, ResultRef: fmt.Sprintf("agentctl://%s/%s", execution.OriginHostID, execution.ID)}
 	} else if err != nil {
 		return mapStoreError("read execution outcome", err)
 	}
@@ -718,10 +729,15 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		return a.fail(renderer, output.NewError(output.CodeUsage, "--timeout, --no-timeout, and --through-execution-deadline are mutually exclusive", false))
 	}
 	deadline := time.Time{}
+	lastMulticaReprobe := time.Time{}
+	consecutiveMulticaReprobeErrors := 0
 	if !noTimeout && !throughExecutionDeadline {
 		deadline = a.now().Add(timeout)
 	}
 	for {
+		if ctx.Err() != nil {
+			return a.fail(renderer, output.Wrap(output.CodeExecutionCancelled, "await cancelled", false, ctx.Err()).WithDetail("execution_id", id.String()))
+		}
 		journal, openErr := a.openRead(c)
 		if openErr != nil {
 			return a.fail(renderer, openErr)
@@ -764,6 +780,34 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		}
 		if !deadline.IsZero() && !a.now().Before(deadline) {
 			return a.fail(renderer, outcomeError(output.CodeTimeout, "await deadline elapsed", execution))
+		}
+		if execution.Authority == model.AuthorityMultica && !execution.State.Terminal() && (lastMulticaReprobe.IsZero() || a.now().Sub(lastMulticaReprobe) >= awaitMulticaReprobeInterval) {
+			probeCtx := ctx
+			cancelProbe := func() {}
+			if !deadline.IsZero() {
+				probeCtx, cancelProbe = context.WithDeadline(ctx, deadline)
+			}
+			problem := a.reprobeAwaitedMultica(probeCtx, c, execution)
+			probeContextError := probeCtx.Err()
+			cancelProbe()
+			if ctx.Err() != nil {
+				return a.fail(renderer, output.Wrap(output.CodeExecutionCancelled, "await cancelled", false, ctx.Err()).WithDetail("execution_id", id.String()))
+			}
+			if errors.Is(probeContextError, context.DeadlineExceeded) {
+				return a.fail(renderer, outcomeError(output.CodeTimeout, "await deadline elapsed", execution))
+			}
+			if problem != nil {
+				consecutiveMulticaReprobeErrors++
+				lastMulticaReprobe = a.now()
+				if !problem.Retryable || consecutiveMulticaReprobeErrors >= awaitMulticaMaxConsecutiveErrors {
+					problem.WithDetail("consecutive_failures", consecutiveMulticaReprobeErrors)
+					return a.fail(renderer, problem)
+				}
+				continue
+			}
+			consecutiveMulticaReprobeErrors = 0
+			lastMulticaReprobe = a.now()
+			continue
 		}
 		timer := time.NewTimer(500 * time.Millisecond)
 		select {
@@ -827,17 +871,54 @@ func (a *app) acknowledgeExecution(ctx context.Context, c common, id ids.Executi
 }
 
 func openJournalWithRetry(path string, options store.Options) (*store.Journal, error) {
+	return openJournalWithRetryLoop(context.Background(), path, options, false)
+}
+
+func openJournalWithRetryContext(ctx context.Context, path string, options store.Options) (*store.Journal, error) {
+	return openJournalWithRetryLoop(ctx, path, options, true)
+}
+
+func openJournalWithRetryLoop(ctx context.Context, path string, options store.Options, contextBound bool) (*store.Journal, error) {
 	var err error
 	for attempt := 0; attempt < 2; attempt++ {
-		journal, openErr := store.Open(path, options)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		openOptions := options
+		if contextBound {
+			lockTimeout := 50 * time.Millisecond
+			if deadline, ok := ctx.Deadline(); ok {
+				remaining := time.Until(deadline)
+				if remaining <= 0 {
+					return nil, context.DeadlineExceeded
+				}
+				if remaining < lockTimeout {
+					lockTimeout = remaining
+				}
+			}
+			if openOptions.LockTimeout == 0 || openOptions.LockTimeout > lockTimeout {
+				openOptions.LockTimeout = lockTimeout
+			}
+		}
+		journal, openErr := store.Open(path, openOptions)
 		if openErr == nil {
+			if ctx.Err() != nil {
+				_ = journal.Close()
+				return nil, ctx.Err()
+			}
 			return journal, nil
 		}
 		err = openErr
 		if !errors.Is(openErr, store.ErrBusy) || attempt == 1 {
 			break
 		}
-		time.Sleep(time.Duration(100+time.Now().UnixNano()%250) * time.Millisecond)
+		timer := time.NewTimer(time.Duration(100+time.Now().UnixNano()%250) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
 	}
 	return nil, err
 }

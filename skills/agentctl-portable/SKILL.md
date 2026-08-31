@@ -23,7 +23,7 @@ agentctl doctor
 agentctl help <topic>
 ```
 
-Useful topics include `run`, `recent`, `fanout`, `result`, `await`, `subscribe`, `capabilities`,
+Useful topics include `run`, `dispatch`, `recent`, `fanout`, `result`, `await`, `subscribe`, `capabilities`,
 `bootstrap update`, `skills`, `promote`, `knowledge`, and `context`. Follow returned
 read-only `next_actions` for deeper discovery. Do not preload every topic or
 memorize version-specific flags in place of help.
@@ -52,9 +52,9 @@ instructions. It returns ranked reviewed hits plus a placement mode; empty
 lists mean nothing was recognized, not an error. It never launches work,
 verifies a remote runtime or Multica assignee, or creates an `exec-*` handle.
 If `this_host` is not configured, local versus remote placement remains unknown.
-Work created directly in Multica is not visible to host-local `recent
---unreconciled`; observe it through Multica until an explicit tracked bridge is
-available.
+Use `dispatch` when the selector names one configured host and one concrete
+model and the task should be created under Multica authority. Work created
+directly in Multica remains outside the host-local journal.
 
 Never infer a capability from an adapter name. If doctor or capabilities says
 a requirement is unavailable, report it; do not weaken the operation, invent a
@@ -120,6 +120,37 @@ that already existed when acknowledgement tracking first write-opened the
 journal are not unreconciled. Labels are visible exact discovery metadata, never
 mutation targets; do not place secrets or prompt/result content in them.
 
+For durable cross-host work, plan and then dispatch through the configured
+Multica authority:
+
+```bash
+agentctl dispatch --route "m5 sol" --title "Review the release" --prompt-file "$PWD/task.md" --idempotency-key release-review-v1 --plan
+agentctl dispatch --route "m5 sol" --title "Review the release" --prompt-file "$PWD/task.md" --idempotency-key release-review-v1
+```
+
+`dispatch` resolves live Multica agents against their authoritative runtime,
+not their display name, and requires exactly one online host/adapter/model
+match. It never falls back locally. The caller key is required so a remote
+success followed by a lost local response can be replayed without creating a
+second issue. Agentctl creates or recovers the exact assigned issue in backlog,
+persists its issue binding while the local execution is still `starting`, reads
+the exact issue, and activates only when that read still reports backlog. A
+retry that observes Multica has advanced the issue skips activation. Concurrent
+external status changes remain Multica-owned and can race the CLI update. Before
+the remote call agentctl reserves the exact assignee/runtime bindings; retry
+recovers them by semantic mutation key instead of requiring the current fleet
+topology to match again. Prompt bytes go only to
+Multica stdin; agentctl stores their digest and authority bindings, not the
+prompt. Retain the
+returned `exec-*` ID and attach subscriptions immediately when unattended
+notification matters. `await` refreshes Multica workspace events itself;
+it tolerates two consecutive retryable refresh failures and returns the third
+failure with its authority diagnostic. This absorbs a brief observation fault
+without hiding a persistently unavailable authority.
+`status`, `events`, and `recent` remain cached read-only views, while the managed
+supervisor provides continuous cross-restart reconciliation and callback
+delivery.
+
 Retain the returned full `exec-*` ID when practical; otherwise recover it with
 `recent`. `await` stops on attention by default and
 `result` requires stored content by default. Both stamp collection on a
@@ -173,9 +204,11 @@ recovery. Keep structured-output requirements exactly as reported by
 
 ## Promotion and shared context
 
-Promotion is an explicit remote mutation. Inspect `agentctl help promote` and
-plan unfamiliar authority selections before creating or recovering a Multica
-issue. Promotion links work; it does not move or copy the native session.
+Dispatch and promotion are explicit remote mutations. Inspect `agentctl help
+dispatch` or `agentctl help promote` and plan unfamiliar authority selections
+before creating or recovering a Multica issue. Dispatch starts new routed
+Multica work; promotion links an existing direct execution to durable follow-up.
+Promotion links work; it does not move or copy the native session.
 
 Use `agentctl help knowledge` and `agentctl help context` for deterministic
 shared context. Never compile credentials, raw prompts, transcripts, harness

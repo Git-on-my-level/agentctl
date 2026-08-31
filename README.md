@@ -38,7 +38,8 @@ contract.
 - reconciles reviewed personal skill packs from a pinned Git config source;
 - optionally validates, compiles, and renders context from independently owned
   Git knowledge sources; and
-- optionally promotes direct work into a configured Multica authority.
+- optionally dispatches routed work to a verified Multica agent and promotes
+  direct work into a configured Multica authority.
 
 It is not a model gateway, transcript database, issue tracker, credential
 manager, or replacement for the agent CLI being supervised.
@@ -135,6 +136,28 @@ agentctl run -- cursor-agent --print --output-format stream-json --trust "scope 
 agentctl run -- cursor-agent --print --output-format stream-json --mode ask --trust "explain this code"
 agentctl run -- claude --output-format stream-json "review this patch"
 ```
+
+Dispatch durable cross-host work without weakening `run`'s exact-native-argv
+contract:
+
+```bash
+agentctl dispatch --route "m5 sol" --title "Review this release" \
+  --prompt-file task.md --idempotency-key release-review-v1 --plan
+agentctl dispatch --route "m5 sol" --title "Review this release" \
+  --prompt-file task.md --idempotency-key release-review-v1
+```
+
+Dispatch performs live read-only agent/runtime resolution, requires one
+unarchived idle or working agent on an online host/adapter/model runtime,
+creates the issue with Multica's exact assignee ID, and returns a tracked
+Multica-authority `exec-*` handle. It never dispatches by display name or falls
+back locally. Replay safety uses an assigned backlog creation, a persisted issue
+binding, and an exact-status activation only after the exact issue still reads
+as backlog. If replay observes Multica already advanced the issue, it skips
+activation. Concurrent external status changes remain Multica-owned and may race
+the CLI update. Before the remote mutation, agentctl reserves a `starting`
+execution with the exact resolved assignee/runtime bindings, so a lost-response
+retry does not depend on the fleet still having the same online or unique match.
 
 Known executable names select their built-in adapter. Use `--adapter` for an
 ambiguous executable or a deliberate override. `run` waits for a terminal

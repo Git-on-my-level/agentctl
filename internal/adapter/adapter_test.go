@@ -49,6 +49,28 @@ func TestGenericLaunchDiscoversSessionAndStructuredSuccess(t *testing.T) {
 	}
 }
 
+func TestMulticaIssueReviewAndBlockedStatusesRequireAttention(t *testing.T) {
+	parser := multicaPageParser{}
+	for _, test := range []struct {
+		status string
+		code   string
+		kind   string
+	}{
+		{status: "in_review", code: "multica_in_review", kind: "review"},
+		{status: "blocked", code: "multica_blocked", kind: "blocked"},
+	} {
+		doc := fmt.Sprintf(`{"events":[{"type":"issue.updated","aggregate_kind":"issue","aggregate_id":"issue-1","payload":{"status":%q}}]}`, test.status)
+		parsed := parser.Parse([]byte(doc), false)
+		if parsed.Page == nil || len(parsed.Page.Observations) != 1 {
+			t.Fatalf("status=%s page=%#v", test.status, parsed.Page)
+		}
+		observation := parsed.Page.Observations[0]
+		if observation.State != StateAttention || observation.Kind != "attention" || observation.Data["diagnostic_code"] != test.code || observation.Data["attention_kind"] != test.kind {
+			t.Fatalf("status=%s observation=%#v", test.status, observation)
+		}
+	}
+}
+
 func TestProcessEventsCursorUsesNativeIntBounds(t *testing.T) {
 	record := &processRecord{events: []Event{{Sequence: 1}, {Sequence: 2}}}
 	if got := record.eventsAfter("1"); len(got) != 1 || got[0].Sequence != 2 {
@@ -800,6 +822,20 @@ func TestMulticaEventPageAcceptsPrettyPrintedJSON(t *testing.T) {
 	event := page.Events[0]
 	if event.Kind != "terminal" || event.State != StateCompleted || event.Payload["aggregate_id"] != config.Issue {
 		t.Fatalf("pretty terminal event = %#v", event)
+	}
+}
+
+func TestMulticaEventPageProcessFailureIsRetryableObservationError(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s\n' 'temporary event service failure' >&2; exit 19`)
+	config := MulticaConfig{Binary: path, Profile: "profile-fixture", Workspace: "workspace-fixture", Issue: "issue-fixture"}
+	paged := NewMultica(config).(PagedEvents)
+	_, err := paged.EventsPage(context.Background(), EventsRequest{Ref: SourceRef{Adapter: "multica", Kind: "multica_issue", Profile: config.Profile, Workspace: config.Workspace, Issue: config.Issue}, Cursor: "0"})
+	var adapterErr *AdapterError
+	if !errors.As(err, &adapterErr) {
+		t.Fatalf("event failure type=%T err=%v", err, err)
+	}
+	if adapterErr.Code != ErrExecutionFailed || !adapterErr.Retryable || adapterErr.Message != "Multica event list did not return a structured page" {
+		t.Fatalf("event failure=%#v", adapterErr)
 	}
 }
 

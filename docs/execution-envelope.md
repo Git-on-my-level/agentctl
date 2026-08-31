@@ -152,6 +152,11 @@ an omission tombstone. Final text is UTF-8, at most 1 MiB inline, and includes
 a digest only when complete. The outcome never contains prompts, reasoning,
 tool chatter, token streams, or arbitrary native stdout/stderr.
 
+Terminal Multica issue executions currently project
+`unavailable_at_source` because the verified adapter observes lifecycle events
+but has no result-content route. Use `result <id> --allow-empty` when the
+metadata-only terminal result is sufficient.
+
 Stored text content may include a bounded `source` label such as
 `assistant_terminal_result`, `assistant_message_fallback`, or the generic
 `terminal_result`. `agentctl result` can assert that provenance and a

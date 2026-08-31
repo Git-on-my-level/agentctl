@@ -48,6 +48,8 @@ session unless that CLI exposes a reviewed durable attach/status API.
 - Exact configured binary/profile/workspace/server; no ambient default profile.
 - Config provenance doctor and application URL support.
 - Explicit `promote --plan` and execute path.
+- Explicit routed `dispatch --plan` and execute path with live Multica
+  agent/runtime verification and a tracked execution handle.
 - Authority-owned `sha256:` client key, semantic conflict detection, exact
   remote replay, one local target envelope, source/target promotion links, and
   optional supersession.
@@ -55,8 +57,9 @@ session unless that CLI exposes a reviewed durable attach/status API.
 - Issue-only promotion remains issue-authoritative: nested task/run terminal
   events are evidence until an exact run binding exists.
 
-`agentctl` creates/reconciles the durable issue but does not reimplement
-Multica run dispatch, assignment, status mutation, or review.
+`agentctl` creates/reconciles the durable issue and may select one verified
+configured Multica agent for explicit dispatch. Multica still owns assignment,
+run execution, status mutation, and review.
 
 ## Phase 3 — Shared context: implemented locally and portably
 

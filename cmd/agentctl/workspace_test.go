@@ -19,6 +19,8 @@ import (
 func TestDiscoverGitWorkspaceDistinguishesLinkedWorktreesAndOperations(t *testing.T) {
 	repository := initWorkspaceRepository(t)
 	siblingRoot := t.TempDir()
+	t.Setenv("OMI_GIT_WRAPPER_ENV", filepath.Join(t.TempDir(), "missing-wrapper-env"))
+	t.Setenv("OMI_WORKTREES", siblingRoot)
 	sibling := filepath.Join(siblingRoot, "sibling")
 	runGit(t, repository, "worktree", "add", "-b", "sibling", sibling)
 

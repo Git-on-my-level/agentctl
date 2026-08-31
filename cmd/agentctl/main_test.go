@@ -42,6 +42,8 @@ func TestAutomaticMaintenanceRunsOnlyWithExternalWork(t *testing.T) {
 		{args: []string{"unknown-command"}, wantCode: 2},
 		{args: []string{"run", "--plan", "--allow-missing-result", "--", "/bin/true"}, wantCode: -1},
 		{args: []string{"run", "--allow-missing-result", "--", "/bin/true"}, wantCode: -1, wantCalled: true},
+		{args: []string{"dispatch", "--plan"}, wantCode: -1},
+		{args: []string{"dispatch"}, wantCode: -1, wantCalled: true},
 	} {
 		var stdout, stderr bytes.Buffer
 		a := testApp(&stdout, &stderr)
@@ -1407,6 +1409,29 @@ func TestAwaitContextCancellationIsNotReportedAsTimeout(t *testing.T) {
 	}
 }
 
+func TestContextBoundJournalOpenDoesNotOverrunDeadline(t *testing.T) {
+	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	owner, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	startedAt := time.Now()
+	journal, err := openJournalWithRetryContext(ctx, journalPath, store.Options{})
+	if journal != nil {
+		journal.Close()
+		t.Fatal("context-bound open unexpectedly acquired a locked journal")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("context-bound open error=%v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed >= 750*time.Millisecond {
+		t.Fatalf("context-bound journal open overran deadline: %s", elapsed)
+	}
+}
+
 func TestRunCancelledBeforeLaunchDoesNotCreateExecution(t *testing.T) {
 	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
 	var stdout, stderr bytes.Buffer
@@ -1641,7 +1666,7 @@ func TestRouteExplainRemoteIsExplicitlyNotDispatched(t *testing.T) {
 	if code := a.run(context.Background(), []string{"--config", configPath, "route", "explain", "m5", "sol"}); code != 0 {
 		t.Fatalf("exit=%d output=%s", code, stdout.String())
 	}
-	if !strings.Contains(stdout.String(), `"code":"route_not_dispatched"`) || !strings.Contains(stdout.String(), `"tracked_execution":false`) || !strings.Contains(stdout.String(), `"agentctl","help","route"`) {
+	if !strings.Contains(stdout.String(), `"code":"route_not_dispatched"`) || !strings.Contains(stdout.String(), `"tracked_execution":false`) || !strings.Contains(stdout.String(), `"agentctl","dispatch"`) || !strings.Contains(stdout.String(), `"--plan"`) {
 		t.Fatalf("remote advice looked dispatched: %s", stdout.String())
 	}
 }

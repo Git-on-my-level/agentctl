@@ -375,7 +375,7 @@ func parseAgentJSON(line []byte, stderr bool, family string, sessionKeys, termin
 		obs.Content = ""
 		obs.ContentType = ""
 		obs.ContentTruncated = false
-		if containsAny(typ, "attention", "permission", "approval", "input") {
+		if containsAny(typ, "attention", "permission", "approval", "input") || family == "multica" && multicaAttentionStatus(status) {
 			obs.State = StateAttention
 		}
 		if containsAny(typ, "waiting", "wait") {
@@ -414,8 +414,25 @@ func parseAgentJSON(line []byte, stderr bool, family string, sessionKeys, termin
 		}
 		obs.Data["attention_kind"] = attentionKind
 		obs.Data["diagnostic_code"] = normalizedDiagnosticCode(typ)
+		if family == "multica" && multicaAttentionStatus(status) {
+			if status == "in_review" || status == "in-review" || status == "review" || status == "needs_review" {
+				obs.Data["attention_kind"] = "review"
+			} else if status == "blocked" {
+				obs.Data["attention_kind"] = "blocked"
+			}
+			obs.Data["diagnostic_code"] = normalizedDiagnosticCode("multica_" + status)
+		}
 	}
 	return obs
+}
+
+func multicaAttentionStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "in_review", "in-review", "review", "needs_review", "blocked", "needs_input", "attention":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizedDiagnosticCode(value string) string {
