@@ -118,6 +118,11 @@ means only that its executable is locally runnable; configured Multica authority
 health remains `unknown` because `orient` does not probe its remote service or
 authentication.
 
+`--limit` is one total execution-record budget, not a separate cap per list.
+Newest active records are returned first because they are actionable; newest
+terminal records fill any remaining slots. `matched` still reports the full
+workspace-matched count, while `returned` proves the bounded projection size.
+
 `doctor` performs the broader readiness inspection and can live-probe adapters;
 use `doctor --static` when launches are not appropriate. Use `--output text`
 when a compact human projection is preferable to the default JSON.

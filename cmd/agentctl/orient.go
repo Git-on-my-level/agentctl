@@ -142,6 +142,7 @@ type orientExecutions struct {
 	JournalPath   string            `json:"journal_path,omitempty"`
 	MatchBasis    string            `json:"match_basis"`
 	Matched       int               `json:"matched"`
+	Returned      int               `json:"returned"`
 	Unscoped      int               `json:"unscoped"`
 	Active        []orientExecution `json:"active"`
 	Recent        []orientExecution `json:"recent"`
@@ -494,16 +495,34 @@ func (a *app) inspectOrientExecutions(ctx context.Context, c common, workspace o
 		}
 	}
 	result.Matched = len(matched)
+	result.Active, result.Recent = selectOrientExecutions(matched, limit)
+	result.Returned = len(result.Active) + len(result.Recent)
+	return result
+}
+
+// selectOrientExecutions treats limit as one total output budget. Active work
+// is actionable, so newest active records consume the budget first; newest
+// terminal records fill only the remaining slots. Each execution appears in
+// exactly one projection.
+func selectOrientExecutions(matched []model.Execution, limit int) ([]orientExecution, []orientExecution) {
+	activeCandidates := make([]orientExecution, 0)
+	recentCandidates := make([]orientExecution, 0)
 	for i := len(matched) - 1; i >= 0; i-- {
 		projected := projectOrientExecution(matched[i])
 		if !matched[i].State.Terminal() {
-			result.Active = append(result.Active, projected)
-		}
-		if len(result.Recent) < limit {
-			result.Recent = append(result.Recent, projected)
+			activeCandidates = append(activeCandidates, projected)
+		} else {
+			recentCandidates = append(recentCandidates, projected)
 		}
 	}
-	return result
+	if limit <= 0 {
+		return []orientExecution{}, []orientExecution{}
+	}
+	activeCount := min(len(activeCandidates), limit)
+	active := append([]orientExecution{}, activeCandidates[:activeCount]...)
+	recentCount := min(len(recentCandidates), limit-activeCount)
+	recent := append([]orientExecution{}, recentCandidates[:recentCount]...)
+	return active, recent
 }
 
 func orientJournalReason(err error) string {
@@ -557,7 +576,7 @@ func orientLines(report orientReport) []output.Line {
 	for _, value := range report.Adapters {
 		lines = append(lines, output.Line{Lead: "adapter", Fields: []output.Field{{Name: "name", Value: value.Name}, {Name: "authority", Value: value.Authority}, {Name: "configured", Value: value.ConfigurationStatus}, {Name: "health", Value: value.Health}, {Name: "executable", Value: value.Executable}}})
 	}
-	lines = append(lines, output.Line{Lead: "executions", Fields: []output.Field{{Name: "journal", Value: report.Executions.JournalStatus}, {Name: "matched", Value: report.Executions.Matched}, {Name: "active", Value: len(report.Executions.Active)}, {Name: "recent", Value: len(report.Executions.Recent)}, {Name: "unscoped", Value: report.Executions.Unscoped}}})
+	lines = append(lines, output.Line{Lead: "executions", Fields: []output.Field{{Name: "journal", Value: report.Executions.JournalStatus}, {Name: "matched", Value: report.Executions.Matched}, {Name: "returned", Value: report.Executions.Returned}, {Name: "active", Value: len(report.Executions.Active)}, {Name: "recent", Value: len(report.Executions.Recent)}, {Name: "unscoped", Value: report.Executions.Unscoped}}})
 	for _, value := range report.Executions.Active {
 		lines = append(lines, output.Line{Lead: value.ID.String(), Fields: []output.Field{{Name: "scope", Value: "active"}, {Name: "adapter", Value: value.Adapter}, {Name: "state", Value: value.State}, {Name: "liveness", Value: value.Liveness}}})
 	}

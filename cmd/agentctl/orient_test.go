@@ -138,11 +138,50 @@ func TestInspectOrientExecutionsMatchesOnlyCurrentWorkspace(t *testing.T) {
 	}
 	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
 	got := a.inspectOrientExecutions(context.Background(), common{journalPath: journalPath}, orientWorkspace{Status: "ready", CWD: workspace, WorktreeRoot: workspace}, 10)
-	if got.JournalStatus != "ready" || got.Matched != 2 || len(got.Active) != 2 || len(got.Recent) != 2 || got.Unscoped != 1 {
+	if got.JournalStatus != "ready" || got.Matched != 2 || got.Returned != 2 || len(got.Active) != 2 || len(got.Recent) != 0 || got.Unscoped != 1 {
 		t.Fatalf("executions=%+v", got)
 	}
-	if got.Active[0].Labels == nil || got.Recent[0].Labels == nil {
+	if got.Active[0].Labels == nil {
 		t.Fatalf("nil labels leaked into deterministic output: %+v", got)
+	}
+	bounded := a.inspectOrientExecutions(context.Background(), common{journalPath: journalPath}, orientWorkspace{Status: "ready", CWD: workspace, WorktreeRoot: workspace}, 1)
+	if bounded.Matched != 2 || bounded.Returned != 1 || len(bounded.Active) != 1 || len(bounded.Recent) != 0 {
+		t.Fatalf("end-to-end limit did not bound returned records: %+v", bounded)
+	}
+}
+
+func TestSelectOrientExecutionsLimitBoundsAllReturnedRecords(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	matched := []model.Execution{
+		{Adapter: "oldest-active", State: model.StateRunning, UpdatedAt: now},
+		{Adapter: "newer-active", State: model.StateWaiting, UpdatedAt: now.Add(time.Second)},
+		{Adapter: "newest-active", State: model.StateAttention, UpdatedAt: now.Add(2 * time.Second)},
+	}
+	active, recent := selectOrientExecutions(matched, 1)
+	if len(active)+len(recent) != 1 || len(active) != 1 || active[0].Adapter != "newest-active" {
+		t.Fatalf("limit did not bound active output: active=%+v recent=%+v", active, recent)
+	}
+}
+
+func TestSelectOrientExecutionsActiveFirstThenNewestTerminal(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	terminalAt := now.Add(4 * time.Second)
+	matched := []model.Execution{
+		{Adapter: "older-active", State: model.StateRunning, UpdatedAt: now},
+		{Adapter: "older-terminal", State: model.StateCompleted, UpdatedAt: now.Add(time.Second), TerminalAt: &terminalAt},
+		{Adapter: "newer-active", State: model.StateWaiting, UpdatedAt: now.Add(2 * time.Second)},
+		{Adapter: "newer-terminal", State: model.StateFailed, UpdatedAt: now.Add(3 * time.Second), TerminalAt: &terminalAt},
+	}
+	active, recent := selectOrientExecutions(matched, 3)
+	if len(active) != 2 || active[0].Adapter != "newer-active" || active[1].Adapter != "older-active" {
+		t.Fatalf("active selection=%+v", active)
+	}
+	if len(recent) != 1 || recent[0].Adapter != "newer-terminal" || len(active)+len(recent) != 3 {
+		t.Fatalf("terminal fill active=%+v recent=%+v", active, recent)
+	}
+	active, recent = selectOrientExecutions(matched, 0)
+	if active == nil || recent == nil || len(active)+len(recent) != 0 {
+		t.Fatalf("zero limit must return deterministic empty arrays: active=%#v recent=%#v", active, recent)
 	}
 }
 
