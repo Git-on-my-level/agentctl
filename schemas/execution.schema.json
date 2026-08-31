@@ -204,31 +204,21 @@
     },
     "task_contract": {
       "type": "object",
-      "additionalProperties": false,
-      "minProperties": 1,
+      "additionalProperties": true,
       "properties": {
-        "objective_summary": {"type": "string", "minLength": 1, "maxLength": 2048},
-        "side_effect_boundary": {
-          "type": "string",
-          "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
-        },
+        "objective_summary": {"type": "string", "maxLength": 2048},
+        "side_effect_boundary": {"type": "string"},
         "acceptance_ref": {
           "type": "string",
           "pattern": "^context-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
         },
         "expected_artifact_kinds": {
           "type": "array",
-          "maxItems": 16,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
-          }
+          "items": {"type": "string"}
         },
         "continuation": {
           "type": "object",
-          "additionalProperties": false,
-          "required": ["same_session_required"],
+          "additionalProperties": true,
           "properties": {
             "same_session_required": {"type": "boolean"}
           }

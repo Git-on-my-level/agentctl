@@ -163,6 +163,7 @@ func (a *app) schemaCommand(renderer output.Renderer, args []string) *output.Err
 		{"name": "skill-pack-report", "version": 1, "file": "schemas/skill-pack-report.schema.json"},
 		{"name": "subscription", "version": 1, "file": "schemas/subscription.schema.json"},
 		{"name": "workspace-owners", "version": 1, "file": "schemas/workspace-owners.schema.json"},
+		{"name": "task-contract-input", "version": 1, "file": "schemas/task-contract-input.schema.json"},
 	}
 	lines := make([]output.Line, 0, len(schemas))
 	for _, item := range schemas {

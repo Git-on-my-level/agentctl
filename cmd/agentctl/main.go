@@ -863,7 +863,7 @@ func writeExecution(renderer output.Renderer, e model.Execution, operation strin
 	warnings := []output.Warning{}
 	if e.TaskContract != nil {
 		fields = append(fields, output.Field{Name: "task_contract", Value: "retained"}, output.Field{Name: "acceptance", Value: "external_required"})
-		warnings = append(warnings, output.Warning{Code: "acceptance_external_required", Message: "the native execution state does not prove the task contract's expected artifacts or acceptance; verify them through their named authority"})
+		warnings = append(warnings, taskContractAcceptanceWarning())
 	}
 	if operation == "run" {
 		warnings = append(warnings, output.Warning{Code: "foreground_execution_owned", Message: "foreground run is owned by this process and has no default wall-clock timeout; use --background with recent, await, and result for work that must outlive this shell"})
@@ -915,13 +915,18 @@ func writeExecutionOutcome(renderer output.Renderer, e model.Execution, outcome 
 	warnings := []output.Warning{}
 	if e.TaskContract != nil {
 		fields = append(fields, output.Field{Name: "task_contract", Value: "retained"}, output.Field{Name: "acceptance", Value: "external_required"})
-		warnings = append(warnings, output.Warning{Code: "acceptance_external_required", Message: "the native execution state does not prove the task contract's expected artifacts or acceptance; verify them through their named authority"})
+		warnings = append(warnings, taskContractAcceptanceWarning())
 	}
 	if err := renderer.Success(output.Success{Result: value, Lines: []output.Line{{Lead: e.ID.String(), Fields: fields}}, Warnings: warnings}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil
 }
+
+func taskContractAcceptanceWarning() output.Warning {
+	return output.Warning{Code: "acceptance_external_required", Message: "the execution state does not prove the task contract's expected artifacts or acceptance; verify them through their named authority"}
+}
+
 func eventLine(e model.Event) output.Line {
 	return output.Line{Lead: e.ID.String(), Fields: []output.Field{{Name: "execution", Value: e.ExecutionID}, {Name: "sequence", Value: e.Sequence}, {Name: "kind", Value: e.Kind}, {Name: "state", Value: e.State}, {Name: "ordering", Value: e.Ordering}}}
 }

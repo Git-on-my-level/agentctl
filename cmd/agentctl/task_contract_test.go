@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 )
@@ -94,9 +95,29 @@ func TestRunTaskContractInputFailsClosed(t *testing.T) {
 	if err := os.WriteFile(invalid, []byte(`{"expected_artifact_kinds":["Not Typed"]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	empty := filepath.Join(root, "empty.json")
+	if err := os.WriteFile(empty, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	emptyArtifacts := filepath.Join(root, "empty-artifacts.json")
+	if err := os.WriteFile(emptyArtifacts, []byte(`{"expected_artifact_kinds":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nullObjective := filepath.Join(root, "null-objective.json")
+	if err := os.WriteFile(nullObjective, []byte(`{"objective_summary":null,"side_effect_boundary":"read_only"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	emptyContinuation := filepath.Join(root, "empty-continuation.json")
+	if err := os.WriteFile(emptyContinuation, []byte(`{"continuation":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, args := range [][]string{
 		{"--task-contract", unknown, "--", "/bin/echo", "done"},
 		{"--task-contract", invalid, "--", "/bin/echo", "done"},
+		{"--task-contract", empty, "--", "/bin/echo", "done"},
+		{"--task-contract", emptyArtifacts, "--", "/bin/echo", "done"},
+		{"--task-contract", nullObjective, "--", "/bin/echo", "done"},
+		{"--task-contract", emptyContinuation, "--", "/bin/echo", "done"},
 		{"--task-contract", "-", "--", "/bin/echo", "done"},
 	} {
 		var stdout, stderr bytes.Buffer
@@ -206,4 +227,93 @@ func TestExecutionSchemaPublishesCompleteTaskContractShape(t *testing.T) {
 			t.Errorf("task_contract schema omitted %q", field)
 		}
 	}
+}
+
+func TestTaskContractInputSchemaIsStrictWhileExecutionV1IsTolerant(t *testing.T) {
+	root := schemaRepositoryRoot(t)
+	readSchema := func(t *testing.T, name string) map[string]any {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(root, "schemas", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var schema map[string]any
+		if err := json.Unmarshal(data, &schema); err != nil {
+			t.Fatal(err)
+		}
+		return schema
+	}
+	executionSchema := readSchema(t, "execution.schema.json")
+	stored := executionSchema["$defs"].(map[string]any)["task_contract"].(map[string]any)
+	if stored["additionalProperties"] != true {
+		t.Fatalf("stored execution-v1 task contract is not extension-tolerant: %#v", stored)
+	}
+	storedArtifacts := stored["properties"].(map[string]any)["expected_artifact_kinds"].(map[string]any)
+	if _, tightened := storedArtifacts["minItems"]; tightened {
+		t.Fatalf("stored execution-v1 rejects legacy empty artifact arrays: %#v", storedArtifacts)
+	}
+	input := readSchema(t, "task-contract-input.schema.json")
+	if input["additionalProperties"] != false {
+		t.Fatalf("new task contract input is not strict: %#v", input)
+	}
+	inputArtifacts := input["properties"].(map[string]any)["expected_artifact_kinds"].(map[string]any)
+	if inputArtifacts["minItems"] != float64(1) {
+		t.Fatalf("task contract input does not reject empty artifact arrays: %#v", inputArtifacts)
+	}
+}
+
+func TestPromotedTaskContractWarningsAreAuthorityNeutral(t *testing.T) {
+	executionID, err := ids.NewExecutionID(ids.CryptoGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID, err := ids.NewHostID(ids.CryptoGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := model.Execution{
+		ID:           executionID,
+		OriginHostID: hostID,
+		Authority:    model.AuthorityMultica,
+		Adapter:      "multica",
+		Mode:         model.ModeMultica,
+		Acquisition:  model.AcquisitionPromoted,
+		State:        model.StateWaiting,
+		TaskContract: &model.TaskContract{ObjectiveSummary: "Continue durable work", SideEffectBoundary: "multica_issue"},
+	}
+	assertWarning := func(t *testing.T, raw []byte) {
+		t.Helper()
+		var document struct {
+			Warnings []output.Warning `json:"warnings"`
+		}
+		if err := json.Unmarshal(raw, &document); err != nil {
+			t.Fatal(err)
+		}
+		if len(document.Warnings) != 1 || document.Warnings[0].Code != "acceptance_external_required" {
+			t.Fatalf("warnings=%#v", document.Warnings)
+		}
+		message := document.Warnings[0].Message
+		if strings.Contains(strings.ToLower(message), "native") || message != "the execution state does not prove the task contract's expected artifacts or acceptance; verify them through their named authority" {
+			t.Fatalf("warning is not authority-neutral: %q", message)
+		}
+	}
+
+	t.Run("status", func(t *testing.T) {
+		var stdout bytes.Buffer
+		if problem := writeExecution(output.Renderer{Mode: output.JSON, Writer: &stdout}, execution, "status"); problem != nil {
+			t.Fatal(problem)
+		}
+		assertWarning(t, stdout.Bytes())
+	})
+
+	t.Run("result", func(t *testing.T) {
+		terminal := execution
+		terminal.State = model.StateCompleted
+		var stdout bytes.Buffer
+		outcome := model.Outcome{SchemaVersion: model.SchemaVersion, ExecutionID: terminal.ID, State: model.StateCompleted, Availability: model.OutcomeStored}
+		if problem := writeExecutionOutcome(output.Renderer{Mode: output.JSON, Writer: &stdout}, terminal, outcome); problem != nil {
+			t.Fatal(problem)
+		}
+		assertWarning(t, stdout.Bytes())
+	})
 }

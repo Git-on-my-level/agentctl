@@ -19,22 +19,30 @@ func TestTaskContractValidate(t *testing.T) {
 		ExpectedArtifactKinds: []string{"root_cause_report"},
 		Continuation:          &Continuation{SameSessionRequired: true},
 	}
-	if err := valid.Validate(); err != nil {
+	if err := valid.ValidateInput(); err != nil {
 		t.Fatalf("valid contract: %v", err)
 	}
 	for name, contract := range map[string]TaskContract{
 		"empty":              {},
 		"oversized_summary":  {ObjectiveSummary: strings.Repeat("x", 2049)},
 		"invalid_boundary":   {SideEffectBoundary: "Read Only"},
+		"empty_artifacts":    {ExpectedArtifactKinds: []string{}},
 		"invalid_artifact":   {ExpectedArtifactKinds: []string{"Report"}},
 		"duplicate_artifact": {ExpectedArtifactKinds: []string{"report", "report"}},
 		"invalid_digest":     {Provenance: &ExecutionProvenance{ContextDigest: "sha256:nope"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := contract.Validate(); err == nil {
+			if err := contract.ValidateInput(); err == nil {
 				t.Fatal("invalid task contract was accepted")
 			}
 		})
+	}
+	if err := (TaskContract{}).Validate(); err != nil {
+		t.Fatalf("legacy empty stored contract was rejected: %v", err)
+	}
+	legacy := TaskContract{SideEffectBoundary: "human reviewed write boundary", ExpectedArtifactKinds: []string{}}
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("legacy permissive stored contract was rejected: %v", err)
 	}
 }
 
