@@ -41,7 +41,7 @@ func helpTopics() map[string]commandHelp {
 		},
 		"orient": {
 			Name: "orient", Summary: "Describe the current worktree, configured authorities, static adapter health, and workspace-scoped executions in one read-only snapshot.", Usage: "agentctl orient [--limit n]",
-			SideEffectClass: output.ReadOnly, Defaults: []string{"current working directory", "newest 10 workspace-matched executions", "no Git fetch", "no adapter launch or remote authentication probe", "journal opens read-only and an absent journal is reported as unconfigured", "raw prompts, transcripts, results, and per-execution paths omitted", "static adapter health proves only local executable availability"},
+			SideEffectClass: output.ReadOnly, Defaults: []string{"current working directory", "at most 10 workspace-matched execution records total", "newest active executions first, then newest terminal executions within the remaining limit", "no Git fetch", "no adapter launch or remote authentication probe", "journal opens read-only and an absent journal is reported as unconfigured", "raw prompts, transcripts, results, and per-execution paths omitted", "static adapter health proves only local executable availability"},
 			Examples: [][]string{{"agentctl", "orient"}, {"agentctl", "orient", "--limit", "25"}}, Related: []string{"doctor", "recent", "route"},
 		},
 		"run": {

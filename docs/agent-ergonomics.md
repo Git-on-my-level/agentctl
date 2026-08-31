@@ -357,7 +357,10 @@ escape for callers that intentionally need weaker or broader behavior:
   explicitly executable-only; remote service and authentication health remain
   unknown until a command with that authority performs a live check. It matches
   executions only from stored absolute `cwd` or `repository` paths and counts
-  missing path metadata as `unscoped` rather than inferring from recency.
+  missing path metadata as `unscoped` rather than inferring from recency. Its
+  `--limit` is one total record budget: newest active records consume it first,
+  then newest terminal records fill any remaining slots. `matched` remains the
+  full count and `returned` is the bounded projection count.
 - `bootstrap update` detects supported harnesses and reconciles their
   canonical skill roots. It upgrades managed assets and installs missing
   portable skills, but refuses drifted assets, does not delete legacy copies,
