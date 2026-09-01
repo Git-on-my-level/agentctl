@@ -345,7 +345,7 @@ func buildBootstrapStatusAt(home string, expected []string, getenv func(string) 
 		if canonical == "" {
 			status.Healthy = false
 			status.Problems = append(status.Problems, name+"_root_unavailable")
-			status.Harnesses = append(status.Harnesses, bootstrapHarness{Name: name, State: "unsupported", Canonical: "", Detected: bootstrapContains(expected, name), Entries: []bootstrapSkillEntry{}, InstructionPointer: inspectInstructionPointer(spec, home, expectedPointer)})
+			status.Harnesses = append(status.Harnesses, bootstrapHarness{Name: name, State: "unsupported", Canonical: "", Detected: bootstrapContains(expected, name), Entries: []bootstrapSkillEntry{}, InstructionPointer: inspectInstructionPointer(spec, home, expectedPointer, embeddedSkill.Revision, embeddedSkill.Digest)})
 			continue
 		}
 		roots := []string{canonical}
@@ -391,7 +391,7 @@ func buildBootstrapStatusAt(home string, expected []string, getenv func(string) 
 				}
 			}
 		}
-		pointer := inspectInstructionPointer(spec, home, expectedPointer)
+		pointer := inspectInstructionPointer(spec, home, expectedPointer, embeddedSkill.Revision, embeddedSkill.Digest)
 		if pointer.State == "stale" {
 			status.Problems = append(status.Problems, name+"_instruction_pointer_stale")
 		} else if pointer.State == "missing" {
@@ -425,11 +425,14 @@ func buildBootstrapStatusAt(home string, expected []string, getenv func(string) 
 }
 
 func instructionPointerBlock(revision, skillDigest string) string {
-	body := strings.Join([]string{
+	return instructionPointerStart + "\n" + instructionPointerBody() + instructionPointerEnd + "\n"
+}
+
+func instructionPointerBody() string {
+	return strings.Join([]string{
 		"CLI agents (`cursor-agent`, `codex`, `omp`, and similar) go through `agentctl`; load skill `agentctl-portable` or run `agentctl help run`.",
 		"Do not manage native agent work with raw background shells; use `agentctl` foreground/background lifecycle and just-in-time help.",
 	}, "\n") + "\n"
-	return instructionPointerBlockWithBody(body, revision, skillDigest)
 }
 
 func instructionPointerBlockWithBody(body, revision, skillDigest string) string {
@@ -448,11 +451,15 @@ type instructionPointerInspection struct {
 	End         int
 }
 
-func inspectInstructionPointer(spec *bootstrapHarnessSpec, home, expected string) bootstrapInstructionPointer {
+func inspectInstructionPointer(spec *bootstrapHarnessSpec, home, expected, expectedRevision, expectedSkillDigest string) bootstrapInstructionPointer {
 	inspection := inspectInstructionPointerForUpdate(spec, home, expected)
 	state := inspection.State
 	if state == "conflict" {
 		state = "stale"
+	}
+	if inspection.Revision == "" && state == "present" {
+		inspection.Revision = expectedRevision
+		inspection.SkillDigest = expectedSkillDigest
 	}
 	return bootstrapInstructionPointer{Path: inspection.Path, State: state, Digest: inspection.Digest, Revision: inspection.Revision}
 }
@@ -539,6 +546,10 @@ func inspectInstructionPointerBytes(path string, data []byte, expected string) i
 	inspection.Start, inspection.End = start, end
 	sum := sha256.Sum256([]byte(block))
 	inspection.Digest = "sha256:" + hex.EncodeToString(sum[:])
+	if expected != "" && block == expected {
+		inspection.State = "present"
+		return inspection
+	}
 	metadataLineStart := strings.Index(block, instructionPointerMetadataPrefix)
 	if metadataLineStart < len(instructionPointerStart)+1 || !strings.HasPrefix(block, instructionPointerStart+"\n") {
 		inspection.State = "conflict"
@@ -558,6 +569,10 @@ func inspectInstructionPointerBytes(path string, data []byte, expected string) i
 	}
 	inspection.Revision, inspection.SkillDigest = fields[0], fields[1]
 	if block != instructionPointerBlockWithBody(body, inspection.Revision, inspection.SkillDigest) {
+		inspection.State = "conflict"
+		return inspection
+	}
+	if body != instructionPointerBody() {
 		inspection.State = "conflict"
 		return inspection
 	}
