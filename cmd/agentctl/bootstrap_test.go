@@ -350,9 +350,9 @@ func TestBootstrapInstructionPointerLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantBlock := instructionPointerBlock(skill.Revision, skill.Digest)
+	wantBlock := slimInstructionPointerBlockForTest()
 	data, err = os.ReadFile(instructionPath)
-	if err != nil || !strings.HasPrefix(string(data), original+"\n") || strings.Count(string(data), instructionPointerStart) != 1 || !strings.Contains(string(data), wantBlock) {
+	if err != nil || !strings.HasPrefix(string(data), original+"\n") || strings.Count(string(data), instructionPointerStart) != 1 || !strings.Contains(string(data), wantBlock) || strings.Contains(string(data), "sha256:") || strings.Contains(string(data), "agentctl-delegation-revision") {
 		t.Fatalf("pointer append did not preserve prose: %q (%v)", data, err)
 	}
 	if info, err := os.Stat(instructionPath); err != nil || info.Mode().Perm() != 0o640 {
@@ -367,7 +367,7 @@ func TestBootstrapInstructionPointerLifecycle(t *testing.T) {
 		t.Fatalf("fresh pointer was not a no-op: %s", stdout.String())
 	}
 
-	stale := instructionPointerBlockWithBody("Older managed pointer text.\n", "tree:v0.1.4", "sha256:"+strings.Repeat("a", 64))
+	stale := instructionPointerBlockWithBody(instructionPointerBodyForTest(), skill.Revision, skill.Digest)
 	staleContent := "before\n\n" + stale + "\nafter\n"
 	if err := os.WriteFile(instructionPath, []byte(staleContent), 0o640); err != nil {
 		t.Fatal(err)
@@ -388,6 +388,10 @@ func TestBootstrapInstructionPointerLifecycle(t *testing.T) {
 	status := buildBootstrapStatus(home, []string{"claude"}, func(string) string { return "" })
 	if len(status.Harnesses) != 1 || status.Harnesses[0].InstructionPointer.State != "present" || status.Harnesses[0].InstructionPointer.Digest == "" || status.Harnesses[0].InstructionPointer.Revision != skill.Revision {
 		t.Fatalf("fresh pointer status missing provenance: %#v", status.Harnesses)
+	}
+	statusJSON, err := json.Marshal(status)
+	if err != nil || !strings.Contains(string(statusJSON), `"skill_digest":"`+skill.Digest+`"`) || !strings.Contains(string(statusJSON), `"skill_revision":"`+skill.Revision+`"`) || !strings.Contains(string(statusJSON), `"digest":"`+status.Harnesses[0].InstructionPointer.Digest+`"`) {
+		t.Fatalf("status JSON missing pointer provenance: %s (%v)", statusJSON, err)
 	}
 }
 
@@ -428,11 +432,7 @@ func TestBootstrapInstructionPointerRefusesDuplicateMarker(t *testing.T) {
 	if err != nil || string(data) != duplicate {
 		t.Fatalf("duplicate pointer changed: %q (%v)", data, err)
 	}
-	skill, err := portableasset.Skill()
-	if err != nil {
-		t.Fatal(err)
-	}
-	drifted := strings.Replace(instructionPointerBlock(skill.Revision, skill.Digest), "go through", "bypass", 1)
+	drifted := strings.Replace(slimInstructionPointerBlockForTest(), "go through", "bypass", 1)
 	if err := os.WriteFile(path, []byte(drifted), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -582,4 +582,13 @@ func TestBootstrapInstructionPointerWritesCursorAgents(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), instructionPointerStart) {
 		t.Fatalf("cursor pointer missing: %q (%v)", data, err)
 	}
+}
+
+func instructionPointerBodyForTest() string {
+	return "CLI agents (`cursor-agent`, `codex`, `omp`, and similar) go through `agentctl`; load skill `agentctl-portable` or run `agentctl help run`.\n" +
+		"Do not manage native agent work with raw background shells; use `agentctl` foreground/background lifecycle and just-in-time help.\n"
+}
+
+func slimInstructionPointerBlockForTest() string {
+	return instructionPointerStart + "\n" + instructionPointerBodyForTest() + instructionPointerEnd + "\n"
 }
