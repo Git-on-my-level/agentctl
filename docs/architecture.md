@@ -200,16 +200,20 @@ task failure.
 
 A short selector such as `studio omp` is ranked against optional config
 keywords (`route.hosts`, `agent_preferences.preferred`, plus built-in adapter
-family aliases). The result is ranked host and model lists plus a placement
-mode (`local`, `remote`, `need_placement`, `need_this_host`, `ambiguous_host`,
-or `no_host`). Absent lists mean nothing was recognized. The caller chooses
+family aliases when `preferred[]` is empty). When `preferred[]` is present, it
+is the reviewed adapter+model table: off-policy family aliases do not match and
+must not look like a validated remote route. The result is ranked host and model
+lists plus a placement mode (`local`, `remote`, `need_placement`,
+`need_this_host`, `ambiguous_host`, or `no_host`). Absent lists mean nothing was recognized. The caller chooses
 among hits. JSON omits the query, match scores, glue words, default `speed`,
 and placement reasons the caller can already infer from `mode`.
 Task prose, lifecycle intent, and nested delegation are deliberately not
 inferred. If `route.this_host` is absent, agentctl returns `need_this_host`
 rather than treating the operating-system hostname as reviewed fleet identity.
 Any unmatched tokens are returned with `route_unmatched_tokens` and have no
-effect on the ranked advice.
+effect on the ranked advice. `dispatch` fails closed on the same off-policy
+selectors; `run` warns and still launches because native argv remains
+caller-authoritative.
 
 ## Authority-safe references
 

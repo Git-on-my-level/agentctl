@@ -557,6 +557,50 @@ func TestDispatchRejectsUnavailableAgentBeforeIssueCreation(t *testing.T) {
 	}
 }
 
+func TestDispatchRejectsOffPolicyModel(t *testing.T) {
+	root := t.TempDir()
+	agents := `[{"id":"agent-grok","name":"M5 Cursor Grok","model":"cursor-grok-4.6-high","runtime_id":"runtime-m5-cursor","status":"idle","archived_at":null}]`
+	runtimes := `[{"id":"runtime-m5-cursor","custom_name":"M5 MBP","provider":"cursor","status":"online"}]`
+	fake, capture := writeDispatchFixture(t, root, agents, runtimes)
+	configPath := filepath.Join(root, "config", "config.json")
+	writeDispatchConfig(t, configPath, fake,
+		[]any{map[string]any{"agent": "codex", "model": "gpt-5.6-sol", "speed": "regular", "use_for": "alias:sol"}},
+		map[string]any{"m5": "m5-mbp"})
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	a.stdin = strings.NewReader("Review the change.")
+	a.stdinIsTerminal = func() bool { return false }
+	code := a.run(context.Background(), []string{"--config", configPath, "dispatch", "--route", "m5 grok", "--title", "Off-policy guard", "--prompt-stdin", "--idempotency-key", "off-policy", "--plan"})
+	if code == 0 || !strings.Contains(stdout.String(), `"code":"usage"`) || !strings.Contains(stdout.String(), `agent_preferences`) || strings.Contains(stdout.String(), `"runtime_verified":true`) {
+		t.Fatalf("off-policy dispatch exit=%d output=%s", code, stdout.String())
+	}
+	if _, err := os.Stat(capture + ".argv"); !os.IsNotExist(err) {
+		t.Fatalf("off-policy dispatch created issue: %v", err)
+	}
+}
+
+func TestDispatchPlanAcceptsInTableGrok(t *testing.T) {
+	root := t.TempDir()
+	agents := `[{"id":"agent-grok","name":"M4 Mini Cursor (Grok)","model":"cursor-grok-4.6-high","runtime_id":"runtime-m4-cursor","status":"idle","archived_at":null}]`
+	runtimes := `[{"id":"runtime-m4-cursor","custom_name":"M4 Mini","provider":"cursor","status":"online"}]`
+	fake, capture := writeDispatchFixture(t, root, agents, runtimes)
+	configPath := filepath.Join(root, "config", "config.json")
+	writeDispatchConfig(t, configPath, fake,
+		[]any{map[string]any{"agent": "cursor", "model": "cursor-grok-4.6-high", "speed": "regular", "use_for": "alias:grok"}},
+		map[string]any{"mini": "m4-mini"})
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	a.stdin = strings.NewReader("Do the reviewed grok work.")
+	a.stdinIsTerminal = func() bool { return false }
+	code := a.run(context.Background(), []string{"--config", configPath, "dispatch", "--route", "mini grok", "--title", "In-table grok", "--prompt-stdin", "--idempotency-key", "in-table-grok", "--plan"})
+	if code != 0 || !strings.Contains(stdout.String(), `"runtime_verified":true`) || !strings.Contains(stdout.String(), `"model":"cursor-grok-4.6-high"`) || !strings.Contains(stdout.String(), `"adapter":"cursor"`) {
+		t.Fatalf("in-table grok dispatch exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(capture + ".argv"); !os.IsNotExist(err) {
+		t.Fatalf("plan created Multica issue: %v", err)
+	}
+}
+
 func TestDispatchReplayDoesNotRegressAdvancedIssue(t *testing.T) {
 	root := t.TempDir()
 	agents := `[{"id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol","runtime_id":"runtime-m5-codex","status":"working","archived_at":null}]`
