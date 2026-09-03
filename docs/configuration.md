@@ -62,17 +62,23 @@ credentials remain in the native CLI, operating-system credential store, or
 another operator-owned secret system; they are not config fields.
 
 `agent_preferences` is ordered, portable guidance for callers and delegated
-agents. Its only supported mode is `advisory`; agentctl reports it through
-`config show`, `config doctor`, and the top-level `doctor`, but never checks a
-native model catalog, blocks a different model, or changes direct CLI argv.
+agents. Its only supported mode is `advisory`; agentctl does not invent a second
+preference document or silently remap argv onto a different adapter or model.
 `agent`, `model`, `speed`, `use_for`, and `notes` are intentionally text fields
 so profiles can describe native tools without agentctl owning their vocabulary.
+
+When a profile has `preferred[]`, that table is the reviewed adapter+model set
+for `dispatch` and `route explain`: off-policy selectors fail closed or return
+no model match. Direct `run` stays caller-authoritative: off-policy argv emits
+a warning and still launches. Without `preferred[]`, `route explain` still ranks
+built-in adapter family aliases such as `glm` or `codex`.
 
 Optional `route` data feeds `agentctl route explain <query>`. `this_host` is the
 local machine id. `hosts` maps nicknames onto those ids. `placement.kind` names
 whatever remote authority the operator configured (Multica is one kind). None
-of these fields are required; without them the matcher still ranks built-in
-adapter family aliases such as `glm` or `codex`.
+of these fields are required. Without `preferred[]`, the matcher still ranks
+built-in adapter family aliases such as `glm` or `codex`. With `preferred[]`,
+only those reviewed models match.
 Without `this_host`, a matched host produces `need_this_host`; agentctl does not
 guess fleet identity from an operating-system hostname. `use_for` contributes
 route aliases only in the explicit `alias:name,other-name` form; ordinary prose

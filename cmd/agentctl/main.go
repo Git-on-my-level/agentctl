@@ -455,18 +455,54 @@ func catalogFromProfile(profile config.Profile) route.Catalog {
 			kind = profile.Route.Placement.Kind
 		}
 	}
-	var preferred []route.ModelRecord
-	if profile.AgentPreferences != nil {
-		for _, item := range profile.AgentPreferences.Preferred {
-			preferred = append(preferred, route.ModelRecord{
-				Adapter: item.Agent,
-				Model:   item.Model,
-				Speed:   item.Speed,
-				Aliases: route.ParseUseForAliases(item.UseFor),
-			})
-		}
+	return route.NewCatalog(thisHost, hosts, preferredRecords(profile), kind)
+}
+
+func preferredRecords(profile config.Profile) []route.ModelRecord {
+	if profile.AgentPreferences == nil {
+		return nil
 	}
-	return route.NewCatalog(thisHost, hosts, preferred, kind)
+	preferred := make([]route.ModelRecord, 0, len(profile.AgentPreferences.Preferred))
+	for _, item := range profile.AgentPreferences.Preferred {
+		preferred = append(preferred, route.ModelRecord{
+			Adapter: item.Agent,
+			Model:   item.Model,
+			Speed:   item.Speed,
+			Aliases: route.ParseUseForAliases(item.UseFor),
+		})
+	}
+	return preferred
+}
+
+func offPolicyRunWarning(c common, adapter string, argv []string) *output.Warning {
+	path, err := configPath(c)
+	if err != nil {
+		return nil
+	}
+	resolution, err := config.Resolve(path, c.configBundle)
+	if err != nil {
+		return nil
+	}
+	_, profile, err := resolution.Config.ResolveProfile(c.profile)
+	if err != nil {
+		return nil
+	}
+	records := preferredRecords(profile)
+	if len(records) == 0 {
+		return nil
+	}
+	model := route.NativeArgvModel(adapter, argv)
+	if model == "" {
+		return nil
+	}
+	if route.InPreferredTable(records, adapter, model) {
+		return nil
+	}
+	return &output.Warning{
+		Code:    "off_policy_run",
+		Message: "native argv is not in the active profile's agent_preferences table; launching anyway because run remains caller-authoritative",
+		Details: map[string]any{"adapter": adapter, "model": model},
+	}
 }
 
 func (a *app) doctor(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
