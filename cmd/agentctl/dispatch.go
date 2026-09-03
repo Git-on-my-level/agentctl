@@ -398,7 +398,11 @@ func validDispatchStatus(value string) bool {
 
 func resolveDispatchRoute(selector string, catalog route.Catalog) (dispatchRoute, *output.Error) {
 	matched := route.Match(selector, catalog)
+	policyLocked := route.HasConcretePreferences(catalog)
 	if len(matched.Unmatched) != 0 {
+		if policyLocked {
+			return dispatchRoute{}, output.NewError(output.CodeUsage, "dispatch route is not in the active profile's agent_preferences table", false).WithDetail("tokens", matched.Unmatched)
+		}
 		return dispatchRoute{}, output.NewError(output.CodeUsage, "dispatch route contains unmatched tokens", false).WithDetail("tokens", matched.Unmatched)
 	}
 	host, ok := uniqueTopDispatchHost(matched.Hosts)
@@ -407,7 +411,14 @@ func resolveDispatchRoute(selector string, catalog route.Catalog) (dispatchRoute
 	}
 	modelHit, ok := uniqueTopDispatchModel(matched.Models)
 	if !ok || strings.TrimSpace(modelHit.Model) == "" {
-		return dispatchRoute{}, output.NewError(output.CodeUsage, "dispatch route must identify exactly one configured concrete model", false)
+		message := "dispatch route must identify exactly one configured concrete model"
+		if policyLocked {
+			message = "dispatch route must identify exactly one model from the active profile's agent_preferences table"
+		}
+		return dispatchRoute{}, output.NewError(output.CodeUsage, message, false)
+	}
+	if policyLocked && !route.InPreferredTable(catalog.Models, modelHit.Adapter, modelHit.Model) {
+		return dispatchRoute{}, output.NewError(output.CodeUsage, "dispatch route is not in the active profile's agent_preferences table", false).WithDetail("adapter", modelHit.Adapter).WithDetail("model", modelHit.Model)
 	}
 	return dispatchRoute{Host: host, Adapter: modelHit.Adapter, Model: modelHit.Model}, nil
 }

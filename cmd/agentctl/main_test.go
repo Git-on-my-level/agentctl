@@ -1800,6 +1800,77 @@ func TestRouteExplainRemoteIsExplicitlyNotDispatched(t *testing.T) {
 	}
 }
 
+func TestRouteExplainOffPolicyDoesNotLookValidated(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config.json")
+	raw := `{"schema_version":1,"default_profile":"fleet","profiles":{"fleet":{"agent_preferences":{"mode":"advisory","preferred":[{"agent":"codex","model":"gpt-5.6-sol","speed":"regular","use_for":"alias:sol"}]},"route":{"this_host":"m4-air","hosts":{"m5":"m5-mbp"},"placement":{"kind":"multica"}}}}}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--config", configPath, "route", "explain", "m5", "grok"}); code != 0 {
+		t.Fatalf("exit=%d output=%s", code, stdout.String())
+	}
+	if strings.Contains(stdout.String(), `"adapter":"cursor"`) || strings.Contains(stdout.String(), `"model":"cursor-grok-4.6-high"`) || strings.Contains(stdout.String(), `"runtime_verified":true`) {
+		t.Fatalf("off-policy grok looked like a validated route: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"code":"route_unmatched_tokens"`) || !strings.Contains(stdout.String(), `"grok"`) {
+		t.Fatalf("off-policy grok was not unmatched: %s", stdout.String())
+	}
+}
+
+func TestRunWarnsOffPolicyAndStillLaunches(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config.json")
+	raw := `{"schema_version":1,"default_profile":"fleet","profiles":{"fleet":{"agent_preferences":{"mode":"advisory","preferred":[{"agent":"cursor","model":"cursor-grok-4.6-high","speed":"regular","use_for":"alias:grok"},{"agent":"codex","model":"gpt-5.6-sol","speed":"regular","use_for":"alias:sol"}]}}}}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	native := `{"type":"result","status":"completed","result":{"summary":"off-policy still launched"}}`
+	script := filepath.Join(root, "native")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '"+native+"'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(root, "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "--config", configPath, "run", "--adapter", "generic-process", "--", script, "--model", "composer-2.5"})
+	if code != 0 {
+		t.Fatalf("off-policy run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"code":"off_policy_run"`) || !strings.Contains(stdout.String(), `"model":"composer-2.5"`) || !strings.Contains(stdout.String(), `"ok":true`) {
+		t.Fatalf("off-policy run missed warning or failed: %s", stdout.String())
+	}
+}
+
+func TestRunInTableModelDoesNotWarn(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config.json")
+	raw := `{"schema_version":1,"default_profile":"fleet","profiles":{"fleet":{"agent_preferences":{"mode":"advisory","preferred":[{"agent":"generic-process","model":"gpt-5.6-sol","speed":"regular","use_for":"alias:sol"},{"agent":"cursor","model":"cursor-grok-4.6-high","speed":"regular","use_for":"alias:grok"}]}}}}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	native := `{"type":"result","status":"completed","result":{"summary":"in-table launched"}}`
+	script := filepath.Join(root, "native")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '"+native+"'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(root, "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "--config", configPath, "run", "--adapter", "generic-process", "--", script, "--model", "sol"})
+	if code != 0 {
+		t.Fatalf("in-table run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), `"code":"off_policy_run"`) {
+		t.Fatalf("in-table run warned: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"ok":true`) {
+		t.Fatalf("in-table run did not succeed: %s", stdout.String())
+	}
+}
+
 func TestCapabilitiesSummaryCanRequireResultContent(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)

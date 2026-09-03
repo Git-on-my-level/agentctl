@@ -341,7 +341,8 @@ func collapseModels(hits []ModelHit) []ModelHit {
 }
 
 // NewCatalog builds a catalog from optional config. Built-in family aliases
-// are always included; preferred[] adds concrete model slugs.
+// are the fallback when preferred[] is empty. When preferred[] is present it
+// is the reviewed adapter+model table: off-policy family aliases do not match.
 func NewCatalog(thisHost string, hosts map[string]string, preferred []ModelRecord, placementKind string) Catalog {
 	catalog := Catalog{ThisHost: strings.TrimSpace(thisHost), PlacementKind: strings.TrimSpace(placementKind)}
 	byID := map[string]*HostRecord{}
@@ -374,8 +375,11 @@ func NewCatalog(thisHost string, hosts map[string]string, preferred []ModelRecor
 	}
 	sort.Slice(catalog.Hosts, func(i, j int) bool { return catalog.Hosts[i].ID < catalog.Hosts[j].ID })
 
-	catalog.Models = append(catalog.Models, BuiltinModelCatalog()...)
-	catalog.Models = append(catalog.Models, preferred...)
+	if len(preferred) == 0 {
+		catalog.Models = append(catalog.Models, BuiltinModelCatalog()...)
+	} else {
+		catalog.Models = append(catalog.Models, preferred...)
+	}
 	return catalog
 }
 

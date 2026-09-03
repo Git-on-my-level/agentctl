@@ -53,8 +53,9 @@ type Adapter struct {
 }
 
 // AgentPreferences records human- and agent-readable delegation guidance.
-// It is deliberately advisory: agentctl never rewrites or rejects the exact
-// native argv supplied by a caller based on these values.
+// Mode stays advisory: agentctl never rewrites native run argv. Dispatch and
+// route explain treat preferred[] as the reviewed adapter+model table and fail
+// closed on off-policy selectors. Off-policy run argv warns and still launches.
 type AgentPreferences struct {
 	Mode      string            `json:"mode"`
 	Preferred []AgentPreference `json:"preferred"`

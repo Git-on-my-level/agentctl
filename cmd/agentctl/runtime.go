@@ -68,6 +68,9 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	if problem != nil {
 		return problem
 	}
+	if warning := offPolicyRunWarning(c, opts.adapter, opts.argv); warning != nil {
+		renderer = renderer.WithWarnings(*warning)
+	}
 	launchCWD, repository, workspace, workspaceErr := captureLaunchWorkspace(ctx, opts.cwd)
 	if workspaceErr != nil {
 		return output.Wrap(output.CodeUsage, "resolve run working directory", false, workspaceErr).WithDetail("cwd", opts.cwd)
