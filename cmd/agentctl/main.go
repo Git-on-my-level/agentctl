@@ -951,11 +951,11 @@ func writeExecution(renderer output.Renderer, e model.Execution, operation strin
 		actions = append(actions, output.NextAction{Label: "Review run ownership and lifecycle", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 	}
 	if !e.State.Terminal() {
-		label := "Wait up to 10 minutes"
-		argv := []string{"agentctl", "await", e.ID.String(), "--output", string(renderer.Mode)}
+		label := "Wait without timeout"
+		argv := []string{"agentctl", "await", e.ID.String(), "--output", string(renderer.Mode), "--no-timeout"}
 		if e.DeadlineAt != nil {
 			label = "Wait through execution deadline"
-			argv = append(argv, "--through-execution-deadline")
+			argv = []string{"agentctl", "await", e.ID.String(), "--output", string(renderer.Mode), "--through-execution-deadline"}
 		}
 		actions = append(actions, output.NextAction{Label: label, Argv: argv, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}})
 		if operation == "background" {

@@ -304,6 +304,59 @@ func TestForegroundRunEnvelopeTeachesOwnership(t *testing.T) {
 	}
 }
 
+func TestWriteExecutionAwaitNextActionMatchesDeadline(t *testing.T) {
+	executionID, err := ids.NewExecutionID(ids.CryptoGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID, err := ids.NewHostID(ids.CryptoGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := model.Execution{ID: executionID, OriginHostID: hostID, Authority: model.AuthorityNative, Adapter: "codex", State: model.StateRunning}
+	awaitArgv := func(t *testing.T, execution model.Execution, operation string) (label string, argv []string) {
+		t.Helper()
+		var stdout bytes.Buffer
+		if problem := writeExecution(output.Renderer{Mode: output.JSON, Writer: &stdout}, execution, operation); problem != nil {
+			t.Fatal(problem)
+		}
+		var document struct {
+			NextActions []output.NextAction `json:"next_actions"`
+		}
+		if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+			t.Fatal(err)
+		}
+		for _, action := range document.NextActions {
+			if len(action.Argv) >= 2 && action.Argv[1] == "await" {
+				return action.Label, action.Argv
+			}
+		}
+		t.Fatalf("missing await next_action: %s", stdout.String())
+		return "", nil
+	}
+
+	label, argv := awaitArgv(t, base, "background")
+	wantUnbounded := []string{"agentctl", "await", executionID.String(), "--output", "json", "--no-timeout"}
+	if label == "" || strings.Contains(strings.ToLower(label), "10 minutes") || strings.Contains(strings.ToLower(label), "ten-minute") {
+		t.Fatalf("unbounded await label=%q", label)
+	}
+	if !reflect.DeepEqual(argv, wantUnbounded) {
+		t.Fatalf("unbounded await argv=%q want=%q", argv, wantUnbounded)
+	}
+
+	deadline := time.Now().UTC().Add(30 * time.Second)
+	bounded := base
+	bounded.DeadlineAt = &deadline
+	label, argv = awaitArgv(t, bounded, "background")
+	wantBounded := []string{"agentctl", "await", executionID.String(), "--output", "json", "--through-execution-deadline"}
+	if label != "Wait through execution deadline" {
+		t.Fatalf("bounded await label=%q", label)
+	}
+	if !reflect.DeepEqual(argv, wantBounded) {
+		t.Fatalf("bounded await argv=%q want=%q", argv, wantBounded)
+	}
+}
+
 func TestRunParsesLabelsAndBackground(t *testing.T) {
 	opts, problem := parseRun([]string{"--background", "--label", "review", "--label", "model.grok", "--", "/bin/echo", "done"})
 	if problem != nil {
