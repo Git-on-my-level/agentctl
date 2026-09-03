@@ -695,7 +695,7 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 	if problem != nil {
 		return a.fail(renderer, problem)
 	}
-	timeout := 10 * time.Minute
+	var timeout time.Duration
 	noTimeout := false
 	timeoutSet := false
 	throughExecutionDeadline := false
@@ -731,7 +731,7 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 	deadline := time.Time{}
 	lastMulticaReprobe := time.Time{}
 	consecutiveMulticaReprobeErrors := 0
-	if !noTimeout && !throughExecutionDeadline {
+	if timeoutSet {
 		deadline = a.now().Add(timeout)
 	}
 	for {

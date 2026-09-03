@@ -99,9 +99,9 @@ JSON output contains:
 `next_actions` uses argv arrays, not prose commands requiring shell parsing.
 Actions include required preconditions and whether they mutate state. They are
 derived from the durable execution contract: a bounded run points at its
-recorded deadline, while an unbounded run recommends `await --no-timeout` so
-the observer does not die at the command's ten-minute default. Background
-results also offer subscription discovery for callers that cannot block.
+recorded deadline, while an unbounded run recommends `await --no-timeout` as
+an explicit unbounded observer. Background results also offer subscription
+discovery for callers that cannot block.
 
 Normal success emits no decorative banners. Bounded JSON mode writes exactly
 one JSON document to stdout. An explicitly streaming JSON command writes one
@@ -419,11 +419,11 @@ escape for callers that intentionally need weaker or broader behavior:
   closed on conflicted evidence. `--allow-empty` is for metadata-only inspection; `--summary`
   intentionally returns the bounded preview. A successful dereference writes an
   acknowledgement stamp so `recent --unreconciled` can forget the execution.
-- `await` uses a ten-minute timeout and stops on actionable attention, returning
-  `attention_required` with a next action. `--timeout` changes the bound and
-  `--no-timeout` removes it; `--through-execution-deadline` uses a recorded run
-  deadline plus bounded terminalization grace; `--ignore-attention` opts into
-  continued waiting.
+- `await` waits until terminal or attention by default, returning
+  `attention_required` with a next action. `--timeout` adds an explicit bound
+  and `--no-timeout` remains a valid explicit form; `--through-execution-deadline`
+  uses a recorded run deadline plus bounded terminalization grace;
+  `--ignore-attention` opts into continued waiting.
   A terminal return acknowledges the execution; attention and timeout do not.
 - `subscribe create` listens for `terminal`, `attention`, and `artifact` by
   default, expires after acknowledged terminal delivery, and has a bounded

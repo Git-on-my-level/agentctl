@@ -64,7 +64,7 @@ func helpTopics() map[string]commandHelp {
 		},
 		"await": {
 			Name: "await", Summary: "Wait for terminal state or attention without polling native session files.", Usage: "agentctl await <execution-id> [--timeout duration|--no-timeout|--through-execution-deadline] [--ignore-attention]",
-			SideEffectClass: output.LocalOperationalWrite, Defaults: []string{"10 minute timeout", "returns immediately when attention is required", "Multica-authority executions are refreshed from durable workspace events while awaiting", "two consecutive retryable Multica refresh failures are tolerated; the third returns its diagnostic", "a terminal return acknowledges the execution so it is no longer unreconciled"},
+			SideEffectClass: output.LocalOperationalWrite, Defaults: []string{"no timeout", "returns immediately when attention is required", "Multica-authority executions are refreshed from durable workspace events while awaiting", "two consecutive retryable Multica refresh failures are tolerated; the third returns its diagnostic", "a terminal return acknowledges the execution so it is no longer unreconciled"},
 			Examples: [][]string{{"agentctl", "await", "exec-..."}, {"agentctl", "await", "exec-...", "--through-execution-deadline"}, {"agentctl", "await", "exec-...", "--no-timeout", "--ignore-attention"}}, Related: []string{"status", "events", "result"},
 		},
 		"result": {

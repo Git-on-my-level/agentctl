@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -256,6 +257,28 @@ func TestDefaultOutputIsJSONAndTopicHelpIsProgressive(t *testing.T) {
 	stdout.Reset()
 	if code := a.run(context.Background(), []string{"help", "missing-topic"}); code != 3 || !strings.Contains(stdout.String(), `"code":"not_found"`) {
 		t.Fatalf("unknown help exit=%d output=%s", code, stdout.String())
+	}
+}
+
+func TestHelpAwaitDefaultHasNoTimeout(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"help", "await"}); code != 0 {
+		t.Fatalf("help await exit=%d output=%s", code, stdout.String())
+	}
+	var doc struct {
+		OK     bool        `json:"ok"`
+		Result commandHelp `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.ToLower(strings.Join(doc.Result.Defaults, "\n"))
+	if !doc.OK || doc.Result.Name != "await" || strings.Contains(joined, "10 minute") || strings.Contains(joined, "ten-minute") {
+		t.Fatalf("await help defaults=%q output=%s", doc.Result.Defaults, stdout.String())
+	}
+	if !strings.Contains(joined, "no timeout") {
+		t.Fatalf("await help defaults omitted no-timeout default: %q", doc.Result.Defaults)
 	}
 }
 
@@ -1459,6 +1482,59 @@ func TestAwaitContextCancellationIsNotReportedAsTimeout(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("cancelled await did not return")
+	}
+}
+
+func TestAwaitDefaultDoesNotApplyTenMinuteTimeout(t *testing.T) {
+	now := time.Now().UTC()
+	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journal, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, _, err := journal.CreateExecution(context.Background(), model.Execution{Authority: model.AuthorityNative, Adapter: "generic-process", Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateRunning, Liveness: model.LivenessAlive, SourceBindings: []model.SourceBinding{}, Capabilities: model.CapabilitySnapshot{NegotiatedAt: now, AdapterVersion: "test", Items: []model.CapabilityItem{}}, Observation: model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: now}}, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	var calls atomic.Int64
+	a.now = func() time.Time {
+		return now.Add(time.Duration(calls.Add(1)) * 11 * time.Minute)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() {
+		done <- a.run(ctx, []string{"--output", "json", "--journal", journalPath, "await", execution.ID.String()})
+	}()
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case code := <-done:
+		t.Fatalf("no-flag await returned before cancel: exit=%d output=%s", code, stdout.String())
+	default:
+	}
+	cancel()
+	select {
+	case code := <-done:
+		if code != output.ExitCodeFor(output.CodeExecutionCancelled) || !strings.Contains(stdout.String(), `"code":"execution_cancelled"`) {
+			t.Fatalf("no-flag await exit=%d output=%s", code, stdout.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled no-flag await did not return")
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	calls.Store(0)
+	bounded := testApp(&stdout, &stderr)
+	bounded.now = func() time.Time {
+		return now.Add(time.Duration(calls.Add(1)) * 11 * time.Minute)
+	}
+	if code := bounded.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "await", execution.ID.String(), "--timeout", "10m"}); code != output.ExitCodeFor(output.CodeTimeout) || !strings.Contains(stdout.String(), `"code":"timeout"`) {
+		t.Fatalf("explicit timeout exit=%d output=%s", code, stdout.String())
 	}
 }
 
