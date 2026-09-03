@@ -1,8 +1,11 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -58,10 +61,10 @@ type MulticaConfig struct {
 // discovers credentials into an agentctl profile.
 const MulticaDefaultProfile = "@default"
 
-// MulticaArgv constructs one of the currently verified read-only Multica event
-// commands. The fork's grammar uses global --profile/--workspace-id flags and
-// nested `event list|watch` commands. Unverified issue/run operations return
-// nil instead of inventing a command that could mutate authority state.
+// MulticaArgv constructs verified Multica CLI argv for supported authority
+// operations. The fork's grammar uses global --profile/--workspace-id flags and
+// nested subcommands. Unverified issue/run operations return nil instead of
+// inventing a command that could mutate authority state.
 func MulticaArgv(config MulticaConfig, operation string, extra ...string) []string {
 	binary := config.Binary
 	if binary == "" {
@@ -73,6 +76,8 @@ func MulticaArgv(config MulticaConfig, operation string, extra ...string) []stri
 		command = []string{"event", "list"}
 	case "event watch":
 		command = []string{"event", "watch"}
+	case "issue cancel-task":
+		command = []string{"issue", "cancel-task"}
 	default:
 		return nil
 	}
@@ -321,7 +326,26 @@ func (m *multicaAdapter) Resume(ctx context.Context, req ResumeRequest) (LaunchR
 	return LaunchResult{}, capabilityError(CapabilityResume, "Multica issue/run resume route is not verified for the current CLI")
 }
 func (m *multicaAdapter) Cancel(ctx context.Context, req CancelRequest) error {
-	return capabilityError(CapabilityCancel, "Multica issue/run cancellation route is not verified for the current CLI")
+	if m.config.Profile == "" || m.config.Workspace == "" {
+		return invalidRequest("Multica cancel requires exact profile and workspace-id")
+	}
+	if m.config.Issue == "" || m.config.Run == "" {
+		return invalidRequest("Multica cancel requires bound issue and task from the journaled execution")
+	}
+	argv := MulticaArgv(m.config, "issue cancel-task", m.config.Run, "--issue", m.config.Issue, "--output", "json")
+	if len(argv) == 0 {
+		return capabilityError(CapabilityCancel, "Multica issue cancel-task route is not verified for the current CLI")
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = os.Environ()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		retryable := ctx.Err() != nil
+		details := map[string]any{"stderr": strings.TrimSpace(stderr.String())}
+		return &AdapterError{Code: ErrExecutionFailed, Message: "Multica issue cancel-task was rejected", Retryable: retryable, Cause: err, Details: details}
+	}
+	return nil
 }
 
 func multicaScopedArgv(config MulticaConfig, operation string, ref SourceRef, extra ...string) []string {
@@ -378,8 +402,10 @@ func ompManifest() Manifest {
 func multicaManifest() Manifest {
 	events := capDecl(CapabilityEvents, CapabilityDegraded)
 	events.Constraints = map[string]any{"scope": "workspace_events", "cross_restart": true, "source": "native_cli"}
+	cancel := capDecl(CapabilityCancel, CapabilitySupported)
+	cancel.Constraints = map[string]any{"scope": "authority_forward", "cross_restart": true, "acceptance_semantics": "cancel_request_not_terminal"}
 	m := baseManifest("multica", "0.1.0", "multica_run", "multica-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilityUnavailable), capDecl(CapabilityAttach, CapabilityUnavailable), capDecl(CapabilitySnapshot, CapabilityUnavailable), events, capDecl(CapabilityResult, CapabilityUnavailable), capDecl(CapabilityResultContent, CapabilityUnavailable), capDecl(CapabilityResume, CapabilityUnavailable), capDecl(CapabilityCancel, CapabilityUnavailable), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilityUnavailable), capDecl(CapabilityAttach, CapabilityUnavailable), capDecl(CapabilitySnapshot, CapabilityUnavailable), events, capDecl(CapabilityResult, CapabilityUnavailable), capDecl(CapabilityResultContent, CapabilityUnavailable), capDecl(CapabilityResume, CapabilityUnavailable), cancel, capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 	m.ContextInjection = ContextInjection{Mechanisms: []ContextMechanism{ContextEnvironmentPath, ContextAuthorityArtifact}, Guaranteed: false, Reason: "delivery must be explicitly verified by the Multica worker"}
 	return m
