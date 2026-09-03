@@ -971,13 +971,13 @@ func parseExecutionRef(value string, c common) (ids.ExecutionID, *output.Error) 
 	}
 	return id, nil
 }
-func writeExecution(renderer output.Renderer, e model.Execution, operation string) *output.Error {
+func writeExecution(renderer output.Renderer, e model.Execution, operation string, extraWarnings ...output.Warning) *output.Error {
 	fields := []output.Field{{Name: "state", Value: e.State}, {Name: "authority", Value: e.Authority}, {Name: "adapter", Value: e.Adapter}, {Name: "liveness", Value: e.Liveness}, {Name: "revision", Value: e.Revision}}
 	if len(e.Labels) != 0 {
 		fields = append(fields, output.Field{Name: "labels", Value: e.Labels})
 	}
 	actions := []output.NextAction{}
-	warnings := []output.Warning{}
+	warnings := append([]output.Warning{}, extraWarnings...)
 	if e.TaskContract != nil {
 		fields = append(fields, output.Field{Name: "task_contract", Value: "retained"}, output.Field{Name: "acceptance", Value: "external_required"})
 		warnings = append(warnings, taskContractAcceptanceWarning())

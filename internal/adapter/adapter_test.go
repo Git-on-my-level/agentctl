@@ -731,6 +731,11 @@ func TestMulticaArgvBindsAllAuthoritySelectors(t *testing.T) {
 	if strings.Join(watch, "\x00") != strings.Join([]string{"/tmp/multica", "--profile", "profile-fixture", "--workspace-id", "workspace-fixture", "event", "watch", "--cursor", "evt1.abc", "--limit", "100", "--interval", "15s"}, "\x00") {
 		t.Fatalf("watch argv = %#v", watch)
 	}
+	cancel := MulticaArgv(config, "issue cancel-task", config.Run, "--issue", config.Issue, "--output", "json")
+	expectedCancel := []string{"/tmp/multica", "--profile", "profile-fixture", "--workspace-id", "workspace-fixture", "issue", "cancel-task", config.Run, "--issue", config.Issue, "--output", "json"}
+	if strings.Join(cancel, "\x00") != strings.Join(expectedCancel, "\x00") {
+		t.Fatalf("cancel argv = %#v", cancel)
+	}
 }
 
 func TestMulticaBoundedEventPageFiltersAndAdvancesCursor(t *testing.T) {
@@ -770,6 +775,36 @@ func TestMulticaBoundedEventPageFiltersAndAdvancesCursor(t *testing.T) {
 	observed, err := filteredAdapter.Events(context.Background(), EventsRequest{Ref: SourceRef{Adapter: "multica", Kind: "multica_event", Profile: config.Profile, Workspace: config.Workspace}, Cursor: "evt-prev"})
 	if err != nil || len(observed) != 1 || observed[0].Kind != "health" || observed[0].Cursor != "evt-next" {
 		t.Fatalf("cursor-only observation = %#v, err=%v", observed, err)
+	}
+}
+
+func TestMulticaCancelForwardsToIssueCancelTask(t *testing.T) {
+	argvPath := filepath.Join(t.TempDir(), "argv")
+	path := fixtureExecutable(t, `printf '%s\n' "$@" > "`+argvPath+`"; exit 0`)
+	config := MulticaConfig{Binary: path, Profile: "profile-fixture", Workspace: "workspace-fixture", Issue: "issue-fixture", Run: "task-fixture", EventPageLimit: 1}
+	adapter := NewMultica(config)
+	if err := adapter.Cancel(context.Background(), CancelRequest{Ref: SourceRef{Kind: "multica_run", Issue: config.Issue, Run: config.Run}}); err != nil {
+		t.Fatal(err)
+	}
+	argvBytes, err := os.ReadFile(argvPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(strings.Fields(string(argvBytes)), " ")
+	for _, expected := range []string{"--profile", config.Profile, "--workspace-id", config.Workspace, "issue", "cancel-task", config.Run, "--issue", config.Issue, "--output", "json"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("argv %q missing %q", joined, expected)
+		}
+	}
+}
+
+func TestMulticaCancelRequiresBoundIssueAndTask(t *testing.T) {
+	config := MulticaConfig{Binary: "/bin/true", Profile: "profile-fixture", Workspace: "workspace-fixture", Issue: "issue-fixture"}
+	adapter := NewMultica(config)
+	err := adapter.Cancel(context.Background(), CancelRequest{})
+	var adapterErr *AdapterError
+	if !errors.As(err, &adapterErr) || adapterErr.Code != ErrUsage {
+		t.Fatalf("err=%v", err)
 	}
 }
 

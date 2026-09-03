@@ -979,6 +979,9 @@ func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c comm
 	if execution.State.Terminal() {
 		return output.NewError(output.CodeInvalidState, "terminal execution cannot be cancelled", false).WithDetail("execution_id", id.String()).WithDetail("state", execution.State)
 	}
+	if execution.Authority == model.AuthorityMultica {
+		return a.cancelMulticaForward(ctx, renderer, c, execution, id)
+	}
 	runtime, _, problem := a.runtimeAdapter(c, execution.Adapter, bindingOpaque(execution, "issue"), bindingOpaque(execution, "run"))
 	if problem != nil {
 		return problem
@@ -996,6 +999,39 @@ func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c comm
 		return mapStoreError("record cancellation outcome", err)
 	}
 	return writeExecution(renderer, execution, "cancel")
+}
+
+func (a *app) cancelMulticaForward(ctx context.Context, renderer output.Renderer, c common, execution model.Execution, id ids.ExecutionID) *output.Error {
+	issue, issueBound := dispatchBindingOpaque(execution.SourceBindings, "multica_issue")
+	run, runBound := dispatchBindingOpaque(execution.SourceBindings, "multica_run")
+	if !issueBound || !runBound {
+		message := "Multica cancel requires a journaled execution with bound issue and task"
+		if !issueBound && !runBound {
+			message = "there is no tracked Multica execution; raw Multica issues created outside agentctl are not journaled here"
+		} else if !runBound {
+			message = "Multica cancel requires a bound task (multica_run); the issue exists but no Multica task is bound yet"
+		}
+		return output.NewError(output.CodeCapabilityUnavailable, message, false).
+			WithDetail("execution_id", id.String()).
+			WithDetail("multica_issue_bound", issueBound).
+			WithDetail("multica_run_bound", runBound)
+	}
+	runtime, _, problem := a.runtimeAdapter(c, execution.Adapter, issue, run)
+	if problem != nil {
+		return problem
+	}
+	profile, _ := dispatchBindingOpaque(execution.SourceBindings, "multica_profile")
+	endpoint, _ := dispatchBindingOpaque(execution.SourceBindings, "multica_endpoint")
+	workspace, _ := dispatchBindingOpaque(execution.SourceBindings, "multica_workspace")
+	ref := adapter.SourceRef{
+		Adapter: execution.Adapter, Kind: "multica_run", OpaqueID: run, Issue: issue, Run: run,
+		Profile: profile, Endpoint: endpoint, Workspace: workspace,
+	}
+	if err := runtime.Cancel(ctx, adapter.CancelRequest{Ref: ref}); err != nil {
+		return mapAdapterError("Multica cancel request failed", err).WithDetail("execution_id", id.String())
+	}
+	warnings := []output.Warning{{Code: "cancel_request_accepted", Message: "Multica accepted the cancel request; the remote run may still be stopping—use await or status to observe terminal state"}}
+	return writeExecution(renderer, execution, "cancel", warnings...)
 }
 
 func commitCancellation(ctx context.Context, journal *store.Journal, execution model.Execution, now time.Time) (model.Execution, error) {
