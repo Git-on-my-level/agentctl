@@ -220,13 +220,9 @@ func (a *app) loadFanoutPrompts(manifest fanoutManifest, root string) ([]*prompt
 	cache := map[string]*promptPayload{}
 	total := 0
 	load := func(path, delivery string) (*promptPayload, *output.Error) {
-		key := path
-		if !filepath.IsAbs(key) {
-			key = filepath.Join(root, key)
-		}
-		key = filepath.Clean(key)
+		key, confined := fanoutPromptCacheKey(root, path)
 		payload := cache[key]
-		if payload == nil {
+		if payload == nil || !confined {
 			var problem *output.Error
 			payload, problem = a.loadPrompt(runOptions{cwd: root, promptFile: path, promptDelivery: normalizedPromptDelivery(delivery)})
 			if problem != nil {
@@ -236,7 +232,9 @@ func (a *app) loadFanoutPrompts(manifest fanoutManifest, root string) ([]*prompt
 			if total > maxFanoutPromptBytes {
 				return nil, output.NewError(output.CodeUsage, "fanout unique prompt bytes exceed 64 MiB limit", false)
 			}
-			cache[key] = payload
+			if confined {
+				cache[key] = payload
+			}
 		}
 		// Byte storage is shared, but delivery metadata is per child. Never
 		// mutate a cached prompt while concurrent argv/stdin consumers use it.
@@ -330,6 +328,29 @@ func fanoutRunArgs(child fanoutChild, id ids.ExecutionID, prompt *promptPayload)
 		args = append(args, "--allow-unreliable-result")
 	}
 	return append(append(args, "--"), child.Argv...)
+}
+
+func fanoutPromptCacheKey(root, path string) (string, bool) {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return path, false
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(absRoot, path)
+	}
+	path, err = filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return path, false
+	}
+	rel, err := filepath.Rel(absRoot, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return path, false
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return filepath.Join(absRoot, rel), true
+	}
+	return filepath.Join(resolvedRoot, rel), true
 }
 
 func normalizedPromptDelivery(value string) string {

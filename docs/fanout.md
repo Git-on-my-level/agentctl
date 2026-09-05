@@ -51,8 +51,9 @@ model, permission, session, or tool options. Native flags belong in `argv`.
 
 Every prompt path is resolved and checked below the manifest directory, even
 when the child runs elsewhere. Prompt files must pass the existing regular-file
-and no-symlink checks. A file is read once per distinct normalized path before
-any task launches. All children using that path share an in-memory snapshot,
+and no-symlink checks. A file is read once per confined path below the manifest
+directory (the manifest root is symlink-resolved; the prompt file itself must
+still be a regular file). All children using that path share an in-memory snapshot,
 including when their delivery modes differ. Later file edits do not change the
 prepared batch. Limits are 8 MiB per prompt and 64 MiB of unique prompt bytes.
 Prompt text never appears in the batch response; only source, delivery, byte

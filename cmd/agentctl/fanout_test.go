@@ -153,6 +153,42 @@ func TestFanoutPromptCacheSharesBytesNotDeliveryMetadata(t *testing.T) {
 	}
 }
 
+func TestFanoutPromptCacheCollapsesAbsolutePath(t *testing.T) {
+	root := t.TempDir()
+	writeFanoutTestFile(t, root, "task.md", "prompt", 0o600)
+	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
+	m := fanoutManifest{SchemaVersion: 1, PromptFile: "task.md", Children: []fanoutChild{
+		{PromptDelivery: "argv"},
+		{PromptFile: filepath.Join(root, "task.md"), PromptDelivery: "stdin"},
+	}}
+	prompts, shared, problem := a.loadFanoutPrompts(m, root)
+	if problem != nil {
+		t.Fatal(problem)
+	}
+	if prompts[0].Delivery != "argv" || prompts[1].Delivery != "stdin" {
+		t.Fatal("delivery metadata was mutated")
+	}
+	if &prompts[0].Bytes[0] != &prompts[1].Bytes[0] || &shared.Bytes[0] != &prompts[0].Bytes[0] {
+		t.Fatal("same confined path was materialized more than once")
+	}
+}
+
+func TestFanoutPromptSymlinkIsStillRejected(t *testing.T) {
+	root := t.TempDir()
+	writeFanoutTestFile(t, root, "task.md", "prompt", 0o600)
+	if err := os.Symlink("task.md", filepath.Join(root, "alias.md")); err != nil {
+		t.Skip(err)
+	}
+	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
+	m := fanoutManifest{SchemaVersion: 1, PromptFile: "task.md", Children: []fanoutChild{
+		{PromptDelivery: "argv"},
+		{PromptFile: "alias.md", PromptDelivery: "stdin"},
+	}}
+	if _, _, problem := a.loadFanoutPrompts(m, root); problem == nil {
+		t.Fatal("symlink prompt was accepted")
+	}
+}
+
 func TestFanoutLoadsAllPromptsBeforeLaunching(t *testing.T) {
 	root := t.TempDir()
 	writeFanoutTestFile(t, root, "first.md", "first", 0o600)
