@@ -94,7 +94,7 @@ func TestNewSchemaDocumentsDeclareDraftAndRequiredShape(t *testing.T) {
 		"callback-envelope.schema.json": {"schema_version", "delivery_id", "subscription_id", "event_id", "event_dedupe_key", "attempt", "sent_at", "expires_at", "nonce", "event"},
 		"context-result.schema.json":    {"bundle_revision", "matches"},
 		"event-page.schema.json":        {"events", "scanned", "filtered", "page_limit"},
-		"fanout-manifest.schema.json":   {"schema_version", "prompt_file", "children"},
+		"fanout-manifest.schema.json":   {"schema_version", "children"},
 		"inbox-result.schema.json":      {"executions", "count", "has_more", "host_local", "as_of", "stale_after_seconds"},
 		"outcome.schema.json":           {"schema_version", "execution_id", "revision", "state", "availability", "recorded_at", "source", "result_ref"},
 		"skill-pack.schema.json":        {"schema_version", "skills"},

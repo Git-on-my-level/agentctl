@@ -277,19 +277,34 @@ agentctl fanout --plan --manifest "$PWD/fanout.json"
 agentctl fanout --manifest "$PWD/fanout.json"
 ```
 
-`fanout` reads the prompt once, preallocates one `exec-*` ID per child, runs up
-to two children concurrently by default, and returns every child ID and state.
-The manifest requires `schema_version`, `prompt_file`, and at least one
-`children[].argv`; `prompt_delivery` may be set globally or per child. The
-prompt file and each relative `children[].cwd` resolve from the manifest
-directory. A child with no `cwd` inherits the directory from which agentctl was
-invoked. Use `agentctl schema list` to locate the normative manifest schema.
-Results remain independently retrievable with `agentctl result <exec-id>`;
-`--content` writes exact stored UTF-8 text without an envelope or added newline.
-agentctl does not concatenate or synthesize answers. Fan-out is intentionally
-foreground-owned: if its invoking process exits, native children are
-terminated. Put explicit execution IDs in the manifest when subscriptions must
-be created before launch.
+`fanout` validates every child before launching any task, reads each distinct
+prompt file once, preallocates one `exec-*` ID per child, and admits up to two
+children concurrently by default. The manifest requires `schema_version` and
+`children[].argv`, plus a shared `prompt_file` or a `prompt_file` on every child.
+A child prompt overrides the shared prompt; `prompt_delivery` can also be set
+globally or per child. Optional unique child `name` values correlate responses,
+while manifest and child `labels` persist on executions for `recent` and `inbox`.
+
+Prompt files and relative child `cwd` values resolve from the manifest directory.
+A child with no `cwd` inherits the invoking directory. Preflight may execute
+native read-only version probes; it is not an atomic batch reservation. Existing
+execution IDs fail preflight rather than replaying or resuming work. Use separate
+worktrees for parallel writers; fan-out neither isolates nor merges changes.
+
+Responses retain manifest order and report each child's `launch_attempted`,
+`recorded`, actual journal `state`, and any error, including on batch failure.
+`--fail-fast` cancels admitted siblings and skips queued children; skipped work
+has no fabricated journal state. Results remain independently retrievable with
+`agentctl result <exec-id>`, and `--content` writes exact stored UTF-8 text.
+agentctl does not concatenate or synthesize answers, create a group authority,
+or acknowledge collection during batch observation. Foreground ownership does
+not provide crash or host-restart durability. Put explicit execution IDs in the
+manifest when subscriptions must be created before launch.
+
+See the [delegation-batch contract](docs/fanout.md) for limits and failure
+semantics, and the [distinct-task example](examples/fanout/fanout.json) for
+cross-harness review delegation. `agentctl schema list` locates the normative
+manifest schema.
 
 For Cursor, omitting `--mode` selects its normal Agent behavior; `--mode ask`
 is the read-only Q&A path. Cursor plan mode is rejected by default because its

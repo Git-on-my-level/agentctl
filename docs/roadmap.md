@@ -30,7 +30,8 @@ version may use a screened list; v1 order and membership will not change.
 - Known executable names infer adapters; `run` has explicit optional timeout
   and prompt transport plus result-content preflight. Explicit `--background`
   starts a detached host-local worker, labels support exact discovery, and
-  foreground `fanout` runs one prompt across explicit child argv vectors.
+  foreground `fanout` runs shared or distinct prompts across explicit child argv
+  vectors, with batch-wide preflight, optional correlation names, and labels.
   `await` stops on attention by default, and
   `result` requires a stored content or failure body unless `--allow-empty` is supplied.
   `recent --unreconciled` lists terminal executions whose result has not been

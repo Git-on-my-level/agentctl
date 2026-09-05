@@ -63,7 +63,8 @@ binary and progressive help available:
   `--static` are explicit manifest/probe escapes.
 - `run` infers known adapters, has no default wall-clock kill, accepts bounded
   explicit file/stdin prompt transport, and preflights `launch,result_content`.
-  `fanout` coordinates one prompt across explicit native argv vectors in the
+  `fanout` coordinates shared or distinct prompts across explicit native argv
+  vectors with whole-batch preflight, names, and persisted labels, in the
   foreground without creating a group authority. `result` requires stored
   content and `await` stops on attention unless the caller supplies
   `--ignore-attention`. `recent --unreconciled` recovers terminal work whose
