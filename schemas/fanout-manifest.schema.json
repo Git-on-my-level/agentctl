@@ -1,44 +1,141 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:agentctl:schema:fanout-manifest:v1",
-  "x-agentctl-docs": "../README.md",
-  "title": "agentctl foreground fan-out manifest",
+  "x-agentctl-docs": "../docs/fanout.md",
+  "title": "agentctl foreground delegation batch manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "prompt_file", "children"],
+  "required": [
+    "schema_version",
+    "children"
+  ],
   "properties": {
-    "schema_version": { "const": 1 },
-    "prompt_file": { "type": "string", "minLength": 1 },
-    "prompt_delivery": { "enum": ["argv", "stdin"] },
-    "concurrency": { "type": "integer", "minimum": 1, "maximum": 16 },
+    "schema_version": {
+      "const": 1
+    },
+    "prompt_file": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prompt_delivery": {
+      "enum": [
+        "argv",
+        "stdin"
+      ]
+    },
+    "concurrency": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 16,
+      "description": "0 or omitted selects the default concurrency of 2."
+    },
     "children": {
       "type": "array",
       "minItems": 1,
       "maxItems": 64,
-      "items": { "$ref": "#/$defs/child" }
+      "items": {
+        "$ref": "#/$defs/child"
+      }
+    },
+    "labels": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+      }
     }
   },
   "$defs": {
     "child": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["argv"],
+      "required": [
+        "argv"
+      ],
       "properties": {
-        "execution_id": { "type": "string", "pattern": "^exec-(?:[a-z]+-){5}[a-z]+$" },
-        "adapter": { "type": "string", "minLength": 1 },
-        "cwd": { "type": "string", "minLength": 1 },
-        "timeout": { "type": "string", "minLength": 1 },
-        "prompt_delivery": { "enum": ["argv", "stdin"] },
-        "no_store_result": { "type": "boolean" },
-        "allow_missing_result": { "type": "boolean" },
-        "allow_unreliable_result": { "type": "boolean" },
+        "execution_id": {
+          "type": "string",
+          "pattern": "^exec-(?:[a-z]+-){5}[a-z]+$"
+        },
+        "adapter": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timeout": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt_delivery": {
+          "enum": [
+            "argv",
+            "stdin"
+          ]
+        },
+        "no_store_result": {
+          "type": "boolean"
+        },
+        "allow_missing_result": {
+          "type": "boolean"
+        },
+        "allow_unreliable_result": {
+          "type": "boolean"
+        },
         "argv": {
           "type": "array",
           "minItems": 1,
           "maxItems": 256,
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{0,63}$",
+          "description": "Optional batch-local correlation name; must be unique among named children."
+        },
+        "prompt_file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Manifest-relative prompt override; required when there is no shared prompt_file."
+        },
+        "labels": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+          }
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "not": {
+          "required": [
+            "prompt_file"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "children": {
+            "items": {
+              "required": [
+                "prompt_file"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
 }

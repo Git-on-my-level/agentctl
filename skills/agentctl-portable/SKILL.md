@@ -83,14 +83,26 @@ agentctl run --prompt-stdin --prompt-delivery stdin -- codex exec --json - < "$P
 
 Never infer prompt delivery from an adapter name. Use `argv` only for a native
 form that expects a positional prompt and `stdin` only for a verified
-stdin-reading form. Use `agentctl fanout --manifest <path>` when one prompt must
-run through several explicit native argv vectors; fan-out is foreground-owned,
-returns independent child execution IDs, and does not synthesize their results.
-The v1 manifest requires `schema_version`, `prompt_file`, and `children[].argv`;
-set `prompt_delivery` globally or per child. Prompt files and relative child
-working directories resolve from the manifest directory, while an omitted
-child `cwd` inherits the invoking process directory. Discover the normative
-shape with `agentctl help fanout` and `agentctl schema list`.
+stdin-reading form. Use `agentctl fanout --manifest <path>` to delegate shared
+or distinct tasks through explicit native argv vectors. It is foreground-owned,
+returns independent child IDs, and never synthesizes results or creates a group
+authority. The v1 manifest requires `schema_version`, `children[].argv`, and a
+shared or per-child `prompt_file`. Child prompts replace the shared prompt;
+`prompt_delivery` also supports a child override. Optional unique child `name`
+values correlate responses; shared and child `labels` persist for rediscovery.
+Prompt paths and explicit relative child working directories are manifest-relative;
+an omitted child `cwd` inherits the invoking directory.
+
+Every batch preflights all children before any task launch. Preflight can run
+native read-only version probes and is not an atomic launch reservation.
+`--fail-fast` cancels admitted siblings and skips queued children. Inspect
+`launch_attempted`, `recorded`, `state`, and `error` separately: an allocated ID
+or an attempted launch is not proof of a journaled execution or successful work.
+On failure the report is in `error.details.fanout`. Existing IDs conflict;
+fan-out has no automatic replay, retry, or restart durability. Do not blindly
+rerun a partially executed manifest. Collect journaled results individually.
+Discover the normative shape and limits with `agentctl help fanout` and
+`agentctl schema list`.
 
 `run` has no default wall-clock timeout. Add `--timeout` only when the caller
 requires a bound. Native work remains owned by the invoking agentctl process;

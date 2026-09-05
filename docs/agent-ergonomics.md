@@ -409,12 +409,15 @@ escape for callers that intentionally need weaker or broader behavior:
   only after a source is selected. Prompt bytes are excluded from plan output,
   the journal, events, and status; only digest, byte count, source, and delivery
   participate in plan and idempotency metadata.
-- `fanout --manifest` reads one prompt file once and runs explicit child argv
-  vectors with bounded foreground concurrency. It returns per-child execution
-  IDs and states but creates no group authority and performs no synthesis. A
-  v1 manifest requires `schema_version`, `prompt_file`, and `children[].argv`.
-  The prompt file and relative child working directories are manifest-relative;
-  a child with no `cwd` inherits the invoking process directory.
+- `fanout --manifest` delegates shared or per-child prompts through explicit
+  native argv, preflighting every child before any task launch. It reports each
+  child's ID, optional name, labels, prompt digest, launch attempt, recorded
+  state, and error without creating a group authority or synthesizing results.
+  The v1 manifest requires `schema_version`, `children[].argv`, and a shared or
+  per-child `prompt_file`. Prompt paths and explicit relative child working
+  directories are manifest-relative; omitted `cwd` inherits the invoking
+  directory. Labels enable rediscovery; fail-fast skips queued work without
+  inventing execution states. See the [batch contract](fanout.md).
 - `result` requires bounded stored content or a structured failure, and fails
   closed on conflicted evidence. `--allow-empty` is for metadata-only inspection; `--summary`
   intentionally returns the bounded preview. A successful dereference writes an

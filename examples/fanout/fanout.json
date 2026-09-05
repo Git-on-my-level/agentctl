@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "concurrency": 2,
+  "labels": ["review-batch"],
+  "children": [
+    {
+      "name": "correctness",
+      "prompt_file": "correctness.md",
+      "labels": ["correctness"],
+      "argv": ["codex", "exec", "--json"]
+    },
+    {
+      "name": "operability",
+      "prompt_file": "operability.md",
+      "labels": ["operability"],
+      "argv": ["cursor-agent", "--print", "--output-format", "stream-json", "--mode", "ask"]
+    }
+  ]
+}
