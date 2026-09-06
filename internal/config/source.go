@@ -135,7 +135,10 @@ func RestoreSourceWithGit(ctx context.Context, git SourceGit, configPath string)
 		return SourceUpdate{}, fmt.Errorf("%w: managed checkout bundle differs from applied state", ErrConflict)
 	}
 	materialized := MaterializeBundle(bundle)
-	_, beforeLoadErr := Load(cleanConfig)
+	existing, beforeLoadErr := Load(cleanConfig)
+	if beforeLoadErr == nil {
+		materialized = applyHostLocalConfig(existing, materialized)
+	}
 	before, _ := fileSHA256(cleanConfig)
 	if err := Save(cleanConfig, materialized, true); err != nil {
 		return SourceUpdate{}, err
@@ -336,6 +339,7 @@ func InitSourceWithGit(ctx context.Context, git SourceGit, configPath string, sp
 	if existing, loadErr := Load(cleanConfig); loadErr == nil {
 		configExisted = true
 		previousConfig = existing
+		materialized = applyHostLocalConfig(existing, materialized)
 		if !configsEqual(existing, materialized) && !configCanBeEnrichedBy(existing, materialized) {
 			return SourceUpdate{}, fmt.Errorf("%w: existing live config conflicts with Git bundle; initialization may add missing profiles or profile fields but never replace or remove existing values", ErrConflict)
 		}
@@ -439,7 +443,7 @@ func UpdateSourceWithGit(ctx context.Context, git SourceGit, configPath string, 
 			return SourceUpdate{}, fmt.Errorf("%w: fetched revision is not a fast-forward of the applied commit", ErrConflict)
 		}
 	}
-	materialized := MaterializeBundle(bundle)
+	materialized := applyHostLocalConfig(previousConfig, MaterializeBundle(bundle))
 	if commit == state.AppliedCommit && bundleDigest == state.BundleSHA256 {
 		status, err := SourceStatusWithGit(ctx, git, cleanConfig)
 		if err != nil {
@@ -696,6 +700,15 @@ func MaterializeBundle(bundle Bundle) Config {
 		cfg.Profiles[name] = profile.profile()
 	}
 	return cfg
+}
+
+func applyHostLocalConfig(existing, materialized Config) Config {
+	if existing.Bootstrap == nil {
+		return materialized
+	}
+	copy := *existing.Bootstrap
+	materialized.Bootstrap = &copy
+	return materialized
 }
 
 func configsEqual(a, b Config) bool {

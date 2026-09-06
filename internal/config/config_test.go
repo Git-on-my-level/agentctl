@@ -40,6 +40,32 @@ func TestLoadAndResolveExplicitMulticaProfile(t *testing.T) {
 	}
 }
 
+func TestBootstrapInstructionPointersPolicy(t *testing.T) {
+	if err := (Bootstrap{InstructionPointers: "off"}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := (Bootstrap{InstructionPointers: "manage"}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := (Bootstrap{InstructionPointers: "silent"}).Validate(); err == nil {
+		t.Fatal("invalid instruction_pointers was accepted")
+	}
+	dir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	path := filepath.Join(dir, "config.json")
+	cfg := testBootstrapConfig()
+	cfg.Bootstrap = &Bootstrap{InstructionPointers: "off"}
+	if err := Save(path, cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil || loaded.Bootstrap == nil || loaded.Bootstrap.InstructionPointers != "off" {
+		t.Fatalf("bootstrap policy was not round-tripped: %#v %v", loaded.Bootstrap, err)
+	}
+}
+
 func TestLoadDoesNotCreateMissingConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.json")
 	if _, err := Load(path); !errors.Is(err, ErrNotFound) {

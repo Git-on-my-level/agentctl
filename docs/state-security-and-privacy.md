@@ -187,9 +187,11 @@ output.
 - External side effects require explicit mode and appear in `--plan`.
 - Destructive cleanup reports exact paths/bytes/retention before action.
 - `bootstrap update` is the explicit local reconciliation boundary: detection
-  is automatic within the command, but only canonical manifest-bound skill
-  assets and already-managed supervisor files may be changed. New services,
-  legacy-copy removal, and permission-granting flags remain explicit.
+  is automatic within the command. Canonical manifest-bound skill assets,
+  digest-matching unmarked skill copies, documented instruction pointers, and
+  already-managed supervisor files may be changed. New services, legacy-copy
+  removal, and permission-granting flags remain explicit. Instruction-pointer
+  writes can be disabled with `bootstrap.instruction_pointers=off`.
 
 ## Threat boundaries
 

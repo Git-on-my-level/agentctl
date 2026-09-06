@@ -367,10 +367,14 @@ escape for callers that intentionally need weaker or broader behavior:
   then newest terminal records fill any remaining slots. `matched` remains the
   full count and `returned` is the bounded projection count.
 - `bootstrap update` detects supported harnesses and reconciles their
-  canonical skill roots. It upgrades managed assets and installs missing
-  portable skills, but refuses drifted assets, does not delete legacy copies,
-  and never creates a new supervisor service implicitly. `--dry-run` previews
-  the exact paths and `--harness` narrows detection.
+  canonical skill roots. It upgrades managed assets, installs missing
+  portable skills, and adopts digest-matching unmarked copies, but refuses
+  drifted assets with a different digest, does not delete legacy copies, and
+  never creates a new supervisor service implicitly. Instruction pointers
+  append, create documented files except OMP, and repair truncated or duplicate
+  agentctl markers unless `bootstrap.instruction_pointers=off` or
+  `--no-instruction-pointers` is set. `--dry-run` previews the exact paths and
+  `--harness` narrows detection.
 - `run` infers an adapter from a known executable, has no default wall-clock
   timeout, and preflights both `launch` and invocation-scoped `result_content`.
   `--timeout` adds

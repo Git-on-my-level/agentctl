@@ -26,13 +26,13 @@ func helpTopics() map[string]commandHelp {
 		},
 		"bootstrap": {
 			Name: "bootstrap", Summary: "Inspect or reconcile agentctl across detected local harnesses.", Usage: "agentctl bootstrap status|update [flags]",
-			SideEffectClass: output.LocalOperationalWrite, Defaults: []string{"status is read-only and reports instruction pointer path, state, digest, and revision per harness", "update detects supported harnesses and canonical roots", "update reconciles pointers only in existing documented user-global instruction files", "update refuses drifted or duplicate managed assets"},
+			SideEffectClass: output.LocalOperationalWrite, Defaults: []string{"status is read-only and reports instruction pointer path, state, digest, and revision per harness", "update detects supported harnesses and canonical roots", "update heals, appends, or creates documented user-global instruction pointers unless config sets bootstrap.instruction_pointers=off", "update refuses drifted user-edited pointer bodies and duplicate unmanaged skill collisions"},
 			Examples: [][]string{{"agentctl", "bootstrap", "status"}, {"agentctl", "bootstrap", "update", "--dry-run"}, {"agentctl", "bootstrap", "update"}}, Related: []string{"bootstrap update", "doctor"},
 		},
 		"bootstrap update": {
-			Name: "bootstrap update", Summary: "Reconcile the embedded portable skill and delegation pointers for detected harnesses.", Usage: "agentctl bootstrap update [--dry-run] [--harness names] [--home path] [--target-dir path]",
-			SideEffectClass: output.LocalOperationalWrite, Defaults: []string{"all detected harnesses", "canonical skill roots", "managed skill upgrades and missing installs", "instruction pointers update only marked blocks in existing documented user-global files", "missing instruction files are reported but never created", "no legacy-copy deletion", "no new supervisor service"},
-			Examples: [][]string{{"agentctl", "bootstrap", "update", "--dry-run"}, {"agentctl", "bootstrap", "update"}, {"agentctl", "bootstrap", "update", "--harness", "cursor"}}, Related: []string{"bootstrap", "doctor"},
+			Name: "bootstrap update", Summary: "Reconcile the embedded portable skill and delegation pointers for detected harnesses.", Usage: "agentctl bootstrap update [--dry-run] [--no-instruction-pointers] [--harness names] [--home path] [--target-dir path]",
+			SideEffectClass: output.LocalOperationalWrite, Defaults: []string{"all detected harnesses", "canonical skill roots", "managed skill upgrades, missing installs, and digest-matching unmarked copies", "instruction pointers append to existing unmarked files, create missing documented files except OMP, and repair truncated or duplicate agentctl markers", "user-edited pointer bodies remain conflicts", "opt out with bootstrap.instruction_pointers=off or --no-instruction-pointers", "no legacy-copy deletion", "no new supervisor service"},
+			Examples: [][]string{{"agentctl", "bootstrap", "update", "--dry-run"}, {"agentctl", "bootstrap", "update"}, {"agentctl", "bootstrap", "update", "--harness", "cursor"}, {"agentctl", "bootstrap", "update", "--no-instruction-pointers"}}, Related: []string{"bootstrap", "doctor"},
 		},
 		"capabilities": {
 			Name: "capabilities", Summary: "Return a concise live viability projection for one adapter.", Usage: "agentctl capabilities <adapter> [--require names] [--full] [--static] [--executable path]",
