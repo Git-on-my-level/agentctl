@@ -25,6 +25,13 @@ type Config struct {
 	DefaultProfile string             `json:"default_profile,omitempty"`
 	Profiles       map[string]Profile `json:"profiles,omitempty"`
 	Skills         *Skills            `json:"skills,omitempty"`
+	Bootstrap      *Bootstrap         `json:"bootstrap,omitempty"`
+}
+
+// Bootstrap is host-local live-config policy. Git config bundles cannot set
+// it; source materialization preserves an existing live value.
+type Bootstrap struct {
+	InstructionPointers string `json:"instruction_pointers,omitempty"`
 }
 
 // Skills selects a reviewed pack in a separate Git-backed Skill Hub. The
@@ -145,6 +152,11 @@ func (c Config) Validate() error {
 			return fmt.Errorf("skills: %w", err)
 		}
 	}
+	if c.Bootstrap != nil {
+		if err := c.Bootstrap.Validate(); err != nil {
+			return fmt.Errorf("bootstrap: %w", err)
+		}
+	}
 	for name, profile := range c.Profiles {
 		if strings.TrimSpace(name) == "" {
 			return errors.New("profile name cannot be empty")
@@ -171,6 +183,15 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func (b Bootstrap) Validate() error {
+	switch strings.TrimSpace(b.InstructionPointers) {
+	case "", "manage", "off":
+		return nil
+	default:
+		return errors.New("instruction_pointers must be manage or off")
+	}
 }
 
 func (s Skills) Validate() error {

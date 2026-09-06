@@ -150,10 +150,17 @@ service merely because a harness was detected.
 detected harnesses, canonical skill roots, managed revisions, and drift. The
 default `agentctl bootstrap update` discovers supported harnesses, deduplicates
 shared roots (Codex and OMP commonly share `~/.agents/skills`), and atomically
-installs or upgrades only manifest-bound portable-skill assets. `--dry-run`
-shows exact paths and side effects. Legacy copies, unmanaged skills, and new
-supervisor services remain untouched unless an explicit cleanup or host-manager
-operation authorizes them.
+installs or upgrades only manifest-bound portable-skill assets. Digest-matching
+unmarked copies are adopted by writing the managed marker. Instruction pointers
+are reconciled independently of skill-root health: existing unmarked files
+receive an appended marked block, missing documented files are created with
+only that block (except OMP), and truncated or duplicate agentctl markers are
+repaired. User-edited pointer bodies remain conflicts. `--dry-run` shows exact
+paths and side effects. Legacy copies, unmanaged skills with a different
+digest, and new supervisor services remain untouched unless an explicit cleanup
+or host-manager operation authorizes them. Live config may set
+`bootstrap.instruction_pointers` to `off`; Git bundles cannot set that field
+and source updates preserve an existing live value.
 
 `scripts/install.sh` composes this reconciliation into a binary release: after
 the managed binary is installed it runs the same detected update and refreshes

@@ -70,8 +70,10 @@ binary and progressive help available:
   `--ignore-attention`. `recent --unreconciled` recovers terminal work whose
   result was never acknowledged.
 - Subscriptions default to terminal/attention/artifact, and
-  `bootstrap update` reconciles detected canonical roots while leaving
-  unmanaged files, legacy copies, and new supervisor services untouched.
+  `bootstrap update` reconciles detected canonical roots, adopts digest-matching
+  unmarked portable-skill copies, and heals documented instruction pointers
+  while leaving different-digest unmanaged files, legacy copies, and new
+  supervisor services untouched.
 
 ## Intentional preview constraints
 

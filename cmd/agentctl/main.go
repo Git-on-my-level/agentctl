@@ -162,7 +162,7 @@ func (a *app) run(ctx context.Context, args []string) int {
 	case "data":
 		err = a.dataCommand(ctx, renderer, commonArgs, rest[1:])
 	case "bootstrap":
-		err = a.bootstrapCommand(renderer, rest[1:])
+		err = a.bootstrapCommand(renderer, commonArgs, rest[1:])
 	case "supervisor":
 		err = a.supervisorCommand(ctx, renderer, commonArgs, rest[1:])
 	case "promote":

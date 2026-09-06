@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/portableasset"
 )
@@ -395,7 +396,7 @@ func TestBootstrapInstructionPointerLifecycle(t *testing.T) {
 	}
 }
 
-func TestBootstrapInstructionPointerSkipsMissingFile(t *testing.T) {
+func TestBootstrapInstructionPointerCreatesMissingFile(t *testing.T) {
 	home := t.TempDir()
 	var stdout bytes.Buffer
 	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
@@ -404,11 +405,12 @@ func TestBootstrapInstructionPointerSkipsMissingFile(t *testing.T) {
 		t.Fatalf("update failed: %v", problem)
 	}
 	path := filepath.Join(home, ".claude", "CLAUDE.md")
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("bootstrap created missing instruction file: %v", err)
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != slimInstructionPointerBlockForTest() {
+		t.Fatalf("missing instruction file was not created: %q (%v)", data, err)
 	}
-	if !strings.Contains(stdout.String(), `"state":"skipped"`) || !strings.Contains(stdout.String(), "does not create it") {
-		t.Fatalf("missing instruction file was not reported as skipped: %s", stdout.String())
+	if !strings.Contains(stdout.String(), `"state":"create"`) {
+		t.Fatalf("create was not reported: %s", stdout.String())
 	}
 }
 
@@ -581,6 +583,178 @@ func TestBootstrapInstructionPointerWritesCursorAgents(t *testing.T) {
 	data, err := os.ReadFile(path)
 	if err != nil || !strings.Contains(string(data), instructionPointerStart) {
 		t.Fatalf("cursor pointer missing: %q (%v)", data, err)
+	}
+}
+
+func TestBootstrapAdoptsDigestMatchingUnmanagedSkillAndWritesSoul(t *testing.T) {
+	home := t.TempDir()
+	skill, err := portableasset.Skill()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeBootstrapSkill(t, filepath.Join(home, ".hermes", "skills"), skill.Revision, string(skill.Bytes))
+	soul := filepath.Join(home, ".hermes", "SOUL.md")
+	if err := os.MkdirAll(filepath.Dir(soul), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := "You are a helpful assistant.\n"
+	if err := os.WriteFile(soul, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
+	renderer := output.Renderer{Mode: output.JSON, Writer: &stdout}
+	if problem := a.bootstrapUpdate(renderer, home, []string{"hermes"}, "", true); problem != nil {
+		t.Fatalf("dry-run failed: %v\n%s", problem, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"state":"adopt"`) || !strings.Contains(stdout.String(), `"state":"append"`) {
+		t.Fatalf("dry-run did not report adopt and append: %s", stdout.String())
+	}
+	data, err := os.ReadFile(soul)
+	if err != nil || string(data) != original {
+		t.Fatalf("dry-run changed SOUL.md: %q (%v)", data, err)
+	}
+	stdout.Reset()
+	if problem := a.bootstrapUpdate(renderer, home, []string{"hermes"}, "", false); problem != nil {
+		t.Fatalf("update failed: %v\n%s", problem, stdout.String())
+	}
+	data, err = os.ReadFile(soul)
+	if err != nil || !strings.HasPrefix(string(data), original) || !strings.Contains(string(data), slimInstructionPointerBlockForTest()) {
+		t.Fatalf("SOUL.md pointer missing: %q (%v)", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".hermes", "skills", "agentctl-portable", bootstrapManagedMarkerName)); err != nil {
+		t.Fatalf("matching skill was not adopted: %v", err)
+	}
+}
+
+func TestBootstrapWritesPointerWhenSkillRootConflicts(t *testing.T) {
+	home := t.TempDir()
+	writeBootstrapSkill(t, filepath.Join(home, ".hermes", "skills"), "tree:v0.1.0", "third-party skill")
+	soul := filepath.Join(home, ".hermes", "SOUL.md")
+	if err := os.MkdirAll(filepath.Dir(soul), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := "You are a helpful assistant.\n"
+	if err := os.WriteFile(soul, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
+	problem := a.bootstrapUpdate(output.Renderer{Mode: output.JSON, Writer: &stdout}, home, []string{"hermes"}, "", false)
+	if problem == nil || problem.Code != output.CodeConflict {
+		t.Fatalf("divergent skill was not a conflict: %#v", problem)
+	}
+	if _, ok := problem.Details["instruction_pointer_actions"]; !ok {
+		t.Fatalf("conflict omitted pointer actions: %#v", problem.Details)
+	}
+	data, err := os.ReadFile(soul)
+	if err != nil || !strings.HasPrefix(string(data), original) || !strings.Contains(string(data), instructionPointerStart) {
+		t.Fatalf("conflicting skill skipped pointer write: %q (%v)", data, err)
+	}
+	skill, err := os.ReadFile(filepath.Join(home, ".hermes", "skills", "agentctl-portable", "SKILL.md"))
+	if err != nil || string(skill) != "third-party skill" {
+		t.Fatalf("divergent skill was clobbered: %q (%v)", skill, err)
+	}
+}
+
+func TestBootstrapInstructionPointerRepairsTruncatedAndDuplicateBlocks(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".claude", "CLAUDE.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	truncated := "keep me\n" + instructionPointerStart + "\npartial"
+	if err := os.WriteFile(path, []byte(truncated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
+	renderer := output.Renderer{Mode: output.JSON, Writer: &stdout}
+	if problem := a.bootstrapUpdate(renderer, home, []string{"claude"}, "", false); problem != nil {
+		t.Fatalf("truncated repair failed: %v\n%s", problem, stdout.String())
+	}
+	want := "keep me\n" + slimInstructionPointerBlockForTest()
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != want {
+		t.Fatalf("truncated repair content=%q want=%q (%v)", data, want, err)
+	}
+	duplicate := slimInstructionPointerBlockForTest() + "mid\n" + slimInstructionPointerBlockForTest()
+	if err := os.WriteFile(path, []byte("before\n"+duplicate+"after\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if problem := a.bootstrapUpdate(renderer, home, []string{"claude"}, "", false); problem != nil {
+		t.Fatalf("duplicate repair failed: %v\n%s", problem, stdout.String())
+	}
+	data, err = os.ReadFile(path)
+	if err != nil || string(data) != "before\n"+slimInstructionPointerBlockForTest()+"mid\n"+"after\n" {
+		t.Fatalf("duplicate repair content=%q (%v)", data, err)
+	}
+}
+
+func TestBootstrapInstructionPointerOptOut(t *testing.T) {
+	home := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(home); err == nil {
+		home = resolved
+	}
+	configPath := filepath.Join(home, ".config", "agentctl", "config.json")
+	cfg := config.Config{SchemaVersion: config.SchemaVersion, Bootstrap: &config.Bootstrap{InstructionPointers: "off"}}
+	if err := config.Save(configPath, cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
+	if problem := a.bootstrapUpdateOpts(output.Renderer{Mode: output.JSON, Writer: &stdout}, home, []string{"claude"}, bootstrapUpdateOptions{ConfigPath: configPath}); problem != nil {
+		t.Fatalf("opt-out update failed: %v\n%s", problem, stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "CLAUDE.md")); !os.IsNotExist(err) {
+		t.Fatalf("opt-out created instruction file: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"instruction_pointer_policy":"off"`) || !strings.Contains(stdout.String(), "instruction pointers disabled by config") {
+		t.Fatalf("opt-out was not reported: %s", stdout.String())
+	}
+	stdout.Reset()
+	if problem := a.bootstrapUpdateOpts(output.Renderer{Mode: output.JSON, Writer: &stdout}, home, []string{"claude"}, bootstrapUpdateOptions{NoInstructionPointers: true}); problem != nil {
+		t.Fatalf("flag opt-out failed: %v", problem)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "CLAUDE.md")); !os.IsNotExist(err) {
+		t.Fatalf("flag opt-out created instruction file: %v", err)
+	}
+}
+
+func TestBootstrapInstructionPointerInvalidConfigFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(home); err == nil {
+		home = resolved
+	}
+	configPath := filepath.Join(home, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"schema_version":1,"bootstrap":{"instruction_pointers":"silent"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}}
+	problem := a.bootstrapUpdateOpts(output.Renderer{Mode: output.JSON, Writer: &stdout}, home, []string{"claude"}, bootstrapUpdateOptions{ConfigPath: configPath})
+	if problem == nil || problem.Code != output.CodeUsage {
+		t.Fatalf("invalid config was accepted: %#v", problem)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "CLAUDE.md")); !os.IsNotExist(err) {
+		t.Fatalf("invalid config still created instruction file: %v", err)
+	}
+}
+
+func TestBootstrapInstructionPointerCreatesCodexAgentsNotOverride(t *testing.T) {
+	home := t.TempDir()
+	var stdout bytes.Buffer
+	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
+	if problem := a.bootstrapUpdate(output.Renderer{Mode: output.JSON, Writer: &stdout}, home, []string{"codex"}, "", false); problem != nil {
+		t.Fatalf("codex create failed: %v\n%s", problem, stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, ".codex", "AGENTS.override.md")); !os.IsNotExist(err) {
+		t.Fatalf("created override instead of AGENTS.md: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".codex", "AGENTS.md"))
+	if err != nil || string(data) != slimInstructionPointerBlockForTest() {
+		t.Fatalf("codex AGENTS.md=%q (%v)", data, err)
 	}
 }
 

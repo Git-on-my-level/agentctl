@@ -478,11 +478,18 @@ agentctl config doctor
 
 `agentctl bootstrap update` detects supported harnesses, installs or upgrades
 agentctl's embedded portable skill in canonical locations, and reconciles a
-short marked delegation pointer in documented user-global instruction files
-that already exist. It never creates instruction files or changes prose outside
-the marked block. It leaves credentials, sessions, settings, caches, and legacy
-copies alone. An existing agentctl-managed supervisor may be reconciled; a new
-service is never created merely because a harness was detected.
+short marked delegation pointer in documented user-global instruction files:
+`~/.hermes/SOUL.md`, `~/.codex/AGENTS.md`, `~/.cursor/AGENTS.md`, and
+`~/.claude/CLAUDE.md`. It appends the pointer to existing unmarked files,
+creates a missing file that contains only the marked block, repairs truncated
+or duplicate agentctl markers, and adopts digest-matching unmarked skill copies.
+It does not rewrite user prose outside the marked block, does not overwrite a
+user-edited pointer body, and does not create `~/.omp/agent/AGENTS.md`. A skill
+root conflict no longer skips independent pointer writes. Opt out with
+`bootstrap.instruction_pointers` set to `off` in the live config, or pass
+`--no-instruction-pointers` for one invocation. An existing agentctl-managed
+supervisor may be reconciled; a new service is never created merely because a
+harness was detected.
 
 ```bash
 agentctl bootstrap update --dry-run

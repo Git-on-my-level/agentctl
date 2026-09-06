@@ -42,6 +42,21 @@ not be reached through symlinked parent directories.
 }
 ```
 
+Host-local bootstrap policy is optional and omitted by default (`manage`). Set
+it only to disable instruction-pointer writes:
+
+```json
+{
+  "schema_version": 1,
+  "bootstrap": {
+    "instruction_pointers": "off"
+  }
+}
+```
+
+Git config bundles cannot include this field. Source init/update/restore
+preserve an existing live value rather than treating it as bundle drift.
+
 Use the CLI to write a profile atomically only for a manual host-local setup.
 For a Git-backed live config, skip this command and initialize the source first.
 

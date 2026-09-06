@@ -29,9 +29,12 @@ read-only `next_actions` for deeper discovery. Do not preload every topic or
 memorize version-specific flags in place of help.
 
 `agentctl bootstrap update` reconciles the embedded portable skill and a short
-delegation pointer in detected, existing harness instruction files; it never
-creates those instruction files. Use `--dry-run` when inspecting another home
-or narrowing an unfamiliar installation.
+delegation pointer in detected harness instruction files. It appends a marked
+block to existing unmarked files, creates missing documented files except OMP,
+and repairs truncated or duplicate agentctl markers. Opt out with
+`bootstrap.instruction_pointers=off` or `--no-instruction-pointers`. Use
+`--dry-run` when inspecting another home or narrowing an unfamiliar
+installation.
 
 Exact release builds default to automatic updates. The first work-creating
 invocation due on each UTC day starts a detached short-lived worker that verifies the matching
