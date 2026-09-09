@@ -60,9 +60,11 @@ func (a *app) dataInventory(ctx context.Context, renderer output.Renderer, c com
 
 func (a *app) dataCleanup(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	var beforeRaw, planDigest string
-	var planOnly, apply bool
+	var planOnly, apply, includeUnreconciled bool
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--include-unreconciled":
+			includeUnreconciled = true
 		case "--before":
 			i++
 			if i >= len(args) {
@@ -107,7 +109,7 @@ func (a *app) dataCleanup(ctx context.Context, renderer output.Renderer, c commo
 			return problem
 		}
 		defer journal.Close()
-		plan, err = journal.PlanCleanup(ctx, before)
+		plan, err = journal.PlanCleanup(ctx, before, store.CleanupOptions{IncludeUnreconciled: includeUnreconciled})
 	} else {
 		path, pathErr := a.journalPath(c)
 		if pathErr != nil {
@@ -125,22 +127,44 @@ func (a *app) dataCleanup(ctx context.Context, renderer output.Renderer, c commo
 			return mapStoreError("open journal", openErr)
 		}
 		defer journal.Close()
-		plan, err = journal.ApplyCleanup(ctx, before, planDigest)
+		plan, err = journal.ApplyCleanup(ctx, before, planDigest, store.CleanupOptions{IncludeUnreconciled: includeUnreconciled})
 	}
 	if err != nil {
 		return mapStoreError("cleanup journal data", err)
 	}
 	lines := []output.Line{
-		{Lead: "data.cleanup", Fields: []output.Field{{Name: "mode", Value: cleanupMode(planOnly)}, {Name: "before", Value: before}, {Name: "eligible_executions", Value: len(plan.Eligible)}, {Name: "protected_executions", Value: len(plan.Protected)}, {Name: "records", Value: plan.Records.Total()}, {Name: "logical_bytes", Value: plan.LogicalBytes}, {Name: "plan_digest", Value: plan.PlanDigest}}},
+		{Lead: "data.cleanup", Fields: []output.Field{{Name: "mode", Value: cleanupMode(planOnly)}, {Name: "before", Value: before}, {Name: "eligible_executions", Value: len(plan.Eligible)}, {Name: "protected_executions", Value: len(plan.Protected)}, {Name: "protected_unreconciled", Value: plan.ProtectedUnreconciled}, {Name: "include_unreconciled", Value: plan.IncludeUnreconciled}, {Name: "records", Value: plan.Records.Total()}, {Name: "logical_bytes", Value: plan.LogicalBytes}, {Name: "plan_digest", Value: plan.PlanDigest}}},
 	}
 	warnings := []output.Warning{{Code: "journal_not_compacted", Message: "logical bytes describe selected records; the journal file is not compacted automatically"}}
+	if plan.IncludeUnreconciled {
+		warnings = append(warnings, output.Warning{
+			Code:    "uncollected_results_included",
+			Message: "--include-unreconciled deletes terminal results that no caller has collected with result or await",
+		})
+	}
 	actions := []output.NextAction{}
 	if planOnly {
+		applyArgv := []string{"agentctl", "data", "cleanup", "--before", before.Format(time.RFC3339), "--apply", "--plan-digest", plan.PlanDigest}
+		if includeUnreconciled {
+			applyArgv = append(applyArgv, "--include-unreconciled")
+		}
+		preconditions := []string{"review eligible execution IDs", "journal references may change before apply; apply recomputes atomically"}
+		if includeUnreconciled {
+			preconditions = append(preconditions, "the reviewed digest is bound to --include-unreconciled; apply must repeat the flag")
+		}
 		actions = append(actions, output.NextAction{
 			Label:   "Apply this cleanup policy after reviewing eligible IDs",
-			Argv:    []string{"agentctl", "data", "cleanup", "--before", before.Format(time.RFC3339), "--apply", "--plan-digest", plan.PlanDigest},
+			Argv:    applyArgv,
 			Mutates: true, SideEffectClass: output.LocalOperationalWrite,
-			Preconditions: []string{"review eligible execution IDs", "journal references may change before apply; apply recomputes atomically"},
+			Preconditions: preconditions,
+		})
+	}
+	if planOnly && plan.ProtectedUnreconciled > 0 {
+		actions = append(actions, output.NextAction{
+			Label:   "Collect the retained uncollected results before reclaiming their space",
+			Argv:    []string{"agentctl", "result", "--unreconciled"},
+			Mutates: true, SideEffectClass: output.LocalOperationalWrite,
+			Preconditions: []string{"collected results become eligible for a later cleanup"},
 		})
 	}
 	if err := renderer.Success(output.Success{Result: plan, Warnings: warnings, Lines: lines, NextActions: actions}); err != nil {

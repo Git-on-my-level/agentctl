@@ -403,11 +403,15 @@ escape for callers that intentionally need weaker or broader behavior:
   adapter, or label without reading prompt or result records. Repeated label
   filters use AND semantics. `--unreconciled` returns terminal executions whose
   result has never been acknowledged; terminals that predate acknowledgement
-  tracking on that journal are omitted.
+  tracking on that journal are omitted. `count` is the returned projection and
+  `total` is the full filtered set, so a caller sizes a backlog from one call
+  instead of paging to discover how much work is waiting.
 - `inbox` returns the newest 20 actionable executions without refreshing an
   adapter or reading a result. It includes current attention, unreconciled
   terminals, and running or unreachable work whose observation age is at least
   `--stale-after` (one hour by default, bounded from one minute to thirty days).
+  As in `recent`, `count` is the returned projection and `total` is the full
+  actionable set; `has_more` alone never told a caller how large the backlog was.
   `work_health` describes task/collection state while `tool_health` repeats
   normalized liveness; `tool_unreachable` explicitly does not assert task
   failure. A collected terminal failure drops out instead of creating a second
@@ -431,6 +435,18 @@ escape for callers that intentionally need weaker or broader behavior:
   closed on conflicted evidence. `--allow-empty` is for metadata-only inspection; `--summary`
   intentionally returns the bounded preview. A successful dereference writes an
   acknowledgement stamp so `recent --unreconciled` can forget the execution.
+- `result --unreconciled` collects the uncollected terminal set instead of one
+  execution, so a backlog is not drained one identifier at a time. It selects
+  the newest 50 unreconciled terminals by default, narrows with `--label`, and
+  bounds with `--limit` (1 to 200). Every item is dereferenced through the same
+  single-execution path, so `--allow-empty`, `--summary`, and the fail-closed
+  treatment of conflicted evidence are identical. An execution that cannot be
+  dereferenced is reported with its `skip_reason` and left unreconciled rather
+  than aborting the batch, and each delivered result is stamped first-write-wins,
+  so re-running collects only what remains. `--content`,
+  `--require-result-source`, and `--min-result-bytes` each describe exactly one
+  result and are rejected in this mode. Collection is
+  `local_operational_write`: it writes acknowledgement stamps and nothing else.
 - `await` waits until terminal or attention by default, returning
   `attention_required` with a next action. `--timeout` adds an explicit bound
   and `--no-timeout` remains a valid explicit form; `--through-execution-deadline`

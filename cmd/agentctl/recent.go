@@ -80,7 +80,9 @@ func (a *app) recent(ctx context.Context, renderer output.Renderer, c common, ar
 		}
 		lines = append(lines, output.Line{Lead: item.ID.String(), Fields: fields})
 	}
-	result := map[string]any{"executions": items, "count": len(items), "has_more": matched > len(items), "host_local": true}
+	// count is the returned projection; total is the full filtered set, so a
+	// caller can size a backlog without paging to discover it.
+	result := map[string]any{"executions": items, "count": len(items), "total": matched, "has_more": matched > len(items), "host_local": true}
 	if err := renderer.Success(output.Success{Result: result, Lines: lines}); err != nil {
 		return output.Wrap(output.CodeInternal, "write recent executions", false, err)
 	}

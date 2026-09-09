@@ -5,13 +5,14 @@
   "title": "agentctl inbox result v1",
   "type": "object",
   "additionalProperties": true,
-  "required": ["executions", "count", "has_more", "host_local", "as_of", "stale_after_seconds"],
+  "required": ["executions", "count", "total", "has_more", "host_local", "as_of", "stale_after_seconds"],
   "properties": {
     "executions": {
       "type": "array",
       "items": {"$ref": "#/$defs/inbox_execution"}
     },
     "count": {"type": "integer", "minimum": 0, "maximum": 200},
+    "total": {"type": "integer", "minimum": 0},
     "has_more": {"type": "boolean"},
     "host_local": {"const": true},
     "as_of": {"type": "string", "format": "date-time"},

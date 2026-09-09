@@ -105,9 +105,12 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 		}
 		lines = append(lines, output.Line{Lead: item.ID.String(), Fields: fields})
 	}
+	// count is the returned projection; total is the full actionable set, so a
+	// caller can size the backlog without paging to discover it.
 	result := map[string]any{
 		"executions":          items,
 		"count":               len(items),
+		"total":               matched,
 		"has_more":            matched > len(items),
 		"host_local":          true,
 		"as_of":               now,
