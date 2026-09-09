@@ -5,7 +5,7 @@
   "title": "agentctl journal cleanup plan v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "before", "generated_at", "applied", "plan_digest", "eligible", "protected", "records", "logical_bytes"],
+  "required": ["schema_version", "before", "generated_at", "applied", "plan_digest", "eligible", "protected", "records", "logical_bytes", "include_unreconciled", "protected_unreconciled"],
   "properties": {
     "schema_version": {"const": 1},
     "before": {"type": "string", "format": "date-time"},
@@ -13,6 +13,8 @@
     "applied": {"type": "boolean"},
     "plan_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
     "logical_bytes": {"type": "integer", "minimum": 0},
+    "include_unreconciled": {"type": "boolean"},
+    "protected_unreconciled": {"type": "integer", "minimum": 0},
     "eligible": {
       "type": "array",
       "items": {

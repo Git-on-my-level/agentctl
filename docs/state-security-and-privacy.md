@@ -155,6 +155,19 @@ It is idempotent when the caller reviews the resulting empty plan before a
 repeat apply. The logical byte estimate does not promise immediate shrinkage of
 the bbolt file; no physical compaction is performed.
 
+A terminal execution whose result no caller has collected is protected with
+reason `result_unreconciled`. Cleanup reclaims space; it must not double as an
+acknowledgement that somebody read the outcome, so the default policy refuses to
+delete evidence that was never delivered. `protected_unreconciled` counts those
+executions in the plan. `--include-unreconciled` is the explicit opt-out. It
+participates in the plan digest, so a digest reviewed under one policy can never
+authorize the other, and an applied opt-out plan warns that uncollected results
+were deleted. The protection is gated on the journal's acknowledgement epoch:
+terminals that predate acknowledgement tracking on that journal can never gain a
+stamp retroactively and stay eligible, so an old journal does not become
+permanently uncleanable. `agentctl result --unreconciled` collects the retained
+backlog, after which those executions become eligible normally.
+
 Nonterminal graphs, partial parent/supersession graphs, active subscription
 filters/cursors/coordinators, and every retained outbox delivery or receipt are
 protected. Promotion-linked executions are conservatively never eligible in

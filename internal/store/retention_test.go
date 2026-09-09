@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -102,7 +103,7 @@ func TestCleanupPlanApplyIsExactAtomicAndIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	cutoff := now.Add(-24 * time.Hour)
-	plan, err := journal.PlanCleanup(ctx, cutoff)
+	plan, err := journal.PlanCleanup(ctx, cutoff, CleanupOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +113,7 @@ func TestCleanupPlanApplyIsExactAtomicAndIdempotent(t *testing.T) {
 	if _, err := journal.GetExecution(ctx, old.ID); err != nil {
 		t.Fatalf("planning wrote journal: %v", err)
 	}
-	applied, err := journal.ApplyCleanup(ctx, cutoff, plan.PlanDigest)
+	applied, err := journal.ApplyCleanup(ctx, cutoff, plan.PlanDigest, CleanupOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,11 +132,11 @@ func TestCleanupPlanApplyIsExactAtomicAndIdempotent(t *testing.T) {
 	if _, err := journal.GetExecution(ctx, running.ID); err != nil {
 		t.Fatalf("running execution removed: %v", err)
 	}
-	afterPlan, err := journal.PlanCleanup(ctx, cutoff)
+	afterPlan, err := journal.PlanCleanup(ctx, cutoff, CleanupOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := journal.ApplyCleanup(ctx, cutoff, afterPlan.PlanDigest)
+	again, err := journal.ApplyCleanup(ctx, cutoff, afterPlan.PlanDigest, CleanupOptions{})
 	if err != nil || !again.Applied || len(again.Eligible) != 0 || again.Records.Total() != 0 {
 		t.Fatalf("repeat apply is not an idempotent no-op: %#v err=%v", again, err)
 	}
@@ -151,12 +152,12 @@ func TestCleanupApplyRejectsStaleReviewedPlan(t *testing.T) {
 	journal, _, now := openTestJournal(t)
 	seedTerminalForRetention(t, journal, now.Add(-72*time.Hour), contracts.MutationKey{})
 	cutoff := now.Add(-24 * time.Hour)
-	plan, err := journal.PlanCleanup(ctx, cutoff)
+	plan, err := journal.PlanCleanup(ctx, cutoff, CleanupOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	additional := seedTerminalForRetention(t, journal, now.Add(-48*time.Hour), contracts.MutationKey{})
-	if _, err := journal.ApplyCleanup(ctx, cutoff, plan.PlanDigest); !errors.Is(err, ErrConflict) {
+	if _, err := journal.ApplyCleanup(ctx, cutoff, plan.PlanDigest, CleanupOptions{}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale reviewed plan was accepted: %v", err)
 	}
 	if _, err := journal.GetExecution(ctx, additional.ID); err != nil {
@@ -212,7 +213,7 @@ func TestCleanupProtectsActiveSubscriptionAndOutboxReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := journal.PlanCleanup(ctx, now.Add(-24*time.Hour))
+	plan, err := journal.PlanCleanup(ctx, now.Add(-24*time.Hour), CleanupOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +230,7 @@ func TestCleanupProtectsActiveSubscriptionAndOutboxReceipt(t *testing.T) {
 	if !containsReason(reasons[outboxExecution.ID.String()], "outbox_delivery") || !containsReason(reasons[outboxExecution.ID.String()], "delivery_receipt") {
 		t.Fatalf("delivery protection reasons missing: %#v", reasons)
 	}
-	if _, err := journal.ApplyCleanup(ctx, now.Add(-24*time.Hour), plan.PlanDigest); err != nil {
+	if _, err := journal.ApplyCleanup(ctx, now.Add(-24*time.Hour), plan.PlanDigest, CleanupOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := journal.GetExecution(ctx, activeProtected.ID); err != nil {
@@ -266,14 +267,14 @@ func TestCleanupProtectsPromotionGraph(t *testing.T) {
 	}
 	one := create(oneID, twoID, "source")
 	two := create(twoID, oneID, "target")
-	plan, err := journal.PlanCleanup(ctx, now.Add(-24*time.Hour))
+	plan, err := journal.PlanCleanup(ctx, now.Add(-24*time.Hour), CleanupOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(plan.Eligible) != 0 || len(plan.Protected) != 2 || !containsReason(plan.Protected[0].Reasons, "promotion_reference") || !containsReason(plan.Protected[1].Reasons, "promotion_reference") {
 		t.Fatalf("promotion graph was not protected: %#v", plan)
 	}
-	if _, err := journal.ApplyCleanup(ctx, now.Add(-24*time.Hour), plan.PlanDigest); err != nil {
+	if _, err := journal.ApplyCleanup(ctx, now.Add(-24*time.Hour), plan.PlanDigest, CleanupOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := journal.GetExecution(ctx, one.ID); err != nil {
@@ -306,7 +307,7 @@ func TestCleanupPropagatesReferenceProtectionAcrossEligibleGraph(t *testing.T) {
 	if _, _, err := journal.PutSubscription(ctx, active); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := journal.PlanCleanup(ctx, now.Add(-24*time.Hour))
+	plan, err := journal.PlanCleanup(ctx, now.Add(-24*time.Hour), CleanupOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,4 +330,125 @@ func containsReason(reasons []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// openRetentionJournalWithEpoch opens a journal whose acknowledgement epoch is
+// set to an explicit instant so a test can seed terminals on both sides of it.
+func openRetentionJournalWithEpoch(t *testing.T, epoch time.Time) *Journal {
+	t.Helper()
+	generator := &sequenceGenerator{next: map[ids.Type]uint64{ids.TypeHost: 100, ids.TypeExecution: 200, ids.TypeEvent: 300}}
+	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	journal, err := Open(path, Options{Generator: generator, Clock: func() time.Time { return epoch }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	return journal
+}
+
+func planReasons(plan CleanupPlan, id ids.ExecutionID) []string {
+	for _, protected := range plan.Protected {
+		if protected.ExecutionID == id.String() {
+			return protected.Reasons
+		}
+	}
+	return nil
+}
+
+func planIsEligible(plan CleanupPlan, id ids.ExecutionID) bool {
+	for _, eligible := range plan.Eligible {
+		if eligible.ExecutionID == id.String() {
+			return true
+		}
+	}
+	return false
+}
+
+func TestCleanupProtectsUnreconciledTerminalResults(t *testing.T) {
+	ctx := context.Background()
+	epoch := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	journal := openRetentionJournalWithEpoch(t, epoch)
+	preEpoch := seedTerminalForRetention(t, journal, epoch.Add(-48*time.Hour), contracts.MutationKey{})
+	uncollected := seedTerminalForRetention(t, journal, epoch.Add(time.Hour), contracts.MutationKey{})
+	collected := seedTerminalForRetention(t, journal, epoch.Add(2*time.Hour), contracts.MutationKey{})
+	if _, _, err := journal.AcknowledgeExecution(ctx, collected.ID, AcknowledgementResult); err != nil {
+		t.Fatal(err)
+	}
+	cutoff := epoch.Add(72 * time.Hour)
+
+	plan, err := journal.PlanCleanup(ctx, cutoff, CleanupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reasons := planReasons(plan, uncollected.ID); len(reasons) != 1 || reasons[0] != "result_unreconciled" {
+		t.Fatalf("uncollected terminal is not protected as unreconciled: %#v", plan.Protected)
+	}
+	if plan.ProtectedUnreconciled != 1 {
+		t.Fatalf("protected_unreconciled=%d want 1: %#v", plan.ProtectedUnreconciled, plan)
+	}
+	if plan.IncludeUnreconciled {
+		t.Fatalf("default plan opted into unreconciled deletion: %#v", plan)
+	}
+	// A journal older than acknowledgement tracking must stay cleanable, and a
+	// collected result must not be retained forever by this rule.
+	if !planIsEligible(plan, preEpoch.ID) {
+		t.Fatalf("pre-epoch terminal became uncleanable: %#v", plan)
+	}
+	if !planIsEligible(plan, collected.ID) {
+		t.Fatalf("acknowledged terminal was protected: %#v", plan)
+	}
+
+	// Applying the protective plan must leave the uncollected result intact.
+	if _, err := journal.ApplyCleanup(ctx, cutoff, plan.PlanDigest, CleanupOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.GetOutcome(ctx, uncollected.ID); err != nil {
+		t.Fatalf("uncollected result was deleted: %v", err)
+	}
+	if _, err := journal.GetExecution(ctx, preEpoch.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("pre-epoch terminal survived: %v", err)
+	}
+	if _, err := journal.GetExecution(ctx, collected.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("acknowledged terminal survived: %v", err)
+	}
+}
+
+func TestCleanupIncludeUnreconciledIsAnExplicitOptOutWithADistinctDigest(t *testing.T) {
+	ctx := context.Background()
+	epoch := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	journal := openRetentionJournalWithEpoch(t, epoch)
+	uncollected := seedTerminalForRetention(t, journal, epoch.Add(time.Hour), contracts.MutationKey{})
+	cutoff := epoch.Add(72 * time.Hour)
+
+	protective, err := journal.PlanCleanup(ctx, cutoff, CleanupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	permissive, err := journal.PlanCleanup(ctx, cutoff, CleanupOptions{IncludeUnreconciled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !permissive.IncludeUnreconciled || permissive.ProtectedUnreconciled != 0 {
+		t.Fatalf("opt-out plan still protects uncollected results: %#v", permissive)
+	}
+	if !planIsEligible(permissive, uncollected.ID) {
+		t.Fatalf("opt-out plan did not select the uncollected terminal: %#v", permissive)
+	}
+	if protective.PlanDigest == permissive.PlanDigest {
+		t.Fatalf("opting into unreconciled deletion did not change the plan digest: %s", protective.PlanDigest)
+	}
+
+	// A digest reviewed under one policy must not authorize the other.
+	if _, err := journal.ApplyCleanup(ctx, cutoff, permissive.PlanDigest, CleanupOptions{}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("permissive digest applied under the protective policy: %v", err)
+	}
+	if _, err := journal.ApplyCleanup(ctx, cutoff, protective.PlanDigest, CleanupOptions{IncludeUnreconciled: true}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("protective digest applied under the permissive policy: %v", err)
+	}
+	if _, err := journal.ApplyCleanup(ctx, cutoff, permissive.PlanDigest, CleanupOptions{IncludeUnreconciled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.GetExecution(ctx, uncollected.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("explicit opt-out did not delete the uncollected terminal: %v", err)
+	}
 }

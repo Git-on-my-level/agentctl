@@ -87,6 +87,20 @@ type CleanupPlan struct {
 	Protected     []ProtectedExecution `json:"protected"`
 	Records       CleanupRecordCounts  `json:"records"`
 	LogicalBytes  int64                `json:"logical_bytes"`
+	// IncludeUnreconciled reports whether the caller explicitly opted out of
+	// uncollected-result protection. ProtectedUnreconciled counts the terminal
+	// executions retained solely because nobody has collected their result.
+	IncludeUnreconciled   bool `json:"include_unreconciled"`
+	ProtectedUnreconciled int  `json:"protected_unreconciled"`
+}
+
+// CleanupOptions carries the explicit caller intent that widens deletion
+// beyond the safe default. A zero value is the protective policy.
+type CleanupOptions struct {
+	// IncludeUnreconciled deletes terminal executions whose result was never
+	// acknowledged by result or await. It is destructive of uncollected
+	// evidence and must come from an explicit caller flag.
+	IncludeUnreconciled bool
 }
 
 type cleanupEvent struct {
@@ -187,7 +201,7 @@ func measureBucket(bucket *bbolt.Bucket, usage *BucketUsage) {
 
 // PlanCleanup selects terminal execution graphs whose terminal timestamp is
 // strictly before the cutoff. It never writes, including when opened writable.
-func (j *Journal) PlanCleanup(ctx context.Context, before time.Time) (CleanupPlan, error) {
+func (j *Journal) PlanCleanup(ctx context.Context, before time.Time, options CleanupOptions) (CleanupPlan, error) {
 	if err := ctx.Err(); err != nil {
 		return CleanupPlan{}, err
 	}
@@ -197,7 +211,7 @@ func (j *Journal) PlanCleanup(ctx context.Context, before time.Time) (CleanupPla
 	var plan CleanupPlan
 	err := j.db.View(func(tx *bbolt.Tx) error {
 		var err error
-		plan, _, err = j.cleanupPlanTx(tx, before.UTC())
+		plan, _, err = j.cleanupPlanTx(tx, before.UTC(), options)
 		return err
 	})
 	return plan, err
@@ -205,7 +219,7 @@ func (j *Journal) PlanCleanup(ctx context.Context, before time.Time) (CleanupPla
 
 // ApplyCleanup atomically recomputes and deletes the eligible graph. Repeating
 // it is safe: already-deleted records simply produce an empty applied plan.
-func (j *Journal) ApplyCleanup(ctx context.Context, before time.Time, expectedPlanDigest string) (CleanupPlan, error) {
+func (j *Journal) ApplyCleanup(ctx context.Context, before time.Time, expectedPlanDigest string, options CleanupOptions) (CleanupPlan, error) {
 	if j.readOnly {
 		return CleanupPlan{}, ErrReadOnly
 	}
@@ -222,7 +236,7 @@ func (j *Journal) ApplyCleanup(ctx context.Context, before time.Time, expectedPl
 	err := j.db.Update(func(tx *bbolt.Tx) error {
 		var targets []cleanupTarget
 		var err error
-		plan, targets, err = j.cleanupPlanTx(tx, before.UTC())
+		plan, targets, err = j.cleanupPlanTx(tx, before.UTC(), options)
 		if err != nil {
 			return err
 		}
@@ -265,9 +279,9 @@ func (j *Journal) ApplyCleanup(ctx context.Context, before time.Time, expectedPl
 	return plan, err
 }
 
-func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time) (CleanupPlan, []cleanupTarget, error) {
+func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupOptions) (CleanupPlan, []cleanupTarget, error) {
 	now := j.clock().UTC()
-	plan := CleanupPlan{SchemaVersion: RetentionSchemaVersion, Before: before, GeneratedAt: now, Eligible: []CleanupExecution{}, Protected: []ProtectedExecution{}}
+	plan := CleanupPlan{SchemaVersion: RetentionSchemaVersion, Before: before, GeneratedAt: now, Eligible: []CleanupExecution{}, Protected: []ProtectedExecution{}, IncludeUnreconciled: options.IncludeUnreconciled}
 	executions := map[string]model.Execution{}
 	base := map[string]bool{}
 	if err := tx.Bucket(bExecutions).ForEach(func(key, raw []byte) error {
@@ -442,6 +456,38 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time) (CleanupPlan, []
 		}
 	}
 
+	// A terminal result nobody collected is uncollected evidence, not garbage.
+	// Cleanup reclaims space; it must not double as an acknowledgement that a
+	// human or agent already read the outcome. The epoch guard keeps this from
+	// freezing old journals: terminals that predate acknowledgement tracking on
+	// this journal can never gain a stamp retroactively, so they stay eligible.
+	if !options.IncludeUnreconciled {
+		epoch, err := acknowledgementEpoch(tx)
+		if err != nil {
+			return CleanupPlan{}, nil, err
+		}
+		if !epoch.IsZero() {
+			acknowledged := map[string]bool{}
+			if bucket := tx.Bucket(bAcknowledgements); bucket != nil {
+				if err := bucket.ForEach(func(key, _ []byte) error {
+					acknowledged[string(key)] = true
+					return nil
+				}); err != nil {
+					return CleanupPlan{}, nil, err
+				}
+			}
+			for id, value := range executions {
+				if !base[id] || acknowledged[id] {
+					continue
+				}
+				if value.TerminalAt == nil || value.TerminalAt.Before(epoch) {
+					continue
+				}
+				protect(id, "result_unreconciled")
+			}
+		}
+	}
+
 	// A protected member protects its full relationship component. Deleting a
 	// sibling while retaining a parent, supersession target, or promotion peer
 	// would leave a dangling execution reference even when both are terminal.
@@ -481,6 +527,9 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time) (CleanupPlan, []
 				list = append(list, reason)
 			}
 			sort.Strings(list)
+			if reasons["result_unreconciled"] {
+				plan.ProtectedUnreconciled++
+			}
 			plan.Protected = append(plan.Protected, ProtectedExecution{ExecutionID: id, TerminalAt: *value.TerminalAt, Reasons: list})
 			continue
 		}
@@ -494,10 +543,11 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time) (CleanupPlan, []
 		plan.LogicalBytes += target.LogicalBytes
 	}
 	digestInput := struct {
-		SchemaVersion int                `json:"schema_version"`
-		Before        time.Time          `json:"before"`
-		Eligible      []CleanupExecution `json:"eligible"`
-	}{RetentionSchemaVersion, before, plan.Eligible}
+		SchemaVersion       int                `json:"schema_version"`
+		Before              time.Time          `json:"before"`
+		IncludeUnreconciled bool               `json:"include_unreconciled"`
+		Eligible            []CleanupExecution `json:"eligible"`
+	}{RetentionSchemaVersion, before, options.IncludeUnreconciled, plan.Eligible}
 	raw, err := json.Marshal(digestInput)
 	if err != nil {
 		return CleanupPlan{}, nil, err

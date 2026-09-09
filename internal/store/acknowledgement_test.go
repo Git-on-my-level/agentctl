@@ -126,14 +126,14 @@ func TestCleanupRemovesExecutionAcknowledgement(t *testing.T) {
 		t.Fatal(err)
 	}
 	cutoff := now.Add(-24 * time.Hour)
-	plan, err := journal.PlanCleanup(ctx, cutoff)
+	plan, err := journal.PlanCleanup(ctx, cutoff, CleanupOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(plan.Eligible) != 1 || plan.Records.Acknowledgements != 1 {
 		t.Fatalf("plan missing acknowledgement: %#v", plan)
 	}
-	if _, err := journal.ApplyCleanup(ctx, cutoff, plan.PlanDigest); err != nil {
+	if _, err := journal.ApplyCleanup(ctx, cutoff, plan.PlanDigest, CleanupOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := journal.GetAcknowledgement(ctx, old.ID); !errors.Is(err, ErrNotFound) {
