@@ -48,7 +48,14 @@ type workspaceOwnersDocument struct {
 
 func (a *app) workspaceCommand(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) == 0 || args[0] != "owners" {
-		return output.NewError(output.CodeUsage, "usage: agentctl workspace owners [--path directory]", false)
+		// `workspace` is a group, not a command. Name the only subcommand it
+		// has so a caller that read the help table can recover in one step.
+		return output.NewError(output.CodeUsage, "usage: agentctl workspace owners [--path directory]", false).
+			WithDetail("subcommands", []string{"owners"}).
+			WithActions(
+				output.NextAction{Label: "Report worktree execution owners", Argv: []string{"agentctl", "workspace", "owners", "--output", string(renderer.Mode)}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}},
+				output.NextAction{Label: "Read the workspace owners contract", Argv: []string{"agentctl", "help", "workspace", "owners"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}},
+			)
 	}
 	path, problem := parseWorkspaceOwners(args[1:])
 	if problem != nil {

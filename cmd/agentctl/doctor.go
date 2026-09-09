@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"os"
 	"sort"
 	"strings"
@@ -12,6 +15,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/supervisor"
 )
 
 type doctorJournal struct {
@@ -98,6 +102,17 @@ func (a *app) doctorReadiness(ctx context.Context, renderer output.Renderer, c c
 	if bootstrap.SupervisorSocket {
 		report.Supervisor["status"] = "running"
 		report.Supervisor["socket"] = true
+	}
+	// A reachable socket only proves the process is listening. Readiness has to
+	// come from the service's own health projection, or doctor reports healthy
+	// while deliveries are stuck.
+	supervisorProblems := []string{}
+	if !static {
+		supervisorProblems = a.foldSupervisorHealth(ctx, report.Supervisor, bootstrap.SupervisorSocket)
+		if len(supervisorProblems) != 0 {
+			report.Healthy = false
+			report.Problems = append(report.Problems, supervisorProblems...)
+		}
 	}
 
 	configPath := c.configPath
@@ -200,6 +215,9 @@ func (a *app) doctorReadiness(ctx context.Context, renderer output.Renderer, c c
 		lines = append(lines, output.Line{Lead: "adapter", Fields: []output.Field{{Name: "name", Value: value.Name}, {Name: "status", Value: value.Status}, {Name: "executable", Value: value.Executable}}})
 	}
 	actions := []output.NextAction{}
+	if len(supervisorProblems) != 0 {
+		actions = append(actions, output.NextAction{Label: "Inspect supervisor health", Argv: []string{"agentctl", "supervisor", "status"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+	}
 	if !bootstrap.Healthy {
 		actions = append(actions, output.NextAction{Label: "Reconcile detected installations", Argv: []string{"agentctl", "bootstrap", "update", "--dry-run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 	}
@@ -328,4 +346,100 @@ func uniqueStrings(values []string) []string {
 		}
 	}
 	return out
+}
+
+// doctorSupervisorCycleStaleAfter bounds how old the supervisor's last cycle may
+// be before doctor stops calling it healthy. It is twelve default cycles, so a
+// briefly busy host does not read as a stalled service.
+const doctorSupervisorCycleStaleAfter = time.Minute
+
+// foldSupervisorHealth folds the service's own health projection into doctor's
+// supervisor block. Socket reachability alone proves only that something is
+// listening: degraded state, a recorded last error, or a stale cycle must make
+// the readiness report unhealthy rather than silently healthy. It returns the
+// problem codes it discovered and performs no write.
+func (a *app) foldSupervisorHealth(ctx context.Context, block map[string]any, socketPresent bool) []string {
+	probe := a.supervisorHealthProbe
+	if probe == nil {
+		// An absent socket stays an absent optional service: doctor must not
+		// dial, and must not invent a problem for a supervisor nobody installed.
+		if !socketPresent {
+			return nil
+		}
+		probe = a.dialSupervisorStatus
+	}
+	status, err := probe(ctx)
+	if err != nil {
+		// A reachable-looking socket that refuses a bounded read-only status
+		// request is a real readiness problem, not an absent service.
+		block["status"] = "unreachable"
+		block["socket"] = true
+		block["error"] = err.Error()
+		return []string{"supervisor_unreachable"}
+	}
+	health := status.Health
+	block["status"] = string(health.State)
+	block["health_state"] = string(health.State)
+	block["running"] = status.Running
+	block["pending_deliveries"] = health.PendingDeliveries
+	block["nonterminal_executions"] = health.NonTerminalExecutions
+	if health.LastError != "" {
+		block["last_error"] = health.LastError
+	}
+	problems := []string{}
+	if !health.LastCycleAt.IsZero() {
+		block["last_cycle_at"] = health.LastCycleAt.UTC()
+		age := a.now().UTC().Sub(health.LastCycleAt.UTC())
+		if age < 0 {
+			age = 0
+		}
+		block["last_cycle_age_seconds"] = age.Seconds()
+		if age > doctorSupervisorCycleStaleAfter {
+			block["cycle_freshness"] = "stale"
+			problems = append(problems, "supervisor_cycle_stale")
+		} else {
+			block["cycle_freshness"] = "fresh"
+		}
+	} else {
+		block["cycle_freshness"] = "unknown"
+	}
+	switch health.State {
+	case supervisor.HealthHealthy, supervisor.HealthStarting:
+	default:
+		problems = append(problems, "supervisor_"+string(health.State))
+	}
+	if health.LastError != "" && len(problems) == 0 {
+		problems = append(problems, "supervisor_last_error")
+	}
+	return problems
+}
+
+// dialSupervisorStatus performs one bounded read-only status RPC against the
+// owner-only Unix socket. It never starts, installs, or restarts a service.
+func (a *app) dialSupervisorStatus(ctx context.Context) (supervisor.Status, error) {
+	socketPath, problem := a.defaultSupervisorSocket()
+	if problem != nil {
+		return supervisor.Status{}, problem
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(dialCtx, "unix", socketPath)
+	if err != nil {
+		return supervisor.Status{}, err
+	}
+	defer conn.Close()
+	if deadline, ok := dialCtx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
+	if err := json.NewEncoder(conn).Encode(supervisor.RPCRequest{Op: "status"}); err != nil {
+		return supervisor.Status{}, err
+	}
+	var response supervisor.RPCResponse
+	if err := json.NewDecoder(io.LimitReader(conn, 64<<10)).Decode(&response); err != nil {
+		return supervisor.Status{}, err
+	}
+	if !response.OK || response.Status == nil {
+		return supervisor.Status{}, errors.New("supervisor rejected the status request")
+	}
+	return *response.Status, nil
 }

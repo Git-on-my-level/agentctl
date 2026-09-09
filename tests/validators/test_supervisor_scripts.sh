@@ -53,8 +53,17 @@ plist_path = os.path.join(home, 'Library', 'LaunchAgents', label + '.plist')
 if os.environ.get('PLAN_BAD') == 'path':
     plist_path = os.path.join(home, 'wrong.plist')
 args = [exe, 'supervisor', 'run', '--socket', os.path.join(state, 'supervisor.sock'), '--state-dir', state]
-plist = plistlib.dumps({'Label': label, 'ProgramArguments': args, 'RunAtLoad': True, 'KeepAlive': True}, fmt=plistlib.FMT_XML, sort_keys=False)
-print(json.dumps({'ok': True, 'schema_version': 1, 'result': {'Path': plist_path, 'Contents': base64.b64encode(plist).decode(), 'Service': {'Label': label, 'ProgramArguments': args, 'Environment': None, 'RunAtLoad': True, 'KeepAlive': True}}, 'warnings': [], 'next_actions': []}, separators=(',', ':')))
+log_dir = os.path.join(home, 'Library', 'Logs', 'agentctl')
+stdout_path = os.path.join(log_dir, 'supervisor.out.log')
+stderr_path = os.path.join(log_dir, 'supervisor.err.log')
+if os.environ.get('PLAN_BAD') == 'logs':
+    stdout_path = os.path.join(home, 'unreviewed.out.log')
+keys = {'Label': label, 'ProgramArguments': args, 'RunAtLoad': True, 'KeepAlive': True,
+        'StandardOutPath': stdout_path, 'StandardErrorPath': stderr_path, 'ThrottleInterval': 10}
+plist = plistlib.dumps(keys, fmt=plistlib.FMT_XML, sort_keys=False)
+service = dict(keys)
+service['Environment'] = None
+print(json.dumps({'ok': True, 'schema_version': 1, 'result': {'Path': plist_path, 'Contents': base64.b64encode(plist).decode(), 'Service': service}, 'warnings': [], 'next_actions': []}, separators=(',', ':')))
 PY
 SH
 chmod 0755 "$AGENTCTL"
@@ -119,6 +128,8 @@ if "$INSTALL" --agentctl "$AGENTCTL" --state-dir relative-state >/dev/null 2>&1;
 
 export PLAN_BAD=path
 if "$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" >/dev/null 2>&1; then fail 'installer accepted a plan with an unexpected path'; fi
+export PLAN_BAD=logs
+if "$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" >/dev/null 2>&1; then fail 'installer accepted a plan with an unreviewed log path'; fi
 unset PLAN_BAD
 [ ! -e "$plist" ] && [ ! -e "$manifest" ] || fail 'invalid plan wrote managed files'
 
@@ -133,7 +144,11 @@ with open(sys.argv[1], 'rb') as fh: data = plistlib.load(fh)
 assert data['Label'] == 'io.agentctl.supervisor'
 assert data['ProgramArguments'][1:3] == ['supervisor', 'run']
 assert data['RunAtLoad'] is True and data['KeepAlive'] is True
+assert data['StandardOutPath'].endswith('/Library/Logs/agentctl/supervisor.out.log')
+assert data['StandardErrorPath'].endswith('/Library/Logs/agentctl/supervisor.err.log')
+assert data['ThrottleInterval'] == 10
 PY
+[ -d "$HOME/Library/Logs/agentctl" ] || fail 'install did not create the supervisor log directory'
 grep -q 'bootstrap gui/' "$LAUNCH_LOG" || fail 'install did not bootstrap service'
 grep -q 'kickstart -k gui/' "$LAUNCH_LOG" || fail 'install did not kickstart service'
 

@@ -20,6 +20,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/route"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/supervisor"
 	"github.com/Git-on-my-level/agentctl/internal/updatecheck"
 )
 
@@ -37,6 +38,10 @@ type app struct {
 	getenv          func(string) string
 	now             func() time.Time
 	updateNotice    func(context.Context, string, common) *output.Warning
+	// supervisorHealthProbe overrides the owner-only supervisor status RPC that
+	// doctor folds into its readiness report. Production leaves it nil and
+	// dials the socket; tests inject a bounded fake health response.
+	supervisorHealthProbe func(context.Context) (supervisor.Status, error)
 }
 type common struct {
 	mode                                                        output.Mode
@@ -811,7 +816,12 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 			return a.deliverAwaitError(ctx, renderer, c, id, store.AcknowledgementAwait, outcomeError(output.CodeExecutionUnknown, "execution is orphaned", execution))
 		case model.StateAttention:
 			if stopAttention {
-				return a.fail(renderer, outcomeError(output.CodeAttentionRequired, "execution requires attention", execution))
+				// The stop is only useful if the caller can escape it: point at
+				// the authority evidence, the read-only re-check, and the
+				// explicit wait that continues through attention.
+				return a.fail(renderer, outcomeError(output.CodeAttentionRequired, "execution requires attention", execution).
+					WithDetail("authority", string(execution.Authority)).
+					WithActions(attentionNextActions(renderer.Mode, execution)...))
 			}
 		}
 		if !deadline.IsZero() && !a.now().Before(deadline) {
@@ -993,7 +1003,17 @@ func writeExecution(renderer output.Renderer, e model.Execution, operation strin
 			label = "Wait through execution deadline"
 			argv = []string{"agentctl", "await", e.ID.String(), "--output", string(renderer.Mode), "--through-execution-deadline"}
 		}
-		actions = append(actions, output.NextAction{Label: label, Argv: argv, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}})
+		if e.State == model.StateAttention {
+			// A plain wait stops on attention, so recommending it here would
+			// return attention_required immediately and loop the caller. The
+			// decision belongs to the execution authority; agentctl offers the
+			// read-only evidence, a read-only re-check, and the explicit wait
+			// that continues through attention once the authority has decided.
+			warnings = append(warnings, attentionAuthorityWarning(e))
+			actions = append(actions, attentionNextActions(renderer.Mode, e)...)
+		} else {
+			actions = append(actions, output.NextAction{Label: label, Argv: argv, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}})
+		}
 		if operation == "background" {
 			actions = append(actions, output.NextAction{Label: "Discover durable callback setup", Argv: []string{"agentctl", "help", "subscribe"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"choose an explicit callback destination and target"}})
 		}
@@ -1038,6 +1058,52 @@ func writeExecutionOutcome(renderer output.Renderer, e model.Execution, outcome 
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil
+}
+
+// attentionAuthorityWarning is the non-executable pointer at the authority that
+// must decide. agentctl records the attention state but never resolves it: a
+// Multica-authority execution is decided on its bound issue, and a native
+// execution is decided in its own session or provider surface.
+func attentionAuthorityWarning(e model.Execution) output.Warning {
+	details := map[string]any{"execution_id": e.ID.String(), "authority": string(e.Authority), "adapter": e.Adapter}
+	if e.SourceState != nil && *e.SourceState != "" {
+		details["source_state"] = *e.SourceState
+	}
+	message := "the native session for this execution requires a human decision; agentctl cannot answer a permission, approval, authentication, or input prompt on its behalf"
+	if e.Authority == model.AuthorityMultica {
+		message = "the bound Multica issue requires a human decision; agentctl observes the attention but never decides it"
+		for _, binding := range e.SourceBindings {
+			if binding.Kind == "issue" {
+				details["issue_alias"] = binding.AliasID.String()
+				break
+			}
+		}
+	}
+	return output.Warning{Code: "attention_requires_authority_decision", Message: message, Details: details}
+}
+
+// attentionDecisionPrecondition keeps the continued wait honest: it is only
+// useful after the authority named by attentionAuthorityWarning has decided.
+func attentionDecisionPrecondition(e model.Execution) string {
+	if e.Authority == model.AuthorityMultica {
+		return "resolve the attention on the bound Multica issue; this wait does not decide it"
+	}
+	return "resolve the attention in the native session; this wait does not decide it"
+}
+
+// attentionNextActions are the escapes from an attention stop: read-only
+// evidence, a read-only re-check, and the explicit wait that continues through
+// attention. None of them returns attention_required again.
+func attentionNextActions(mode output.Mode, e model.Execution) []output.NextAction {
+	argv := []string{"agentctl", "await", e.ID.String(), "--output", string(mode), "--no-timeout", "--ignore-attention"}
+	if e.DeadlineAt != nil {
+		argv = []string{"agentctl", "await", e.ID.String(), "--output", string(mode), "--through-execution-deadline", "--ignore-attention"}
+	}
+	return []output.NextAction{
+		{Label: "Read the attention evidence", Argv: []string{"agentctl", "events", e.ID.String(), "--output", string(mode), "--kind", "attention"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}},
+		{Label: "Re-check state after the authority decision", Argv: []string{"agentctl", "status", e.ID.String(), "--output", string(mode)}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}},
+		{Label: "Wait through attention after the authority decides", Argv: argv, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{attentionDecisionPrecondition(e)}},
+	}
 }
 
 func taskContractAcceptanceWarning() output.Warning {

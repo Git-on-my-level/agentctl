@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -20,25 +21,66 @@ type ServicePlan struct {
 	SocketPath  string
 	StateDir    string
 	Environment map[string]string
+	// LogDir is the owner-only absolute directory that receives the service's
+	// stdout and stderr. A managed service with no declared log destination
+	// leaves no evidence behind when it degrades, so every derived unit
+	// declares both paths and rendering fails closed without this directory.
+	LogDir string
+}
+
+// DefaultThrottleInterval bounds how often a supervised service may respawn, so
+// a crash loop cannot consume the host between diagnoses.
+const DefaultThrottleInterval = 10
+
+// StandardOutPath and StandardErrorPath derive the two log destinations from the
+// service name's last segment, keeping them deterministic and reviewable.
+func (s ServicePlan) StandardOutPath() string { return s.logPath("out") }
+
+func (s ServicePlan) StandardErrorPath() string { return s.logPath("err") }
+
+func (s ServicePlan) logPath(stream string) string {
+	if strings.TrimSpace(s.LogDir) == "" {
+		return ""
+	}
+	return filepath.Join(s.LogDir, serviceLogBase(s.Name)+"."+stream+".log")
+}
+
+// serviceLogBase keeps a reverse-DNS label from becoming an unreadable file
+// name: io.agentctl.supervisor logs to supervisor.out.log.
+func serviceLogBase(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "service"
+	}
+	if index := strings.LastIndex(trimmed, "."); index >= 0 && index+1 < len(trimmed) {
+		return trimmed[index+1:]
+	}
+	return trimmed
 }
 
 // LaunchdPlan is the launchd-specific projection of ServicePlan.
 type LaunchdPlan struct {
-	Label            string
-	ProgramArguments []string
-	Environment      map[string]string
-	RunAtLoad        bool
-	KeepAlive        bool
+	Label             string
+	ProgramArguments  []string
+	Environment       map[string]string
+	RunAtLoad         bool
+	KeepAlive         bool
+	StandardOutPath   string
+	StandardErrorPath string
+	ThrottleInterval  int
 }
 
 // SystemdPlan is the systemd-specific projection of ServicePlan.
 type SystemdPlan struct {
-	UnitName    string
-	Description string
-	ExecStart   string
-	Environment map[string]string
-	Restart     string
-	WantedBy    string
+	UnitName       string
+	Description    string
+	ExecStart      string
+	Environment    map[string]string
+	Restart        string
+	RestartSec     int
+	StandardOutput string
+	StandardError  string
+	WantedBy       string
 }
 
 // LaunchdInstallPlan describes a plist path and its exact bytes without
@@ -69,11 +111,14 @@ func LaunchdPlanFor(service ServicePlan) LaunchdPlan {
 		args = append(args, "--state-dir", service.StateDir)
 	}
 	return LaunchdPlan{
-		Label:            service.Name,
-		ProgramArguments: args,
-		Environment:      cloneEnvironment(service.Environment),
-		RunAtLoad:        true,
-		KeepAlive:        true,
+		Label:             service.Name,
+		ProgramArguments:  args,
+		Environment:       cloneEnvironment(service.Environment),
+		RunAtLoad:         true,
+		KeepAlive:         true,
+		StandardOutPath:   service.StandardOutPath(),
+		StandardErrorPath: service.StandardErrorPath(),
+		ThrottleInterval:  DefaultThrottleInterval,
 	}
 }
 
@@ -88,12 +133,15 @@ func SystemdPlanFor(service ServicePlan) SystemdPlan {
 		args = append(args, "--state-dir", service.StateDir)
 	}
 	return SystemdPlan{
-		UnitName:    service.Name,
-		Description: service.Description,
-		ExecStart:   joinSystemdArgs(args),
-		Environment: cloneEnvironment(service.Environment),
-		Restart:     "on-failure",
-		WantedBy:    "default.target",
+		UnitName:       service.Name,
+		Description:    service.Description,
+		ExecStart:      joinSystemdArgs(args),
+		Environment:    cloneEnvironment(service.Environment),
+		Restart:        "on-failure",
+		RestartSec:     DefaultThrottleInterval,
+		StandardOutput: systemdAppend(service.StandardOutPath()),
+		StandardError:  systemdAppend(service.StandardErrorPath()),
+		WantedBy:       "default.target",
 	}
 }
 
@@ -105,15 +153,21 @@ func RenderLaunchdPlist(plan LaunchdPlan) ([]byte, error) {
 	if len(plan.ProgramArguments) == 0 || strings.TrimSpace(plan.ProgramArguments[0]) == "" {
 		return nil, fmt.Errorf("launchd program arguments are required")
 	}
+	if err := validateLogPaths(plan.StandardOutPath, plan.StandardErrorPath); err != nil {
+		return nil, err
+	}
 	root := launchdPlist{
 		XMLName: xml.Name{Local: "plist"},
 		Version: "1.0",
 		Dict: launchdDict{
-			Label:            plan.Label,
-			ProgramArguments: append([]string(nil), plan.ProgramArguments...),
-			Environment:      cloneEnvironment(plan.Environment),
-			RunAtLoad:        plan.RunAtLoad,
-			KeepAlive:        plan.KeepAlive,
+			Label:             plan.Label,
+			ProgramArguments:  append([]string(nil), plan.ProgramArguments...),
+			Environment:       cloneEnvironment(plan.Environment),
+			RunAtLoad:         plan.RunAtLoad,
+			KeepAlive:         plan.KeepAlive,
+			StandardOutPath:   plan.StandardOutPath,
+			StandardErrorPath: plan.StandardErrorPath,
+			ThrottleInterval:  plan.ThrottleInterval,
 		},
 	}
 	rendered, err := xml.MarshalIndent(root, "", "  ")
@@ -150,6 +204,21 @@ func RenderSystemdUnit(plan SystemdPlan) []byte {
 	if plan.Restart != "" {
 		b.WriteString("Restart=")
 		b.WriteString(plan.Restart)
+		b.WriteByte('\n')
+	}
+	if plan.RestartSec > 0 {
+		b.WriteString("RestartSec=")
+		b.WriteString(strconv.Itoa(plan.RestartSec))
+		b.WriteByte('\n')
+	}
+	if plan.StandardOutput != "" {
+		b.WriteString("StandardOutput=")
+		b.WriteString(escapeSystemdValue(plan.StandardOutput))
+		b.WriteByte('\n')
+	}
+	if plan.StandardError != "" {
+		b.WriteString("StandardError=")
+		b.WriteString(escapeSystemdValue(plan.StandardError))
 		b.WriteByte('\n')
 	}
 	for _, key := range sortedKeys(plan.Environment) {
@@ -198,6 +267,9 @@ func BuildSystemdInstallPlan(service ServicePlan, userConfigDir string) (Systemd
 		return SystemdInstallPlan{}, fmt.Errorf("systemd user config directory is required")
 	}
 	plan := SystemdPlanFor(service)
+	if err := validateLogPaths(service.StandardOutPath(), service.StandardErrorPath()); err != nil {
+		return SystemdInstallPlan{}, err
+	}
 	return SystemdInstallPlan{
 		Path:     filepath.Join(userConfigDir, service.Name+".service"),
 		Contents: RenderSystemdUnit(plan),
@@ -213,11 +285,14 @@ type launchdPlist struct {
 
 // launchdDict uses explicit XML elements to preserve plist's key/value shape.
 type launchdDict struct {
-	Label            string            `xml:"-"`
-	ProgramArguments []string          `xml:"-"`
-	Environment      map[string]string `xml:"-"`
-	RunAtLoad        bool              `xml:"-"`
-	KeepAlive        bool              `xml:"-"`
+	Label             string            `xml:"-"`
+	ProgramArguments  []string          `xml:"-"`
+	Environment       map[string]string `xml:"-"`
+	RunAtLoad         bool              `xml:"-"`
+	KeepAlive         bool              `xml:"-"`
+	StandardOutPath   string            `xml:"-"`
+	StandardErrorPath string            `xml:"-"`
+	ThrottleInterval  int               `xml:"-"`
 }
 
 func (d launchdDict) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
@@ -259,6 +334,17 @@ func (d launchdDict) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
 	}
 	if d.KeepAlive {
 		if err := plistKeyBool(e, "KeepAlive"); err != nil {
+			return err
+		}
+	}
+	if err := plistKeyString(e, "StandardOutPath", d.StandardOutPath); err != nil {
+		return err
+	}
+	if err := plistKeyString(e, "StandardErrorPath", d.StandardErrorPath); err != nil {
+		return err
+	}
+	if d.ThrottleInterval > 0 {
+		if err := plistKeyInteger(e, "ThrottleInterval", d.ThrottleInterval); err != nil {
 			return err
 		}
 	}
@@ -309,6 +395,46 @@ func plistKeyArray(e *xml.Encoder, key string, values []string) error {
 		}
 	}
 	return e.EncodeToken(xml.EndElement{Name: xml.Name{Local: "array"}})
+}
+
+// validateLogPaths keeps a derived unit from silently discarding its output.
+func validateLogPaths(standardOut, standardError string) error {
+	for name, value := range map[string]string{"StandardOutPath": standardOut, "StandardErrorPath": standardError} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("service log directory is required to derive %s", name)
+		}
+		if !filepath.IsAbs(value) {
+			return fmt.Errorf("%s must be an absolute path", name)
+		}
+	}
+	return nil
+}
+
+// systemdAppend keeps journald from being the only copy of the service output.
+func systemdAppend(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	return "append:" + path
+}
+
+func plistKeyInteger(e *xml.Encoder, key string, value int) error {
+	if err := e.EncodeToken(xml.StartElement{Name: xml.Name{Local: "key"}}); err != nil {
+		return err
+	}
+	if err := e.EncodeToken(xml.CharData(key)); err != nil {
+		return err
+	}
+	if err := e.EncodeToken(xml.EndElement{Name: xml.Name{Local: "key"}}); err != nil {
+		return err
+	}
+	if err := e.EncodeToken(xml.StartElement{Name: xml.Name{Local: "integer"}}); err != nil {
+		return err
+	}
+	if err := e.EncodeToken(xml.CharData(strconv.Itoa(value))); err != nil {
+		return err
+	}
+	return e.EncodeToken(xml.EndElement{Name: xml.Name{Local: "integer"}})
 }
 
 func plistKeyBool(e *xml.Encoder, key string) error {

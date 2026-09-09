@@ -151,19 +151,29 @@ try:
     socket = os.path.join(state_dir, 'supervisor.sock')
     argv = [executable, 'supervisor', 'run', '--socket', socket, '--state-dir', state_dir]
     exec_start = ' '.join(quote(value) for value in argv)
+    log_dir = os.path.join(state_dir, 'logs')
+    standard_output = 'append:' + os.path.join(log_dir, 'supervisor.out.log')
+    standard_error = 'append:' + os.path.join(log_dir, 'supervisor.err.log')
     expected_service = {
         'UnitName': 'io.agentctl.supervisor',
         'Description': 'agentctl host-local supervisor',
         'ExecStart': exec_start,
         'Environment': None,
         'Restart': 'on-failure',
+        'RestartSec': 10,
+        'StandardOutput': standard_output,
+        'StandardError': standard_error,
         'WantedBy': 'default.target',
     }
     if service != expected_service:
         raise ValueError('plan service does not match requested executable/state directory')
     data = base64.b64decode(encoded, validate=True)
-    expected = (f'[Unit]\nDescription=agentctl host-local supervisor\n\n'
-                f'[Service]\nType=simple\nExecStart={exec_start}\nRestart=on-failure\n\n'
+    # The renderer escapes every unit value, so the reviewed description
+    # arrives quoted; comparing against the raw text rejected real plans.
+    description = quote('agentctl host-local supervisor')
+    expected = (f'[Unit]\nDescription={description}\n\n'
+                f'[Service]\nType=simple\nExecStart={exec_start}\nRestart=on-failure\nRestartSec=10\n'
+                f'StandardOutput={quote(standard_output)}\nStandardError={quote(standard_error)}\n\n'
                 f'[Install]\nWantedBy=default.target\n').encode()
     if data != expected:
         raise ValueError('decoded unit does not match the reviewed systemd projection')
@@ -226,6 +236,8 @@ active=0
 "$systemctl_bin" --user is-active --quiet "$UNIT_NAME" >/dev/null 2>&1 && active=1
 
 umask 077
+# systemd cannot append to a log file whose directory does not exist.
+mkdir -p "$STATE_DIR/logs"
 mkdir -p "$unit_dir"
 [ ! -L "$unit_dir" ] || die "systemd user directory became a symlink: $unit_dir"
 unit_tmp=$(mktemp "$unit_dir/.$UNIT_NAME.XXXXXX")

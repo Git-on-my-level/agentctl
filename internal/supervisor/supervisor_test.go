@@ -474,6 +474,7 @@ func TestServicePlansArePureAndDeterministic(t *testing.T) {
 		Executable:  "/opt/agentctl",
 		SocketPath:  "/tmp/agentctl.sock",
 		StateDir:    "/tmp/agentctl",
+		LogDir:      "/tmp/agentctl-logs",
 		Environment: map[string]string{"Z": "last", "A": "first"},
 	}
 	launchd, err := BuildLaunchdInstallPlan(service, "/tmp/LaunchAgents")
@@ -505,6 +506,7 @@ func TestSystemdEscapingPreventsSpecifierAndLineInjection(t *testing.T) {
 		Executable: "/opt/agent%ctl/bin/agentctl",
 		Arguments:  []string{"supervisor", "line\nbreak", `quoted"value`},
 		StateDir:   "/tmp/state%h",
+		LogDir:     "/tmp/logs",
 	}
 	plan, err := BuildSystemdInstallPlan(service, "/tmp/systemd")
 	if err != nil {

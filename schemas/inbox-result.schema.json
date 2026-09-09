@@ -51,7 +51,23 @@
           "type": "array",
           "minItems": 1,
           "items": {"$ref": "#/$defs/reason"}
+        },
+        "next_actions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/next_action"}
         }
+      }
+    },
+    "next_action": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["label", "argv", "mutates", "side_effect_class", "preconditions"],
+      "properties": {
+        "label": {"type": "string", "minLength": 1},
+        "argv": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "mutates": {"type": "boolean"},
+        "side_effect_class": {"enum": ["read_only", "local_operational_write", "remote_coordination_write", "external_side_effect"]},
+        "preconditions": {"type": "array", "items": {"type": "string"}}
       }
     },
     "reason": {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
+	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
@@ -136,7 +137,7 @@ func TestInboxSeparatesWorkFromToolHealth(t *testing.T) {
 		UpdatedAt:   now.Add(-2 * time.Hour),
 		Observation: model.Observation{ObservedAt: now.Add(-2 * time.Hour)},
 	}
-	item, actionable := projectInbox(execution, now, time.Hour, store.AcknowledgementIndex{})
+	item, actionable := projectInbox(execution, now, time.Hour, store.AcknowledgementIndex{}, output.JSON)
 	if !actionable {
 		t.Fatal("stale unreachable work was not actionable")
 	}
@@ -164,7 +165,7 @@ func TestInboxTerminalFailureClearsOnCollection(t *testing.T) {
 		Observation: model.Observation{ObservedAt: terminalAt},
 	}
 	acks := store.AcknowledgementIndex{Epoch: now.Add(-2 * time.Hour), ByID: map[ids.ExecutionID]store.ExecutionAcknowledgement{}}
-	item, actionable := projectInbox(execution, now, time.Hour, acks)
+	item, actionable := projectInbox(execution, now, time.Hour, acks, output.JSON)
 	if !actionable || item.WorkHealth != "failed" || !item.Unreconciled {
 		t.Fatalf("uncollected failure=%#v actionable=%v", item, actionable)
 	}
@@ -173,7 +174,7 @@ func TestInboxTerminalFailureClearsOnCollection(t *testing.T) {
 		t.Fatalf("reasons=%v want=%v", got, want)
 	}
 	acks.ByID[execution.ID] = store.ExecutionAcknowledgement{ExecutionID: execution.ID, AcknowledgedAt: now, Source: store.AcknowledgementResult}
-	if _, actionable := projectInbox(execution, now, time.Hour, acks); actionable {
+	if _, actionable := projectInbox(execution, now, time.Hour, acks, output.JSON); actionable {
 		t.Fatal("acknowledged terminal failure remained in the inbox")
 	}
 }
@@ -188,7 +189,7 @@ func TestInboxConflictedTerminalRemainsActionableAfterCollection(t *testing.T) {
 	}
 	acks := store.AcknowledgementIndex{Epoch: now.Add(-2 * time.Hour), ByID: map[ids.ExecutionID]store.ExecutionAcknowledgement{}}
 
-	item, actionable := projectInbox(execution, now, time.Hour, acks)
+	item, actionable := projectInbox(execution, now, time.Hour, acks, output.JSON)
 	if !actionable || item.WorkHealth != "integrity_conflicted" || !item.Unreconciled {
 		t.Fatalf("uncollected conflicted terminal=%#v actionable=%v", item, actionable)
 	}
@@ -200,7 +201,7 @@ func TestInboxConflictedTerminalRemainsActionableAfterCollection(t *testing.T) {
 	}
 
 	acks.ByID[execution.ID] = store.ExecutionAcknowledgement{ExecutionID: execution.ID, AcknowledgedAt: now, Source: store.AcknowledgementResult}
-	item, actionable = projectInbox(execution, now, time.Hour, acks)
+	item, actionable = projectInbox(execution, now, time.Hour, acks, output.JSON)
 	if !actionable || item.WorkHealth != "integrity_conflicted" || item.Unreconciled {
 		t.Fatalf("acknowledged conflicted terminal=%#v actionable=%v", item, actionable)
 	}
@@ -216,7 +217,7 @@ func TestInboxIntegrityConflictOutranksStalenessAndKeepsToolReason(t *testing.T)
 		CreatedAt: now.Add(-3 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour),
 		Observation: model.Observation{ObservedAt: now.Add(-2 * time.Hour), Integrity: model.IntegrityConflicted},
 	}
-	item, actionable := projectInbox(execution, now, time.Hour, store.AcknowledgementIndex{})
+	item, actionable := projectInbox(execution, now, time.Hour, store.AcknowledgementIndex{}, output.JSON)
 	if !actionable || item.WorkHealth != "integrity_conflicted" || item.ToolHealth != "unreachable" {
 		t.Fatalf("conflicted stale work=%#v actionable=%v", item, actionable)
 	}
@@ -229,7 +230,7 @@ func TestInboxIntegrityConflictOutranksStalenessAndKeepsToolReason(t *testing.T)
 func TestInboxAttentionDoesNotRequireStaleness(t *testing.T) {
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	execution := model.Execution{State: model.StateAttention, Liveness: model.LivenessBlocked, CreatedAt: now, UpdatedAt: now, Observation: model.Observation{ObservedAt: now}}
-	item, actionable := projectInbox(execution, now, time.Hour, store.AcknowledgementIndex{})
+	item, actionable := projectInbox(execution, now, time.Hour, store.AcknowledgementIndex{}, output.JSON)
 	if !actionable || item.WorkHealth != "attention_required" || item.ToolHealth != "blocked" {
 		t.Fatalf("attention=%#v actionable=%v", item, actionable)
 	}
@@ -241,7 +242,7 @@ func TestInboxAttentionDoesNotRequireStaleness(t *testing.T) {
 func TestInboxUnreachableWaitingDoesNotInventWorkFailure(t *testing.T) {
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	execution := model.Execution{State: model.StateWaiting, Liveness: model.LivenessUnreachable, CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour), Observation: model.Observation{ObservedAt: now.Add(-2 * time.Hour)}}
-	item, actionable := projectInbox(execution, now, time.Hour, store.AcknowledgementIndex{})
+	item, actionable := projectInbox(execution, now, time.Hour, store.AcknowledgementIndex{}, output.JSON)
 	if !actionable || item.WorkHealth != "active" || item.ToolHealth != "unreachable" {
 		t.Fatalf("waiting unreachable=%#v actionable=%v", item, actionable)
 	}
