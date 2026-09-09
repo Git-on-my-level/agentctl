@@ -71,7 +71,7 @@ func newApp() *app {
 		options := updatecheck.Options{CurrentVersion: currentVersion, StatePath: statePath, Getenv: a.getenv}
 		if mode == updatecheck.ModeAuto || a.skillsAutoDue(c) {
 			if (mode == updatecheck.ModeAuto && updatecheck.Due(options)) || a.skillsAutoDue(c) {
-				_ = startUpdateWorker()
+				_ = startUpdateWorker(c)
 			}
 			if mode == updatecheck.ModeAuto || mode == updatecheck.ModeOff {
 				return nil
@@ -117,9 +117,9 @@ func (a *app) run(ctx context.Context, args []string) int {
 	var err *output.Error
 	switch rest[0] {
 	case "_update-worker":
-		return a.updateWorker(ctx)
+		return a.updateWorker(ctx, commonArgs)
 	case "update":
-		err = a.updateCommand(ctx, renderer, rest[1:])
+		err = a.updateCommand(ctx, renderer, commonArgs, rest[1:])
 	case "help", "--help", "-h":
 		topic := strings.Join(rest[1:], " ")
 		return a.help(renderer, topic)
