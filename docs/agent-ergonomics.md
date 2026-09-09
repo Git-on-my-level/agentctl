@@ -432,6 +432,14 @@ escape for callers that intentionally need weaker or broader behavior:
   uses a recorded run deadline plus bounded terminalization grace;
   `--ignore-attention` opts into continued waiting.
   A terminal return acknowledges the execution; attention and timeout do not.
+- An execution in `attention` never recommends a wait that stops on attention.
+  `status`, `inbox`, and the `attention_required` error itself emit the read-only
+  attention evidence, a read-only `status` re-check, and the explicit
+  `--ignore-attention` wait whose precondition names the decision that agentctl
+  cannot make. The `attention_requires_authority_decision` warning is the
+  non-executable pointer at the deciding authority: the bound Multica issue, or
+  the native session. No emitted `next_action` returns the error class that
+  produced it.
 - `subscribe create` listens for `terminal`, `attention`, and `artifact` by
   default, expires after acknowledged terminal delivery, and has a bounded
   twenty-four-hour TTL. Transient delivery failures retry with bounded backoff

@@ -47,6 +47,9 @@ type inboxExecution struct {
 	ObservationAgeSeconds float64         `json:"observation_age_seconds"`
 	Unreconciled          bool            `json:"unreconciled"`
 	Reasons               []inboxReason   `json:"reasons"`
+	// NextActions is per item because inbox reports many executions at once and
+	// a document-level action cannot name which one it applies to.
+	NextActions []output.NextAction `json:"next_actions"`
 }
 
 func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
@@ -75,7 +78,7 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 		if !inboxFilterMatches(execution, opts) {
 			continue
 		}
-		item, actionable := projectInbox(execution, now, opts.staleAfter, acks)
+		item, actionable := projectInbox(execution, now, opts.staleAfter, acks, renderer.Mode)
 		if !actionable {
 			continue
 		}
@@ -166,7 +169,7 @@ func inboxFilterMatches(execution model.Execution, opts inboxOptions) bool {
 	return true
 }
 
-func projectInbox(execution model.Execution, now time.Time, staleAfter time.Duration, acks store.AcknowledgementIndex) (inboxExecution, bool) {
+func projectInbox(execution model.Execution, now time.Time, staleAfter time.Duration, acks store.AcknowledgementIndex, mode output.Mode) (inboxExecution, bool) {
 	observationAge := now.Sub(execution.Observation.ObservedAt)
 	if observationAge < 0 {
 		observationAge = 0
@@ -178,9 +181,13 @@ func projectInbox(execution model.Execution, now time.Time, staleAfter time.Dura
 	if integrityConflicted {
 		reasons = append(reasons, inboxReason{Code: "observation_integrity_conflicted", Domain: "integrity", Summary: "normalized execution evidence conflicts; outcome-dependent commands remain unavailable until the authority is reconciled"})
 	}
+	actions := []output.NextAction{}
 	if execution.State == model.StateAttention {
 		workHealth = "attention_required"
 		reasons = append(reasons, inboxReason{Code: "attention_required", Domain: "work", Summary: "the execution authority requires a decision or intervention"})
+		// Attention is the one inbox reason whose escape is not `result`: the
+		// authority decides, and only then does a wait through attention end.
+		actions = append(actions, attentionNextActions(mode, execution)...)
 	}
 	if unreconciled && (execution.State == model.StateFailed || execution.State == model.StateOrphaned) {
 		if execution.State == model.StateFailed {
@@ -217,7 +224,7 @@ func projectInbox(execution model.Execution, now time.Time, staleAfter time.Dura
 		ID: execution.ID, Labels: labels, Authority: execution.Authority, Adapter: execution.Adapter, Mode: execution.Mode,
 		State: execution.State, Liveness: execution.Liveness, WorkHealth: workHealth, ToolHealth: string(execution.Liveness),
 		CreatedAt: execution.CreatedAt, UpdatedAt: execution.UpdatedAt, ObservationAgeSeconds: observationAge.Seconds(),
-		Unreconciled: unreconciled, Reasons: reasons,
+		Unreconciled: unreconciled, Reasons: reasons, NextActions: actions,
 	}
 	return item, len(reasons) != 0
 }
