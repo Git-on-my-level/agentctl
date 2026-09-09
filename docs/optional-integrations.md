@@ -112,6 +112,11 @@ evidence on the host instead of discarding its output. On macOS the plist sets
 `ThrottleInterval` that bounds respawn; on Linux the unit appends to
 `<state-dir>/logs/` with the matching `RestartSec`. The installers create that
 owner-only directory and refuse a plan whose log paths are not the reviewed ones.
+Because the reviewed plan shape can grow, the launchd installer accepts
+`--plan-with PATH`: the named executable renders the plan while `--agentctl`
+stays the reviewed service executable recorded in the manifest. A binary upgrade
+uses it to preflight the plan the replacement will install, so the outgoing
+binary is never judged against the incoming supervisor contract.
 
 On Linux, the explicit systemd-user installer writes the exact plan-derived
 unit beneath the user's systemd config root and an owner-only checksum manifest.

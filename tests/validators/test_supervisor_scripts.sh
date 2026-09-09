@@ -8,6 +8,7 @@ umask 077
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 INSTALL="$ROOT/scripts/install-supervisor.sh"
+BINARY_INSTALL="$ROOT/scripts/install.sh"
 UNINSTALL="$ROOT/scripts/uninstall-supervisor.sh"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/agentctl-supervisor-test.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
@@ -36,6 +37,7 @@ cat >"$AGENTCTL" <<'SH'
 #!/bin/sh
 set -eu
 printf '%s\n' "$*" >>"$AGENTCTL_ARGS_LOG"
+if [ "${1:-}" = bootstrap ]; then exit 0; fi
 state=
 exe=
 prev=
@@ -60,6 +62,10 @@ if os.environ.get('PLAN_BAD') == 'logs':
     stdout_path = os.path.join(home, 'unreviewed.out.log')
 keys = {'Label': label, 'ProgramArguments': args, 'RunAtLoad': True, 'KeepAlive': True,
         'StandardOutPath': stdout_path, 'StandardErrorPath': stderr_path, 'ThrottleInterval': 10}
+if os.environ.get('PLAN_LEGACY'):
+    # A binary released before the reviewed log contract omits the keys entirely.
+    for key in ('StandardOutPath', 'StandardErrorPath', 'ThrottleInterval'):
+        keys.pop(key)
 plist = plistlib.dumps(keys, fmt=plistlib.FMT_XML, sort_keys=False)
 service = dict(keys)
 service['Environment'] = None
@@ -132,6 +138,83 @@ export PLAN_BAD=logs
 if "$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" >/dev/null 2>&1; then fail 'installer accepted a plan with an unreviewed log path'; fi
 unset PLAN_BAD
 [ ! -e "$plist" ] && [ ! -e "$manifest" ] || fail 'invalid plan wrote managed files'
+
+# A binary released before the reviewed log contract renders a plan without the
+# log keys. It must never install such a plan, and it must never be the binary
+# whose plan an upgrade is judged by.
+LEGACY="$TMP/bin/legacy-agentctl"
+cat >"$LEGACY" <<'SH'
+#!/bin/sh
+set -eu
+PLAN_LEGACY=1 export PLAN_LEGACY
+exec "$FAKE_CURRENT_AGENTCTL" "$@"
+SH
+chmod 0755 "$LEGACY"
+export FAKE_CURRENT_AGENTCTL="$AGENTCTL"
+
+if "$INSTALL" --agentctl "$LEGACY" --state-dir "$state" >/dev/null 2>&1; then
+  fail 'installer accepted a plan that predates the reviewed log contract'
+fi
+[ ! -e "$plist" ] && [ ! -e "$manifest" ] || fail 'legacy plan wrote managed files'
+
+if "$INSTALL" --agentctl "$AGENTCTL" --plan-with relative-planner --state-dir "$state" >/dev/null 2>&1; then
+  fail 'installer accepted a relative --plan-with'
+fi
+if "$INSTALL" --agentctl "$AGENTCTL" --plan-with "$TMP/bin/absent-planner" --state-dir "$state" >/dev/null 2>&1; then
+  fail 'installer accepted a --plan-with that does not exist'
+fi
+
+# --plan-with renders the plan with the replacement while the reviewed service
+# executable stays the installed target: the upgrade preflight shape.
+"$INSTALL" --agentctl "$LEGACY" --plan-with "$AGENTCTL" --state-dir "$state" --dry-run >/dev/null \
+  || fail 'upgrade preflight rejected a replacement-rendered plan for the installed target'
+[ ! -e "$plist" ] || fail 'upgrade preflight wrote plist'
+[ ! -e "$manifest" ] || fail 'upgrade preflight wrote manifest'
+
+"$INSTALL" --agentctl "$LEGACY" --plan-with "$AGENTCTL" --state-dir "$state" --output json >/dev/null \
+  || fail 'replacement-rendered plan did not install'
+python3 - "$plist" "$LEGACY" <<'UPGRADEPY'
+import plistlib, sys
+with open(sys.argv[1], 'rb') as fh: data = plistlib.load(fh)
+assert data['ProgramArguments'][0] == sys.argv[2], data['ProgramArguments']
+assert data['StandardOutPath'].endswith('/Library/Logs/agentctl/supervisor.out.log')
+assert data['ThrottleInterval'] == 10
+UPGRADEPY
+grep -Fqx "agentctl=$LEGACY" "$manifest" || fail 'manifest did not bind the reviewed service executable'
+rm -f "$plist" "$manifest" "$LAUNCH_LOG" "$LOADED"
+
+# End to end: upgrading a managed installation whose live supervisor still
+# points at a binary that predates the reviewed log contract must succeed.
+UPGRADE_PREFIX="$TMP/upgrade-prefix"
+mkdir -p "$UPGRADE_PREFIX/bin" "$UPGRADE_PREFIX/share/agentctl"
+UPGRADE_TARGET="$UPGRADE_PREFIX/bin/agentctl"
+cp "$LEGACY" "$UPGRADE_TARGET"
+chmod 0755 "$UPGRADE_TARGET"
+{
+  printf '%s\n' 'manifest_version=1'
+  printf 'target=%s\n' "$UPGRADE_TARGET"
+  printf 'sha256=%s\n' "$(shasum -a 256 "$UPGRADE_TARGET" | cut -d ' ' -f 1)"
+} >"$UPGRADE_PREFIX/share/agentctl/install-manifest"
+chmod 0600 "$UPGRADE_PREFIX/share/agentctl/install-manifest"
+
+"$INSTALL" --agentctl "$UPGRADE_TARGET" --plan-with "$AGENTCTL" --state-dir "$state" >/dev/null \
+  || fail 'could not stage a managed supervisor for the upgrade test'
+[ -f "$manifest" ] || fail 'upgrade staging did not write a supervisor manifest'
+
+"$BINARY_INSTALL" --binary "$AGENTCTL" --prefix "$UPGRADE_PREFIX" --name agentctl >/dev/null \
+  || fail 'upgrading a managed install with a live supervisor was refused'
+cmp -s "$AGENTCTL" "$UPGRADE_TARGET" || fail 'upgrade did not replace the managed binary'
+python3 - "$plist" "$UPGRADE_TARGET" <<'UPGRADEDPY'
+import plistlib, sys
+with open(sys.argv[1], 'rb') as fh: data = plistlib.load(fh)
+assert data['ProgramArguments'][0] == sys.argv[2], data['ProgramArguments']
+assert data['StandardOutPath'].endswith('/Library/Logs/agentctl/supervisor.out.log')
+assert data['StandardErrorPath'].endswith('/Library/Logs/agentctl/supervisor.err.log')
+assert data['ThrottleInterval'] == 10
+UPGRADEDPY
+rm -f "$plist" "$manifest" "$LAUNCH_LOG" "$LOADED"
+unset FAKE_CURRENT_AGENTCTL
+
 
 "$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" --output json | grep -q '"state":"installed"'
 [ -f "$plist" ] || fail 'install did not write plist'

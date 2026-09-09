@@ -159,8 +159,8 @@ inspect_supervisor() {
 
 reconcile_supervisor() {
   [ "$supervisor_required" -eq 1 ] || return 0
-  local agentctl_path=$1 dry_flag=${2:-}
-  local args=(--agentctl "$agentctl_path" --state-dir "$supervisor_state_dir" --output json)
+  local agentctl_path=$1 plan_path=$2 dry_flag=${3:-}
+  local args=(--agentctl "$agentctl_path" --plan-with "$plan_path" --state-dir "$supervisor_state_dir" --output json)
   [ -n "$dry_flag" ] && args+=("$dry_flag")
   "$SUPERVISOR_INSTALLER" "${args[@]}" >/dev/null || die "supervisor reconciliation failed for $agentctl_path"
 }
@@ -172,13 +172,17 @@ if [ "$BINARY_ONLY" -eq 0 ]; then
   "$source_absolute" bootstrap update --dry-run >/dev/null || die 'bootstrap update preflight failed; refusing to mutate the binary'
 fi
 inspect_supervisor
-# A managed supervisor normally points at the currently installed target. Use
-# that matching executable for the ownership/plan dry-run; the source path is
-# intentionally different and would correctly fail manifest binding. If the
-# target was deleted, restoring it is the recovery prerequisite, so defer the
-# helper invocation until the replacement exists.
+# A managed supervisor normally points at the currently installed target, so
+# the reviewed service executable stays "$target" for the ownership dry-run;
+# the source path is intentionally different and would correctly fail manifest
+# binding. The plan itself must come from the replacement binary: the target
+# still holds the version being replaced, and preflighting its plan would judge
+# the outgoing binary against the incoming supervisor contract and refuse every
+# upgrade that adds a plan field. If the target was deleted, restoring it is the
+# recovery prerequisite, so defer the helper invocation until the replacement
+# exists.
 if [ -x "$target" ]; then
-  reconcile_supervisor "$target" --dry-run
+  reconcile_supervisor "$target" "$source_absolute" --dry-run
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -212,5 +216,5 @@ printf 'installed %s\n' "$target"
 if [ "$BINARY_ONLY" -eq 0 ]; then
   # Run the exact binary now installed, not the caller-supplied source path.
   "$target" bootstrap update || die 'bootstrap update failed after binary installation'
-  reconcile_supervisor "$target"
+  reconcile_supervisor "$target" "$target"
 fi

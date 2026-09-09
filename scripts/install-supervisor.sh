@@ -8,6 +8,7 @@
 set -euo pipefail
 
 AGENTCTL=
+PLAN_WITH=
 STATE_DIR=
 FORCE=0
 DRY_RUN=0
@@ -18,11 +19,14 @@ die() { printf 'error: %s\n' "$*" >&2; exit 2; }
 
 usage() {
   cat <<'EOF'
-usage: scripts/install-supervisor.sh --agentctl PATH [--state-dir DIR]
-       [--force] [--dry-run] [--output text|json]
+usage: scripts/install-supervisor.sh --agentctl PATH [--plan-with PATH]
+       [--state-dir DIR] [--force] [--dry-run] [--output text|json]
 
 Install the owner-only launchd supervisor for the current user. The supplied
-agentctl path must be absolute and executable. No config, journal,
+agentctl path must be absolute and executable. --plan-with names the
+executable that renders the plan when it differs from the reviewed service
+executable, which is how an upgrade preflights the plan the replacement
+binary will install; it defaults to --agentctl. No config, journal,
 credential, or session files are read or removed.
 EOF
 }
@@ -56,6 +60,9 @@ while [ "$#" -gt 0 ]; do
     --agentctl)
       [ "$#" -ge 2 ] || die '--agentctl requires a value'
       AGENTCTL=$2; shift 2 ;;
+    --plan-with)
+      [ "$#" -ge 2 ] || die '--plan-with requires a value'
+      PLAN_WITH=$2; shift 2 ;;
     --state-dir)
       [ "$#" -ge 2 ] || die '--state-dir requires a value'
       STATE_DIR=$2; shift 2 ;;
@@ -81,6 +88,15 @@ case "$AGENTCTL" in
 esac
 [ -f "$AGENTCTL" ] || die "agentctl does not exist: $AGENTCTL"
 [ -x "$AGENTCTL" ] || die "agentctl is not executable: $AGENTCTL"
+if [ -z "$PLAN_WITH" ]; then
+  PLAN_WITH=$AGENTCTL
+fi
+case "$PLAN_WITH" in
+  /*) ;;
+  *) die '--plan-with must be an absolute path' ;;
+esac
+[ -f "$PLAN_WITH" ] || die "plan executable does not exist: $PLAN_WITH"
+[ -x "$PLAN_WITH" ] || die "plan executable is not executable: $PLAN_WITH"
 case "$OUTPUT" in text|json) ;; *) die '--output must be text or json' ;; esac
 
 HOME_DIR=${HOME:-}
@@ -112,7 +128,7 @@ plan_json=$(mktemp "${TMPDIR:-/tmp}/agentctl-supervisor-plan.XXXXXX")
 plan_plist=$(mktemp "${TMPDIR:-/tmp}/agentctl-supervisor-plist.XXXXXX")
 trap 'rm -f "$plan_json" "$plan_plist"' EXIT HUP INT TERM
 
-"$AGENTCTL" --output json supervisor plan --platform darwin --executable "$AGENTCTL" --state-dir "$STATE_DIR" >"$plan_json" || die 'agentctl supervisor plan failed'
+"$PLAN_WITH" --output json supervisor plan --platform darwin --executable "$AGENTCTL" --state-dir "$STATE_DIR" >"$plan_json" || die 'agentctl supervisor plan failed'
 
 # Validate every field used by installation and decode the plist bytes. The
 # validator rejects plans outside this user's LaunchAgents path or log
