@@ -45,7 +45,6 @@ func (cursorParser) Parse(line []byte, stderr bool) parsedObservation {
 		obs.Kind, obs.State, obs.Liveness = "progress", StateRunning, LivenessAlive
 		obs.Summary, obs.Content, obs.ContentType, obs.ContentSource, obs.Error = "", "", "", "", ""
 		obs.ContentTruncated = false
-		obs.Data = map[string]any{"family": "cursor"}
 	}
 	if obs.Terminal && strings.TrimSpace(obs.Content) != "" {
 		// Cursor's terminal result field is the final assistant answer, not

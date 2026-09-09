@@ -25,7 +25,15 @@ func assertCursorPhaseProgress(t *testing.T, line string) {
 }
 
 func TestCursorThinkingCompletedIsProgressNotTerminal(t *testing.T) {
-	assertCursorPhaseProgress(t, `{"type":"thinking","subtype":"completed"}`)
+	line := `{"type":"thinking","subtype":"completed","session_id":"fixture","text":"private reasoning"}`
+	assertCursorPhaseProgress(t, line)
+	obs := (cursorParser{}).Parse([]byte(line), false)
+	if obs.SessionID != "fixture" || obs.Data["type"] != "thinking" || obs.Data["subtype"] != "completed" {
+		t.Fatalf("phase lost native metadata: %#v", obs)
+	}
+	if _, exists := obs.Data["text"]; exists {
+		t.Fatal("reasoning text leaked into phase metadata")
+	}
 }
 
 func TestCursorPhaseSubtypeCompletionsAreNotTaskTerminal(t *testing.T) {
