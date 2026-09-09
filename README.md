@@ -95,7 +95,8 @@ config is absent, `update now` and automatic maintenance skip the optional skill
 phase without creating config or selecting a pack. The existing empty skill
 report is returned; it does not claim healthy or installed skills. A missing
 explicit config selection, malformed config, or unsafe config permissions still
-fail visibly.
+fail visibly. Explicit `--config` selections are preserved by update status,
+manual updates, and the detached maintenance worker.
 
 ## Build from source
 

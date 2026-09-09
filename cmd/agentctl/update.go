@@ -15,12 +15,12 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/updatecheck"
 )
 
-func startUpdateWorker() error {
+func startUpdateWorker(c common) error {
 	executable, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	command := exec.Command(executable, "_update-worker")
+	command := updateWorkerCommand(executable, c)
 	command.Stdin, command.Stdout, command.Stderr = nil, nil, nil
 	command.Env = os.Environ()
 	prepareDetachedCommand(command)
@@ -30,7 +30,15 @@ func startUpdateWorker() error {
 	return command.Process.Release()
 }
 
-func (a *app) updateWorker(parent context.Context) int {
+func updateWorkerCommand(executable string, c common) *exec.Cmd {
+	args := []string{"_update-worker"}
+	if c.configPath != "" {
+		args = append(args, "--config", c.configPath)
+	}
+	return exec.Command(executable, args...)
+}
+
+func (a *app) updateWorker(parent context.Context, c common) int {
 	statePath, policyPath, err := updatecheck.DefaultPaths(a.getenv)
 	if err != nil {
 		return 0
@@ -41,11 +49,11 @@ func (a *app) updateWorker(parent context.Context) int {
 	if modeErr == nil && mode == updatecheck.ModeAuto {
 		_, _ = updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv}})
 	}
-	_, _ = a.updateSkillsAutoClean(ctx, common{}, false)
+	_, _ = a.updateSkillsAutoClean(ctx, c, false)
 	return 0
 }
 
-func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, args []string) *output.Error {
+func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	statePath, policyPath, err := updatecheck.DefaultPaths(a.getenv)
 	if err != nil {
 		return output.Wrap(output.CodeInternal, "resolve update state", false, err)
@@ -62,7 +70,7 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, args 
 		if err != nil {
 			return output.Wrap(output.CodeInternal, "read update status", false, err)
 		}
-		skills := a.skillsUpdateStatus(ctx, common{})
+		skills := a.skillsUpdateStatus(ctx, c)
 		_ = renderer.Success(output.Success{Result: map[string]any{"binary": status, "skills": skills}, Lines: []output.Line{{Lead: "update.binary", Fields: []output.Field{{Name: "mode", Value: status.Mode}, {Name: "checked_on", Value: status.CheckedOn}, {Name: "latest_version", Value: status.LatestVersion}, {Name: "installed_version", Value: status.InstalledVersion}}}, {Lead: "update.skills", Fields: []output.Field{{Name: "policy", Value: skills["policy"]}, {Name: "configured", Value: skills["configured"]}, {Name: "checked_on", Value: skills["checked_on"]}, {Name: "healthy", Value: skills["healthy"]}}}}})
 		return nil
 	case "policy":
@@ -87,7 +95,7 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, args 
 			}
 			return output.Wrap(output.CodeInternal, "apply agentctl update", false, err)
 		}
-		skills, skillsErr := a.updateSkillsAutoClean(ctx, common{}, true)
+		skills, skillsErr := a.updateSkillsAutoClean(ctx, c, true)
 		if skillsErr != nil {
 			return mapSkillpackError("apply Skill Hub update", skills, skillsErr)
 		}

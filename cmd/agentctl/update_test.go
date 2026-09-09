@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,11 +50,13 @@ func TestAutomaticSkillsPreserveExplicitMissingAndMalformedConfigFailures(t *tes
 				if err := os.Mkdir(filepath.Dir(path), 0o700); err != nil {
 					t.Fatal(err)
 				}
+				data := []byte("not valid json")
 				mode := os.FileMode(0o600)
 				if kind == "unsafe" {
 					mode = 0o644
+					data = []byte(`{"schema_version":1,"profiles":{}}`)
 				}
-				if err := os.WriteFile(path, []byte("not valid json"), mode); err != nil {
+				if err := os.WriteFile(path, data, mode); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -62,5 +65,60 @@ func TestAutomaticSkillsPreserveExplicitMissingAndMalformedConfigFailures(t *tes
 				t.Fatal("invalid configured selection was silently skipped")
 			}
 		})
+	}
+}
+
+func TestUpdateNowHonorsExplicitMissingConfig(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	t.Setenv("AGENTCTL_CONFIG", "")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	a.getenv = os.Getenv
+	if code := a.run(context.Background(), []string{"--config", filepath.Join(root, "explicit.json"), "update", "now"}); code == 0 {
+		t.Fatalf("explicit missing config silently skipped: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "apply Skill Hub update") {
+		t.Fatalf("wrong failure: %s", stdout.String())
+	}
+}
+
+func TestUpdateStatusAndWorkerKeepExplicitConfigSelection(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	t.Setenv("AGENTCTL_CONFIG", filepath.Join(root, "missing-environment.json"))
+	selected := filepath.Join(root, "explicit with spaces.json")
+	if err := os.WriteFile(selected, []byte(`{"schema_version":1,"profiles":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	a.getenv = os.Getenv
+	if code := a.run(context.Background(), []string{"--config", selected, "update", "status"}); code != 0 {
+		t.Fatalf("status=%d %s", code, stdout.String())
+	}
+	var envelope struct {
+		Result struct{ Skills map[string]any }
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if err, present := envelope.Result.Skills["error"]; present {
+		t.Fatalf("explicit config was lost: %v", err)
+	}
+	// Cross the actual child argv/parser boundary: a flag must still override an
+	// inherited environment selection, including when its path contains spaces.
+	command := updateWorkerCommand("agentctl", common{configPath: selected})
+	parsed, rest, err := a.parseCommon(command.Args[1:])
+	if err != nil || len(rest) != 1 || rest[0] != "_update-worker" || parsed.configPath != selected {
+		t.Fatalf("worker selection lost: %#v %v %v", parsed, rest, err)
+	}
+	path, err := configPath(parsed)
+	if err != nil || path != selected {
+		t.Fatalf("worker path=%q err=%v", path, err)
 	}
 }
