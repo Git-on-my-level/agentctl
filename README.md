@@ -90,6 +90,13 @@ once-per-UTC-day `agentctl_update_available` warning without installing, while
 `off` performs no check. `AGENTCTL_UPDATE_MODE` overrides the stored policy and
 the legacy `AGENTCTL_UPDATE_CHECK=off` remains a hard-off override.
 
+Binary maintenance does not require a Skill Hub configuration. When the default
+config is absent, `update now` and automatic maintenance skip the optional skill
+phase without creating config or selecting a pack. The existing empty skill
+report is returned; it does not claim healthy or installed skills. A missing
+explicit config selection, malformed config, or unsafe config permissions still
+fail visibly.
+
 ## Build from source
 
 Requirements: a supported platform, the Go version declared in `go.mod` or

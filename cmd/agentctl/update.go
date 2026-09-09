@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
@@ -159,6 +160,11 @@ func (a *app) updateSkillsAutoClean(ctx context.Context, c common, force bool) (
 		return skillpack.Report{}, err
 	}
 	cfg, err := config.Load(path)
+	// Binary-only installations need no Skill Hub selection. An explicitly
+	// selected missing config remains an error, as do malformed or unsafe files.
+	if errors.Is(err, config.ErrNotFound) && c.configPath == "" && strings.TrimSpace(os.Getenv("AGENTCTL_CONFIG")) == "" {
+		return skillpack.Report{}, nil
+	}
 	if err != nil || cfg.Skills == nil || cfg.Skills.UpdatePolicy != "auto-clean" {
 		return skillpack.Report{}, err
 	}
