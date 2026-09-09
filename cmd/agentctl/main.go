@@ -20,6 +20,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/route"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/supervisor"
 	"github.com/Git-on-my-level/agentctl/internal/updatecheck"
 )
 
@@ -37,6 +38,10 @@ type app struct {
 	getenv          func(string) string
 	now             func() time.Time
 	updateNotice    func(context.Context, string, common) *output.Warning
+	// supervisorHealthProbe overrides the owner-only supervisor status RPC that
+	// doctor folds into its readiness report. Production leaves it nil and
+	// dials the socket; tests inject a bounded fake health response.
+	supervisorHealthProbe func(context.Context) (supervisor.Status, error)
 }
 type common struct {
 	mode                                                        output.Mode

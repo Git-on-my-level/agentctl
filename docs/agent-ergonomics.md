@@ -355,7 +355,12 @@ escape for callers that intentionally need weaker or broader behavior:
 - `doctor` discovers local harnesses and checks whether they can launch, be
   observed, and return a result. It includes bootstrap, journal, configuration,
   supervisor, and live adapter readiness; `--adapter` narrows the check and
-  `--static` skips live probes.
+  `--static` skips live probes. Supervisor readiness comes from the service's
+  own bounded health projection, not from socket reachability alone: a degraded
+  or failed state, a recorded last error, an unreadable socket, or a last cycle
+  older than one minute makes the report unhealthy and offers
+  `agentctl supervisor status`. An absent socket remains an absent optional
+  service rather than a problem.
 - `orient` is read-only orientation rather than a repository manager. It uses
   only the local Git object database and working tree, never fetches, never
   launches an adapter, and never creates journal state. Its adapter health is
