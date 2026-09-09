@@ -13,6 +13,7 @@ import (
 
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/model"
+	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
@@ -189,5 +190,76 @@ func runGit(t *testing.T, cwd string, args ...string) {
 	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v (%s)", args, err, output)
+	}
+}
+
+// TestWorkspaceGroupAndSubcommandAgreeInHelp keeps the self-description honest:
+// the command surface listed by `agentctl help` must be runnable as listed. The
+// bare group is not a command, so the concrete subcommand has to appear the way
+// `bootstrap update` and `data cleanup` do.
+func TestWorkspaceGroupAndSubcommandAgreeInHelp(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--output", "json", "help"}); code != 0 {
+		t.Fatalf("help exit=%d output=%s", code, stdout.String())
+	}
+	var document struct {
+		Result struct {
+			Commands []map[string]any `json:"commands"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	summaries := map[string]string{}
+	for _, command := range document.Result.Commands {
+		summaries[command["name"].(string)] = command["summary"].(string)
+	}
+	owners, listed := summaries["workspace owners"]
+	if !listed {
+		t.Fatalf("help omitted the runnable workspace subcommand: %v", summaries)
+	}
+	if group := summaries["workspace"]; group == owners {
+		t.Fatalf("the workspace group still claims the owners contract: %q", group)
+	}
+
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "workspace"}); code != 2 {
+		t.Fatalf("bare workspace exit=%d output=%s", code, stdout.String())
+	}
+	var usage struct {
+		Error struct {
+			Code        string              `json:"code"`
+			NextActions []output.NextAction `json:"next_actions"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &usage); err != nil {
+		t.Fatal(err)
+	}
+	if usage.Error.Code != "usage" {
+		t.Fatalf("bare workspace error=%s", stdout.String())
+	}
+	recovered := false
+	for _, action := range usage.Error.NextActions {
+		if len(action.Argv) >= 3 && action.Argv[1] == "workspace" && action.Argv[2] == "owners" {
+			recovered = true
+		}
+	}
+	if !recovered {
+		t.Fatalf("bare workspace offered no recovery: %#v", usage.Error.NextActions)
+	}
+
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "help", "workspace", "owners"}); code != 0 {
+		t.Fatalf("help workspace owners exit=%d output=%s", code, stdout.String())
+	}
+	var topic struct {
+		Result commandHelp `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &topic); err != nil {
+		t.Fatal(err)
+	}
+	if topic.Result.Name != "workspace owners" {
+		t.Fatalf("help topic=%#v", topic.Result)
 	}
 }
