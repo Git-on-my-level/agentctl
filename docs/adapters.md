@@ -149,6 +149,14 @@ handles but cannot claim the child model read them.
 
 ### Cursor
 
+Thinking, assistant, and tool envelopes describe phases within a task. Their
+`completed`, `done`, or failed subtypes/statuses do not terminate the task, and
+tool results are never assistant answers. The task's explicit result envelope
+owns completion. If the process exits or reaches its deadline without that
+result, phase completion cannot turn the outcome into success. This rule is
+specific to Cursor's native stream; Multica lifecycle statuses keep their own
+meaning.
+
 - Consume `stream-json`.
 - Use `result.is_error`, not process exit code alone.
 - Prefer terminal `result` content, but retain the last bounded assistant text
@@ -165,8 +173,8 @@ handles but cannot claim the child model read them.
   emit an intermediate assistant message followed by a successful terminal
   envelope without a completed plan body; the explicit
   `--allow-unreliable-result` escape hatch records caller acceptance.
-- Emit metadata-only progress phases (`initializing`, `assistant`, `tool`, and
-  `completing`) without tool output or reasoning.
+- Emit metadata-only progress phases (`initializing`, `thinking`, `assistant`, `tool`,
+  and `completing`) without tool output or reasoning.
 - Preserve a bounded, redacted stderr diagnostic in explicit failed outcomes
   when no structured error is available; events and callbacks remain
   metadata-only.

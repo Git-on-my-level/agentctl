@@ -30,21 +30,35 @@ type cursorParser struct{}
 func (cursorParser) Name() string { return "cursor-stream-json" }
 func (cursorParser) Parse(line []byte, stderr bool) parsedObservation {
 	obs := parseAgentJSON(line, stderr, "cursor", []string{"session_id"}, []string{"result"})
+	value, ok := decodeLine(line)
+	if !ok {
+		return obs
+	}
+	typ := strings.ToLower(firstString(value, "type"))
+	switch typ {
+	case "thinking", "assistant", "tool_call", "tool_result", "tool":
+		// These envelopes describe a phase within the task. In particular,
+		// thinking/subtype=completed and a tool's result/status describe only
+		// that phase, even when the shared parser recognizes a terminal word.
+		// A task result must not be synthesized from phase text or tool output.
+		obs.Terminal, obs.Success = false, false
+		obs.Kind, obs.State, obs.Liveness = "progress", StateRunning, LivenessAlive
+		obs.Summary, obs.Content, obs.ContentType, obs.ContentSource, obs.Error = "", "", "", "", ""
+		obs.ContentTruncated = false
+		obs.Data = map[string]any{"family": "cursor"}
+	}
 	if obs.Terminal && strings.TrimSpace(obs.Content) != "" {
 		// Cursor's terminal result field is the final assistant answer, not
 		// generic process output. Preserve both its semantic role and the
 		// native envelope that supplied it.
 		obs.ContentSource = "assistant_terminal_result"
 	}
-	value, ok := decodeLine(line)
-	if !ok {
-		return obs
-	}
 	if obs.Terminal && obs.Success && strings.TrimSpace(obs.Content) == "" {
 		obs.Data["diagnostic_code"] = "empty_terminal_result"
 	}
-	typ := strings.ToLower(firstString(value, "type"))
 	switch typ {
+	case "thinking":
+		obs.Data["progress_phase"] = "thinking"
 	case "system":
 		obs.Data["progress_phase"] = "initializing"
 	case "assistant":
