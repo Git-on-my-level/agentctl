@@ -61,9 +61,16 @@ path = os.path.join(config, 'systemd', 'user', name + '.service')
 if os.environ.get('PLAN_BAD') == 'path': path = os.path.join(config, 'wrong.service')
 argv = [exe, 'supervisor', 'run', '--socket', os.path.join(state, 'supervisor.sock'), '--state-dir', state]
 exec_start = ' '.join(quote(value) for value in argv)
-service = {'UnitName': name, 'Description': 'agentctl host-local supervisor', 'ExecStart': exec_start, 'Environment': None, 'Restart': 'on-failure', 'WantedBy': 'default.target'}
-unit = (f'[Unit]\nDescription=agentctl host-local supervisor\n\n[Service]\nType=simple\n'
-        f'ExecStart={exec_start}\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n').encode()
+log_dir = os.path.join(state, 'logs')
+standard_output = 'append:' + os.path.join(log_dir, 'supervisor.out.log')
+standard_error = 'append:' + os.path.join(log_dir, 'supervisor.err.log')
+if os.environ.get('PLAN_BAD') == 'logs':
+    standard_output = 'append:' + os.path.join(state, 'unreviewed.out.log')
+service = {'UnitName': name, 'Description': 'agentctl host-local supervisor', 'ExecStart': exec_start, 'Environment': None, 'Restart': 'on-failure', 'RestartSec': 10, 'StandardOutput': standard_output, 'StandardError': standard_error, 'WantedBy': 'default.target'}
+unit = (f'[Unit]\nDescription={quote("agentctl host-local supervisor")}\n\n[Service]\nType=simple\n'
+        f'ExecStart={exec_start}\nRestart=on-failure\nRestartSec=10\n'
+        f'StandardOutput={quote(standard_output)}\nStandardError={quote(standard_error)}\n'
+        f'\n[Install]\nWantedBy=default.target\n').encode()
 print(json.dumps({'ok': True, 'result': {'Path': path, 'Contents': base64.b64encode(unit).decode(), 'Service': service}}, separators=(',', ':')))
 PY
 SH
@@ -125,6 +132,8 @@ if "$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state"$'\nforged=1' >/dev/nul
 
 export PLAN_BAD=path
 if "$INSTALL" --agentctl "$AGENTCTL" >/dev/null 2>&1; then fail 'installer accepted plan outside XDG systemd path'; fi
+export PLAN_BAD=logs
+if "$INSTALL" --agentctl "$AGENTCTL" >/dev/null 2>&1; then fail 'installer accepted plan with an unreviewed log path'; fi
 unset PLAN_BAD
 [ ! -e "$unit" ] && [ ! -e "$manifest" ] || fail 'invalid plan wrote managed files'
 
@@ -133,6 +142,10 @@ unset PLAN_BAD
 [ "$(stat -c '%a' "$unit")" = 600 ] || fail 'unit is not owner-only'
 [ "$(stat -c '%a' "$manifest")" = 600 ] || fail 'manifest is not owner-only'
 grep -Fq "ExecStart=$AGENTCTL supervisor run --socket $state/supervisor.sock --state-dir $state" "$unit" || fail 'unit argv does not match requested paths'
+grep -Fq "StandardOutput=append:$state/logs/supervisor.out.log" "$unit" || fail 'unit does not declare a stdout log path'
+grep -Fq "StandardError=append:$state/logs/supervisor.err.log" "$unit" || fail 'unit does not declare a stderr log path'
+grep -Fqx 'RestartSec=10' "$unit" || fail 'unit does not bound respawn'
+[ -d "$state/logs" ] || fail 'install did not create the supervisor log directory'
 [ -e "$LOADED" ] && [ -e "$ENABLED" ] && [ -e "$ACTIVE" ] || fail 'install did not enable and start service'
 grep -q '^--user daemon-reload$' "$SYSTEMCTL_LOG" || fail 'install did not reload systemd'
 grep -q '^--user enable --now io.agentctl.supervisor.service$' "$SYSTEMCTL_LOG" || fail 'install did not enable service'

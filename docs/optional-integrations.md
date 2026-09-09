@@ -106,6 +106,13 @@ Creating a new launchd or systemd service is an explicit host operation.
 `bootstrap update` and the release installer may reconcile only a service whose
 manifest proves agentctl already manages it.
 
+Every derived unit declares both log destinations, so a degraded service leaves
+evidence on the host instead of discarding its output. On macOS the plist sets
+`StandardOutPath` and `StandardErrorPath` under `~/Library/Logs/agentctl/` plus a
+`ThrottleInterval` that bounds respawn; on Linux the unit appends to
+`<state-dir>/logs/` with the matching `RestartSec`. The installers create that
+owner-only directory and refuse a plan whose log paths are not the reviewed ones.
+
 On Linux, the explicit systemd-user installer writes the exact plan-derived
 unit beneath the user's systemd config root and an owner-only checksum manifest.
 It refuses unmanaged, modified, or symlinked targets unless the operator uses

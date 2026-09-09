@@ -218,6 +218,9 @@ func (a *app) supervisorPlan(renderer output.Renderer, args []string) *output.Er
 		if err != nil {
 			return output.Wrap(output.CodeInternal, "resolve home", false, err)
 		}
+		// launchd discards a service's output unless the plist names files, so
+		// the plan declares the conventional per-user log directory.
+		service.LogDir = filepath.Join(home, "Library", "Logs", "agentctl")
 		plan, err := supervisor.BuildLaunchdInstallPlan(service, filepath.Join(home, "Library", "LaunchAgents"))
 		if err != nil {
 			return output.Wrap(output.CodeUsage, "build launchd plan", false, err)
@@ -237,6 +240,9 @@ func (a *app) supervisorPlan(renderer output.Renderer, args []string) *output.Er
 		} else if !filepath.IsAbs(configHome) {
 			return output.NewError(output.CodeUsage, "XDG_CONFIG_HOME must be an absolute path", false)
 		}
+		// The unit keeps its own owner-only copy of stdout and stderr beside the
+		// state it already owns, so diagnosis does not depend on journald.
+		service.LogDir = filepath.Join(stateDir, "logs")
 		plan, err := supervisor.BuildSystemdInstallPlan(service, filepath.Join(configHome, "systemd", "user"))
 		if err != nil {
 			return output.Wrap(output.CodeUsage, "build systemd plan", false, err)

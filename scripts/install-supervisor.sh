@@ -98,6 +98,7 @@ case "$STATE_DIR" in
   *) die '--state-dir must be an absolute path' ;;
 esac
 
+log_dir="$HOME_DIR/Library/Logs/agentctl"
 launch_agents="$HOME_DIR/Library/LaunchAgents"
 plist="$launch_agents/$LABEL.plist"
 manifest="$launch_agents/$LABEL.agentctl-manifest"
@@ -114,12 +115,12 @@ trap 'rm -f "$plan_json" "$plan_plist"' EXIT HUP INT TERM
 "$AGENTCTL" --output json supervisor plan --platform darwin --executable "$AGENTCTL" --state-dir "$STATE_DIR" >"$plan_json" || die 'agentctl supervisor plan failed'
 
 # Validate every field used by installation and decode the plist bytes. The
-# validator rejects plans outside this user's LaunchAgents path or with a
-# changed supervisor argv shape.
-python3 - "$plan_json" "$plan_plist" "$plist" "$AGENTCTL" "$STATE_DIR" "$LABEL" <<'PY'
+# validator rejects plans outside this user's LaunchAgents path or log
+# directory, or with a changed supervisor argv shape.
+python3 - "$plan_json" "$plan_plist" "$plist" "$AGENTCTL" "$STATE_DIR" "$LABEL" "$log_dir" <<'PY'
 import base64, json, os, plistlib, sys
 
-plan_path, output_path, expected_path, executable, state_dir, label = sys.argv[1:]
+plan_path, output_path, expected_path, executable, state_dir, label, log_dir = sys.argv[1:]
 try:
     with open(plan_path, 'rb') as fh:
         doc = json.load(fh)
@@ -143,13 +144,23 @@ try:
         raise ValueError('plan ProgramArguments do not match the requested executable/state directory')
     if service.get('Environment') not in (None, {}):
         raise ValueError('supervisor plan must not introduce environment credentials')
+    stdout_path = os.path.join(log_dir, 'supervisor.out.log')
+    stderr_path = os.path.join(log_dir, 'supervisor.err.log')
+    if service.get('StandardOutPath') != stdout_path or service.get('StandardErrorPath') != stderr_path:
+        raise ValueError('plan log paths are not this user reviewed agentctl log directory')
     data = base64.b64decode(encoded, validate=True)
     parsed = plistlib.loads(data)
     if parsed.get('Label') != label or parsed.get('ProgramArguments') != args:
         raise ValueError('decoded plist does not match the plan Service projection')
     if parsed.get('RunAtLoad') is not True or parsed.get('KeepAlive') is not True:
         raise ValueError('supervisor plist must run at load and keep alive')
-    if set(parsed) - {'Label', 'ProgramArguments', 'RunAtLoad', 'KeepAlive'}:
+    if parsed.get('StandardOutPath') != stdout_path or parsed.get('StandardErrorPath') != stderr_path:
+        raise ValueError('supervisor plist must declare both reviewed log paths')
+    if parsed.get('ThrottleInterval') != service.get('ThrottleInterval'):
+        raise ValueError('decoded plist throttle does not match the plan Service projection')
+    if not isinstance(parsed.get('ThrottleInterval'), int) or parsed['ThrottleInterval'] < 1:
+        raise ValueError('supervisor plist must bound respawn with ThrottleInterval')
+    if set(parsed) - {'Label', 'ProgramArguments', 'RunAtLoad', 'KeepAlive', 'StandardOutPath', 'StandardErrorPath', 'ThrottleInterval'}:
         raise ValueError('supervisor plist contains unreviewed keys')
     with open(output_path, 'wb') as fh:
         fh.write(data)
@@ -214,6 +225,8 @@ if "$launchctl_bin" print "$domain/$LABEL" >/dev/null 2>&1; then
 fi
 
 umask 077
+# launchd fails to spawn a job whose StandardOutPath directory does not exist.
+mkdir -p "$log_dir"
 mkdir -p "$launch_agents"
 [ ! -L "$launch_agents" ] || die "LaunchAgents directory became a symlink: $launch_agents"
 
