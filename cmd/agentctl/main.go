@@ -210,7 +210,7 @@ func invocationAllowsAutomaticMaintenance(args []string) bool {
 		}
 	}
 	switch args[0] {
-	case "run", "fanout", "promote", "dispatch":
+	case "run", "fanout", "promote", "dispatch", "delegate":
 		return true
 	default:
 		return false

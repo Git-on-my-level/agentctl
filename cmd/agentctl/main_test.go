@@ -43,6 +43,8 @@ func TestAutomaticMaintenanceRunsOnlyWithExternalWork(t *testing.T) {
 		{args: []string{"unknown-command"}, wantCode: 2},
 		{args: []string{"run", "--plan", "--allow-missing-result", "--", "/bin/true"}, wantCode: -1},
 		{args: []string{"run", "--allow-missing-result", "--", "/bin/true"}, wantCode: -1, wantCalled: true},
+		{args: []string{"delegate", "--plan"}, wantCode: -1},
+		{args: []string{"delegate"}, wantCode: -1, wantCalled: true},
 		{args: []string{"dispatch", "--plan"}, wantCode: -1},
 		{args: []string{"dispatch"}, wantCode: -1, wantCalled: true},
 	} {
