@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-agentctl-docs": "../docs/structured-delegation.md",
+  "$id": "urn:agentctl:schema:delegate-result:v1",
+  "title": "Delegate success result payload v1",
+  "description": "The result member of the normal success envelope; --content emits raw answer text instead.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "requested",
+    "resolved",
+    "provenance",
+    "request_sha256",
+    "reused"
+  ],
+  "properties": {
+    "requested": {
+      "type": "object",
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "family"
+          ]
+        },
+        {
+          "required": [
+            "model"
+          ]
+        }
+      ],
+      "properties": {
+        "harness": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "family": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "settings": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "speed": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+            },
+            "effort": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+            }
+          }
+        }
+      }
+    },
+    "resolved": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "harness",
+        "model",
+        "host",
+        "authority",
+        "settings"
+      ],
+      "properties": {
+        "harness": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "family": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "authority": {
+          "enum": [
+            "native",
+            "multica"
+          ]
+        },
+        "settings": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "speed": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+            },
+            "effort": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+            }
+          }
+        }
+      }
+    },
+    "request_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "reused": {
+      "type": "boolean"
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "configuration_sha256",
+        "defaulted"
+      ],
+      "properties": {
+        "configuration_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "defaulted": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "harness",
+              "family",
+              "version",
+              "model",
+              "host",
+              "settings.speed",
+              "settings.effort",
+              "speed",
+              "effort"
+            ]
+          }
+        }
+      }
+    },
+    "id": {
+      "type": "string"
+    },
+    "origin_host_id": {
+      "type": "string"
+    },
+    "state": {
+      "$ref": "execution.schema.json#/properties/state"
+    },
+    "liveness": {
+      "$ref": "execution.schema.json#/properties/liveness"
+    },
+    "authority": {
+      "enum": [
+        "native",
+        "multica"
+      ]
+    },
+    "plan": {
+      "const": true
+    },
+    "side_effect_class": {
+      "const": "read_only"
+    },
+    "native": {
+      "type": "object"
+    },
+    "outcome": {
+      "$ref": "outcome.schema.json"
+    }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "plan",
+        "side_effect_class"
+      ]
+    },
+    {
+      "required": [
+        "id",
+        "origin_host_id",
+        "state",
+        "liveness",
+        "authority"
+      ]
+    }
+  ]
+}

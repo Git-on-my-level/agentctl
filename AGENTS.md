@@ -20,3 +20,11 @@ Multica-backed execution modes.
 
 Run `make ci` and the focused race tests for changed stateful packages. Do not
 claim a native or Multica capability that the current adapter can only infer.
+
+## Structured delegation direction
+
+For delegation-interface work, follow [the agreed structured delegation design](docs/structured-delegation.md):
+the parent interprets natural language; agentctl resolves explicit constraints
+and configured defaults deterministically. Keep roles outside the initial scope.
+Check live help before using commands; ship schemas, help, and the portable
+skill together with implementation.

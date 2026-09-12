@@ -152,6 +152,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.runNative(ctx, renderer, commonArgs, rest[1:])
 	case "dispatch":
 		err = a.dispatchCommand(ctx, renderer, commonArgs, rest[1:])
+	case "delegate":
+		err = a.delegateCommand(ctx, renderer, commonArgs, rest[1:])
 	case "fanout":
 		err = a.fanout(ctx, renderer, commonArgs, rest[1:])
 	case "attach":

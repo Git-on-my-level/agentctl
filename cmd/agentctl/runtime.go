@@ -27,6 +27,11 @@ import (
 )
 
 type runOptions struct {
+	delegation                               *model.DelegationBinding
+	mutationOverride                         *contracts.MutationKey
+	preparedPrompt                           *promptPayload
+	admissionReused                          *bool
+	admissionRecorded                        *bool
 	adapter, cwd, idempotencyKey, issue, run string
 	promptFile, promptDelivery               string
 	taskContractFile                         string
@@ -68,6 +73,10 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	if problem != nil {
 		return problem
 	}
+	return a.runNativeOptions(ctx, renderer, c, args, opts)
+}
+
+func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c common, args []string, opts runOptions) *output.Error {
 	if warning := offPolicyRunWarning(c, opts.adapter, opts.argv); warning != nil {
 		renderer = renderer.WithWarnings(*warning)
 	}
@@ -75,9 +84,13 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	if workspaceErr != nil {
 		return output.Wrap(output.CodeUsage, "resolve run working directory", false, workspaceErr).WithDetail("cwd", opts.cwd)
 	}
-	prompt, problem := a.loadPrompt(opts)
-	if problem != nil {
-		return problem
+	prompt := opts.preparedPrompt
+	if prompt == nil {
+		var problem *output.Error
+		prompt, problem = a.loadPrompt(opts)
+		if problem != nil {
+			return problem
+		}
 	}
 	taskContract, problem := loadTaskContract(opts.taskContractFile)
 	if problem != nil {
@@ -192,6 +205,10 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 		}
 		mutation = contracts.MutationKey{Scope: "execution:run", Key: opts.idempotencyKey, InputDigest: digest}
 	}
+	if opts.mutationOverride != nil {
+		mutation = *opts.mutationOverride
+	}
+	execution.Delegation = opts.delegation
 	// The operation context can be cancelled concurrently with this small local
 	// commit. Complete it under a live context so every created execution either
 	// launches or reaches one durable terminal state.
@@ -199,6 +216,12 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	if err != nil {
 		journal.Close()
 		return mapStoreError("create execution", err)
+	}
+	if opts.admissionRecorded != nil {
+		*opts.admissionRecorded = true
+	}
+	if opts.admissionReused != nil {
+		*opts.admissionReused = reused
 	}
 	if reused {
 		journal.Close()

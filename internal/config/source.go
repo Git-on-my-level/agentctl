@@ -742,6 +742,9 @@ func configCanBeEnrichedBy(existing, desired Config) bool {
 		if current.AgentPreferences != nil && !reflect.DeepEqual(current.AgentPreferences, target.AgentPreferences) {
 			return false
 		}
+		if current.Delegation != nil && !reflect.DeepEqual(current.Delegation, target.Delegation) {
+			return false
+		}
 		for adapterName, adapter := range current.Adapters {
 			if targetAdapter, ok := target.Adapters[adapterName]; !ok || targetAdapter != adapter {
 				return false

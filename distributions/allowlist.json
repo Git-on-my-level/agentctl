@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "distribution_id": "agentctl-portable",
-  "revision": "tree:v0.4.4",
+  "revision": "tree:v0.5.0",
   "assets": [
     {
       "id": "portable-skill",
@@ -14,7 +14,9 @@
       "source": "distributions/multica/agentctl-portable.bundle.json",
       "install_name": "agentctl-portable.bundle.json",
       "kind": "runtime_bundle",
-      "harnesses": ["multica"]
+      "harnesses": [
+        "multica"
+      ]
     },
     {
       "id": "revision-manifest",
@@ -23,7 +25,14 @@
       "kind": "manifest"
     }
   ],
-  "harnesses": ["hermes", "codex", "claude", "cursor", "omp", "multica"],
+  "harnesses": [
+    "hermes",
+    "codex",
+    "claude",
+    "cursor",
+    "omp",
+    "multica"
+  ],
   "forbidden_asset_classes": [
     "auth",
     "sessions",

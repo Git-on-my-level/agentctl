@@ -16,6 +16,26 @@ contract.
 > [known constraints](docs/implementation-audit.md#intentional-preview-constraints)
 > before relying on it for unattended or durable work.
 
+## Delegate by model name
+
+The parent agent interprets wording such as “cursor grok 4.6” into explicit
+constraints; agentctl fills compatible configured defaults and builds native
+flags. No roles or fuzzy launch matching are needed. With a reviewed profile:
+
+```json
+{"schema_version":1,"request_key":"review-01","selector":{"harness":"cursor","family":"grok","version":"4.6"}}
+```
+
+```sh
+agentctl delegate --request-file request.json --prompt-file task.md --plan
+agentctl delegate --request-file request.json --prompt-file task.md --wait
+```
+
+Same key and inputs recover the original execution. `--wait` requires a successful,
+nonempty answer. See [configuration, guarantees, and limits](docs/structured-delegation.md)
+and `agentctl help delegate`. This release supports local native delegation;
+Multica remains available through explicit `dispatch`.
+
 ## What it does
 
 - launches Codex, Cursor, Claude Code, OMP, or a structured generic process;
@@ -581,6 +601,7 @@ vulnerabilities through the process in [Security](SECURITY.md).
 - [Agent ergonomics](docs/agent-ergonomics.md)
 - [Implementation status](docs/implementation-audit.md)
 - [Roadmap](docs/roadmap.md)
+- [Structured delegation](docs/structured-delegation.md)
 
 Machine-readable contracts live under [`schemas/`](schemas/).
 

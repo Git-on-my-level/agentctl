@@ -69,7 +69,7 @@ func TestAgentPreferencesAreAdvisoryBoundedAndStrict(t *testing.T) {
 	for name, preferences := range map[string]AgentPreferences{
 		"enforced mode": {Mode: "enforced", Preferred: valid.Preferred},
 		"empty list":    {Mode: "advisory"},
-		"missing speed": {Mode: "advisory", Preferred: []AgentPreference{{Agent: "cursor", Model: "composer-2.5"}}},
+		"blank speed":   {Mode: "advisory", Preferred: []AgentPreference{{Agent: "cursor", Model: "composer-2.5", Speed: " "}}},
 		"duplicate":     {Mode: "advisory", Preferred: append(valid.Preferred, valid.Preferred...)},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -94,6 +94,114 @@ func TestLiveConfigRoundTripsAgentPreferences(t *testing.T) {
 	got := loaded.Profiles["guidance"].AgentPreferences
 	if got == nil || got.Preferred[0].Model != "composer-2.5" || got.Notes[0] != "Never fast." {
 		t.Fatalf("agent preferences did not round-trip: %#v", got)
+	}
+}
+
+func TestPreferenceMetadataIsOptionalAndNonemptyWhenPresent(t *testing.T) {
+	old := AgentPreferences{Mode: "advisory", Preferred: []AgentPreference{{Agent: "cursor", Model: "composer-2.5", Speed: "regular"}}}
+	if err := old.Validate(); err != nil {
+		t.Fatalf("legacy preferred entry rejected: %v", err)
+	}
+	full := AgentPreferences{Mode: "advisory", Preferred: []AgentPreference{{Agent: "cursor", Model: "cursor-grok-4.6-high", Speed: "regular", Family: "grok", Version: "4.6", Effort: "high", Default: true}}}
+	if err := full.Validate(); err != nil {
+		t.Fatalf("catalogued preferred entry rejected: %v", err)
+	}
+	twoDefaults := AgentPreferences{Mode: "advisory", Preferred: []AgentPreference{
+		{Agent: "cursor", Model: "cursor-grok-4.6-high", Speed: "regular", Default: true},
+		{Agent: "cursor", Model: "composer-2.5", Speed: "regular", Default: true},
+	}}
+	if err := twoDefaults.Validate(); err != nil {
+		t.Fatalf("multiple defaults must be left to the resolver: %v", err)
+	}
+	for name, preferences := range map[string]AgentPreferences{
+		"blank family":  {Mode: "advisory", Preferred: []AgentPreference{{Agent: "cursor", Model: "composer-2.5", Speed: "regular", Family: "   "}}},
+		"blank version": {Mode: "advisory", Preferred: []AgentPreference{{Agent: "cursor", Model: "composer-2.5", Speed: "regular", Version: "\t"}}},
+		"blank effort":  {Mode: "advisory", Preferred: []AgentPreference{{Agent: "cursor", Model: "composer-2.5", Speed: "regular", Effort: " "}}},
+		"long family":   {Mode: "advisory", Preferred: []AgentPreference{{Agent: "cursor", Model: "composer-2.5", Speed: "regular", Family: strings.Repeat("x", 129)}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := preferences.Validate(); err == nil {
+				t.Fatal("invalid optional metadata unexpectedly accepted")
+			}
+		})
+	}
+}
+
+func TestBundleAndLiveConfigPreserveDelegationGrantAndPreferenceMetadata(t *testing.T) {
+	document := `{
+  "schema_version": 1,
+  "default_profile": "private",
+  "profiles": {
+    "private": {
+      "adapters": {"codex": {"executable": "/opt/bin/codex"}},
+      "agent_preferences": {
+        "mode": "advisory",
+        "preferred": [
+          {"agent": "cursor", "model": "cursor-grok-4.6-high", "speed": "regular", "family": "grok", "version": "4.6", "effort": "high", "use_for": "alias:grok", "default": true}
+        ]
+      },
+      "delegation": {"cursor_workspace_trust": true}
+    }
+  }
+}`
+	path := writeBundle(t, document, 0o644)
+	bundle, _, err := LoadBundle(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := bundle.Profiles["private"]
+	if profile.Delegation == nil || !profile.Delegation.CursorWorkspaceTrust {
+		t.Fatalf("bundle lost delegation grant: %#v", profile.Delegation)
+	}
+	pref := profile.AgentPreferences.Preferred[0]
+	if pref.Family != "grok" || pref.Version != "4.6" || pref.Effort != "high" || !pref.Default {
+		t.Fatalf("bundle lost preference metadata: %#v", pref)
+	}
+	materialized := MaterializeBundle(bundle)
+	cloned := cloneProfile(materialized.Profiles["private"])
+	if cloned.Delegation == nil || !cloned.Delegation.CursorWorkspaceTrust || cloned.AgentPreferences.Preferred[0].Family != "grok" {
+		t.Fatalf("materialized profile lost grant or metadata: %#v", cloned)
+	}
+	cloned.Delegation.CursorWorkspaceTrust = false
+	cloned.AgentPreferences.Preferred[0].Family = "changed"
+	if !materialized.Profiles["private"].Delegation.CursorWorkspaceTrust || materialized.Profiles["private"].AgentPreferences.Preferred[0].Family != "grok" {
+		t.Fatal("cloneProfile aliased delegation or preferred metadata")
+	}
+	livePath := filepath.Join(t.TempDir(), "config.json")
+	if err := Save(livePath, materialized, false); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(livePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := loaded.Profiles["private"]
+	if got.Delegation == nil || !got.Delegation.CursorWorkspaceTrust || got.AgentPreferences.Preferred[0].Version != "4.6" {
+		t.Fatalf("live config lost grant or metadata: %#v", got)
+	}
+}
+
+func TestSourceEnrichmentPreservesExistingDelegationGrant(t *testing.T) {
+	existing := Config{SchemaVersion: SchemaVersion, DefaultProfile: "private", Profiles: map[string]Profile{"private": {
+		Adapters:   map[string]Adapter{"codex": {Executable: "/opt/bin/codex"}},
+		Delegation: &DelegationPolicy{CursorWorkspaceTrust: true},
+	}}}
+	desired := Config{SchemaVersion: SchemaVersion, DefaultProfile: "private", Profiles: map[string]Profile{"private": {
+		Adapters:   map[string]Adapter{"codex": {Executable: "/opt/bin/codex"}},
+		Delegation: &DelegationPolicy{CursorWorkspaceTrust: false},
+	}}}
+	if configCanBeEnrichedBy(existing, desired) {
+		t.Fatal("existing workspace-trust grant was replaceable")
+	}
+	added := Config{SchemaVersion: SchemaVersion, DefaultProfile: "private", Profiles: map[string]Profile{"private": {
+		Adapters:   map[string]Adapter{"codex": {Executable: "/opt/bin/codex"}},
+		Delegation: &DelegationPolicy{CursorWorkspaceTrust: true},
+	}}}
+	without := Config{SchemaVersion: SchemaVersion, DefaultProfile: "private", Profiles: map[string]Profile{"private": {
+		Adapters: map[string]Adapter{"codex": {Executable: "/opt/bin/codex"}},
+	}}}
+	if !configCanBeEnrichedBy(without, added) {
+		t.Fatal("adding an explicit grant should enrich")
 	}
 }
 
@@ -241,5 +349,12 @@ func TestMulticaURLPolicyAllowsHTTPSAndLoopbackHTTPOnly(t *testing.T) {
 	base.ServerURL = "http://service.internal"
 	if err := base.Validate(); err == nil {
 		t.Fatal("non-loopback HTTP unexpectedly accepted")
+	}
+}
+
+func TestPreferredEntryMayOmitUnsupportedServiceSpeed(t *testing.T) {
+	p := AgentPreferences{Mode: "advisory", Preferred: []AgentPreference{{Agent: "omp", Model: "zai/glm-5.3", Family: "glm", Version: "5.3", Effort: "high"}}}
+	if err := p.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }

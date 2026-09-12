@@ -44,7 +44,8 @@
         },
         "multica": { "$ref": "#/$defs/multica" },
         "agent_preferences": { "$ref": "#/$defs/agent_preferences" },
-        "route": { "$ref": "#/$defs/route" }
+        "route": { "$ref": "#/$defs/route" },
+        "delegation": { "$ref": "#/$defs/delegation" }
       },
       "anyOf": [
         { "required": ["adapters"] },
@@ -84,12 +85,23 @@
     "agent_preference": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["agent", "model", "speed"],
+      "required": ["agent", "model"],
       "properties": {
         "agent": { "type": "string", "minLength": 1, "maxLength": 128 },
         "model": { "type": "string", "minLength": 1, "maxLength": 128 },
         "speed": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "use_for": { "type": "string", "maxLength": 128 }
+        "use_for": { "type": "string", "maxLength": 128 },
+        "family": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "effort": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "default": { "type": "boolean" }
+      }
+    },
+    "delegation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cursor_workspace_trust": { "type": "boolean" }
       }
     },
     "route": {
