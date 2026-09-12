@@ -393,6 +393,10 @@ func (a *app) configSetProfile(renderer output.Renderer, path string, args []str
 		preferences.Notes = append([]string(nil), existing.AgentPreferences.Notes...)
 		profile.AgentPreferences = &preferences
 	}
+	if existing, ok := cfg.Profiles[name]; ok && existing.Delegation != nil {
+		grant := *existing.Delegation
+		profile.Delegation = &grant
+	}
 	if replace {
 		cfg, err = config.UpsertProfile(cfg, name, profile, true)
 	} else {

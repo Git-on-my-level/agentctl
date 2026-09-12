@@ -23,7 +23,7 @@ agentctl doctor
 agentctl help <topic>
 ```
 
-Useful topics include `run`, `dispatch`, `recent`, `fanout`, `result`, `await`, `subscribe`, `capabilities`,
+Useful topics include `delegate`, `run`, `dispatch`, `recent`, `fanout`, `result`, `await`, `subscribe`, `capabilities`,
 `bootstrap update`, `skills`, `promote`, `knowledge`, and `context`. Follow returned
 read-only `next_actions` for deeper discovery. Do not preload every topic or
 memorize version-specific flags in place of help.
@@ -63,7 +63,49 @@ Never infer a capability from an adapter name. If doctor or capabilities says
 a requirement is unavailable, report it; do not weaken the operation, invent a
 native command, or scrape private harness state.
 
-## Golden path
+## Structured delegation: default for named-model requests
+
+Read `agentctl help delegate`. Translate the user's explicit constraints into a
+request; leave everything else absent. “grok” means `{"family":"grok"}`;
+“cursor grok 4.6” means `{"harness":"cursor","family":"grok","version":"4.6"}`.
+Other word orders produce the same constraints. Never guess a version or native
+slug from memory. Add explicit speed/effort under `settings` when requested.
+
+```json
+{"schema_version":1,"request_key":"review-01","selector":{"family":"grok"}}
+```
+
+```bash
+agentctl delegate --request-file request.json --prompt-file task.md --plan
+agentctl delegate --request-file request.json --prompt-file task.md --wait
+```
+
+Agentctl resolves reviewed preferred entries, fills compatible defaults, and
+builds native flags. Inspect `requested`, `resolved`, and `provenance`. Conflicts
+or ambiguity launch nothing; use returned candidates to resolve only the missing
+choice. Config needs explicit family/version metadata. Omitted host or `local` selects
+this machine; `route.this_host` optionally supplies its configured name.
+Workspace trust is a separate `delegation.cursor_workspace_trust` grant, never
+implied by a model preference. Unavailable settings or hosts must not trigger
+silent substitution or fallback to expert `run`.
+
+Keep one stable request key for one logical task. Retry the same inputs to recover
+its original execution and answer, including after defaults change. A changed
+prompt/selector/cwd/authority/timeout/labels conflicts. An uncertain launch is
+reported unknown and never automatically relaunched. A new key starts new work.
+Keys are local to the profile and journal; retain that context with the execution
+ID. Do not put secrets in request metadata. Prompt bytes remain separate.
+
+`--wait` requires completed work with a nonempty stored answer and acknowledges
+collection after delivery. `--content` returns exact answer text. Explicit
+`--require-result-source` and `--min-result-bytes` assertions are available.
+This is foreground-owned native work, with optional `--timeout`; background and
+external context handles are not supported by delegate yet. Plans are read-only.
+Multica delegation is rejected until its result/settings contract is available;
+explicit `dispatch` retains its existing lifecycle-only guarantees. Requested
+model/settings are not proof of provider-side model identity or task correctness.
+
+## Expert native path
 
 Pass native argv exactly after `--`; agentctl does not shell-reparse it:
 

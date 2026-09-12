@@ -207,5 +207,9 @@ func cloneProfile(in Profile) Profile {
 		}
 		out.Route = &routeCopy
 	}
+	if in.Delegation != nil {
+		grant := *in.Delegation
+		out.Delegation = &grant
+	}
 	return out
 }

@@ -239,7 +239,7 @@ func (j *Journal) CreateExecution(ctx context.Context, execution model.Execution
 				if raw == nil {
 					return fmt.Errorf("%w: idempotency target missing", ErrCorrupt)
 				}
-				if err := json.Unmarshal(raw, &result); err != nil {
+				if err := decodeExecution(tx, raw, &result); err != nil {
 					return corrupt(err)
 				}
 				reused = true
@@ -296,6 +296,9 @@ func (j *Journal) CreateExecution(ctx context.Context, execution model.Execution
 		if err := tx.Bucket(bExecutions).Put(key, encoded); err != nil {
 			return err
 		}
+		if err := putDelegationBinding(tx, execution); err != nil {
+			return err
+		}
 		if mutation.Enabled() {
 			if err := putMutation(tx, mutation, "execution", execution.ID.String()); err != nil {
 				return err
@@ -334,7 +337,7 @@ func (j *Journal) GetExecutionByMutation(ctx context.Context, mutation contracts
 		if raw == nil {
 			return fmt.Errorf("%w: idempotency target missing", ErrCorrupt)
 		}
-		if err := json.Unmarshal(raw, &result); err != nil {
+		if err := decodeExecution(tx, raw, &result); err != nil {
 			return corrupt(err)
 		}
 		found = true
@@ -353,7 +356,7 @@ func (j *Journal) GetExecution(ctx context.Context, id ids.ExecutionID) (model.E
 		if raw == nil {
 			return ErrNotFound
 		}
-		if err := json.Unmarshal(raw, &value); err != nil {
+		if err := decodeExecution(tx, raw, &value); err != nil {
 			return corrupt(err)
 		}
 		return value.Validate()
@@ -376,7 +379,7 @@ func (j *Journal) UpdateExecution(ctx context.Context, next model.Execution, exp
 			return ErrNotFound
 		}
 		var previous model.Execution
-		if err := json.Unmarshal(raw, &previous); err != nil {
+		if err := decodeExecution(tx, raw, &previous); err != nil {
 			return corrupt(err)
 		}
 		if previous.Revision != expectedRevision {
@@ -413,7 +416,7 @@ func (j *Journal) ListExecutions(ctx context.Context, nonTerminalOnly bool) ([]m
 	err := j.db.View(func(tx *bbolt.Tx) error {
 		return tx.Bucket(bExecutions).ForEach(func(_, raw []byte) error {
 			var value model.Execution
-			if err := json.Unmarshal(raw, &value); err != nil {
+			if err := decodeExecution(tx, raw, &value); err != nil {
 				return corrupt(err)
 			}
 			if err := value.Validate(); err != nil {
@@ -506,7 +509,7 @@ func (j *Journal) appendEventTx(tx *bbolt.Tx, event model.Event, canonicalProjec
 		return model.Event{}, false, ErrNotFound
 	}
 	var execution model.Execution
-	if err := json.Unmarshal(execRaw, &execution); err != nil {
+	if err := decodeExecution(tx, execRaw, &execution); err != nil {
 		return model.Event{}, false, corrupt(err)
 	}
 	if execution.State.Terminal() {
@@ -605,7 +608,7 @@ func (j *Journal) CommitObservedEvent(ctx context.Context, next model.Execution,
 			return ErrNotFound
 		}
 		var previous model.Execution
-		if err := json.Unmarshal(raw, &previous); err != nil {
+		if err := decodeExecution(tx, raw, &previous); err != nil {
 			return corrupt(err)
 		}
 		if previous.State.Terminal() {
@@ -672,7 +675,7 @@ func (j *Journal) CommitTerminalOutcome(ctx context.Context, next model.Executio
 			return ErrNotFound
 		}
 		var previous model.Execution
-		if err := json.Unmarshal(raw, &previous); err != nil {
+		if err := decodeExecution(tx, raw, &previous); err != nil {
 			return corrupt(err)
 		}
 		outcomes, err := ensureJournalBucket(tx, bOutcomes)
@@ -832,11 +835,13 @@ type dedupeRecord struct {
 	ProjectionDigest string `json:"projection_digest"`
 }
 type mutationRecord struct {
-	Scope       string `json:"scope"`
-	Key         string `json:"key"`
-	InputDigest string `json:"input_digest"`
-	ObjectType  string `json:"object_type"`
-	ObjectID    string `json:"object_id"`
+	NativePlan  *model.DelegationNativePlan `json:"native_plan,omitempty"`
+	Delegation  *model.DelegationBinding    `json:"delegation,omitempty"`
+	Scope       string                      `json:"scope"`
+	Key         string                      `json:"key"`
+	InputDigest string                      `json:"input_digest"`
+	ObjectType  string                      `json:"object_type"`
+	ObjectID    string                      `json:"object_id"`
 }
 
 func lookupMutation(tx *bbolt.Tx, key contracts.MutationKey) (*mutationRecord, error) {

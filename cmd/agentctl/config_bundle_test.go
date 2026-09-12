@@ -91,7 +91,7 @@ func TestConfigBundleIsNeverImplicitlyDiscovered(t *testing.T) {
 func TestConfigSetProfilePreservesReviewedAgentPreferences(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	preferences := &config.AgentPreferences{Mode: "advisory", Preferred: []config.AgentPreference{{Agent: "cursor", Model: "composer-2.5", Speed: "regular"}}, Notes: []string{"Never fast."}}
-	cfg := config.Config{SchemaVersion: config.SchemaVersion, DefaultProfile: "fleet", Profiles: map[string]config.Profile{"fleet": {Adapters: map[string]config.Adapter{"cursor": {Executable: "/old/cursor"}}, AgentPreferences: preferences}}}
+	cfg := config.Config{SchemaVersion: config.SchemaVersion, DefaultProfile: "fleet", Profiles: map[string]config.Profile{"fleet": {Adapters: map[string]config.Adapter{"cursor": {Executable: "/old/cursor"}}, AgentPreferences: preferences, Delegation: &config.DelegationPolicy{CursorWorkspaceTrust: true}}}}
 	if err := config.Save(path, cfg, false); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestConfigSetProfilePreservesReviewedAgentPreferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile := updated.Profiles["fleet"]
-	if profile.Adapters["cursor"].Executable != "/new/cursor" || profile.AgentPreferences == nil || profile.AgentPreferences.Preferred[0].Model != "composer-2.5" {
+	if profile.Adapters["cursor"].Executable != "/new/cursor" || profile.AgentPreferences == nil || profile.AgentPreferences.Preferred[0].Model != "composer-2.5" || profile.Delegation == nil || !profile.Delegation.CursorWorkspaceTrust {
 		t.Fatalf("set-profile did not preserve preferences: %#v", profile)
 	}
 	stdout.Reset()

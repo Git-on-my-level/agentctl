@@ -56,6 +56,8 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 		"context-result":      "schemas/context-result.schema.json",
 		"data-cleanup-plan":   "schemas/data-cleanup-plan.schema.json",
 		"data-inventory":      "schemas/data-inventory.schema.json",
+		"delegate-request":    "schemas/delegate-request.schema.json",
+		"delegate-result":     "schemas/delegate-result.schema.json",
 		"error":               "schemas/error.schema.json",
 		"event":               "schemas/event.schema.json",
 		"event-page":          "schemas/event-page.schema.json",

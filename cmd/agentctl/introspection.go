@@ -151,6 +151,8 @@ func (a *app) schemaCommand(renderer output.Renderer, args []string) *output.Err
 		{"name": "context-result", "version": 1, "file": "schemas/context-result.schema.json"},
 		{"name": "data-cleanup-plan", "version": 1, "file": "schemas/data-cleanup-plan.schema.json"},
 		{"name": "data-inventory", "version": 1, "file": "schemas/data-inventory.schema.json"},
+		{"name": "delegate-request", "version": 1, "file": "schemas/delegate-request.schema.json"},
+		{"name": "delegate-result", "version": 1, "file": "schemas/delegate-result.schema.json"},
 		{"name": "error", "version": 1, "file": "schemas/error.schema.json"},
 		{"name": "event", "version": 1, "file": "schemas/event.schema.json"},
 		{"name": "event-page", "version": 1, "file": "schemas/event-page.schema.json"},

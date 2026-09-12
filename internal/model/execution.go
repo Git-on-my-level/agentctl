@@ -255,6 +255,7 @@ type Execution struct {
 	SupersededBy      *ids.ExecutionID   `json:"superseded_by"`
 	Promotion         *PromotionLink     `json:"promotion"`
 	TaskContract      *TaskContract      `json:"task_contract,omitempty"`
+	Delegation        *DelegationBinding `json:"delegation,omitempty"`
 	CreatedAt         time.Time          `json:"created_at"`
 	StartedAt         *time.Time         `json:"started_at,omitempty"`
 	DeadlineAt        *time.Time         `json:"deadline_at,omitempty"`
@@ -363,6 +364,14 @@ func (e Execution) Validate() error {
 			return fmt.Errorf("task_contract: %w", err)
 		}
 	}
+	if e.Delegation != nil {
+		if err := e.Delegation.Validate(); err != nil {
+			return fmt.Errorf("delegation: %w", err)
+		}
+		if e.Delegation.Resolved.Authority != e.Authority {
+			return errors.New("delegation authority disagrees with execution")
+		}
+	}
 	if e.Workspace != nil {
 		if err := validateWorkspace(*e.Workspace); err != nil {
 			return fmt.Errorf("workspace: %w", err)
@@ -383,6 +392,9 @@ func ValidateTransition(previous, next Execution) error {
 	}
 	if !reflect.DeepEqual(previous.TaskContract, next.TaskContract) {
 		return errors.New("execution task contract is immutable")
+	}
+	if !reflect.DeepEqual(previous.Delegation, next.Delegation) {
+		return errors.New("execution delegation binding is immutable")
 	}
 	if !workspaceIdentityEqual(previous.Workspace, next.Workspace) {
 		return errors.New("execution workspace is immutable")

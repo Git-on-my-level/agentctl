@@ -53,6 +53,13 @@ type Profile struct {
 	Multica          *Multica           `json:"multica,omitempty"`
 	AgentPreferences *AgentPreferences  `json:"agent_preferences,omitempty"`
 	Route            *Route             `json:"route,omitempty"`
+	Delegation       *DelegationPolicy  `json:"delegation,omitempty"`
+}
+
+// DelegationPolicy is an explicit, machine-readable native permission grant.
+// It never supplies argv. Cursor workspace trust is the only initial grant.
+type DelegationPolicy struct {
+	CursorWorkspaceTrust bool `json:"cursor_workspace_trust,omitempty"`
 }
 
 type Adapter struct {
@@ -70,10 +77,14 @@ type AgentPreferences struct {
 }
 
 type AgentPreference struct {
-	Agent  string `json:"agent"`
-	Model  string `json:"model"`
-	Speed  string `json:"speed"`
-	UseFor string `json:"use_for,omitempty"`
+	Agent   string `json:"agent"`
+	Model   string `json:"model"`
+	Speed   string `json:"speed,omitempty"`
+	UseFor  string `json:"use_for,omitempty"`
+	Family  string `json:"family,omitempty"`
+	Version string `json:"version,omitempty"`
+	Effort  string `json:"effort,omitempty"`
+	Default bool   `json:"default,omitempty"`
 }
 
 // Multica deliberately carries the exact profile, workspace, and link origin.
@@ -181,6 +192,11 @@ func (c Config) Validate() error {
 				return fmt.Errorf("profile %q route: %w", name, err)
 			}
 		}
+		if profile.Delegation != nil {
+			if err := profile.Delegation.Validate(); err != nil {
+				return fmt.Errorf("profile %q delegation: %w", name, err)
+			}
+		}
 	}
 	return nil
 }
@@ -237,7 +253,7 @@ func (p AgentPreferences) Validate() error {
 	}
 	seen := make(map[string]struct{}, len(p.Preferred))
 	for i, preference := range p.Preferred {
-		fields := map[string]string{"agent": preference.Agent, "model": preference.Model, "speed": preference.Speed}
+		fields := map[string]string{"agent": preference.Agent, "model": preference.Model}
 		for field, value := range fields {
 			if strings.TrimSpace(value) == "" {
 				return fmt.Errorf("preferred[%d].%s is required", i, field)
@@ -249,7 +265,20 @@ func (p AgentPreferences) Validate() error {
 		if len(preference.UseFor) > 128 {
 			return fmt.Errorf("preferred[%d].use_for exceeds 128-byte limit", i)
 		}
-		key := preference.Agent + "\x00" + preference.Model + "\x00" + preference.Speed + "\x00" + preference.UseFor
+		for _, field := range []struct {
+			name  string
+			value string
+		}{
+			{"speed", preference.Speed},
+			{"family", preference.Family},
+			{"version", preference.Version},
+			{"effort", preference.Effort},
+		} {
+			if err := validateOptionalPreferenceField(i, field.name, field.value); err != nil {
+				return err
+			}
+		}
+		key := preference.Agent + "\x00" + preference.Model + "\x00" + preference.Speed + "\x00" + preference.UseFor + "\x00" + preference.Family + "\x00" + preference.Version + "\x00" + preference.Effort
 		if _, ok := seen[key]; ok {
 			return fmt.Errorf("preferred[%d] duplicates an earlier entry", i)
 		}
@@ -266,6 +295,23 @@ func (p AgentPreferences) Validate() error {
 			return fmt.Errorf("notes[%d] exceeds 1024-byte limit", i)
 		}
 	}
+	return nil
+}
+
+func validateOptionalPreferenceField(i int, field, value string) error {
+	if value == "" {
+		return nil
+	}
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("preferred[%d].%s cannot be empty", i, field)
+	}
+	if len(value) > 128 {
+		return fmt.Errorf("preferred[%d].%s exceeds 128-byte limit", i, field)
+	}
+	return nil
+}
+
+func (DelegationPolicy) Validate() error {
 	return nil
 }
 

@@ -83,7 +83,7 @@ preference document or silently remap argv onto a different adapter or model.
 so profiles can describe native tools without agentctl owning their vocabulary.
 
 When a profile has `preferred[]`, that table is the reviewed adapter+model set
-for `dispatch` and `route explain`: off-policy selectors fail closed or return
+for `delegate`, `dispatch`, and `route explain`: off-policy selectors fail closed or return
 no model match. Direct `run` stays caller-authoritative: off-policy argv emits
 a warning and still launches. Without `preferred[]`, `route explain` still ranks
 built-in adapter family aliases such as `glm` or `codex`.
@@ -99,6 +99,15 @@ guess fleet identity from an operating-system hostname. `use_for` contributes
 route aliases only in the explicit `alias:name,other-name` form; ordinary prose
 remains advisory text rather than executable routing policy.
 
+Structured `delegate` also accepts optional `family`, `version`, `effort`, and
+`default` metadata on preferred entries. `speed` may be omitted when a harness
+has no service-speed control. Explicit requested settings must match a reviewed
+entry and a supported native recipe. `delegation.cursor_workspace_trust` is a
+separate boolean grant for Cursor workspace trust; it does not grant force/yolo,
+sandbox changes, or MCP approval. See [structured delegation](structured-delegation.md)
+for the request schema, deterministic defaults, and replay contract. Upgrade the
+binary before applying config fields an older version does not recognize.
+
 ## Profile selection
 
 `--profile <name>` selects an exact named profile. If it is omitted, the
@@ -113,7 +122,7 @@ only when replacing the entire profile is intentional. Unknown schema versions,
 missing selected profiles, incomplete Multica authority records, credentialed
 URLs, and unsafe paths fail closed.
 
-`config set-profile` does not author or clear `agent_preferences`. When it
+`config set-profile` does not author or clear `agent_preferences` or `delegation`. When it
 updates adapter or Multica fields on a profile that already has reviewed
 preferences, it preserves those preferences, including with `--replace`.
 
