@@ -760,7 +760,7 @@ func TestBootstrapInstructionPointerCreatesCodexAgentsNotOverride(t *testing.T) 
 
 func instructionPointerBodyForTest() string {
 	return "CLI agents (`cursor-agent`, `codex`, `omp`, and similar) go through `agentctl`; load skill `agentctl-portable` or run `agentctl help run`.\n" +
-		"Do not manage native agent work with raw background shells; use `agentctl` foreground/background lifecycle and just-in-time help.\n"
+		"Do not manage native agent work with raw background shells; parent-background a foreground `agentctl run`, or use `dispatch` for work that must outlive this process.\n"
 }
 
 func slimInstructionPointerBlockForTest() string {

@@ -221,10 +221,13 @@ prompts, transcripts, or event payloads. Multica issues remain authoritative
 for Multica contracts, so `run --adapter multica --task-contract ...` fails
 closed; use the promotion flow instead.
 
-For long-running work, label the execution and explicitly background it:
+For long-running work, label a foreground `run` and parent-background that
+process. `run --background` is rejected: agents treat its journaled exit 0 as
+task completion. Work that must outlive this process belongs on Multica
+`dispatch`, not a detached agentctl worker.
 
 ```bash
-agentctl run --background --label review --label retrieval -- \
+agentctl run --label review --label retrieval -- \
   cursor-agent --print --output-format stream-json --trust "review this change"
 agentctl recent --state nonterminal --liveness alive --label review
 agentctl await exec-... --no-timeout
@@ -233,19 +236,6 @@ agentctl result exec-... --content
 agentctl workspace owners --path "$PWD"
 ```
 
-`--background` starts a detached agentctl worker and returns after the execution
-is visible in the local journal. The worker, not the launching shell, owns the
-native process. It survives the caller exiting but is not restart-durable and
-does not turn direct work into a scheduler or remote authority. The worker is
-noninteractive and has no controlling terminal. Direct native adapters do not
-gain a cross-process cancel route merely because they are backgrounded; use an
-explicit `--timeout` when a hard stop is required unless the adapter advertises
-durable cancellation. Background prompt delivery accepts `--prompt-file` and
-`--prompt-stdin`: the parent reads and bounds the bytes before detaching, then
-hands them to the worker through a one-shot pipe. Raw prompt bytes are not
-placed in argv, the repository, or the durable journal.
-Background launch also rejects `--idempotency-key` until its startup handshake
-can return a reused execution's exact ID.
 Labels are exact lowercase metadata names, may be repeated up to 16 times, and
 never contain or derive from prompt text.
 
@@ -264,7 +254,7 @@ delivery mechanism:
 agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- \
   cursor-agent --print --output-format stream-json --trust
 
-agentctl run --background --prompt-stdin --prompt-delivery argv -- \
+agentctl run --prompt-stdin --prompt-delivery argv -- \
   cursor-agent --print --output-format stream-json --trust < "/absolute/path/task.md"
 
 agentctl run --prompt-stdin --prompt-delivery stdin -- \
@@ -403,7 +393,7 @@ Use `await --no-timeout` for an intentionally unbounded observer. Await still
 stops on actionable attention unless `--ignore-attention` is explicit.
 Executions launched with `run --timeout` record an absolute deadline;
 `await --through-execution-deadline` waits through that deadline plus bounded
-terminalization grace. Generated background next actions use this form and
+terminalization grace. Generated await next actions use this form and
 also point nonblocking callers to durable subscription setup.
 
 JSON callers must inspect the envelope's `.ok` field. In shell pipelines,

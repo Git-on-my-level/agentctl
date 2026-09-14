@@ -1255,7 +1255,7 @@ func writeExecution(renderer output.Renderer, e model.Execution, operation strin
 		warnings = append(warnings, taskContractAcceptanceWarning())
 	}
 	if operation == "run" {
-		warnings = append(warnings, output.Warning{Code: "foreground_execution_owned", Message: "foreground run is owned by this process and has no default wall-clock timeout; use --background with recent, await, and result for work that must outlive this shell"})
+		warnings = append(warnings, output.Warning{Code: "foreground_execution_owned", Message: "foreground run is owned by this process and has no default wall-clock timeout; parent-background this command, or use dispatch for work that must outlive this process"})
 		actions = append(actions, output.NextAction{Label: "Review run ownership and lifecycle", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 	}
 	if !e.State.Terminal() {
@@ -1275,9 +1275,6 @@ func writeExecution(renderer output.Renderer, e model.Execution, operation strin
 			actions = append(actions, attentionNextActions(renderer.Mode, e)...)
 		} else {
 			actions = append(actions, output.NextAction{Label: label, Argv: argv, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}})
-		}
-		if operation == "background" {
-			actions = append(actions, output.NextAction{Label: "Discover durable callback setup", Argv: []string{"agentctl", "help", "subscribe"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"choose an explicit callback destination and target"}})
 		}
 	}
 	if e.State.Terminal() && operation != "result" {

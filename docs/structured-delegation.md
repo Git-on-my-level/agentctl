@@ -128,7 +128,7 @@ bounded by the existing native result contract.
 `--timeout <duration>` bounds a new execution; no timeout is implied. Existing
 runs retain their original deadline. `--label <name>` may repeat up to 16 distinct
 labels. `--authority` accepts `auto`, `native`, or `multica`; this release supports
-native local launches only. `--background`, task contracts, and external
+native local launches only. Task contracts and external
 `--context-file` are not yet supported by this command. Use live help for the
 existing expert `run`, `fanout`, or `dispatch` interfaces when those are needed;
 do not automatically weaken a failed structured request into an expert launch.

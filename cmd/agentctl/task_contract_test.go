@@ -141,29 +141,7 @@ func TestRunTaskContractRejectsMulticaAuthority(t *testing.T) {
 	}
 }
 
-func TestBackgroundCommandPreservesTaskContractAndPinsDigest(t *testing.T) {
-	root := t.TempDir()
-	contractPath := writeTaskContractFixture(t, root)
-	payload, problem := loadTaskContract(contractPath)
-	if problem != nil {
-		t.Fatal(problem)
-	}
-	args := backgroundCommandArgs(common{}, []string{"--background", "--task-contract", contractPath, "--", "/bin/echo", "done"}, "exec-amber-willow-orbit-tiger-harbor-gentle", true, false)
-	want := []string{"--output", "json", "run", "--task-contract", contractPath, "--execution-id", "exec-amber-willow-orbit-tiger-harbor-gentle", "--", "/bin/echo", "done"}
-	if !reflect.DeepEqual(args, want) {
-		t.Fatalf("args=%v want=%v", args, want)
-	}
-	t.Setenv(backgroundReadyTokenEnv, "ready")
-	t.Setenv(backgroundTaskContractDigestEnv, payload.Digest)
-	if got := backgroundTaskContractDigest(); got != payload.Digest {
-		t.Fatalf("digest=%q want=%q", got, payload.Digest)
-	}
-	if got := os.Getenv(backgroundTaskContractDigestEnv); got != "" {
-		t.Fatalf("internal digest leaked beyond worker validation: %q", got)
-	}
-}
-
-func TestBuiltBinaryRejectsInvalidTaskContractsAndRetainsBackgroundContract(t *testing.T) {
+func TestBuiltBinaryRejectsInvalidTaskContractsAndRetainsForegroundContract(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("generic shell fixture is Unix-only")
 	}
@@ -204,11 +182,11 @@ func TestBuiltBinaryRejectsInvalidTaskContractsAndRetainsBackgroundContract(t *t
 	}
 	contractPath := writeTaskContractFixture(t, root)
 	journal := filepath.Join(root, "state", "journal.db")
-	native := `sleep 1; printf '%s\n' '{"type":"result","status":"completed","result":"BACKGROUND_CONTRACT_OK"}'`
-	launch := exec.Command(binary, "--journal", journal, "run", "--background", "--task-contract", contractPath, "--timeout", "30s", "--adapter", "generic-process", "--", "/bin/sh", "-c", native)
+	native := `printf '%s\n' '{"type":"result","status":"completed","result":"FOREGROUND_CONTRACT_OK"}'`
+	launch := exec.Command(binary, "--journal", journal, "run", "--task-contract", contractPath, "--timeout", "30s", "--adapter", "generic-process", "--", "/bin/sh", "-c", native)
 	launchOutput, err := launch.CombinedOutput()
 	if err != nil {
-		t.Fatalf("background launch: %v\n%s", err, launchOutput)
+		t.Fatalf("foreground launch: %v\n%s", err, launchOutput)
 	}
 	var launchDoc struct {
 		Result model.Execution `json:"result"`
@@ -217,7 +195,7 @@ func TestBuiltBinaryRejectsInvalidTaskContractsAndRetainsBackgroundContract(t *t
 		t.Fatal(err)
 	}
 	if launchDoc.Result.TaskContract == nil || launchDoc.Result.TaskContract.ObjectiveSummary != "Diagnose the failing service" {
-		t.Fatalf("background launch omitted task contract: %s", launchOutput)
+		t.Fatalf("foreground launch omitted task contract: %s", launchOutput)
 	}
 	wait := exec.Command(binary, "--journal", journal, "await", launchDoc.Result.ID.String(), "--no-timeout", "--ignore-attention")
 	if waitOutput, err := wait.CombinedOutput(); err != nil {
@@ -225,8 +203,8 @@ func TestBuiltBinaryRejectsInvalidTaskContractsAndRetainsBackgroundContract(t *t
 	}
 	result := exec.Command(binary, "--journal", journal, "result", launchDoc.Result.ID.String())
 	resultOutput, err := result.CombinedOutput()
-	if err != nil || !bytes.Contains(resultOutput, []byte("BACKGROUND_CONTRACT_OK")) || !bytes.Contains(resultOutput, []byte(`"task_contract"`)) || !bytes.Contains(resultOutput, []byte(`"code":"acceptance_external_required"`)) {
-		t.Fatalf("background result: %v\n%s", err, resultOutput)
+	if err != nil || !bytes.Contains(resultOutput, []byte("FOREGROUND_CONTRACT_OK")) || !bytes.Contains(resultOutput, []byte(`"task_contract"`)) || !bytes.Contains(resultOutput, []byte(`"code":"acceptance_external_required"`)) {
+		t.Fatalf("foreground result: %v\n%s", err, resultOutput)
 	}
 }
 

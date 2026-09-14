@@ -265,7 +265,7 @@ that intentionally wants to continue waiting uses `--ignore-attention`; a
 different bounded wait uses `--timeout <duration>`.
 
 Without a managed supervisor, retry and polling continue only while the
-foreground `run`, `await`, or an explicitly backgrounded process remains alive.
+foreground `run` or `await` remains alive.
 Later CLI invocations can recover durable local journal/outbox entries, but no
 component wakes itself after logout or reboot. Cross-restart automatic delivery
 therefore requires the optional supervisor; the daemonless MVP must not claim
