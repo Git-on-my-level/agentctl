@@ -6,7 +6,7 @@
   "skill": {
     "path": "agentctl-portable/SKILL.md",
     "source": "skills/agentctl-portable/SKILL.md",
-    "sha256": "f67d3ac93e774637cee1a7065ba9da33002f6c5ee19cd1117658f9c775a63072"
+    "sha256": "9697c7b93639db1eb9484c50d4f121f0af23ec833605a031904a24cf3e3e2e20"
   },
   "runtime": {
     "entrypoint": "agentctl",

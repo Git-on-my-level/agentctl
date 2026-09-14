@@ -122,7 +122,7 @@ mechanism. Prompt bytes are bounded and are not persisted by agentctl:
 ```bash
 agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- codex exec --json
 agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust
-agentctl run --background --prompt-stdin --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust < "/absolute/path/task.md"
+agentctl run --prompt-stdin --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust < "/absolute/path/task.md"
 agentctl run --prompt-stdin --prompt-delivery stdin -- codex exec --json - < "$PWD/task.md"
 ```
 
@@ -153,22 +153,21 @@ Discover the normative shape and limits with `agentctl help fanout` and
 requires a bound. Native work remains owned by the invoking agentctl process;
 the callback supervisor does not change launch ownership or durability.
 
-For long work that should outlive the launching shell, use explicit background
-ownership and exact metadata labels:
+For long work that must outlive this process, use Multica `dispatch`. Do not
+pass `run --background`; that flag is rejected because agents treat its
+journaled exit 0 as task completion. Parent-background a foreground
+`agentctl run` when the parent already owns process lifetime.
 
 ```bash
-agentctl run --background --label review --prompt-file "$PWD/task.md" --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust
+agentctl run --label review --prompt-file "$PWD/task.md" --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust
 agentctl recent --state nonterminal --liveness alive --label review
 agentctl recent --liveness unreachable
 agentctl recent --unreconciled
 ```
 
-The detached host-local worker remains the native owner; it is not
-restart-durable authority and has no controlling terminal. A direct adapter
+Native work remains owned by the invoking agentctl process. A direct adapter
 does not gain cross-process cancellation; add `--timeout` when a hard stop is
-required unless capabilities advertise a durable cancel route. Background mode
-accepts argv, prompt files, and prompt stdin; the parent materializes prompt
-bytes through a one-shot pipe before detaching. Use `recent` to recover
+required unless capabilities advertise a durable cancel route. Use `recent` to recover
 execution IDs from the local journal. It is read-only, newest-first,
 prompt/result-record-free, and does not aggregate other hosts. Repeated label
 filters use AND semantics. `--unreconciled` lists terminal executions whose

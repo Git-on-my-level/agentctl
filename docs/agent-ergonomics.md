@@ -392,12 +392,9 @@ escape for callers that intentionally need weaker or broader behavior:
   the contract into the native prompt, and native completion remains separate
   from externally verified artifacts or acceptance. Multica issue authority is
   not replaced by a direct-run contract file.
-- `run --background` starts a detached host-local worker and returns only after
-  the execution is durable. The worker survives the caller but not a host
-  restart, is noninteractive, and does not gain a cross-process cancel route
-  unless the adapter advertises one. The parent materializes bounded prompt
-  stdin through a one-shot pipe before detaching. Background idempotency keys
-  remain unavailable.
+- `run --background` is rejected. Parent-background a foreground `agentctl run`,
+  or use `dispatch` for work that must outlive this process. Do not detach
+  inside agentctl.
 - `--label` records up to 16 exact lowercase metadata names. `recent` returns
   the newest 20 host-local executions by default and filters by exact state,
   adapter, or label without reading prompt or result records. Repeated label

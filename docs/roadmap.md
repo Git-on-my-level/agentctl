@@ -28,8 +28,8 @@ version may use a screened list; v1 order and membership will not change.
 - Owner-only journal, normalized source bindings, terminal conflict handling,
   context handles, JSON-first output, and explicit compact text.
 - Known executable names infer adapters; `run` has explicit optional timeout
-  and prompt transport plus result-content preflight. Explicit `--background`
-  starts a detached host-local worker, labels support exact discovery, and
+  and prompt transport plus result-content preflight. `run --background` is
+  rejected; labels support exact discovery, and
   foreground `fanout` runs shared or distinct prompts across explicit child argv
   vectors, with batch-wide preflight, optional correlation names, and labels.
   `await` stops on attention by default, and
@@ -40,8 +40,8 @@ version may use a screened list; v1 order and membership will not change.
   a terminal `await` record the acknowledgement.
 
 Each native launch remains owned by one agentctl process. Foreground runs use the
-caller; `--background` creates a detached worker that survives the caller but
-not a host restart. Another process cannot claim it can attach to the native
+caller; parent-background that process, or use `dispatch` for work that must
+outlive it. Another process cannot claim it can attach to the native
 session unless that CLI exposes a reviewed durable attach/status API.
 
 ## Phase 2 — Optional Multica and promotion: implemented at the authority boundary

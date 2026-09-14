@@ -38,7 +38,6 @@ type runOptions struct {
 	executionID                              ids.ExecutionID
 	labels                                   []string
 	plan                                     bool
-	background                               bool
 	noStoreResult                            bool
 	allowMissingResult                       bool
 	allowUnreliableResult                    bool
@@ -96,20 +95,10 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	if problem != nil {
 		return problem
 	}
-	if expected := backgroundTaskContractDigest(); expected != "" {
-		if taskContract == nil || taskContract.Digest != expected {
-			return output.NewError(output.CodeConflict, "background task contract changed before durable launch", false).
-				WithDetail("expected_digest", expected).
-				WithDetail("observed_digest", taskContractDigest(taskContract))
-		}
-	}
 	if taskContract != nil && opts.adapter == "multica" {
 		return output.NewError(output.CodeCapabilityUnavailable, "--task-contract is a direct/native launch contract; Multica issues remain authoritative for Multica work", false).
 			WithDetail("adapter", "multica").
 			WithActions(output.NextAction{Label: "Review promotion into Multica authority", Argv: []string{"agentctl", "help", "promote"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
-	}
-	if opts.background && !opts.plan {
-		return a.runNativeBackground(ctx, renderer, c, args, opts, prompt, taskContract)
 	}
 	if prompt != nil {
 		if prompt.Delivery == "argv" {
@@ -161,7 +150,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		}
 	}
 	if opts.plan {
-		result := map[string]any{"adapter": runtime.Name(), "executable": opts.argv[0], "argument_count": len(opts.argv) - 1, "profile": profileName, "side_effect_class": output.ExternalSideEffect, "probe": probe, "writes_local_state": true, "stores_result": !opts.noStoreResult, "timeout": timeoutDescription(opts), "background": opts.background, "labels": opts.labels}
+		result := map[string]any{"adapter": runtime.Name(), "executable": opts.argv[0], "argument_count": len(opts.argv) - 1, "profile": profileName, "side_effect_class": output.ExternalSideEffect, "probe": probe, "writes_local_state": true, "stores_result": !opts.noStoreResult, "timeout": timeoutDescription(opts), "labels": opts.labels}
 		if prompt != nil {
 			result["prompt"] = map[string]any{"source": prompt.Source, "delivery": prompt.Delivery, "bytes": len(prompt.Bytes), "sha256": prompt.Digest}
 		}
@@ -229,15 +218,8 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	}
 	// bbolt takes a process-wide writer lock. Do not hold it for the lifetime of
 	// a native child: status/subscription commands and the callback supervisor
-	// must be able to observe the execution while it is running. Release it
-	// before signaling background readiness so the parent can prove the durable
-	// execution exists without racing this worker's startup lock.
+	// must be able to observe the execution while it is running.
 	journal.Close()
-	if emitBackgroundReady(renderer.Writer, execution.ID) {
-		// The parent owns the one startup document. Keep the detached worker's
-		// eventual terminal rendering off a pipe that closes when the parent exits.
-		renderer.Writer = io.Discard
-	}
 	launchCtx := operationCtx
 	launchRequest := adapter.LaunchRequest{Argv: opts.argv, Cwd: opts.cwd, Context: contextInput(c), DiscoveryWindow: 250 * time.Millisecond, StartOnly: true}
 	if prompt != nil && prompt.Delivery == "stdin" {
@@ -593,7 +575,7 @@ func parseRun(args []string) (runOptions, *output.Error) {
 				return o, output.NewError(output.CodeUsage, "run accepts at most 16 labels", false)
 			}
 		case "--background":
-			o.background = true
+			return o, output.NewError(output.CodeUsage, "run --background is not supported; parent-background a foreground agentctl run, or use dispatch for work that must outlive this process", false).WithDetail("flag", "--background")
 		case "--plan":
 			o.plan = true
 		case "--no-store-result":
@@ -624,9 +606,6 @@ func parseRun(args []string) (runOptions, *output.Error) {
 	}
 	if o.promptFile != "" && o.promptStdin {
 		return o, output.NewError(output.CodeUsage, "--prompt-file and --prompt-stdin are mutually exclusive", false)
-	}
-	if o.background && o.idempotencyKey != "" {
-		return o, output.NewError(output.CodeUsage, "--background cannot use --idempotency-key because startup must return the exact created execution ID", false)
 	}
 	if o.promptFile == "" && !o.promptStdin && o.promptDelivery != "" {
 		return o, output.NewError(output.CodeUsage, "--prompt-delivery requires --prompt-file or --prompt-stdin", false)

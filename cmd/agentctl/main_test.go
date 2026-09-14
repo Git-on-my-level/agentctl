@@ -317,15 +317,8 @@ func TestForegroundRunEnvelopeTeachesOwnership(t *testing.T) {
 	if problem := writeExecution(output.Renderer{Mode: output.JSON, Writer: &stdout}, execution, "run"); problem != nil {
 		t.Fatal(problem)
 	}
-	if !strings.Contains(stdout.String(), `"code":"foreground_execution_owned"`) || !strings.Contains(stdout.String(), "no default wall-clock timeout") || !strings.Contains(stdout.String(), `"argv":["agentctl","help","run"]`) {
+	if !strings.Contains(stdout.String(), `"code":"foreground_execution_owned"`) || !strings.Contains(stdout.String(), "no default wall-clock timeout") || !strings.Contains(stdout.String(), `"argv":["agentctl","help","run"]`) || strings.Contains(stdout.String(), "--background") {
 		t.Fatalf("foreground run envelope omitted ownership guidance: %s", stdout.String())
-	}
-	stdout.Reset()
-	if problem := writeExecution(output.Renderer{Mode: output.JSON, Writer: &stdout}, execution, "background"); problem != nil {
-		t.Fatal(problem)
-	}
-	if strings.Contains(stdout.String(), "foreground_execution_owned") {
-		t.Fatalf("background envelope received foreground warning: %s", stdout.String())
 	}
 }
 
@@ -360,7 +353,7 @@ func TestWriteExecutionAwaitNextActionMatchesDeadline(t *testing.T) {
 		return "", nil
 	}
 
-	label, argv := awaitArgv(t, base, "background")
+	label, argv := awaitArgv(t, base, "run")
 	wantUnbounded := []string{"agentctl", "await", executionID.String(), "--output", "json", "--no-timeout"}
 	if label == "" || strings.Contains(strings.ToLower(label), "10 minutes") || strings.Contains(strings.ToLower(label), "ten-minute") {
 		t.Fatalf("unbounded await label=%q", label)
@@ -372,7 +365,7 @@ func TestWriteExecutionAwaitNextActionMatchesDeadline(t *testing.T) {
 	deadline := time.Now().UTC().Add(30 * time.Second)
 	bounded := base
 	bounded.DeadlineAt = &deadline
-	label, argv = awaitArgv(t, bounded, "background")
+	label, argv = awaitArgv(t, bounded, "run")
 	wantBounded := []string{"agentctl", "await", executionID.String(), "--output", "json", "--through-execution-deadline"}
 	if label != "Wait through execution deadline" {
 		t.Fatalf("bounded await label=%q", label)
@@ -382,73 +375,31 @@ func TestWriteExecutionAwaitNextActionMatchesDeadline(t *testing.T) {
 	}
 }
 
-func TestRunParsesLabelsAndBackground(t *testing.T) {
-	opts, problem := parseRun([]string{"--background", "--label", "review", "--label", "model.grok", "--", "/bin/echo", "done"})
+func TestRunParsesLabelsAndRejectsBackground(t *testing.T) {
+	opts, problem := parseRun([]string{"--label", "review", "--label", "model.grok", "--", "/bin/echo", "done"})
 	if problem != nil {
 		t.Fatal(problem)
 	}
-	if !opts.background || !reflect.DeepEqual(opts.labels, []string{"review", "model.grok"}) {
+	if !reflect.DeepEqual(opts.labels, []string{"review", "model.grok"}) {
 		t.Fatalf("opts=%#v", opts)
 	}
 	for _, args := range [][]string{
 		{"--label", "Not-Lowercase", "--", "/bin/echo"},
 		{"--label", "review", "--label", "review", "--", "/bin/echo"},
+		{"--background", "--", "/bin/echo"},
 		{"--background", "--idempotency-key", "same", "--", "/bin/echo"},
 	} {
 		if _, problem := parseRun(args); problem == nil || problem.Code != output.CodeUsage {
 			t.Fatalf("args=%v problem=%#v", args, problem)
 		}
 	}
-}
-
-func TestBackgroundCommandArgsPreserveSelectorsAndRemoveBackground(t *testing.T) {
-	executionID, err := ids.NewExecutionID(ids.CryptoGenerator{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	args := backgroundCommandArgs(common{profile: "fleet", journalPath: "/tmp/journal.db"}, []string{"--background", "--label", "review", "--", "/bin/echo", "done"}, executionID, true, false)
-	want := []string{"--output", "json", "--profile", "fleet", "--journal", "/tmp/journal.db", "run", "--label", "review", "--execution-id", executionID.String(), "--", "/bin/echo", "done"}
-	if !reflect.DeepEqual(args, want) {
-		t.Fatalf("args=%v want=%v", args, want)
-	}
-	args = backgroundCommandArgs(common{}, []string{"--background", "--", "/bin/echo", "--background"}, executionID, true, false)
-	want = []string{"--output", "json", "run", "--execution-id", executionID.String(), "--", "/bin/echo", "--background"}
-	if !reflect.DeepEqual(args, want) {
-		t.Fatalf("native argv was rewritten: args=%v want=%v", args, want)
-	}
-	args = backgroundCommandArgs(common{}, []string{"--background", "--prompt-file", "task.md", "--prompt-delivery", "stdin", "--", "/bin/cat"}, executionID, true, true)
-	want = []string{"--output", "json", "run", "--prompt-stdin", "--prompt-delivery", "stdin", "--execution-id", executionID.String(), "--", "/bin/cat"}
-	if !reflect.DeepEqual(args, want) {
-		t.Fatalf("materialized prompt args=%v want=%v", args, want)
+	_, problem = parseRun([]string{"--background", "--", "/bin/echo", "done"})
+	if problem == nil || problem.Code != output.CodeUsage || !strings.Contains(problem.Message, "run --background is not supported") || problem.Details["flag"] != "--background" {
+		t.Fatalf("background rejection=%#v", problem)
 	}
 }
 
-func TestReadBackgroundExecutionRetriesJournalContention(t *testing.T) {
-	root := t.TempDir()
-	if err := os.Chmod(root, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	journalPath := filepath.Join(root, "journal.db")
-	journal, err := store.Open(journalPath, store.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	execution, _, err := journal.CreateExecution(context.Background(), model.Execution{Authority: model.AuthorityNative, Adapter: "generic-process", Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateRunning, Liveness: model.LivenessAlive, SourceBindings: []model.SourceBinding{}, Capabilities: model.CapabilitySnapshot{NegotiatedAt: now, AdapterVersion: "test", Items: []model.CapabilityItem{}}, Observation: model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: now}}, contracts.MutationKey{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		_ = journal.Close()
-	}()
-	read, found, problem := readBackgroundExecution(context.Background(), journalPath, execution.ID)
-	if problem != nil || !found || read.ID != execution.ID {
-		t.Fatalf("read=%#v found=%v problem=%#v", read, found, problem)
-	}
-}
-
-func TestBackgroundRunLifecycleThroughBuiltBinary(t *testing.T) {
+func TestRunLifecycleThroughBuiltBinary(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("generic shell fixture is Unix-only")
 	}
@@ -460,24 +411,24 @@ func TestBackgroundRunLifecycleThroughBuiltBinary(t *testing.T) {
 		t.Fatalf("build fixture binary: %v\n%s", err, buildOutput)
 	}
 	rejectedJournal := filepath.Join(root, "rejected", "journal.db")
+	started := time.Now()
 	rejected := exec.Command(binary, "--journal", rejectedJournal, "run", "--background", "--adapter", "codex", "--", "/bin/echo", "exec", "review")
 	rejectedOutput, rejectedErr := rejected.CombinedOutput()
-	if rejectedErr == nil || !bytes.Contains(rejectedOutput, []byte(`"code":"capability_unavailable"`)) || !bytes.Contains(rejectedOutput, []byte(`"diagnostic_code":"invocation_output_mode_required"`)) {
-		t.Fatalf("background worker accepted invocation without structured output: %v\n%s", rejectedErr, rejectedOutput)
-	}
-	if _, err := os.Stat(rejectedJournal); !os.IsNotExist(err) {
-		t.Fatalf("background preflight rejection created a journal: %v", err)
-	}
-	journal := filepath.Join(root, "state", "journal.db")
-	native := `sleep 2; printf '%s\n' '{"type":"result","status":"completed","result":"BACKGROUND_INTEGRATION_OK"}'`
-	started := time.Now()
-	launch := exec.Command(binary, "--journal", journal, "run", "--background", "--label", "integration", "--timeout", "30s", "--adapter", "generic-process", "--", "/bin/sh", "-c", native)
-	launchOutput, err := launch.CombinedOutput()
-	if err != nil {
-		t.Fatalf("background launch: %v\n%s", err, launchOutput)
+	if rejectedErr == nil || !bytes.Contains(rejectedOutput, []byte(`"code":"usage"`)) || !bytes.Contains(rejectedOutput, []byte("run --background is not supported")) {
+		t.Fatalf("run --background was not rejected: %v\n%s", rejectedErr, rejectedOutput)
 	}
 	if elapsed := time.Since(started); elapsed >= 1500*time.Millisecond {
-		t.Fatalf("background launch waited for native completion: %s", elapsed)
+		t.Fatalf("run --background rejection waited: %s", elapsed)
+	}
+	if _, err := os.Stat(rejectedJournal); !os.IsNotExist(err) {
+		t.Fatalf("rejected --background created a journal: %v", err)
+	}
+	journal := filepath.Join(root, "state", "journal.db")
+	native := `printf '%s\n' '{"type":"result","status":"completed","result":"RUN_INTEGRATION_OK"}'`
+	launch := exec.Command(binary, "--journal", journal, "run", "--label", "integration", "--timeout", "30s", "--adapter", "generic-process", "--", "/bin/sh", "-c", native)
+	launchOutput, err := launch.CombinedOutput()
+	if err != nil {
+		t.Fatalf("foreground launch: %v\n%s", err, launchOutput)
 	}
 	var launchDoc struct {
 		Result model.Execution `json:"result"`
@@ -485,11 +436,8 @@ func TestBackgroundRunLifecycleThroughBuiltBinary(t *testing.T) {
 	if err := json.Unmarshal(launchOutput, &launchDoc); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(launchDoc.Result.Labels, []string{"integration"}) || launchDoc.Result.State.Terminal() || launchDoc.Result.DeadlineAt == nil {
+	if !reflect.DeepEqual(launchDoc.Result.Labels, []string{"integration"}) || !launchDoc.Result.State.Terminal() || launchDoc.Result.DeadlineAt == nil {
 		t.Fatalf("launch=%#v", launchDoc.Result)
-	}
-	if !bytes.Contains(launchOutput, []byte(`"--through-execution-deadline"`)) || !bytes.Contains(launchOutput, []byte(`"agentctl","help","subscribe"`)) {
-		t.Fatalf("background next actions are not supervision-aware: %s", launchOutput)
 	}
 	recent := exec.Command(binary, "--journal", journal, "recent", "--label", "integration", "--limit", "1")
 	recentOutput, err := recent.CombinedOutput()
@@ -502,11 +450,11 @@ func TestBackgroundRunLifecycleThroughBuiltBinary(t *testing.T) {
 	}
 	result := exec.Command(binary, "--journal", journal, "result", launchDoc.Result.ID.String(), "--min-result-bytes", "10")
 	resultOutput, err := result.CombinedOutput()
-	if err != nil || !bytes.Contains(resultOutput, []byte("BACKGROUND_INTEGRATION_OK")) {
+	if err != nil || !bytes.Contains(resultOutput, []byte("RUN_INTEGRATION_OK")) {
 		t.Fatalf("result: %v\n%s", err, resultOutput)
 	}
 	promptNative := `IFS= read -r value; printf '{"type":"result","status":"completed","result":"%s"}\n' "$value"`
-	promptLaunch := exec.Command(binary, "--journal", journal, "run", "--background", "--label", "prompt-stdin", "--prompt-stdin", "--prompt-delivery", "stdin", "--adapter", "generic-process", "--", "/bin/sh", "-c", promptNative)
+	promptLaunch := exec.Command(binary, "--journal", journal, "run", "--label", "prompt-stdin", "--prompt-stdin", "--prompt-delivery", "stdin", "--adapter", "generic-process", "--", "/bin/sh", "-c", promptNative)
 	promptLaunch.Stdin = strings.NewReader("BACKGROUND_STDIN_OK\n")
 	promptLaunchOutput, err := promptLaunch.CombinedOutput()
 	if err != nil {
@@ -535,7 +483,7 @@ func TestBackgroundRunLifecycleThroughBuiltBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 	promptFileNative := `IFS= read -r value; test "$value" = "PROMPT_FILE_SECRET"; printf '%s\n' '{"type":"result","status":"completed","result":"BACKGROUND_FILE_OK"}'`
-	promptFileLaunch := exec.Command(binary, "--journal", journal, "run", "--background", "--cwd", root, "--label", "prompt-file", "--prompt-file", "background-task.md", "--prompt-delivery", "stdin", "--adapter", "generic-process", "--", "/bin/sh", "-c", promptFileNative)
+	promptFileLaunch := exec.Command(binary, "--journal", journal, "run", "--cwd", root, "--label", "prompt-file", "--prompt-file", "background-task.md", "--prompt-delivery", "stdin", "--adapter", "generic-process", "--", "/bin/sh", "-c", promptFileNative)
 	promptFileLaunchOutput, err := promptFileLaunch.CombinedOutput()
 	if err != nil {
 		t.Fatalf("background prompt file launch: %v\n%s", err, promptFileLaunchOutput)
@@ -574,7 +522,7 @@ printf '%s\n' '{"type":"session","version":3,"id":"omp-background-fixture"}' '{"
 	if err := os.WriteFile(ompFixture, []byte(ompContents), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	ompLaunch := exec.Command(binary, "--journal", journal, "run", "--background", "--label", "omp-integration", "--adapter", "omp", "--", ompFixture, "-p", "--mode", "json", "probe")
+	ompLaunch := exec.Command(binary, "--journal", journal, "run", "--label", "omp-integration", "--adapter", "omp", "--", ompFixture, "-p", "--mode", "json", "probe")
 	ompLaunchOutput, err := ompLaunch.CombinedOutput()
 	if err != nil {
 		t.Fatalf("OMP background launch: %v\n%s", err, ompLaunchOutput)
@@ -599,7 +547,7 @@ printf '%s\n' '{"type":"session","version":3,"id":"omp-background-fixture"}' '{"
 	if err != nil || !bytes.Contains(ompResultOutput, []byte("OMP_BACKGROUND_RESULT_OK")) || !bytes.Contains(ompResultOutput, []byte(`"source":"assistant_terminal_result"`)) {
 		t.Fatalf("OMP result: %v\n%s", err, ompResultOutput)
 	}
-	replay := exec.Command(binary, "--journal", journal, "run", "--background", "--execution-id", launchDoc.Result.ID.String(), "--adapter", "generic-process", "--", "/bin/echo", native)
+	replay := exec.Command(binary, "--journal", journal, "run", "--execution-id", launchDoc.Result.ID.String(), "--adapter", "generic-process", "--", "/bin/echo", native)
 	replayOutput, replayErr := replay.CombinedOutput()
 	if replayErr == nil || !bytes.Contains(replayOutput, []byte(`"code":"conflict"`)) {
 		t.Fatalf("existing execution ID was accepted: %v\n%s", replayErr, replayOutput)
@@ -612,6 +560,7 @@ printf '%s\n' '{"type":"session","version":3,"id":"omp-background-fixture"}' '{"
 	if err != nil {
 		t.Fatal(err)
 	}
+	raceNative := `sleep 1; printf '%s\n' '{"type":"result","status":"completed","result":"RACE_OK"}'`
 	type launchResult struct {
 		output []byte
 		err    error
@@ -619,7 +568,7 @@ printf '%s\n' '{"type":"session","version":3,"id":"omp-background-fixture"}' '{"
 	results := make(chan launchResult, 2)
 	for range 2 {
 		go func() {
-			command := exec.Command(binary, "--journal", journal, "run", "--background", "--execution-id", raceID.String(), "--adapter", "generic-process", "--", "/bin/sh", "-c", native)
+			command := exec.Command(binary, "--journal", journal, "run", "--execution-id", raceID.String(), "--adapter", "generic-process", "--", "/bin/sh", "-c", raceNative)
 			value, runErr := command.CombinedOutput()
 			results <- launchResult{output: value, err: runErr}
 		}()
