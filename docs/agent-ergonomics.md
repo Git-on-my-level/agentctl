@@ -411,9 +411,16 @@ escape for callers that intentionally need weaker or broader behavior:
   actionable set; `has_more` alone never told a caller how large the backlog was.
   `work_health` describes task/collection state while `tool_health` repeats
   normalized liveness; `tool_unreachable` explicitly does not assert task
-  failure. A collected terminal failure drops out instead of creating a second
-  resolution database unless its normalized evidence is conflicted; integrity
-  conflict remains visible until the execution authority is reconciled.
+  failure. Unacknowledged terminals re-notify until deliberately collected:
+  they lead the page oldest-terminal-first, so a week-old uncollected result
+  cannot be buried under newer activity, and each carries `renotify_age_seconds`
+  plus a `renotify_age_tier` (`fresh` under a day, `aging` under three days,
+  `persistent` beyond) derived purely from the terminal event. Aging never
+  removes an item; only an acknowledgement stamp does, and that stamp is a
+  deliberate, final act. A collected terminal failure drops out instead of
+  creating a second resolution database unless its normalized evidence is
+  conflicted; integrity conflict remains visible until the execution authority
+  is reconciled.
 - `--prompt-file` and `--prompt-stdin` are mutually exclusive, bounded prompt
   sources. `--prompt-delivery argv|stdin` is explicit and defaults to `argv`
   only after a source is selected. Prompt bytes are excluded from plan output,
@@ -432,6 +439,9 @@ escape for callers that intentionally need weaker or broader behavior:
   closed on conflicted evidence. `--allow-empty` is for metadata-only inspection; `--summary`
   intentionally returns the bounded preview. A successful dereference writes an
   acknowledgement stamp so `recent --unreconciled` can forget the execution.
+  The stamp is deliberate and final: it removes the terminal from `inbox`
+  re-notification and `recent --unreconciled` permanently, and there is no
+  unacknowledge.
 - `result --unreconciled` collects the uncollected terminal set instead of one
   execution, so a backlog is not drained one identifier at a time. It selects
   the newest 50 unreconciled terminals by default, narrows with `--label`, and

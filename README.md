@@ -371,13 +371,19 @@ history.
 terminal results that still need collection, current attention states, and
 running or unreachable executions whose last observation exceeds an explicit
 age bound (one hour by default, configurable from one minute through thirty
-days). Each row includes stable reason codes and separate `work_health` and
-`tool_health` fields: an unreachable tool is review-worthy but is not evidence
-that the work failed. Terminal failures leave the inbox after `result` or a
-terminal `await` acknowledges collection. `inbox` performs no native refresh,
-result read, acknowledgement write, or cross-host merge. Conflicted normalized
-evidence remains actionable even after collection, because acknowledging a
-result does not reconcile contradictory authority observations.
+days). Unacknowledged terminal results re-notify instead of going stale: they
+lead the page oldest-terminal-first and carry their terminal age plus a
+`renotify_age_tier` (`fresh`, `aging`, `persistent`) derived from the journal,
+so work that finished but was never collected keeps resurfacing until someone
+acts on it. Each row includes stable reason codes and separate `work_health`
+and `tool_health` fields: an unreachable tool is review-worthy but is not
+evidence that the work failed. The only exit from re-notification is a
+deliberate acknowledgement — `result` or a terminal `await` — and that stamp
+is final: acknowledged terminals leave the inbox and do not return. `inbox`
+performs no native refresh, result read, acknowledgement write, or cross-host
+merge. Conflicted normalized evidence remains actionable even after
+collection, because acknowledging a result does not reconcile contradictory
+authority observations.
 
 If a command reports `diagnostic_code=journal_busy`, retry the same agentctl
 invocation with bounded backoff. Do not silently switch to a raw native CLI;
