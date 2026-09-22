@@ -1,0 +1,52 @@
+[
+  {
+    "release": "v0.4.0",
+    "skill_digest": "sha256:dea58d305c1ef44296cbcfc375fe2301eee7585ac7c4c13f2fd40dfec8897c46",
+    "manifest_digest": "sha256:6f0d7894d52a488bd535f6e1d467d45253088be25135f8ad45c525dbafa2af97"
+  },
+  {
+    "release": "v0.4.1",
+    "skill_digest": "sha256:1f84237d959dd0722079e965e024a09c08bb28f329d7e675c67ae827baab95de",
+    "manifest_digest": "sha256:0f3cb16dd04860ee87fe1298e3dd49dcd04125396a7a41e624fb60f63ee54a4f"
+  },
+  {
+    "release": "v0.4.2",
+    "skill_digest": "sha256:1f84237d959dd0722079e965e024a09c08bb28f329d7e675c67ae827baab95de",
+    "manifest_digest": "sha256:0f3cb16dd04860ee87fe1298e3dd49dcd04125396a7a41e624fb60f63ee54a4f"
+  },
+  {
+    "release": "v0.4.3",
+    "skill_digest": "sha256:54daecd8a01f73692caf28d23e9f41612f7f9f507c1c68740c4f306ce56f0e70",
+    "manifest_digest": "sha256:c49de7d4f6caedcc769676ab3825dae5a150163924b65d1cb62cd7d4b722c7de"
+  },
+  {
+    "release": "v0.4.4",
+    "skill_digest": "sha256:09386aab5a6ccbf7e0f7ba63a87de632f1083758f6e988313f90e5aed03dc1cc",
+    "manifest_digest": "sha256:229dda215323e9beaf44e6f0396f7ee19ae93d3b99c60e99a411df0ddd0543d5"
+  },
+  {
+    "release": "v0.4.5",
+    "skill_digest": "sha256:09386aab5a6ccbf7e0f7ba63a87de632f1083758f6e988313f90e5aed03dc1cc",
+    "manifest_digest": "sha256:229dda215323e9beaf44e6f0396f7ee19ae93d3b99c60e99a411df0ddd0543d5"
+  },
+  {
+    "release": "v0.4.6",
+    "skill_digest": "sha256:09386aab5a6ccbf7e0f7ba63a87de632f1083758f6e988313f90e5aed03dc1cc",
+    "manifest_digest": "sha256:229dda215323e9beaf44e6f0396f7ee19ae93d3b99c60e99a411df0ddd0543d5"
+  },
+  {
+    "release": "v0.5.0",
+    "skill_digest": "sha256:f67d3ac93e774637cee1a7065ba9da33002f6c5ee19cd1117658f9c775a63072",
+    "manifest_digest": "sha256:fc3b099d916e3687d018c3b971495c32f025cf886cea73787828ff69768d33b6"
+  },
+  {
+    "release": "v0.6.0",
+    "skill_digest": "sha256:9697c7b93639db1eb9484c50d4f121f0af23ec833605a031904a24cf3e3e2e20",
+    "manifest_digest": "sha256:801d2efb7ddd6c33bfde5bc4bcec7e8a38c50dee08f75fcd1bdf5c9691d87932"
+  },
+  {
+    "release": "v0.7.0",
+    "skill_digest": "sha256:6eb2d9ebcdc8feb8639c83694231e839d0a67ff08d2a09b79a76385e0a1d0901",
+    "manifest_digest": "sha256:137f10a62ef6a9116fd2ae412bebda596e671877d3f931aa802742bc1ec8b259"
+  }
+]

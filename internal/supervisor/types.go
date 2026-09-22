@@ -222,6 +222,7 @@ type Health struct {
 
 // Status is the complete bounded service projection returned by status RPC.
 type Status struct {
+	PID              int       `json:"pid"`
 	Version          string    `json:"version,omitempty"`
 	ExecutableSHA256 string    `json:"executable_sha256,omitempty"`
 	Running          bool      `json:"running"`

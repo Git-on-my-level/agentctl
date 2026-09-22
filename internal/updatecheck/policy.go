@@ -147,6 +147,7 @@ func Due(options Options) bool {
 }
 
 type Status struct {
+	LastErrorRollback string `json:"last_error_rollback,omitempty"`
 	LastErrorStage    string `json:"last_error_stage,omitempty"`
 	LastErrorExitCode int    `json:"last_error_exit_code,omitempty"`
 	Mode              Mode   `json:"mode"`
@@ -181,6 +182,7 @@ func ReadStatus(statePath, policyPath string, getenv func(string) string) (Statu
 	}
 	result.LastErrorCode = state.LastErrorCode
 	result.LastErrorStage, result.LastErrorExitCode = state.LastErrorStage, state.LastErrorExitCode
+	result.LastErrorRollback = state.LastErrorRollback
 	if !state.LastErrorAt.IsZero() {
 		result.LastErrorAt = state.LastErrorAt.Format(time.RFC3339)
 	}

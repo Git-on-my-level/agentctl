@@ -2002,7 +2002,7 @@ func TestNativeRunWithPreallocatedIDReleasesJournalWhileRunning(t *testing.T) {
 	root := t.TempDir()
 	journalPath := filepath.Join(root, "state", "journal.db")
 	script := filepath.Join(root, "slow-agent")
-	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"status\",\"status\":\"running\"}'\nsleep 2\nprintf '%s\\n' '{\"type\":\"result\",\"status\":\"completed\"}'\n"
+	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"status\",\"status\":\"running\"}'\nwhile [ ! -e \"$1\" ]; do sleep 0.02; done\nprintf '%s\\n' '{\"type\":\"result\",\"status\":\"completed\"}'\n"
 	if err := os.WriteFile(script, []byte(contents), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -2017,11 +2017,16 @@ func TestNativeRunWithPreallocatedIDReleasesJournalWhileRunning(t *testing.T) {
 	var runOut, runErr bytes.Buffer
 	runner := testApp(&runOut, &runErr)
 	done := make(chan int, 1)
+	finished := make(chan struct{})
+	release := filepath.Join(root, "release")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	t.Cleanup(func() { cancel(); <-finished })
 	go func() {
-		done <- runner.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "run", "--adapter", "generic-process", "--execution-id", executionID.String(), "--", script})
+		defer close(finished)
+		done <- runner.run(ctx, []string{"--output", "json", "--journal", journalPath, "run", "--adapter", "generic-process", "--execution-id", executionID.String(), "--", script, release})
 	}()
 
-	deadline := time.Now().Add(750 * time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var statusOut, statusErr bytes.Buffer
 		observer := testApp(&statusOut, &statusErr)
@@ -2034,7 +2039,7 @@ func TestNativeRunWithPreallocatedIDReleasesJournalWhileRunning(t *testing.T) {
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("execution was not observable while running; run_output=%s", runOut.String())
+			t.Fatal("execution was not observable while the native process awaited release")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -2068,6 +2073,9 @@ func TestNativeRunWithPreallocatedIDReleasesJournalWhileRunning(t *testing.T) {
 		t.Fatalf("supervisor corrupted active runner lease: %#v", live)
 	}
 
+	if err := os.WriteFile(release, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case code := <-done:
 		if code != 0 {

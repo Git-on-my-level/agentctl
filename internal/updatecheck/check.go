@@ -43,6 +43,7 @@ type Options struct {
 }
 
 type cacheState struct {
+	LastErrorRollback string    `json:"last_error_rollback,omitempty"`
 	LastErrorStage    string    `json:"last_error_stage,omitempty"`
 	LastErrorExitCode int       `json:"last_error_exit_code,omitempty"`
 	SchemaVersion     int       `json:"schema_version"`

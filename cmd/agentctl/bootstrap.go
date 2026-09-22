@@ -145,9 +145,12 @@ func configCandidates(dir string, names ...string) func(string) []string {
 
 func (a *app) bootstrapCommand(renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) == 0 {
-		return output.NewError(output.CodeUsage, "usage: agentctl bootstrap status|update [flags]", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl bootstrap status|update|adopt [flags]", false)
 	}
 	command := args[0]
+	if command == "adopt" {
+		return a.bootstrapAdopt(renderer, args[1:])
+	}
 	home, expectedValue, harnessValue, targetDir := "", "", "", ""
 	dryRun, noInstructionPointers, homeSet := false, false, false
 	for i := 1; i < len(args); i++ {
@@ -177,7 +180,7 @@ func (a *app) bootstrapCommand(renderer output.Renderer, c common, args []string
 		}
 	}
 	if command != "status" && command != "update" {
-		return output.NewError(output.CodeUsage, "usage: agentctl bootstrap status|update [flags]", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl bootstrap status|update|adopt [flags]", false)
 	}
 	if command == "status" && (dryRun || noInstructionPointers) {
 		return output.NewError(output.CodeUsage, "--dry-run and --no-instruction-pointers are only valid for bootstrap update", false)

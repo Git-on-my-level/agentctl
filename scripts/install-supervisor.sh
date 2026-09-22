@@ -14,6 +14,11 @@ FORCE=0
 DRY_RUN=0
 OUTPUT=text
 LABEL=io.agentctl.supervisor
+REGISTER_WRAPPER=
+WRAPPER_INTERPRETER=
+wrapper=
+wrapper_hash=
+interpreter_hash=
 
 die() { printf 'error: %s\n' "$*" >&2; exit 2; }
 
@@ -21,6 +26,7 @@ usage() {
   cat <<'EOF'
 usage: scripts/install-supervisor.sh --agentctl PATH [--plan-with PATH]
        [--state-dir DIR] [--force] [--dry-run] [--output text|json]
+       [--register-wrapper PATH [--wrapper-interpreter /bin/bash|/bin/sh]]
 
 Install the owner-only launchd supervisor for the current user. The supplied
 agentctl path must be absolute and executable. --plan-with names the
@@ -28,6 +34,8 @@ executable that renders the plan when it differs from the reviewed service
 executable, which is how an upgrade preflights the plan the replacement
 binary will install; it defaults to --agentctl. No config, journal,
 credential, or session files are read or removed.
+Wrapper registration is explicit; plan it with --dry-run first. Subsequent
+upgrades preserve the registered launcher and refuse script/interpreter drift.
 EOF
 }
 
@@ -46,9 +54,9 @@ json_result() {
   plist=$2
   manifest=$3
   if [ "$OUTPUT" = json ]; then
-    python3 - "$state" "$plist" "$manifest" <<'PY'
+    python3 - "$state" "$plist" "$manifest" "$wrapper" "$wrapper_hash" "$WRAPPER_INTERPRETER" <<'PY'
 import json, sys
-print(json.dumps({"ok": True, "state": sys.argv[1], "plist": sys.argv[2], "manifest": sys.argv[3]}, separators=(",", ":")))
+print(json.dumps({"ok": True, "state": sys.argv[1], "plist": sys.argv[2], "manifest": sys.argv[3], "wrapper": sys.argv[4], "wrapper_sha256": sys.argv[5], "wrapper_interpreter": sys.argv[6]}, separators=(",", ":")))
 PY
   else
     printf 'state=%s plist=%s manifest=%s\n' "$state" "$plist" "$manifest"
@@ -66,6 +74,12 @@ while [ "$#" -gt 0 ]; do
     --state-dir)
       [ "$#" -ge 2 ] || die '--state-dir requires a value'
       STATE_DIR=$2; shift 2 ;;
+    --register-wrapper)
+      [ "$#" -ge 2 ] || die '--register-wrapper requires an absolute script path'
+      REGISTER_WRAPPER=$2; shift 2 ;;
+    --wrapper-interpreter)
+      [ "$#" -ge 2 ] || die '--wrapper-interpreter requires /bin/bash or /bin/sh'
+      WRAPPER_INTERPRETER=$2; shift 2 ;;
     --force) FORCE=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --output)
@@ -185,6 +199,57 @@ except Exception as exc:
     raise SystemExit(2)
 PY
 
+# Wrapper ownership is explicit and hash-bound. Planning reads but never runs
+# the launcher. Normal upgrades reuse its registered argv prefix.
+if [ -n "$REGISTER_WRAPPER" ]; then
+  wrapper=$REGISTER_WRAPPER
+elif [ -f "$manifest" ]; then
+  wrapper=$(sed -n 's/^wrapper=//p' "$manifest")
+  WRAPPER_INTERPRETER=$(sed -n 's/^wrapper_interpreter=//p' "$manifest")
+fi
+if [ -n "$wrapper" ]; then
+  python3 - "$wrapper" "$WRAPPER_INTERPRETER" "$AGENTCTL" "$STATE_DIR" "$plan_plist" "$plist" "$REGISTER_WRAPPER" <<'WRAPPER_PY'
+import os, pathlib, plistlib, stat, sys
+wrapper, interpreter, executable, state, plan, existing, registering = sys.argv[1:]
+p = pathlib.Path(wrapper)
+if not p.is_absolute() or str(p) != wrapper or '..' in p.parts or any(c in wrapper for c in '\n\r'):
+    raise SystemExit('error: wrapper must be an absolute clean path')
+if any(part.is_symlink() for part in [p, *p.parents]):
+    raise SystemExit('error: wrapper path contains a symlink')
+st = p.stat()
+if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o022:
+    raise SystemExit('error: wrapper must be an owner-controlled regular file')
+if interpreter not in ('', '/bin/bash', '/bin/sh'):
+    raise SystemExit('error: wrapper interpreter must be /bin/bash or /bin/sh')
+if not interpreter and not os.access(wrapper, os.X_OK):
+    raise SystemExit('error: direct wrapper must be executable')
+prefix = [interpreter, wrapper] if interpreter else [wrapper]
+args = prefix + ['supervisor', 'run', '--socket', state + '/supervisor.sock', '--state-dir', state]
+with open(plan, 'rb') as f: proposed = plistlib.load(f)
+if registering and os.path.exists(existing):
+    st = os.stat(existing)
+    if st.st_uid != os.getuid() or st.st_mode & 0o022:
+        raise SystemExit('error: existing plist must be owner controlled')
+    with open(existing, 'rb') as f: old = plistlib.load(f)
+    allowed = set(proposed)
+    if set(old) - allowed or old.get('ProgramArguments') != args:
+        raise SystemExit('error: existing plist does not match the explicit wrapper contract')
+    for key, value in old.items():
+        if key != 'ProgramArguments' and value != proposed.get(key):
+            raise SystemExit('error: existing plist contains an unreviewed setting')
+proposed['ProgramArguments'] = args
+with open(plan, 'wb') as f: plistlib.dump(proposed, f, sort_keys=False)
+WRAPPER_PY
+  wrapper_hash=$(sha256_file "$wrapper")
+  [ -z "$WRAPPER_INTERPRETER" ] || interpreter_hash=$(sha256_file "$WRAPPER_INTERPRETER")
+  if [ -z "$REGISTER_WRAPPER" ]; then
+    [ "$(sed -n 's/^wrapper_sha256=//p' "$manifest")" = "$wrapper_hash" ] || die 'registered wrapper changed; explicitly review and register again'
+    [ "$(sed -n 's/^wrapper_interpreter_sha256=//p' "$manifest")" = "$interpreter_hash" ] || die 'registered wrapper interpreter changed; explicitly review and register again'
+  fi
+elif [ -n "$WRAPPER_INTERPRETER" ]; then
+  die '--wrapper-interpreter requires --register-wrapper'
+fi
+
 plist_hash=$(sha256_file "$plan_plist")
 agentctl_hash=$(sha256_file "$AGENTCTL")
 
@@ -199,7 +264,7 @@ if [ -f "$manifest" ]; then
     managed=1
     recorded_hash=$(sed -n 's/^plist_sha256=//p' "$manifest")
     if [ -f "$plist" ] && [ -n "$recorded_hash" ] && [ "$(sha256_file "$plist")" != "$recorded_hash" ]; then
-      if [ "$FORCE" -ne 1 ]; then
+      if [ "$FORCE" -ne 1 ] && [ -z "$REGISTER_WRAPPER" ]; then
         die "refusing to overwrite modified managed supervisor plist: $plist (use --force after inspection)"
       fi
       managed=0
@@ -210,6 +275,7 @@ if [ -f "$manifest" ]; then
 elif [ -e "$manifest" ] && [ "$FORCE" -ne 1 ]; then
   die "refusing to overwrite non-file supervisor manifest: $manifest (use --force after inspection)"
 fi
+[ -z "$REGISTER_WRAPPER" ] || managed=1
 [ ! -e "$manifest" ] || [ -f "$manifest" ] || die "refusing non-file supervisor manifest: $manifest"
 
 if [ -e "$plist" ] && [ "$managed" -ne 1 ] && [ "$FORCE" -ne 1 ]; then
@@ -217,7 +283,7 @@ if [ -e "$plist" ] && [ "$managed" -ne 1 ] && [ "$FORCE" -ne 1 ]; then
 fi
 [ ! -e "$plist" ] || [ -f "$plist" ] || die "refusing non-file supervisor plist: $plist"
 if [ "$managed" -eq 1 ] && [ "$FORCE" -ne 1 ]; then
-  [ "$(stat -f '%Lp' "$manifest")" = 600 ] || die "refusing non-owner-only managed supervisor manifest: $manifest (use --force after inspection)"
+  [ ! -e "$manifest" ] || [ "$(stat -f '%Lp' "$manifest")" = 600 ] || die "refusing non-owner-only managed supervisor manifest: $manifest (use --force after inspection)"
   [ ! -e "$plist" ] || [ "$(stat -f '%Lp' "$plist")" = 600 ] || die "refusing non-owner-only managed supervisor plist: $plist (use --force after inspection)"
 fi
 
@@ -233,8 +299,12 @@ launchctl_bin=$(command -v launchctl 2>/dev/null || true)
 # no matching managed manifest is a separate conflict from a caller-owned
 # plist and must be explicitly forced.
 loaded=0
+old_pid=
+old_identity=
 if "$launchctl_bin" print "$domain/$LABEL" >/dev/null 2>&1; then
   loaded=1
+  old_pid=$("$launchctl_bin" print "$domain/$LABEL" | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\).*$/\1/p')
+  if [ -n "$old_pid" ]; then old_identity=$(ps -p "$old_pid" -o lstart= 2>/dev/null || true); fi
   if [ "$managed" -ne 1 ] && [ "$FORCE" -ne 1 ]; then
     die "refusing to replace an unmanaged loaded supervisor service: $LABEL (use --force after inspection)"
   fi
@@ -264,12 +334,27 @@ if [ -f "$manifest" ]; then
   chmod 0600 "$old_manifest_tmp"
   old_manifest_exists=1
 fi
+service_transaction=0
+rollback_failed=0
 cleanup() {
+  rc=$?
+  trap - EXIT
+  if [ "$service_transaction" -eq 1 ]; then
+    rollback || rollback_failed=1
+  fi
   rm -f "$plan_json" "$plan_plist" "$plist_tmp" "$manifest_tmp" || :
-  [ -z "$old_plist_tmp" ] || rm -f "$old_plist_tmp"
-  [ -z "$old_manifest_tmp" ] || rm -f "$old_manifest_tmp"
+  if [ "$rollback_failed" -eq 0 ]; then
+    [ -z "$old_plist_tmp" ] || rm -f "$old_plist_tmp"
+    [ -z "$old_manifest_tmp" ] || rm -f "$old_manifest_tmp"
+  else
+    printf 'AGENTCTL_SUPERVISOR_ROLLBACK=incomplete\n' >&2
+    printf 'supervisor recovery backups: %s %s\n' "$old_plist_tmp" "$old_manifest_tmp" >&2
+  fi
+  exit "$rc"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
 cp "$plan_plist" "$plist_tmp"
 chmod 0600 "$plist_tmp"
 {
@@ -281,18 +366,56 @@ chmod 0600 "$plist_tmp"
   printf 'agentctl_sha256=%s\n' "$agentctl_hash"
   printf 'state_dir=%s\n' "$STATE_DIR"
   printf 'plist_sha256=%s\n' "$plist_hash"
+  if [ -n "$wrapper" ]; then
+    printf 'wrapper=%s\nwrapper_sha256=%s\n' "$wrapper" "$wrapper_hash"
+    printf 'wrapper_interpreter=%s\nwrapper_interpreter_sha256=%s\n' "$WRAPPER_INTERPRETER" "$interpreter_hash"
+  fi
 } >"$manifest_tmp"
 chmod 0600 "$manifest_tmp"
-mv -f "$plist_tmp" "$plist"
-mv -f "$manifest_tmp" "$manifest"
 
 wait_for_unloaded() {
   wait_attempt=0
-  while "$launchctl_bin" print "$domain/$LABEL" >/dev/null 2>&1; do
+  while :; do
+    label_present=0
+    "$launchctl_bin" print "$domain/$LABEL" >/dev/null 2>&1 && label_present=1
+    process_present=0
+    if [ -n "$old_pid" ] && [ -n "$old_identity" ]; then
+      identity=$(ps -p "$old_pid" -o lstart= 2>/dev/null || true)
+      [ "$identity" != "$old_identity" ] || process_present=1
+    fi
+    if [ "$label_present" -eq 0 ] && [ "$process_present" -eq 0 ]; then return 0; fi
     wait_attempt=$((wait_attempt + 1))
-    [ "$wait_attempt" -lt 40 ] || return 1
-    sleep 0.05
+    [ "$wait_attempt" -lt 150 ] || return 1
+    sleep 0.2
   done
+}
+
+verify_replacement() {
+  python3 - "$AGENTCTL" "$STATE_DIR" "$agentctl_hash" "$launchctl_bin" "$domain/$LABEL" <<'VERIFY_PY'
+import json, os, re, subprocess, sys, time
+binary, state, digest, launchctl, label = sys.argv[1:]
+digest = 'sha256:' + digest
+deadline = time.monotonic() + 120
+env = dict(os.environ, AGENTCTL_UPDATE_MODE='off')
+while time.monotonic() < deadline:
+    try:
+        loaded = subprocess.run([launchctl, 'print', label], capture_output=True, text=True, timeout=3)
+        match = re.search(r'^\s*pid = (\d+)\s*$', loaded.stdout, re.M)
+        if loaded.returncode == 0 and match:
+            status = subprocess.run([binary, '--output', 'json', 'supervisor', 'status', '--socket', state + '/supervisor.sock'], capture_output=True, text=True, timeout=2, env=env)
+            response = json.loads(status.stdout)
+            value = response.get('result', {})
+            # Legacy releases did not expose PID; retain their hash verification
+            # for rollback compatibility. Current releases bind both identities.
+            if status.returncode == 0 and response.get('ok') and value.get('running'):
+                if value.get('state_dir') != state or value.get('executable_sha256') != digest or value.get('pid', int(match[1])) != int(match[1]):
+                    raise SystemExit('error: replacement supervisor identity mismatch')
+                raise SystemExit(0)
+    except (ValueError, OSError, subprocess.TimeoutExpired):
+        pass
+    time.sleep(0.25)
+raise SystemExit('error: replacement supervisor identity was not verified within 120 seconds')
+VERIFY_PY
 }
 
 bootstrap_with_retry() {
@@ -314,46 +437,60 @@ rollback() {
   # Ensure a failed bootstrap/kickstart cannot leave a service running from a
   # plist whose bytes no longer match its manifest.
   if [ "$loaded" -eq 1 ] || [ "$service_loaded" -eq 1 ] || "$launchctl_bin" print "$domain/$LABEL" >/dev/null 2>&1; then
+    rollback_pid=$("$launchctl_bin" print "$domain/$LABEL" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\).*$/\1/p' || true)
+    if [ -n "$rollback_pid" ]; then
+      old_pid=$rollback_pid
+      old_identity=$(ps -p "$old_pid" -o lstart= 2>/dev/null || true)
+    fi
     "$launchctl_bin" bootout "$domain/$LABEL" >/dev/null 2>&1 || :
-    wait_for_unloaded || :
+    if ! wait_for_unloaded; then
+      printf 'AGENTCTL_SUPERVISOR_ROLLBACK=incomplete\n' >&2
+      return 1
+    fi
   fi
-  rm -f "$plist" "$manifest"
+  rm -f "$plist" "$manifest" || return 1
   if [ "$old_plist_exists" -eq 1 ]; then
-    mv -f "$old_plist_tmp" "$plist"
+    mv -f "$old_plist_tmp" "$plist" || return 1
     old_plist_tmp=
   fi
   if [ "$old_manifest_exists" -eq 1 ]; then
-    mv -f "$old_manifest_tmp" "$manifest"
+    mv -f "$old_manifest_tmp" "$manifest" || return 1
     old_manifest_tmp=
   fi
   if [ "$loaded" -eq 1 ] && [ "$old_plist_exists" -eq 1 ]; then
-    bootstrap_with_retry "$plist" || :
+    if ! bootstrap_with_retry "$plist"; then
+      printf 'AGENTCTL_SUPERVISOR_ROLLBACK=incomplete\n' >&2
+      return 1
+    fi
   fi
 }
 
 service_loaded=0
+service_transaction=1
 if [ "$loaded" -eq 1 ]; then
   if ! "$launchctl_bin" bootout "$domain/$LABEL" >/dev/null 2>&1; then
-    rollback
     die "failed to unload existing supervisor service: $LABEL"
   fi
   # launchctl may acknowledge bootout before the label has completely left the
   # domain. Wait briefly so the following bootstrap does not race the old job.
   if ! wait_for_unloaded; then
-    rollback
     die "supervisor service did not finish unloading: $LABEL"
   fi
 fi
+mv -f "$plist_tmp" "$plist"
+mv -f "$manifest_tmp" "$manifest"
 # A just-unloaded launchd label can transiently reject bootstrap even after
 # print stops finding it. Bound retries keep real plist errors fail-closed.
 if ! bootstrap_with_retry "$plist"; then
-  rollback
   die "failed to load supervisor plist: $plist"
 fi
 service_loaded=1
 if ! "$launchctl_bin" kickstart -k "$domain/$LABEL" >/dev/null 2>&1; then
-  rollback
   die "failed to start supervisor service: $LABEL"
 fi
 
+if ! verify_replacement; then
+  die 'replacement supervisor failed identity verification'
+fi
+service_transaction=0
 json_result installed "$plist" "$manifest"

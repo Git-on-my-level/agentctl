@@ -344,6 +344,7 @@ func recordInstalled(path, installed string) error {
 	state.InstalledAt = time.Now().UTC()
 	state.LastErrorCode, state.LastErrorAt = "", time.Time{}
 	state.LastErrorStage, state.LastErrorExitCode = "", 0
+	state.LastErrorRollback = ""
 	return writeState(path, state)
 }
 
@@ -358,6 +359,10 @@ func recordApplyError(path, code string, cause error) error {
 	if err == nil {
 		state.LastErrorCode = code
 		state.LastErrorStage, state.LastErrorExitCode = stage, exitCode
+		state.LastErrorRollback = ""
+		if install != nil {
+			state.LastErrorRollback = install.rollback
+		}
 		state.LastErrorAt = time.Now().UTC()
 		if retryable {
 			state.CheckedOn = ""
@@ -396,6 +401,7 @@ func (b *boundedBuffer) Write(content []byte) (int, error) {
 // is retained in update state or emitted in automatic notices.
 type installerFailure struct {
 	stage    string
+	rollback string
 	exitCode int
 }
 
@@ -410,6 +416,8 @@ func installerDiagnostic(err error, text string) error {
 	}
 	for _, line := range strings.Split(text, "\n") {
 		switch strings.TrimSpace(line) {
+		case "AGENTCTL_INSTALL_ROLLBACK=restored", "AGENTCTL_INSTALL_ROLLBACK=binary_restored_bootstrap_retained", "AGENTCTL_INSTALL_ROLLBACK=incomplete":
+			d.rollback = strings.TrimPrefix(strings.TrimSpace(line), "AGENTCTL_INSTALL_ROLLBACK=")
 		case "AGENTCTL_INSTALL_STAGE=validation", "AGENTCTL_INSTALL_STAGE=bootstrap_preflight", "AGENTCTL_INSTALL_STAGE=supervisor_preflight", "AGENTCTL_INSTALL_STAGE=binary_replace", "AGENTCTL_INSTALL_STAGE=manifest_write", "AGENTCTL_INSTALL_STAGE=bootstrap_apply", "AGENTCTL_INSTALL_STAGE=supervisor_apply":
 			d.stage = strings.TrimPrefix(strings.TrimSpace(line), "AGENTCTL_INSTALL_STAGE=")
 		}

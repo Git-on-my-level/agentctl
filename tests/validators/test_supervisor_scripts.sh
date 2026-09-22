@@ -46,6 +46,15 @@ for arg in "$@"; do
   if [ "$prev" = --executable ]; then exe=$arg; fi
   prev=$arg
 done
+if [ "${3:-}" = supervisor ] && [ "${4:-}" = status ]; then
+  python3 - "$0" "${6:-}" <<'STATUS_PY'
+import hashlib,json,os,sys
+path,sock=sys.argv[1:]
+path=os.environ.get('FAKE_STATUS_BINARY',path)
+print(json.dumps({'ok':True,'result':{'running':True,'state_dir':os.path.dirname(sock),'pid':999999,'executable_sha256':(os.environ.get('FAKE_STATUS_DIGEST') or 'sha256:'+hashlib.sha256(open(path,'rb').read()).hexdigest())}}))
+STATUS_PY
+  exit 0
+fi
 [ -n "$state" ] && [ -n "$exe" ] || exit 2
 python3 - "$HOME" "$state" "$exe" <<'PY'
 import base64, json, os, plistlib, sys
@@ -97,9 +106,13 @@ case "$1" in
       fi
     fi
     [ -e "$FAKE_LOADED" ] || exit 113
+    if [ -n "${OLD_PID_FILE:-}" ] && [ -f "$OLD_PID_FILE" ]; then
+      printf 'pid = %s\n' "$(cat "$OLD_PID_FILE")"
+    else printf 'pid = 999999\n'; fi
     printf 'path = %s\n' "$HOME/Library/LaunchAgents/io.agentctl.supervisor.plist"
     ;;
   bootout)
+    [ -z "${OLD_PID_FILE:-}" ] || rm -f "$OLD_PID_FILE"
     if [ -n "${DELAYED_BOOTOUT_COUNT_FILE:-}" ]; then
       printf '%s\n' "${DELAYED_BOOTOUT_PRINTS:-3}" >"$DELAYED_BOOTOUT_COUNT_FILE"
     else
@@ -147,6 +160,7 @@ cat >"$LEGACY" <<'SH'
 #!/bin/sh
 set -eu
 PLAN_LEGACY=1 export PLAN_LEGACY
+FAKE_STATUS_BINARY=$0 export FAKE_STATUS_BINARY
 exec "$FAKE_CURRENT_AGENTCTL" "$@"
 SH
 chmod 0755 "$LEGACY"
@@ -250,6 +264,17 @@ export DELAYED_BOOTOUT_COUNT_FILE="$TMP/delayed-bootout-count" DELAYED_BOOTOUT_P
 [ -e "$LOADED" ] || fail 'installer did not wait for delayed launchd bootout completion'
 unset DELAYED_BOOTOUT_COUNT_FILE DELAYED_BOOTOUT_PRINTS
 
+# Removing a label is insufficient while its captured process remains alive.
+export OLD_PID_FILE="$TMP/old-pid"
+sleep 4 &
+old_process=$!
+printf '%s\n' "$old_process" >"$OLD_PID_FILE"
+"$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" >/dev/null
+if kill -0 "$old_process" 2>/dev/null; then fail 'installer returned while old process remained alive'; fi
+wait "$old_process" || :
+unset OLD_PID_FILE
+
+
 rm -f "$manifest"
 if "$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" >/dev/null 2>&1; then fail 'installer overwrote unmanaged plist'; fi
 [ -f "$plist" ] || fail 'conflict refusal removed plist'
@@ -269,6 +294,13 @@ unset FAIL_ACTION
 [ "$(shasum -a 256 "$plist" | cut -d ' ' -f 1)" = "$before_plist" ] || fail 'kickstart rollback did not restore plist'
 [ "$(shasum -a 256 "$manifest" | cut -d ' ' -f 1)" = "$before_manifest" ] || fail 'kickstart rollback did not restore manifest'
 [ -e "$LOADED" ] || fail 'kickstart rollback did not restore loaded service'
+
+# A loaded label with a mismatched RPC identity is not a successful upgrade.
+export FAKE_STATUS_DIGEST=wrong
+if "$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" >/dev/null 2>"$TMP/identity.err"; then fail 'mismatched supervisor identity accepted'; fi
+unset FAKE_STATUS_DIGEST
+grep -q 'identity mismatch' "$TMP/identity.err" || fail 'identity refusal was not diagnosed'
+[ "$(shasum -a 256 "$plist" | cut -d ' ' -f 1)" = "$before_plist" ] || fail 'identity failure did not restore plist'
 
 # With no previous installation, a bootstrap failure removes the new plist and
 # manifest rather than leaving a half-installed service definition.
@@ -320,3 +352,30 @@ if "$UNINSTALL" --agentctl "$AGENTCTL" >/dev/null 2>&1; then fail 'uninstall acc
 [ "$(cat "$state/supervisor-state.json")" = supervisor ] || fail 'uninstall removed supervisor state'
 
 printf 'ok: supervisor installer is plan-derived, owner-only, conflict-safe, and state-preserving\n'
+
+# Explicit wrapper registration adopts only the reviewed argv shape, binds the
+# script hash, and survives a subsequent ordinary managed installation.
+wrapper="$TMP/wrapper.sh"
+printf '#!/bin/sh\nexec "%s" "$@"\n' "$AGENTCTL" >"$wrapper"
+chmod 0700 "$wrapper"
+"$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" >/dev/null
+python3 - "$plist" "$wrapper" <<'PY'
+import plistlib,sys
+path,wrapper=sys.argv[1:]
+with open(path,'rb') as f: p=plistlib.load(f)
+p['ProgramArguments']=['/bin/bash',wrapper]+p['ProgramArguments'][1:]
+with open(path,'wb') as f: plistlib.dump(p,f)
+PY
+cp "$manifest" "$TMP/before-registration"
+"$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" --register-wrapper "$wrapper" --wrapper-interpreter /bin/bash --dry-run >/dev/null
+cmp -s "$manifest" "$TMP/before-registration" || fail 'wrapper plan mutated manifest'
+"$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" --register-wrapper "$wrapper" --wrapper-interpreter /bin/bash >/dev/null
+"$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" >/dev/null
+grep -Fqx "wrapper=$wrapper" "$manifest" || fail 'upgrade dropped wrapper registration'
+python3 - "$plist" "$wrapper" <<'PY'
+import plistlib,sys
+with open(sys.argv[1],'rb') as f:p=plistlib.load(f)
+assert p['ProgramArguments'][:2]==['/bin/bash',sys.argv[2]]
+PY
+printf '# changed\n' >>"$wrapper"
+if "$INSTALL" --agentctl "$AGENTCTL" --state-dir "$state" --dry-run >/dev/null 2>&1; then fail 'wrapper drift accepted'; fi

@@ -124,12 +124,17 @@ func (a *app) supervisorRun(ctx context.Context, renderer output.Renderer, c com
 		_ = renderer.Success(output.Success{Result: nil, Lines: []output.Line{{Lead: "supervisor", Fields: []output.Field{{Name: "state", Value: "starting"}, {Name: "socket", Value: service.Config().SocketPath}}}}})
 	}
 	if err := service.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		if errors.Is(err, supervisor.ErrAlreadyRunning) {
+			return output.NewError(output.CodeConflict, "supervisor already running for this state directory or socket", true)
+		}
 		return output.Wrap(output.CodeRemoteFailure, "supervisor stopped", true, err)
 	}
 	return nil
 }
 
 func (a *app) supervisorStatus(ctx context.Context, renderer output.Renderer, args []string) *output.Error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	socketPath := ""
 	for i := 0; i < len(args); i++ {
 		if args[i] != "--socket" || i+1 >= len(args) {
@@ -150,6 +155,8 @@ func (a *app) supervisorStatus(ctx context.Context, renderer output.Renderer, ar
 		return output.Wrap(output.CodeDependencyUnavailable, "connect supervisor", true, err)
 	}
 	defer conn.Close()
+	deadline, _ := ctx.Deadline()
+	_ = conn.SetDeadline(deadline)
 	if err := json.NewEncoder(conn).Encode(supervisor.RPCRequest{Op: "status"}); err != nil {
 		return output.Wrap(output.CodeRemoteFailure, "request supervisor status", true, err)
 	}
