@@ -86,6 +86,9 @@ func Build(in Input) (Recipe, error) {
 	if err != nil {
 		return Recipe{}, err
 	}
+	if err := requireReviewedAccess(harness, access); err != nil {
+		return Recipe{}, err
+	}
 	var recipe Recipe
 	switch harness {
 	case "cursor":
@@ -114,6 +117,18 @@ func normalizeAccess(raw string) (string, error) {
 		return AccessReadOnly, nil
 	default:
 		return "", fail("unsupported_access", fmt.Sprintf("access %q is not coding or read_only", raw))
+	}
+}
+
+func requireReviewedAccess(harness, access string) error {
+	if access != AccessReadOnly {
+		return nil
+	}
+	switch harness {
+	case "cursor", "codex":
+		return nil
+	default:
+		return fail("access_unavailable", fmt.Sprintf("%s cannot guarantee read-only access; omit access or choose another harness", harness))
 	}
 }
 

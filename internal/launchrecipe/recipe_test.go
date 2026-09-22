@@ -283,6 +283,22 @@ func TestCodexReadOnlyUsesSandbox(t *testing.T) {
 	}
 }
 
+func TestOMPRejectsReadOnlyAccess(t *testing.T) {
+	_, err := Build(Input{Harness: "omp", Model: "zai/glm-5.3", Access: AccessReadOnly})
+	var buildErr *Error
+	if !errors.As(err, &buildErr) || buildErr.Code != "access_unavailable" {
+		t.Fatalf("err=%v want access_unavailable", err)
+	}
+}
+
+func TestClaudeCodeRejectsReadOnlyAccess(t *testing.T) {
+	_, err := Build(Input{Harness: "claude-code", Model: "claude-sonnet-4", Access: AccessReadOnly})
+	var buildErr *Error
+	if !errors.As(err, &buildErr) || buildErr.Code != "access_unavailable" {
+		t.Fatalf("err=%v want access_unavailable", err)
+	}
+}
+
 func TestOMPDoesNotInferBypassWhenGrantIsOn(t *testing.T) {
 	got, err := Build(Input{Harness: "omp", Model: "zai/glm-5.3", UnattendedCodingPermissions: true})
 	if err != nil {

@@ -81,6 +81,55 @@ func TestDelegationSurvivesLegacyProjectionRewrite(t *testing.T) {
 	}
 }
 
+func TestDelegationRecoversAccessDroppedByLegacyProjection(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	initial := sampleExecution(now)
+	initial.Delegation = storedDelegationFixture()
+	initial.Delegation.Resolved.Settings.Access = "coding"
+	initial.Delegation.NativePlan = &model.DelegationNativePlan{Argv: []string{"cursor-agent", "--print"}, PromptDelivery: "argv"}
+	mutation := contracts.MutationKey{Scope: "execution:delegate", Key: "request-01", InputDigest: hash('a')}
+	created, _, err := j.CreateExecution(ctx, initial, mutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = j.db.Update(func(tx *bbolt.Tx) error {
+		legacy := created
+		copy := *legacy.Delegation
+		copy.Resolved.Settings.Access = ""
+		legacy.Delegation = &copy
+		body, e := json.Marshal(legacy)
+		if e != nil {
+			return e
+		}
+		return tx.Bucket(bExecutions).Put([]byte(created.ID.String()), body)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := j.GetExecution(ctx, created.ID)
+	if err != nil || recovered.Delegation == nil || recovered.Delegation.Resolved.Settings.Access != "coding" || !reflect.DeepEqual(recovered.Delegation, created.Delegation) {
+		t.Fatalf("recovered=%#v error=%v", recovered.Delegation, err)
+	}
+	err = j.db.Update(func(tx *bbolt.Tx) error {
+		bad := created
+		copy := *bad.Delegation
+		copy.Resolved.Settings.Access = "read_only"
+		bad.Delegation = &copy
+		body, e := json.Marshal(bad)
+		if e != nil {
+			return e
+		}
+		return tx.Bucket(bExecutions).Put([]byte(created.ID.String()), body)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.GetExecution(ctx, created.ID); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("contradiction error=%v", err)
+	}
+}
+
 func TestCleanupRemovesDelegationIdempotencySnapshot(t *testing.T) {
 	ctx := context.Background()
 	j, _, now := openTestJournal(t)
