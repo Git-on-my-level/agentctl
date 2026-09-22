@@ -64,3 +64,13 @@ func TestPublishedAdoptionPlanApplyAndDrift(t *testing.T) {
 		t.Fatal("missing valid ownership")
 	}
 }
+
+func TestAdoptionMissingHomeIsExplicit(t *testing.T) {
+	t.Setenv("HOME", "")
+	var buf bytes.Buffer
+	a := &app{}
+	problem := a.bootstrapAdopt(output.Renderer{Mode: output.JSON, Writer: &buf}, []string{"--harness", "hermes"})
+	if problem == nil || problem.Code != output.CodeDependencyUnavailable {
+		t.Fatalf("missing home: %v", problem)
+	}
+}

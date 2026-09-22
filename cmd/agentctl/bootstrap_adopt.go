@@ -139,12 +139,18 @@ func (a *app) bootstrapAdopt(renderer output.Renderer, args []string) *output.Er
 		}
 	}
 	if home == "" {
-		home, _ = os.UserHomeDir()
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return output.Wrap(output.CodeDependencyUnavailable, "resolve adoption home", false, err)
+		}
 	}
 	if err := validateBootstrapHome(home); err != nil {
 		return output.Wrap(output.CodeUsage, "invalid adoption home", false, err)
 	}
-	home, _ = filepath.EvalSymlinks(home)
+	if resolved, err := filepath.EvalSymlinks(home); err == nil {
+		home = filepath.Clean(resolved)
+	}
 	spec := bootstrapSpec(harness)
 	if spec == nil || spec.Canonical == nil || strings.Contains(harness, ",") {
 		return output.NewError(output.CodeUsage, "adopt requires one local --harness; Multica uses its runtime bundle installer", false)
