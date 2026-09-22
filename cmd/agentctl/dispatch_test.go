@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +16,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/supervisor"
 )
 
 func writeDispatchFixture(t *testing.T, root, agents, runtimes string) (string, string) {
@@ -52,6 +56,7 @@ case "$*" in
   *"issue create"*)
     printf '%s\n' "$*" >> "$AGENTCTL_TEST_CAPTURE.argv"
     cat > "$AGENTCTL_TEST_CAPTURE.stdin"
+ if [ -n "${AGENTCTL_TEST_CREATE_ERROR:-}" ]; then printf '%s\n' "$AGENTCTL_TEST_CREATE_ERROR" >&2; exit 2; fi
 	if [ -f "$AGENTCTL_TEST_CAPTURE.updated" ]; then
 	  printf '%s\n' '{"id":"opaque-multica-issue","identifier":"SCA-932","status":"todo"}'
 	else
@@ -313,6 +318,10 @@ func TestAwaitRetriesTransientMulticaRefreshFailures(t *testing.T) {
 	}
 	if got := strings.Count(strings.TrimSpace(string(failures)), "\n") + 1; got != 2 {
 		t.Fatalf("transient failure count=%d log=%q", got, failures)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "result", dispatched.Result.Execution.ID.String()}); code != output.ExitCodeFor(output.CodeInvalidState) || !strings.Contains(stdout.String(), `"events"`) || strings.Contains(stdout.String(), `"await"`) {
+		t.Fatalf("attention result action exit=%d output=%s", code, stdout.String())
 	}
 }
 
@@ -638,5 +647,156 @@ func TestDispatchRequiresReplayKeyAndExactPromptSource(t *testing.T) {
 		if code := a.run(context.Background(), args); code != 2 || !strings.Contains(stdout.String(), `"code":"usage"`) {
 			t.Fatalf("args=%v exit=%d output=%s", args, code, stdout.String())
 		}
+	}
+}
+
+func TestSupervisorReprobeDoesNotBlockAnotherProcessJournal(t *testing.T) {
+	root := t.TempDir()
+	agents := `[{"id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol","runtime_id":"runtime-m5-codex","status":"idle","archived_at":null}]`
+	runtimes := `[{"id":"runtime-m5-codex","custom_name":"M5 MBP","provider":"codex","status":"online"}]`
+	fake, capture := writeDispatchFixture(t, root, agents, runtimes)
+	configPath := filepath.Join(root, "config", "config.json")
+	journalPath := filepath.Join(root, "state", "journal.db")
+	writeDispatchConfig(t, configPath, fake,
+		[]any{map[string]any{"agent": "codex", "model": "gpt-5.6-sol", "speed": "regular", "use_for": "alias:sol"}},
+		map[string]any{"m5": "m5-mbp"})
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	a.stdin = strings.NewReader("Review the release candidate.")
+	a.stdinIsTerminal = func() bool { return false }
+	if code := a.run(context.Background(), []string{"--config", configPath, "--journal", journalPath, "dispatch", "--route", "m5 sol", "--title", "Review release", "--prompt-stdin", "--idempotency-key", "await-timeout-v1"}); code != 0 {
+		t.Fatalf("dispatch exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var dispatched struct {
+		Result struct {
+			Execution model.Execution `json:"execution"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &dispatched); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("AGENTCTL_TEST_EVENT_DELAY", "2")
+	done := make(chan error, 1)
+	go func() {
+		_, err := (pathSupervisorExecutions{path: journalPath}).Reprobe(context.Background(), supervisor.Execution{ID: dispatched.Result.Execution.ID.String()})
+		done <- err
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(capture + ".event.started"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("probe did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	command := exec.Command(os.Args[0], "-test.run=^TestJournalProcessProbe$")
+	command.Env = append(os.Environ(), "AGENTCTL_LOCK_TEST_PATH="+journalPath)
+	if data, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("independent writer blocked during adapter I/O: %v %s", err, data)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	// Only the supervisor opts into a short per-probe deadline; the shared
+	// bridge used by explicit await preserves its caller's deadline.
+	bounded := pathSupervisorExecutions{path: journalPath, probeTimeout: 20 * time.Millisecond}
+	if _, err := bounded.Reprobe(context.Background(), supervisor.Execution{ID: dispatched.Result.Execution.ID.String()}); err == nil {
+		t.Fatal("supervisor probe ignored its deadline")
+	}
+}
+func TestJournalProcessProbe(t *testing.T) {
+	path := os.Getenv("AGENTCTL_LOCK_TEST_PATH")
+	if path == "" {
+		t.Skip("subprocess helper")
+	}
+	journal, err := store.Open(path, store.Options{LockTimeout: 300 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	if _, err := journal.ListExecutions(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDispatchFailureMetadataAndSameKeyRecovery(t *testing.T) {
+	root := t.TempDir()
+	agents := `[{
+      "id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol",
+      "runtime_id":"runtime-m5-codex","status":"working","archived_at":null
+    }]`
+	runtimes := `[{"id":"runtime-m5-codex","custom_name":"M5 MBP","provider":"codex","status":"online"}]`
+	fake, capture := writeDispatchFixture(t, root, agents, runtimes)
+	configPath := filepath.Join(root, "config", "config.json")
+	journalPath := filepath.Join(root, "state", "journal.db")
+	writeDispatchConfig(t, configPath, fake,
+		[]any{map[string]any{"agent": "codex", "model": "gpt-5.6-sol", "speed": "regular", "use_for": "alias:sol"}},
+		map[string]any{"m5": "m5-mbp"})
+
+	_ = capture
+	t.Setenv("AGENTCTL_TEST_CREATE_ERROR", "unknown flag: --description-stdin token=do-not-record")
+	args := []string{"--config", configPath, "--journal", journalPath, "dispatch", "--route", "m5 sol", "--title", "Review", "--prompt-stdin", "--idempotency-key", "recover-v1"}
+	var out, stderr bytes.Buffer
+	a := testApp(&out, &stderr)
+	a.stdinIsTerminal = func() bool { return false }
+	var first string
+	for attempt := 0; attempt < 2; attempt++ {
+		out.Reset()
+		a.stdin = strings.NewReader("private prompt")
+		if code := a.run(context.Background(), args); code != 11 {
+			t.Fatalf("exit=%d %s", code, out.String())
+		}
+		var doc struct {
+			Error struct {
+				Details map[string]any `json:"details"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+			t.Fatal(err)
+		}
+		id, _ := doc.Error.Details["execution_id"].(string)
+		if attempt == 0 {
+			first = id
+		} else if id != first {
+			t.Fatal("retry allocated another execution")
+		}
+		if !strings.Contains(out.String(), "invalid_arguments") || strings.Contains(out.String(), "do-not-record") || strings.Contains(out.String(), "private prompt") {
+			t.Fatalf("unsafe diagnostic %s", out.String())
+		}
+	}
+	out.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "status", first}); code != 0 || !strings.Contains(out.String(), "last_operation_failure") {
+		t.Fatalf("status %d %s", code, out.String())
+	}
+	// Hold the journal beyond one open attempt, but within the recording budget.
+	id, err := ids.ParseExecutionID(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() { time.Sleep(550 * time.Millisecond); _ = locked.Close(); close(released) }()
+	problem := a.dispatchFailure(context.Background(), common{journalPath: journalPath}, id, "recover-v1", "default", errors.New("test upstream failure"))
+	<-released
+	if problem.Details["diagnostic_recorded"] != true {
+		t.Fatalf("did not retry busy diagnostic: %#v", problem.Details)
+	}
+	t.Setenv("AGENTCTL_TEST_CREATE_ERROR", "")
+	out.Reset()
+	a.stdin = strings.NewReader("private prompt")
+	if code := a.run(context.Background(), args); code != 0 || !strings.Contains(out.String(), first) {
+		t.Fatalf("recovery %d %s", code, out.String())
+	}
+	t.Setenv("AGENTCTL_TEST_AGENTS", strings.Replace(agents, `"working"`, `"offline"`, 1))
+	out.Reset()
+	a.stdin = strings.NewReader("private prompt")
+	if code := a.run(context.Background(), append(args, "--plan")); code != output.ExitCodeFor(output.CodeCapabilityUnavailable) || !strings.Contains(out.String(), `"agent_status_unavailable":1`) {
+		t.Fatalf("status rejection %d %s", code, out.String())
 	}
 }

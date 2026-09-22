@@ -766,3 +766,19 @@ func instructionPointerBodyForTest() string {
 func slimInstructionPointerBlockForTest() string {
 	return instructionPointerStart + "\n" + instructionPointerBodyForTest() + instructionPointerEnd + "\n"
 }
+
+func TestBootstrapMigratesExactPreV06PointerButPreservesEdits(t *testing.T) {
+	body := "CLI agents (`cursor-agent`, `codex`, `omp`, and similar) go through `agentctl`; load skill `agentctl-portable` or run `agentctl help run`.\nDo not manage native agent work with raw background shells; use `agentctl` foreground/background lifecycle and just-in-time help.\n"
+	old := instructionPointerStart + "\n" + body + instructionPointerEnd + "\n"
+	expected := instructionPointerBlock("new", "sha256:new")
+	for _, block := range []string{old, instructionPointerBlockWithBody(body, "tree:v0.5.0", "sha256:"+strings.Repeat("a", 64))} {
+		got := inspectInstructionPointerBytes("AGENTS.md", []byte("user prefix\n"+block+"user suffix\n"), expected)
+		if got.State != "stale" {
+			t.Fatalf("known old body: %#v", got)
+		}
+	}
+	edited := strings.Replace(old, "just-in-time help.", "custom user policy.", 1)
+	if got := inspectInstructionPointerBytes("AGENTS.md", []byte(edited), expected); got.State != "conflict" {
+		t.Fatalf("edited block incorrectly adopted: %#v", got)
+	}
+}

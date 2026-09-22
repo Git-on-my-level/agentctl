@@ -188,6 +188,12 @@ func (a *app) run(ctx context.Context, args []string) int {
 	if err != nil {
 		if err.Code == output.CodeUsage && len(err.NextActions) == 0 {
 			topic := rest[0]
+			if topic == "ps" || topic == "list" {
+				topic = "recent"
+			}
+			if topic == "agents" {
+				topic = "delegate"
+			}
 			err.NextActions = append(err.NextActions, output.NextAction{Label: "Discover command usage", Argv: []string{"agentctl", "help", topic}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 		}
 		return a.fail(renderer, err)
@@ -705,7 +711,13 @@ func dereferenceResult(ctx context.Context, journal *store.Journal, id ids.Execu
 		return execution, model.Outcome{}, outcomeError(output.CodeUnknownState, "execution evidence is conflicted", execution)
 	}
 	if !execution.State.Terminal() {
-		return execution, model.Outcome{}, output.NewError(output.CodeInvalidState, "execution is not terminal", false).WithDetail("execution_id", id.String()).WithDetail("state", execution.State)
+		action := output.NextAction{Label: "Wait for completion or attention", Argv: []string{"agentctl", "await", id.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}}
+		if execution.State == model.StateAttention {
+			action = output.NextAction{Label: "Inspect attention and resolve it in the native authority", Argv: []string{"agentctl", "events", id.String()}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}
+		} else if execution.State == model.StateStarting && execution.LastOperationFailure != nil {
+			action = output.NextAction{Label: "Inspect dispatch failure before replaying the original key and inputs", Argv: []string{"agentctl", "status", id.String()}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}
+		}
+		return execution, model.Outcome{}, output.NewError(output.CodeInvalidState, "execution is not terminal", false).WithDetail("execution_id", id.String()).WithDetail("state", execution.State).WithDetail("last_operation_failure", execution.LastOperationFailure).WithActions(action)
 	}
 	outcome, err := journal.GetOutcome(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
@@ -1388,7 +1400,7 @@ func mapStoreError(message string, err error) *output.Error {
 	case errors.Is(err, store.ErrCorrupt):
 		return output.Wrap(output.CodeInternal, message, false, err)
 	case errors.Is(err, store.ErrBusy):
-		return output.Wrap(output.CodeDependencyUnavailable, message, true, err).WithDetail("diagnostic_code", "journal_busy")
+		return output.Wrap(output.CodeDependencyUnavailable, message, true, err).WithDetail("diagnostic_code", "journal_busy").WithDetail("recovery", "retry the identical invocation with bounded backoff; do not change journal or execution key").WithActions(output.NextAction{Label: "Inspect supervisor health without opening journal", Argv: []string{"agentctl", "supervisor", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 	default:
 		return output.Wrap(output.CodeInternal, message, false, err)
 	}

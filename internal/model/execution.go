@@ -232,36 +232,47 @@ type WorkspaceIdentity struct {
 	OperationRefs []string      `json:"operation_refs,omitempty"`
 }
 
+// OperationFailure is bounded coordination metadata, never upstream text.
+type OperationFailure struct {
+	Stage                   string    `json:"stage"`
+	Category                string    `json:"category"`
+	UpstreamExitCode        int       `json:"upstream_exit_code"`
+	Retryable               bool      `json:"retryable"`
+	RemoteCreationUncertain bool      `json:"remote_creation_uncertain"`
+	RecordedAt              time.Time `json:"recorded_at"`
+}
+
 type Execution struct {
-	SchemaVersion     int                `json:"schema_version"`
-	ID                ids.ExecutionID    `json:"id"`
-	OriginHostID      ids.HostID         `json:"origin_host_id"`
-	Revision          uint64             `json:"revision"`
-	Authority         Authority          `json:"authority"`
-	Adapter           string             `json:"adapter"`
-	Mode              Mode               `json:"mode"`
-	Acquisition       Acquisition        `json:"acquisition"`
-	State             State              `json:"state"`
-	Liveness          Liveness           `json:"liveness"`
-	SourceState       *string            `json:"source_state,omitempty"`
-	SourceBindings    []SourceBinding    `json:"source_bindings"`
-	Capabilities      CapabilitySnapshot `json:"capabilities"`
-	Labels            []string           `json:"labels,omitempty"`
-	CWD               *string            `json:"cwd,omitempty"`
-	Repository        *string            `json:"repository,omitempty"`
-	Workspace         *WorkspaceIdentity `json:"workspace,omitempty"`
-	ParentExecutionID *ids.ExecutionID   `json:"parent_execution_id"`
-	Supersedes        []ids.ExecutionID  `json:"supersedes"`
-	SupersededBy      *ids.ExecutionID   `json:"superseded_by"`
-	Promotion         *PromotionLink     `json:"promotion"`
-	TaskContract      *TaskContract      `json:"task_contract,omitempty"`
-	Delegation        *DelegationBinding `json:"delegation,omitempty"`
-	CreatedAt         time.Time          `json:"created_at"`
-	StartedAt         *time.Time         `json:"started_at,omitempty"`
-	DeadlineAt        *time.Time         `json:"deadline_at,omitempty"`
-	UpdatedAt         time.Time          `json:"updated_at"`
-	TerminalAt        *time.Time         `json:"terminal_at"`
-	Observation       Observation        `json:"observation"`
+	LastOperationFailure *OperationFailure  `json:"last_operation_failure,omitempty"`
+	SchemaVersion        int                `json:"schema_version"`
+	ID                   ids.ExecutionID    `json:"id"`
+	OriginHostID         ids.HostID         `json:"origin_host_id"`
+	Revision             uint64             `json:"revision"`
+	Authority            Authority          `json:"authority"`
+	Adapter              string             `json:"adapter"`
+	Mode                 Mode               `json:"mode"`
+	Acquisition          Acquisition        `json:"acquisition"`
+	State                State              `json:"state"`
+	Liveness             Liveness           `json:"liveness"`
+	SourceState          *string            `json:"source_state,omitempty"`
+	SourceBindings       []SourceBinding    `json:"source_bindings"`
+	Capabilities         CapabilitySnapshot `json:"capabilities"`
+	Labels               []string           `json:"labels,omitempty"`
+	CWD                  *string            `json:"cwd,omitempty"`
+	Repository           *string            `json:"repository,omitempty"`
+	Workspace            *WorkspaceIdentity `json:"workspace,omitempty"`
+	ParentExecutionID    *ids.ExecutionID   `json:"parent_execution_id"`
+	Supersedes           []ids.ExecutionID  `json:"supersedes"`
+	SupersededBy         *ids.ExecutionID   `json:"superseded_by"`
+	Promotion            *PromotionLink     `json:"promotion"`
+	TaskContract         *TaskContract      `json:"task_contract,omitempty"`
+	Delegation           *DelegationBinding `json:"delegation,omitempty"`
+	CreatedAt            time.Time          `json:"created_at"`
+	StartedAt            *time.Time         `json:"started_at,omitempty"`
+	DeadlineAt           *time.Time         `json:"deadline_at,omitempty"`
+	UpdatedAt            time.Time          `json:"updated_at"`
+	TerminalAt           *time.Time         `json:"terminal_at"`
+	Observation          Observation        `json:"observation"`
 }
 
 var (
@@ -362,6 +373,16 @@ func (e Execution) Validate() error {
 	if e.TaskContract != nil {
 		if err := e.TaskContract.Validate(); err != nil {
 			return fmt.Errorf("task_contract: %w", err)
+		}
+	}
+	if f := e.LastOperationFailure; f != nil {
+		if f.Stage != "issue_create" || f.RecordedAt.IsZero() || f.UpstreamExitCode < -1 || f.UpstreamExitCode > 255 {
+			return errors.New("invalid operation failure metadata")
+		}
+		switch f.Category {
+		case "upstream_failure", "interrupted", "invalid_arguments", "authentication_required", "authorization_denied", "timeout", "invalid_json", "trailing_output":
+		default:
+			return errors.New("invalid operation failure category")
 		}
 	}
 	if e.Delegation != nil {

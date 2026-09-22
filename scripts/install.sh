@@ -6,6 +6,9 @@
 
 set -euo pipefail
 
+INSTALL_STAGE=validation
+trap 'printf "AGENTCTL_INSTALL_STAGE=%s\n" "$INSTALL_STAGE" >&2' ERR
+
 PREFIX=${PREFIX:-}
 BINARY_NAME=${BINARY_NAME:-agentctl}
 SOURCE=
@@ -16,7 +19,7 @@ BINARY_ONLY=0
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 SUPERVISOR_INSTALLER="$SCRIPT_DIR/install-supervisor.sh"
 
-die() { printf 'error: %s\n' "$*" >&2; exit 2; }
+die() { printf 'AGENTCTL_INSTALL_STAGE=%s\n' "$INSTALL_STAGE" >&2; printf 'error: %s\n' "$*" >&2; exit 2; }
 usage() {
   cat <<'EOF'
 usage: scripts/install.sh --binary PATH [--prefix DIR] [--force] [--dry-run]
@@ -169,8 +172,10 @@ if [ "$BINARY_ONLY" -eq 0 ]; then
   # The source is the only executable available before the replacement. Its
   # dry-run is the transaction preflight for both normal installs and --dry-run
   # invocations; it must not write harness state.
+  INSTALL_STAGE=bootstrap_preflight
   "$source_absolute" bootstrap update --dry-run >/dev/null || die 'bootstrap update preflight failed; refusing to mutate the binary'
 fi
+INSTALL_STAGE=supervisor_preflight
 inspect_supervisor
 # A managed supervisor normally points at the currently installed target, so
 # the reviewed service executable stays "$target" for the ownership dry-run;
@@ -190,6 +195,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
+INSTALL_STAGE=binary_replace
 umask 077
 mkdir -p "$bindir" "$sharedir"
 
@@ -200,6 +206,7 @@ chmod 0755 "$tmp"
 mv -f "$tmp" "$target"
 trap - EXIT
 
+INSTALL_STAGE=manifest_write
 hash=$(sha256_file "$target")
 manifest_tmp=$(mktemp "$sharedir/.install-manifest.XXXXXX")
 trap 'rm -f "$manifest_tmp"' EXIT
@@ -215,6 +222,8 @@ printf 'installed %s\n' "$target"
 
 if [ "$BINARY_ONLY" -eq 0 ]; then
   # Run the exact binary now installed, not the caller-supplied source path.
+  INSTALL_STAGE=bootstrap_apply
   "$target" bootstrap update || die 'bootstrap update failed after binary installation'
+  INSTALL_STAGE=supervisor_apply
   reconcile_supervisor "$target" "$target"
 fi

@@ -39,6 +39,12 @@ func (a *app) supervisorCommand(ctx context.Context, renderer output.Renderer, c
 
 func (a *app) supervisorRun(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	cfg := supervisor.DefaultConfig()
+	cfg.Version = version
+	if path, err := os.Executable(); err == nil {
+		if data, err := os.ReadFile(path); err == nil {
+			cfg.ExecutableSHA256 = sha256Digest(data)
+		}
+	}
 	once := false
 	for i := 0; i < len(args); i++ {
 		take := func() (string, *output.Error) {
@@ -85,7 +91,7 @@ func (a *app) supervisorRun(ctx context.Context, renderer output.Renderer, c com
 	// transport I/O and authority reprobes must not hold bbolt's process lock.
 	resolvedStateDir := cfg.StateDir
 	factory := supervisor.DependenciesFactoryFunc(func(cycleCtx context.Context) (supervisor.CycleDependencies, error) {
-		bridge := pathSupervisorExecutions{path: journalPath}
+		bridge := pathSupervisorExecutions{path: journalPath, probeTimeout: 10 * time.Second}
 		deps := supervisor.Dependencies{
 			Executions: bridge,
 			Reprober:   bridge,
@@ -257,7 +263,10 @@ func (a *app) supervisorPlan(renderer output.Renderer, args []string) *output.Er
 	return nil
 }
 
-type pathSupervisorExecutions struct{ path string }
+type pathSupervisorExecutions struct {
+	path         string
+	probeTimeout time.Duration
+}
 
 func (a *app) reprobeAwaitedMultica(ctx context.Context, c common, execution model.Execution) *output.Error {
 	journalPath, err := a.journalPath(c)
@@ -285,12 +294,7 @@ func (a *app) reprobeAwaitedMultica(ctx context.Context, c common, execution mod
 }
 
 func (b pathSupervisorExecutions) withBridge(ctx context.Context, fn func(agentruntime.SupervisorExecutions) error) error {
-	journal, err := openJournalWithRetryContext(ctx, b.path, store.Options{})
-	if err != nil {
-		return err
-	}
-	defer journal.Close()
-	engine, err := agentruntime.New(journal, agentruntime.Options{})
+	engine, err := agentruntime.New(scopedJournal{path: b.path}, agentruntime.Options{})
 	if err != nil {
 		return err
 	}
@@ -306,10 +310,18 @@ func (b pathSupervisorExecutions) ListNonTerminal(ctx context.Context) (result [
 }
 
 func (b pathSupervisorExecutions) Reprobe(ctx context.Context, execution supervisor.Execution) (result supervisor.ProbeResult, err error) {
+	if b.probeTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, b.probeTimeout)
+		defer cancel()
+	}
 	err = b.withBridge(ctx, func(bridge agentruntime.SupervisorExecutions) error {
 		result, err = bridge.Reprobe(ctx, execution)
 		return err
 	})
+	if ctx.Err() != nil {
+		return supervisor.ProbeResult{}, ctx.Err()
+	}
 	return result, err
 }
 

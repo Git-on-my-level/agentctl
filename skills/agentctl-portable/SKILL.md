@@ -14,6 +14,37 @@ Resolve the binary from `AGENTCTL_BIN`, `PATH`, or
 `$HOME/.local/bin/agentctl`. If it is unavailable, stop with
 `dependency_unavailable`; do not inspect native session stores as a fallback.
 
+## First recipe for Hermes, Claude Code, and Codex
+
+For an explicitly requested model, use `delegate` with a schema-versioned
+request file and only the user's constraints. Read `help delegate`, plan with
+`--plan`, then execute the same request and key with `--wait --content` (remove
+`--plan`). Do not reconstruct a native model slug from an alias. Bare adapters
+or missing remote runtimes are unresolved constraints, never substitution grants.
+
+Hermes terminal processes, Claude Code Bash tasks, and Codex terminal sessions
+can own a foreground agentctl process using their supported process lifecycle.
+Retain that process handle and collect its completion. `run --background` is
+rejected since v0.6.0. Use explicit Multica dispatch for durable task ownership.
+The delegate plan reports ownership and collection semantics before launch.
+
+For an external scratch prompt, replace `--prompt-file` with `--prompt-stdin`
+and redirect the file into agentctl. Keep the verified `--prompt-delivery`
+unchanged: source describes agentctl input, delivery describes native input.
+An error includes a structured repair; it never copies prompt bytes into logs.
+
+For results, prefer `result <id> --content` for exact text, `--summary` for compact
+metadata, and `result --unreconciled --summary` for bounded bulk collection.
+A pending result supplies an `await` action. Check the agentctl exit status and
+JSON `ok` before inspecting fields; piping through `head` can hide a failing
+exit code. Completion, delivery, and acceptance remain distinct.
+
+A failed dispatch retains `last_operation_failure` in `status`. Resolve its
+category and retry the original inputs with the original idempotency key.
+Uncertain remote creation is never a reason to allocate a new key.
+`update status` distinguishes observed binary version from installation records;
+inspect bootstrap and supervisor status before treating an update as complete.
+
 ## Discover just in time
 
 Start with the one question relevant to the task:

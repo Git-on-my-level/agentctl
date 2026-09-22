@@ -680,3 +680,28 @@ func TestOutboxPendingOrderingIndependentOfMapOrder(t *testing.T) {
 		t.Fatalf("delivery IDs = %v, want %v", deliverer.calls, want)
 	}
 }
+
+func TestFailedReprobeBackoffDoesNotHideDegradedHealth(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(10, 0)}
+	executions := &fakeExecutions{items: []Execution{{ID: "a", State: "running", Revision: 1}}, results: map[string]ProbeResult{}}
+	reprober := &fakeReprober{errors: map[string]error{"a": errors.New("unavailable")}}
+	s, err := New(testConfig(t, clock), Dependencies{Executions: executions, Reprober: reprober})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.RunOnce(context.Background())
+	s.RunOnce(context.Background())
+	if len(reprober.calls) != 1 || s.Health().State != HealthDegraded {
+		t.Fatalf("calls=%v health=%v", reprober.calls, s.Health())
+	}
+	executions.items[0].Revision++
+	s.RunOnce(context.Background())
+	if len(reprober.calls) != 2 {
+		t.Fatal("new revision was deferred")
+	}
+	clock.now = clock.now.Add(11 * time.Second)
+	s.RunOnce(context.Background())
+	if len(reprober.calls) != 3 {
+		t.Fatal("retry did not resume")
+	}
+}

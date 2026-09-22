@@ -41,6 +41,8 @@ type ApplyResult struct {
 
 type ApplyError struct {
 	Code      string
+	Stage     string
+	ExitCode  int
 	Retryable bool
 	Cause     error
 }
@@ -117,7 +119,7 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	var output boundedBuffer
 	command.Stdout, command.Stderr = &output, &output
 	if err := command.Run(); err != nil {
-		return result, recordApplyError(options.Check.StatePath, "install_failed", fmt.Errorf("packaged installer failed: %w: %s", err, strings.TrimSpace(output.String())))
+		return result, recordApplyError(options.Check.StatePath, "install_failed", installerDiagnostic(err, output.String()))
 	}
 	if err := recordInstalled(options.Check.StatePath, notice.LatestVersion); err != nil {
 		return result, err
@@ -341,14 +343,21 @@ func recordInstalled(path, installed string) error {
 	state.InstalledVersion = installed
 	state.InstalledAt = time.Now().UTC()
 	state.LastErrorCode, state.LastErrorAt = "", time.Time{}
+	state.LastErrorStage, state.LastErrorExitCode = "", 0
 	return writeState(path, state)
 }
 
 func recordApplyError(path, code string, cause error) error {
 	state, err := readState(path)
 	retryable := retryableApplyError(code)
+	stage, exitCode := code, -1
+	var install *installerFailure
+	if errors.As(cause, &install) {
+		stage, exitCode = install.stage, install.exitCode
+	}
 	if err == nil {
 		state.LastErrorCode = code
+		state.LastErrorStage, state.LastErrorExitCode = stage, exitCode
 		state.LastErrorAt = time.Now().UTC()
 		if retryable {
 			state.CheckedOn = ""
@@ -356,7 +365,7 @@ func recordApplyError(path, code string, cause error) error {
 		}
 		err = writeState(path, state)
 	}
-	return &ApplyError{Code: code, Retryable: retryable, Cause: errors.Join(cause, err)}
+	return &ApplyError{Code: code, Stage: stage, ExitCode: exitCode, Retryable: retryable, Cause: errors.Join(cause, err)}
 }
 
 func retryableApplyError(code string) bool {
@@ -381,4 +390,29 @@ func (b *boundedBuffer) Write(content []byte) (int, error) {
 		_, _ = b.Buffer.Write(content)
 	}
 	return original, nil
+}
+
+// Installer output is inspected only for our fixed stage markers. No raw output
+// is retained in update state or emitted in automatic notices.
+type installerFailure struct {
+	stage    string
+	exitCode int
+}
+
+func (e *installerFailure) Error() string {
+	return fmt.Sprintf("packaged installer stage %s exited %d", e.stage, e.exitCode)
+}
+func installerDiagnostic(err error, text string) error {
+	d := &installerFailure{stage: "installer", exitCode: -1}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		d.exitCode = exit.ExitCode()
+	}
+	for _, line := range strings.Split(text, "\n") {
+		switch strings.TrimSpace(line) {
+		case "AGENTCTL_INSTALL_STAGE=validation", "AGENTCTL_INSTALL_STAGE=bootstrap_preflight", "AGENTCTL_INSTALL_STAGE=supervisor_preflight", "AGENTCTL_INSTALL_STAGE=binary_replace", "AGENTCTL_INSTALL_STAGE=manifest_write", "AGENTCTL_INSTALL_STAGE=bootstrap_apply", "AGENTCTL_INSTALL_STAGE=supervisor_apply":
+			d.stage = strings.TrimPrefix(strings.TrimSpace(line), "AGENTCTL_INSTALL_STAGE=")
+		}
+	}
+	return d
 }
