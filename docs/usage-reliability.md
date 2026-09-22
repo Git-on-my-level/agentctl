@@ -2,7 +2,8 @@
 
 Supervisor recovery uses a journal facade that opens bbolt only for each store
 operation. Adapter/network calls hold no journal handle. CAS revisions and event
-idempotency remain store-authoritative. Reprobes have a ten-second bound; repeated
+idempotency remain store-authoritative. Supervisor reprobes have a ten-second bound; explicit awaits retain their
+caller-selected deadline. Repeated
 failures back off per execution/revision from 10 to 160 seconds. A revised
 execution is eligible immediately. Deferred failures still count as degraded
 health. Backoff is in-memory scheduling, not an execution authority.
@@ -24,8 +25,10 @@ startup version and executable digest, which can differ from a replaced binary.
 Inspect `bootstrap status` for installed skill compatibility. These commands are
 read-only; neither a mismatch nor a failed check implicitly updates/restarts.
 
-A pending `result` supplies a mutating `await` next action; an uncertain dispatch
-must first be resolved using its original key. Unknown adapter errors enumerate
+A pending `result` supplies a mutating `await` next action for ordinary running
+work, read-only event inspection for attention, and read-only status inspection
+for a failed starting dispatch. An uncertain dispatch must first be resolved
+using its original key. Unknown adapter errors enumerate
 known names. Unknown `ps`/`list` and `agents` commands direct help to `recent` and
 `delegate`. Prompt-root errors include a structured `repair`: remove the file
 source, select stdin, keep native delivery and other flags, and redirect the

@@ -484,6 +484,7 @@ func resolveMulticaDispatchTarget(ctx context.Context, m *config.Multica, catalo
 		switch strings.ToLower(strings.TrimSpace(agent.Status)) {
 		case "idle", "working":
 		default:
+			rejected["agent_status_unavailable"]++
 			continue
 		}
 		runtime, ok := byID[agent.RuntimeID]

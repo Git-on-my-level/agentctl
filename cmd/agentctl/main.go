@@ -711,7 +711,13 @@ func dereferenceResult(ctx context.Context, journal *store.Journal, id ids.Execu
 		return execution, model.Outcome{}, outcomeError(output.CodeUnknownState, "execution evidence is conflicted", execution)
 	}
 	if !execution.State.Terminal() {
-		return execution, model.Outcome{}, output.NewError(output.CodeInvalidState, "execution is not terminal", false).WithDetail("execution_id", id.String()).WithDetail("state", execution.State).WithDetail("last_operation_failure", execution.LastOperationFailure).WithActions(output.NextAction{Label: "Wait for completion or attention", Argv: []string{"agentctl", "await", id.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{"resolve any recorded dispatch failure with the original key before waiting"}})
+		action := output.NextAction{Label: "Wait for completion or attention", Argv: []string{"agentctl", "await", id.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}}
+		if execution.State == model.StateAttention {
+			action = output.NextAction{Label: "Inspect attention and resolve it in the native authority", Argv: []string{"agentctl", "events", id.String()}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}
+		} else if execution.State == model.StateStarting && execution.LastOperationFailure != nil {
+			action = output.NextAction{Label: "Inspect dispatch failure before replaying the original key and inputs", Argv: []string{"agentctl", "status", id.String()}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}
+		}
+		return execution, model.Outcome{}, output.NewError(output.CodeInvalidState, "execution is not terminal", false).WithDetail("execution_id", id.String()).WithDetail("state", execution.State).WithDetail("last_operation_failure", execution.LastOperationFailure).WithActions(action)
 	}
 	outcome, err := journal.GetOutcome(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {

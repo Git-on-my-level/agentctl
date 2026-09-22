@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -316,6 +318,10 @@ func TestAwaitRetriesTransientMulticaRefreshFailures(t *testing.T) {
 	}
 	if got := strings.Count(strings.TrimSpace(string(failures)), "\n") + 1; got != 2 {
 		t.Fatalf("transient failure count=%d log=%q", got, failures)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "result", dispatched.Result.Execution.ID.String()}); code != output.ExitCodeFor(output.CodeInvalidState) || !strings.Contains(stdout.String(), `"events"`) || strings.Contains(stdout.String(), `"await"`) {
+		t.Fatalf("attention result action exit=%d output=%s", code, stdout.String())
 	}
 }
 
@@ -694,6 +700,12 @@ func TestSupervisorReprobeDoesNotBlockAnotherProcessJournal(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+	// Only the supervisor opts into a short per-probe deadline; the shared
+	// bridge used by explicit await preserves its caller's deadline.
+	bounded := pathSupervisorExecutions{path: journalPath, probeTimeout: 20 * time.Millisecond}
+	if _, err := bounded.Reprobe(context.Background(), supervisor.Execution{ID: dispatched.Result.Execution.ID.String()}); err == nil {
+		t.Fatal("supervisor probe ignored its deadline")
+	}
 }
 func TestJournalProcessProbe(t *testing.T) {
 	path := os.Getenv("AGENTCTL_LOCK_TEST_PATH")
@@ -759,10 +771,32 @@ func TestDispatchFailureMetadataAndSameKeyRecovery(t *testing.T) {
 	if code := a.run(context.Background(), []string{"--journal", journalPath, "status", first}); code != 0 || !strings.Contains(out.String(), "last_operation_failure") {
 		t.Fatalf("status %d %s", code, out.String())
 	}
+	// Hold the journal beyond one open attempt, but within the recording budget.
+	id, err := ids.ParseExecutionID(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() { time.Sleep(550 * time.Millisecond); _ = locked.Close(); close(released) }()
+	problem := a.dispatchFailure(context.Background(), common{journalPath: journalPath}, id, "recover-v1", "default", errors.New("test upstream failure"))
+	<-released
+	if problem.Details["diagnostic_recorded"] != true {
+		t.Fatalf("did not retry busy diagnostic: %#v", problem.Details)
+	}
 	t.Setenv("AGENTCTL_TEST_CREATE_ERROR", "")
 	out.Reset()
 	a.stdin = strings.NewReader("private prompt")
 	if code := a.run(context.Background(), args); code != 0 || !strings.Contains(out.String(), first) {
 		t.Fatalf("recovery %d %s", code, out.String())
+	}
+	t.Setenv("AGENTCTL_TEST_AGENTS", strings.Replace(agents, `"working"`, `"offline"`, 1))
+	out.Reset()
+	a.stdin = strings.NewReader("private prompt")
+	if code := a.run(context.Background(), append(args, "--plan")); code != output.ExitCodeFor(output.CodeCapabilityUnavailable) || !strings.Contains(out.String(), `"agent_status_unavailable":1`) {
+		t.Fatalf("status rejection %d %s", code, out.String())
 	}
 }

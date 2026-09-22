@@ -10,6 +10,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
+	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
 // Only allowlisted categories and numeric exit codes cross the metadata boundary.
@@ -69,11 +70,15 @@ func (a *app) dispatchFailure(ctx context.Context, c common, id ids.ExecutionID,
 		return problem.WithDetail("diagnostic_recorded", false)
 	}
 	j := scopedJournal{path: path}
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 3 && recordCtx.Err() == nil; {
 		e, err := j.GetExecution(recordCtx, id)
+		if errors.Is(err, store.ErrBusy) && recordCtx.Err() == nil {
+			continue
+		}
 		if err != nil || e.State.Terminal() {
 			break
 		}
+		attempt++
 		e.LastOperationFailure = &model.OperationFailure{Stage: "issue_create", Category: d.Category, UpstreamExitCode: d.ExitCode, Retryable: d.Retryable, RemoteCreationUncertain: d.RemoteCreationUncertain, RecordedAt: a.now().UTC()}
 		_, err = j.UpdateExecution(recordCtx, e, e.Revision)
 		if err == nil {
