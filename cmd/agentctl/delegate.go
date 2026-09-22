@@ -431,6 +431,7 @@ func (a *app) findDelegation(ctx context.Context, c common, mutation contracts.M
 func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding, native any, reusedID string) *output.Error {
 	result := map[string]any{"plan": true, "requested": binding.Requested, "resolved": binding.Resolved,
 		"provenance":     map[string]any{"configuration_sha256": binding.ConfigurationSHA256, "defaulted": binding.Defaulted},
+		"lifecycle":      map[string]any{"owner": "foreground_process", "restart_durable": false, "background_flag_supported": false, "collection": "--wait --content requires completed work and stored answer", "cross_process_cancel": "only when explicitly advertised by adapter", "durable_authority": "Multica dispatch"},
 		"request_sha256": binding.RequestSHA256, "side_effect_class": output.ReadOnly, "reused": reusedID != ""}
 	if native != nil {
 		result["native"] = native

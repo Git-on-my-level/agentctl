@@ -28,6 +28,48 @@
     "observation"
   ],
   "properties": {
+    "last_operation_failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stage",
+        "category",
+        "upstream_exit_code",
+        "retryable",
+        "remote_creation_uncertain",
+        "recorded_at"
+      ],
+      "properties": {
+        "stage": {
+          "const": "issue_create"
+        },
+        "category": {
+          "enum": [
+            "upstream_failure",
+            "interrupted",
+            "invalid_arguments",
+            "authentication_required",
+            "authorization_denied",
+            "timeout",
+            "invalid_json",
+            "trailing_output"
+          ]
+        },
+        "upstream_exit_code": {
+          "type": "integer"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "remote_creation_uncertain": {
+          "type": "boolean"
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
     "schema_version": {"const": 1},
     "id": {"$ref": "#/$defs/execution_id"},
     "origin_host_id": {"$ref": "#/$defs/host_id"},

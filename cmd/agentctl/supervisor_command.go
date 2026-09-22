@@ -39,6 +39,12 @@ func (a *app) supervisorCommand(ctx context.Context, renderer output.Renderer, c
 
 func (a *app) supervisorRun(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	cfg := supervisor.DefaultConfig()
+	cfg.Version = version
+	if path, err := os.Executable(); err == nil {
+		if data, err := os.ReadFile(path); err == nil {
+			cfg.ExecutableSHA256 = sha256Digest(data)
+		}
+	}
 	once := false
 	for i := 0; i < len(args); i++ {
 		take := func() (string, *output.Error) {
@@ -285,12 +291,7 @@ func (a *app) reprobeAwaitedMultica(ctx context.Context, c common, execution mod
 }
 
 func (b pathSupervisorExecutions) withBridge(ctx context.Context, fn func(agentruntime.SupervisorExecutions) error) error {
-	journal, err := openJournalWithRetryContext(ctx, b.path, store.Options{})
-	if err != nil {
-		return err
-	}
-	defer journal.Close()
-	engine, err := agentruntime.New(journal, agentruntime.Options{})
+	engine, err := agentruntime.New(scopedJournal{path: b.path}, agentruntime.Options{})
 	if err != nil {
 		return err
 	}
@@ -306,6 +307,8 @@ func (b pathSupervisorExecutions) ListNonTerminal(ctx context.Context) (result [
 }
 
 func (b pathSupervisorExecutions) Reprobe(ctx context.Context, execution supervisor.Execution) (result supervisor.ProbeResult, err error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	err = b.withBridge(ctx, func(bridge agentruntime.SupervisorExecutions) error {
 		result, err = bridge.Reprobe(ctx, execution)
 		return err

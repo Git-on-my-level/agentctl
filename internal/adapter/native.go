@@ -135,7 +135,12 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 	obs := p.parser.Parse(line, stderr)
 	if stderr {
 		p.mu.Lock()
-		p.stderrDiagnostic = safeFailureDiagnostic(string(line))
+		diagnostic := safeFailureDiagnostic(string(line))
+		// Keep the first useful cause instead of replacing it with a trailing
+		// usage/help footer (or an empty line). Structured errors still win.
+		if p.stderrDiagnostic == "" && diagnostic != "" {
+			p.stderrDiagnostic = diagnostic
+		}
 		p.mu.Unlock()
 	}
 	if obs.Page != nil {

@@ -222,11 +222,13 @@ type Health struct {
 
 // Status is the complete bounded service projection returned by status RPC.
 type Status struct {
-	Running    bool      `json:"running"`
-	SocketPath string    `json:"socket_path"`
-	StateDir   string    `json:"state_dir"`
-	Health     Health    `json:"health"`
-	Now        time.Time `json:"now"`
+	Version          string    `json:"version,omitempty"`
+	ExecutableSHA256 string    `json:"executable_sha256,omitempty"`
+	Running          bool      `json:"running"`
+	SocketPath       string    `json:"socket_path"`
+	StateDir         string    `json:"state_dir"`
+	Health           Health    `json:"health"`
+	Now              time.Time `json:"now"`
 }
 
 // RecoveryFailure retains only the execution ID and bounded error text.
@@ -317,6 +319,8 @@ func (f DependenciesFactoryFunc) Open(ctx context.Context) (CycleDependencies, e
 
 // Config controls local lifecycle, polling, and bounded retry behavior.
 type Config struct {
+	Version               string
+	ExecutableSHA256      string
 	SocketPath            string
 	StateDir              string
 	StatePath             string

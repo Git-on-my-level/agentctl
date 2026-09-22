@@ -671,6 +671,7 @@ func (a *app) loadPrompt(opts runOptions) (*promptPayload, *output.Error) {
 				WithDetail("path", path).
 				WithDetail("root", root).
 				WithDetail("recommended_prompt_source", "stdin").
+				WithDetail("repair", map[string]any{"remove_flags": []string{"--prompt-file"}, "set_flags": map[string]string{"--prompt-stdin": "", "--prompt-delivery": opts.promptDelivery}, "stdin_file": path, "preserve_other_arguments": true, "explanation": "prompt source selects how agentctl reads bytes; delivery selects how the native CLI receives them"}).
 				WithActions(output.NextAction{Label: "Use piped prompt stdin for an external scratch file", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"select --prompt-stdin and an explicit --prompt-delivery supported by the native argv"}})
 		}
 		resolvedRoot, err := filepath.EvalSymlinks(root)

@@ -638,7 +638,7 @@ func instructionPointerBlockIsManaged(block, expected string) bool {
 	if expected != "" && block == expected {
 		return true
 	}
-	if strings.HasPrefix(block, instructionPointerStart+"\n") && strings.HasSuffix(strings.TrimRight(block, "\r\n"), instructionPointerEnd) && innerInstructionPointerBody(block) == instructionPointerBody() {
+	if strings.HasPrefix(block, instructionPointerStart+"\n") && strings.HasSuffix(strings.TrimRight(block, "\r\n"), instructionPointerEnd) && knownInstructionPointerBody(innerInstructionPointerBody(block)) {
 		return true
 	}
 	revision, skillDigest := instructionPointerMetadata(block)
@@ -646,7 +646,19 @@ func instructionPointerBlockIsManaged(block, expected string) bool {
 		return false
 	}
 	body := instructionPointerBodyFromSHABlock(block)
-	return body == instructionPointerBody() && block == instructionPointerBlockWithBody(body, revision, skillDigest)
+	return knownInstructionPointerBody(body) && block == instructionPointerBlockWithBody(body, revision, skillDigest)
+}
+
+// Only exact previously shipped bodies may be migrated. Arbitrary edits within
+// markers remain conflicts; matching a marker alone is not ownership proof.
+func knownInstructionPointerBody(body string) bool {
+	if body == instructionPointerBody() {
+		return true
+	}
+	return body == strings.Join([]string{
+		"CLI agents (`cursor-agent`, `codex`, `omp`, and similar) go through `agentctl`; load skill `agentctl-portable` or run `agentctl help run`.",
+		"Do not manage native agent work with raw background shells; use `agentctl` foreground/background lifecycle and just-in-time help.",
+	}, "\n")+"\n"
 }
 
 func innerInstructionPointerBody(block string) string {

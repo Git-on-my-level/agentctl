@@ -886,3 +886,12 @@ func TestRequiredContextFailsBeforeChildLaunch(t *testing.T) {
 		t.Fatal("child was launched despite required context failure")
 	}
 }
+
+func TestNativeFailurePreservesCauseBeforeUsageFooter(t *testing.T) {
+	record := &processRecord{parser: codexParser{}, maxOutput: 1 << 20}
+	record.ingest([]byte("error: unexpected argument '--bad-flag' found"), true)
+	record.ingest([]byte("For more information, try '--help'."), true)
+	if !strings.Contains(record.stderrDiagnostic, "--bad-flag") {
+		t.Fatalf("lost cause: %s", record.stderrDiagnostic)
+	}
+}

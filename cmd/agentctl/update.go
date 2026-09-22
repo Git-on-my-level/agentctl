@@ -11,6 +11,7 @@ import (
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/output"
+	"github.com/Git-on-my-level/agentctl/internal/portableasset"
 	"github.com/Git-on-my-level/agentctl/internal/skillpack"
 	"github.com/Git-on-my-level/agentctl/internal/updatecheck"
 )
@@ -71,7 +72,16 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c com
 			return output.Wrap(output.CodeInternal, "read update status", false, err)
 		}
 		skills := a.skillsUpdateStatus(ctx, c)
-		_ = renderer.Success(output.Success{Result: map[string]any{"binary": status, "skills": skills}, Lines: []output.Line{{Lead: "update.binary", Fields: []output.Field{{Name: "mode", Value: status.Mode}, {Name: "checked_on", Value: status.CheckedOn}, {Name: "latest_version", Value: status.LatestVersion}, {Name: "installed_version", Value: status.InstalledVersion}}}, {Lead: "update.skills", Fields: []output.Field{{Name: "policy", Value: skills["policy"]}, {Name: "configured", Value: skills["configured"]}, {Name: "checked_on", Value: skills["checked_on"]}, {Name: "healthy", Value: skills["healthy"]}}}}})
+		observed := map[string]any{"version": version, "bookkeeping_matches": status.InstalledVersion == version}
+		if path, err := os.Executable(); err == nil {
+			if data, err := os.ReadFile(path); err == nil {
+				observed["sha256"] = sha256Digest(data)
+			}
+		}
+		if skill, err := portableasset.Skill(); err == nil {
+			observed["expected_portable_skill_sha256"] = skill.Digest
+		}
+		_ = renderer.Success(output.Success{Result: map[string]any{"binary": status, "skills": skills, "observed_binary": observed, "compatibility_actions": []output.NextAction{{Label: "Inspect installed portable skills", Argv: []string{"agentctl", "bootstrap", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}, {Label: "Inspect running supervisor", Argv: []string{"agentctl", "supervisor", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}}}, Lines: []output.Line{{Lead: "update.binary", Fields: []output.Field{{Name: "mode", Value: status.Mode}, {Name: "checked_on", Value: status.CheckedOn}, {Name: "latest_version", Value: status.LatestVersion}, {Name: "installed_version", Value: status.InstalledVersion}}}, {Lead: "update.skills", Fields: []output.Field{{Name: "policy", Value: skills["policy"]}, {Name: "configured", Value: skills["configured"]}, {Name: "checked_on", Value: skills["checked_on"]}, {Name: "healthy", Value: skills["healthy"]}}}}})
 		return nil
 	case "policy":
 		if len(args) != 2 {
@@ -91,7 +101,7 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c com
 		if err != nil {
 			var applyError *updatecheck.ApplyError
 			if errors.As(err, &applyError) {
-				return output.Wrap(output.CodeConflict, "apply agentctl update", applyError.Retryable, err).WithDetail("update_error_code", applyError.Code)
+				return output.Wrap(output.CodeConflict, "apply agentctl update", applyError.Retryable, err).WithDetail("update_error_code", applyError.Code).WithDetail("stage", applyError.Stage).WithDetail("upstream_exit_code", applyError.ExitCode).WithActions(output.NextAction{Label: "Inspect update state", Argv: []string{"agentctl", "update", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 			}
 			return output.Wrap(output.CodeInternal, "apply agentctl update", false, err)
 		}

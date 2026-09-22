@@ -22,12 +22,20 @@ import (
 // Supervisor is a managed host-local supervisor.  It owns only process
 // lifecycle, recovery scheduling, and bounded callback draining; authority
 // state remains in injected adapters.
+type probeRetry struct {
+	revision   uint64
+	attempts   int
+	next       time.Time
+	diagnostic string
+}
+
 type Supervisor struct {
-	mu     sync.RWMutex
-	cycle  sync.Mutex
-	cfg    Config
-	deps   Dependencies
-	health Health
+	probeRetries map[string]probeRetry
+	mu           sync.RWMutex
+	cycle        sync.Mutex
+	cfg          Config
+	deps         Dependencies
+	health       Health
 
 	running        bool
 	stopping       bool
@@ -64,9 +72,10 @@ func New(cfg Config, deps Dependencies) (*Supervisor, error) {
 		cfg.Clock = RealClock{}
 	}
 	return &Supervisor{
-		cfg:    cfg,
-		deps:   deps,
-		health: Health{State: HealthStopped},
+		cfg:          cfg,
+		probeRetries: map[string]probeRetry{},
+		deps:         deps,
+		health:       Health{State: HealthStopped},
 	}, nil
 }
 
@@ -489,17 +498,41 @@ func (s *Supervisor) recoverWith(ctx context.Context, deps Dependencies) Recover
 	}
 	sort.Slice(nonTerminal, func(i, j int) bool { return nonTerminal[i].ID < nonTerminal[j].ID })
 	report.Examined = len(nonTerminal)
+	live := make(map[string]bool, len(nonTerminal))
 	for _, execution := range nonTerminal {
+		live[execution.ID] = true
+	}
+	for id := range s.probeRetries {
+		if !live[id] {
+			delete(s.probeRetries, id)
+		}
+	}
+	for _, execution := range nonTerminal {
+		retry := s.probeRetries[execution.ID]
+		if retry.revision == execution.Revision && s.cfg.Clock.Now().Before(retry.next) {
+			report.Failures = append(report.Failures, RecoveryFailure{ExecutionID: execution.ID, Error: retry.diagnostic})
+			continue
+		}
 		if err := ctx.Err(); err != nil {
 			report.Failures = append(report.Failures, RecoveryFailure{ExecutionID: execution.ID, Error: boundedError(err)})
 			break
 		}
 		result, err := deps.Reprober.Reprobe(ctx, execution)
 		if err != nil {
+			if retry.revision != execution.Revision {
+				retry = probeRetry{revision: execution.Revision}
+			}
+			if retry.attempts < 5 {
+				retry.attempts++
+			}
+			retry.next = s.cfg.Clock.Now().Add(time.Duration(1<<retry.attempts) * 5 * time.Second)
+			retry.diagnostic = boundedError(err)
+			s.probeRetries[execution.ID] = retry
 			report.Failures = append(report.Failures, RecoveryFailure{ExecutionID: execution.ID, Error: boundedError(err)})
 			s.recordError(err)
 			continue
 		}
+		delete(s.probeRetries, execution.ID)
 		report.Probed++
 		if result.ObservedAt.IsZero() {
 			result.ObservedAt = s.cfg.Clock.Now()
@@ -697,6 +730,7 @@ func (s *Supervisor) Status() Status {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return Status{
+		Version: s.cfg.Version, ExecutableSHA256: s.cfg.ExecutableSHA256,
 		Running:    s.running,
 		SocketPath: s.cfg.SocketPath,
 		StateDir:   s.cfg.StateDir,

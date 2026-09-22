@@ -147,11 +147,12 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 		}
 		return nil
 	}
-	journal, problem := a.openWrite(c)
+	initialJournal, problem := a.openWrite(c)
 	if problem != nil {
 		return problem.WithDetail("client_key", clientKey)
 	}
-	defer journal.Close()
+	journal := scopedJournal{path: initialJournal.Path()}
+	initialJournal.Close()
 	prepared, found, err := journal.GetExecutionByMutation(ctx, mutation)
 	if err != nil {
 		return mapStoreError("recover prepared dispatch", err).WithDetail("client_key", clientKey)
@@ -207,7 +208,7 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 			if errors.Is(createErr, errMulticaIssueConflict) {
 				return output.Wrap(output.CodeConflict, "Multica issue client key conflicts with changed dispatch semantics", false, createErr).WithDetail("client_key", clientKey).WithDetail("execution_id", prepared.ID.String()).WithDetail("profile", profileName)
 			}
-			return output.Wrap(output.CodeRemoteFailure, "create or recover Multica dispatch issue", true, createErr).WithDetail("client_key", clientKey).WithDetail("execution_id", prepared.ID.String()).WithDetail("profile", profileName)
+			return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, createErr)
 		}
 		issueID, _ = issue["id"].(string)
 		identifier, _ = issue["identifier"].(string)
@@ -474,8 +475,10 @@ func resolveMulticaDispatchTarget(ctx context.Context, m *config.Multica, catalo
 		byID[runtime.ID] = runtime
 	}
 	var matches []dispatchTarget
+	rejected := map[string]int{}
 	for _, agent := range agents {
 		if agent.ArchivedAt != nil || strings.TrimSpace(agent.ID) == "" || strings.TrimSpace(agent.RuntimeID) == "" {
+			rejected["archived_or_unbound"]++
 			continue
 		}
 		switch strings.ToLower(strings.TrimSpace(agent.Status)) {
@@ -485,25 +488,29 @@ func resolveMulticaDispatchTarget(ctx context.Context, m *config.Multica, catalo
 		}
 		runtime, ok := byID[agent.RuntimeID]
 		if !ok || !strings.EqualFold(strings.TrimSpace(runtime.Status), "online") {
+			rejected["runtime_missing_or_offline"]++
 			continue
 		}
 		if canonicalProvider(runtime.Provider) != canonicalProvider(selected.Adapter) {
+			rejected["adapter_mismatch"]++
 			continue
 		}
 		hostMatch := route.Match(runtime.CustomName, catalog)
 		host, ok := uniqueTopDispatchHost(hostMatch.Hosts)
 		if !ok || host != selected.Host {
+			rejected["host_unmatched_or_mismatch"]++
 			continue
 		}
 		modelMatch := route.Match(agent.Model, catalog)
 		modelHit, ok := uniqueTopDispatchModel(modelMatch.Models)
 		if !ok || canonicalProvider(modelHit.Adapter) != canonicalProvider(selected.Adapter) || modelHit.Model != selected.Model {
+			rejected["model_unmatched_or_mismatch"]++
 			continue
 		}
 		matches = append(matches, dispatchTarget{AgentID: agent.ID, AgentName: agent.Name, RuntimeID: runtime.ID, RuntimeName: runtime.CustomName, Route: selected})
 	}
 	if len(matches) == 0 {
-		return dispatchTarget{}, output.NewError(output.CodeCapabilityUnavailable, "no online Multica agent matches the routed host, adapter, and model", false).WithDetail("host", selected.Host).WithDetail("adapter", selected.Adapter).WithDetail("model", selected.Model)
+		return dispatchTarget{}, output.NewError(output.CodeCapabilityUnavailable, "no online Multica agent matches the routed host, adapter, and model", false).WithDetail("host", selected.Host).WithDetail("adapter", selected.Adapter).WithDetail("model", selected.Model).WithDetail("rejection_counts", rejected).WithDetail("required_match", []string{"reviewed host alias", "exact adapter and model", "non-archived agent", "online runtime"}).WithActions(output.NextAction{Label: "Inspect configured route constraints", Argv: []string{"agentctl", "route", "explain", selected.Host + " " + selected.Model}, SideEffectClass: output.ReadOnly, Preconditions: []string{"a configured alias is not proof of a live Multica runtime"}})
 	}
 	if len(matches) > 1 {
 		names := make([]string, 0, len(matches))

@@ -291,17 +291,17 @@ func runMulticaIssueMutation(ctx context.Context, operation string, argv []strin
 		if strings.Contains(message, "conflicts with the current state") || strings.Contains(message, "client key conflict") || strings.Contains(message, "issue_client_key_conflict") {
 			return nil, fmt.Errorf("%w: Multica rejected changed semantics", errMulticaIssueConflict)
 		}
-		return nil, fmt.Errorf("Multica issue %s failed (%T)", operation, err)
+		return nil, classifyOperation(ctx, err, stderr.String())
 	}
 	var result map[string]any
 	dec := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
 	dec.UseNumber()
 	if err := dec.Decode(&result); err != nil {
-		return nil, errors.New("Multica returned invalid JSON")
+		return nil, &operationDiagnostic{Category: "invalid_json", ExitCode: 0, Retryable: true, RemoteCreationUncertain: true}
 	}
 	var extra any
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return nil, errors.New("Multica returned trailing output")
+		return nil, &operationDiagnostic{Category: "trailing_output", ExitCode: 0, Retryable: true, RemoteCreationUncertain: true}
 	}
 	return result, nil
 }
