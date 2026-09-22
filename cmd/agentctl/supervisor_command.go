@@ -333,8 +333,8 @@ func (b pathSupervisorExecutions) ApplyProbe(ctx context.Context, id string, res
 
 type journalSupervisorOutbox struct{ path string }
 
-func (b journalSupervisorOutbox) withJournal(fn func(*store.Journal) error) error {
-	journal, err := openJournalWithRetry(b.path, store.Options{})
+func (b journalSupervisorOutbox) withJournal(ctx context.Context, fn func(*store.Journal) error) error {
+	journal, err := openJournalWithRetryContext(ctx, b.path, store.Options{})
 	if err != nil {
 		return err
 	}
@@ -344,7 +344,7 @@ func (b journalSupervisorOutbox) withJournal(fn func(*store.Journal) error) erro
 
 func (b journalSupervisorOutbox) ListPending(ctx context.Context) ([]agentruntime.OutboxRecord, error) {
 	var items []store.DeliveryRecord
-	err := b.withJournal(func(journal *store.Journal) error {
+	err := b.withJournal(ctx, func(journal *store.Journal) error {
 		var err error
 		items, err = journal.ListPendingDeliveries(ctx)
 		return err
@@ -359,18 +359,18 @@ func (b journalSupervisorOutbox) ListPending(ctx context.Context) ([]agentruntim
 	return result, nil
 }
 func (b journalSupervisorOutbox) MarkAcknowledged(ctx context.Context, id string) error {
-	return b.withJournal(func(journal *store.Journal) error { return journal.Ack(ctx, id) })
+	return b.withJournal(ctx, func(journal *store.Journal) error { return journal.Ack(ctx, id) })
 }
 func (b journalSupervisorOutbox) ScheduleRetry(ctx context.Context, id string, next time.Time, reason string) error {
-	return b.withJournal(func(journal *store.Journal) error { return journal.Retry(ctx, id, next, reason) })
+	return b.withJournal(ctx, func(journal *store.Journal) error { return journal.Retry(ctx, id, next, reason) })
 }
 func (b journalSupervisorOutbox) MarkDeadLetter(ctx context.Context, id, reason string) error {
-	return b.withJournal(func(journal *store.Journal) error { return journal.DeadLetter(ctx, id, reason) })
+	return b.withJournal(ctx, func(journal *store.Journal) error { return journal.DeadLetter(ctx, id, reason) })
 }
 
 func (b journalSupervisorOutbox) BeginAttempt(ctx context.Context, id string) (agentruntime.OutboxRecord, error) {
 	var item store.DeliveryRecord
-	err := b.withJournal(func(journal *store.Journal) error {
+	err := b.withJournal(ctx, func(journal *store.Journal) error {
 		var err error
 		item, err = journal.BeginDeliveryAttempt(ctx, id)
 		return err
@@ -387,7 +387,7 @@ type callbackTransport struct {
 }
 
 func (t callbackTransport) Deliver(ctx context.Context, record agentruntime.OutboxRecord) error {
-	journal, err := openJournalWithRetry(t.journalPath, store.Options{ReadOnly: true})
+	journal, err := openJournalWithRetryContext(ctx, t.journalPath, store.Options{ReadOnly: true})
 	if err != nil {
 		return &supervisor.RetryableDeliveryError{Err: err}
 	}

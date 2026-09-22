@@ -970,12 +970,12 @@ func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c comm
 	if problem != nil {
 		return problem
 	}
-	journal, problem := a.openWrite(c)
+	journal, problem := a.openRead(c)
 	if problem != nil {
 		return problem
 	}
-	defer journal.Close()
 	execution, err := journal.GetExecution(ctx, id)
+	_ = journal.Close()
 	if err != nil {
 		return mapStoreError("read execution", err)
 	}
@@ -996,6 +996,11 @@ func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c comm
 	if err := runtime.Cancel(ctx, adapter.CancelRequest{Ref: ref, Signal: "term", Grace: 5 * time.Second}); err != nil {
 		return mapAdapterError("native cancellation failed", err).WithDetail("execution_id", id.String())
 	}
+	journal, problem = a.openWrite(c)
+	if problem != nil {
+		return problem
+	}
+	defer journal.Close()
 	now := a.now().UTC()
 	execution, err = commitCancellation(ctx, journal, execution, now)
 	if err != nil {

@@ -619,7 +619,9 @@ func (e *Engine) updateCASFromRevision(ctx context.Context, desired model.Execut
 		if err != nil {
 			return model.Execution{}, wrapError("get_execution", desired.Adapter, err)
 		}
-		if sourceRevision != 0 && current.State.Terminal() && current.Revision > sourceRevision {
+		// Revision-bound observations cannot overwrite newer evidence, even
+		// when the newer execution is still nonterminal.
+		if sourceRevision != 0 && current.Revision > sourceRevision {
 			return current, nil
 		}
 		desired.Revision = current.Revision
@@ -635,6 +637,7 @@ func (e *Engine) updateCASFromRevision(ctx context.Context, desired model.Execut
 		desired.SupersededBy = current.SupersededBy
 		desired.Promotion = current.Promotion
 		desired.TaskContract = current.TaskContract
+		desired.LastOperationFailure = current.LastOperationFailure
 		if current.State.Terminal() && current.State != desired.State {
 			desired.State = current.State
 			desired.TerminalAt = current.TerminalAt

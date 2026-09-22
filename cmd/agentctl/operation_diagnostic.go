@@ -36,29 +36,33 @@ func classifyOperation(ctx context.Context, err error, stderr string) *operation
 	case strings.Contains(text, "unknown flag"), strings.Contains(text, "unknown option"), strings.Contains(text, "unrecognized argument"), strings.Contains(text, "unexpected argument"):
 		d.Category = "invalid_arguments"
 		d.Retryable = false
-		d.RemoteCreationUncertain = false
 	case strings.Contains(text, "not authenticated"), strings.Contains(text, "unauthorized"), strings.Contains(text, "login required"):
 		d.Category = "authentication_required"
 		d.Retryable = false
-		d.RemoteCreationUncertain = false
 	case strings.Contains(text, "permission denied"), strings.Contains(text, "forbidden"):
 		d.Category = "authorization_denied"
 		d.Retryable = false
-		d.RemoteCreationUncertain = false
 	case strings.Contains(text, "timed out"), strings.Contains(text, "timeout"):
 		d.Category = "timeout"
 	}
 	return d
 }
-func (a *app) dispatchFailure(ctx context.Context, c common, id ids.ExecutionID, clientKey, profile string, cause error) *output.Error {
+func (a *app) dispatchFailure(ctx context.Context, c common, id ids.ExecutionID, clientKey, profile, stage string, cause error) *output.Error {
 	d := &operationDiagnostic{Category: "upstream_failure", ExitCode: -1, Retryable: true, RemoteCreationUncertain: true}
 	var classified *operationDiagnostic
 	if errors.As(cause, &classified) {
 		d = classified
 	}
-	problem := output.Wrap(output.CodeRemoteFailure, "create or recover Multica dispatch issue", d.Retryable, cause).
+	// Once an issue is bound, recovery concerns reading/activating that exact
+	// issue. Stderr alone never proves that an issue-create call had no effect.
+	if stage != "issue_create" {
+		copy := *d
+		copy.RemoteCreationUncertain = false
+		d = &copy
+	}
+	problem := output.Wrap(output.CodeRemoteFailure, "Multica dispatch operation failed", d.Retryable, cause).
 		WithDetail("client_key", clientKey).WithDetail("execution_id", id.String()).WithDetail("profile", profile).
-		WithDetail("stage", "issue_create").WithDetail("diagnostic", d).
+		WithDetail("stage", stage).WithDetail("diagnostic", d).
 		WithDetail("recovery", "inspect status; retry the original dispatch with the same key and inputs after resolving the cause; never allocate a replacement key for an uncertain creation").
 		WithActions(output.NextAction{Label: "Inspect dispatch and last operation failure", Argv: []string{"agentctl", "status", id.String()}, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 	// The original operation may have been cancelled. Record only bounded metadata
@@ -79,7 +83,7 @@ func (a *app) dispatchFailure(ctx context.Context, c common, id ids.ExecutionID,
 			break
 		}
 		attempt++
-		e.LastOperationFailure = &model.OperationFailure{Stage: "issue_create", Category: d.Category, UpstreamExitCode: d.ExitCode, Retryable: d.Retryable, RemoteCreationUncertain: d.RemoteCreationUncertain, RecordedAt: a.now().UTC()}
+		e.LastOperationFailure = &model.OperationFailure{Stage: stage, Category: d.Category, UpstreamExitCode: d.ExitCode, Retryable: d.Retryable, RemoteCreationUncertain: d.RemoteCreationUncertain, RecordedAt: a.now().UTC()}
 		_, err = j.UpdateExecution(recordCtx, e, e.Revision)
 		if err == nil {
 			return problem.WithDetail("diagnostic_recorded", true)

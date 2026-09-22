@@ -27,6 +27,9 @@ mkdir -p "$AGENTCTL_TEST_CAPTURE"
 case "$*" in
   *"issue cancel-task"*)
     printf '%s\n' "$*" >> "$AGENTCTL_TEST_CAPTURE/cancel.argv"
+    if [ -n "${AGENTCTL_TEST_PROBE_BINARY:-}" ]; then
+      "$AGENTCTL_TEST_PROBE_BINARY" -test.run=^TestJournalProcessProbe$ >&2
+    fi
     printf '%s\n' '{"accepted":true}'
     ;;
   *"event list"*)
