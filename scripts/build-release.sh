@@ -9,7 +9,7 @@ MAIN_PKG=${MAIN_PKG:-./cmd/agentctl}
 VERSION=${VERSION:-}
 TARGETS=${TARGETS:-}
 PYTHON=${PYTHON:-python3}
-MIN_RELEASE_GO_VERSION=${MIN_RELEASE_GO_VERSION:-go1.25.12}
+MIN_RELEASE_GO_VERSION=${MIN_RELEASE_GO_VERSION:-go1.26.6}
 
 die() { printf 'error: %s\n' "$*" >&2; exit 2; }
 usage() {
