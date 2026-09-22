@@ -673,7 +673,7 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 		return problem
 	}
 	defer journal.Close()
-	execution, outcome, problem := dereferenceResult(ctx, journal, id, opts)
+	execution, outcome, problem := dereferenceResult(ctx, journal, id, opts, renderer.Mode)
 	if problem != nil {
 		return problem
 	}
@@ -702,7 +702,7 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 // dereferenceResult is the single-execution result contract. Batch collection
 // routes through it unchanged so conflicted evidence, nonterminal state, and
 // --allow-empty behave identically whether one id or a set was requested.
-func dereferenceResult(ctx context.Context, journal *store.Journal, id ids.ExecutionID, opts resultOptions) (model.Execution, model.Outcome, *output.Error) {
+func dereferenceResult(ctx context.Context, journal *store.Journal, id ids.ExecutionID, opts resultOptions, mode output.Mode) (model.Execution, model.Outcome, *output.Error) {
 	execution, err := journal.GetExecution(ctx, id)
 	if err != nil {
 		return model.Execution{}, model.Outcome{}, mapStoreError("read execution result", err)
@@ -711,13 +711,16 @@ func dereferenceResult(ctx context.Context, journal *store.Journal, id ids.Execu
 		return execution, model.Outcome{}, outcomeError(output.CodeUnknownState, "execution evidence is conflicted", execution)
 	}
 	if !execution.State.Terminal() {
-		action := output.NextAction{Label: "Wait for completion or attention", Argv: []string{"agentctl", "await", id.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}}
+		problem := output.NewError(output.CodeInvalidState, "execution is not terminal", false).WithDetail("execution_id", id.String()).WithDetail("state", execution.State).WithDetail("last_operation_failure", execution.LastOperationFailure)
 		if execution.State == model.StateAttention {
-			action = output.NextAction{Label: "Inspect attention and resolve it in the native authority", Argv: []string{"agentctl", "events", id.String()}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}
-		} else if execution.State == model.StateStarting && execution.LastOperationFailure != nil {
-			action = output.NextAction{Label: "Inspect dispatch failure before replaying the original key and inputs", Argv: []string{"agentctl", "status", id.String()}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}
+			// A plain wait stops on attention, so recommending it here would
+			// return attention_required immediately and loop the caller.
+			return execution, model.Outcome{}, problem.WithActions(attentionNextActions(mode, execution)...)
 		}
-		return execution, model.Outcome{}, output.NewError(output.CodeInvalidState, "execution is not terminal", false).WithDetail("execution_id", id.String()).WithDetail("state", execution.State).WithDetail("last_operation_failure", execution.LastOperationFailure).WithActions(action)
+		if execution.State == model.StateStarting && execution.LastOperationFailure != nil {
+			return execution, model.Outcome{}, problem.WithActions(output.NextAction{Label: "Inspect dispatch failure before replaying the original key and inputs", Argv: []string{"agentctl", "status", id.String()}, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+		}
+		return execution, model.Outcome{}, problem.WithActions(output.NextAction{Label: "Wait for completion or attention", Argv: []string{"agentctl", "await", id.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}})
 	}
 	outcome, err := journal.GetOutcome(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
@@ -827,7 +830,7 @@ func (a *app) resultUnreconciled(ctx context.Context, renderer output.Renderer, 
 			labels = []string{}
 		}
 		item := unreconciledResultItem{ExecutionID: execution.ID.String(), Labels: labels, Adapter: execution.Adapter, Authority: execution.Authority, State: execution.State, TerminalAt: execution.TerminalAt}
-		_, outcome, problem := dereferenceResult(ctx, journal, execution.ID, opts)
+		_, outcome, problem := dereferenceResult(ctx, journal, execution.ID, opts, renderer.Mode)
 		if problem != nil {
 			item.Status = "skipped"
 			item.SkipReason = string(problem.Code)
