@@ -6,6 +6,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -33,7 +34,7 @@ func TestPublishedAdoptionPlanApplyAndDrift(t *testing.T) {
 	if doc.Result.State != "planned" || doc.Result.Digest == "" {
 		t.Fatal(buf.String())
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(root), ".agentctl-adoption-backups")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(home, ".local", "share", "agentctl", "adoption-backups")); !os.IsNotExist(err) {
 		t.Fatal("plan mutated disk")
 	}
 	apply := append(append([]string{}, args...), "--apply", "--expected-digest", doc.Result.Digest)
@@ -52,6 +53,9 @@ func TestPublishedAdoptionPlanApplyAndDrift(t *testing.T) {
 		t.Fatal(problem)
 	}
 	json.Unmarshal(buf.Bytes(), &doc)
+	if !strings.HasPrefix(doc.Result.Backup, filepath.Join(home, ".local", "share", "agentctl", "adoption-backups")+string(filepath.Separator)) {
+		t.Fatal("backup is inside a skill discovery root")
+	}
 	saved, err := os.ReadFile(filepath.Join(doc.Result.Backup, "SKILL.md"))
 	if err != nil || !bytes.Equal(saved, legacy) {
 		t.Fatal("backup did not preserve legacy bytes", err)

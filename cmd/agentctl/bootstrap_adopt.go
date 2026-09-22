@@ -152,6 +152,13 @@ func (a *app) bootstrapAdopt(renderer output.Renderer, args []string) *output.Er
 	if target == "" {
 		target = spec.Canonical(home)
 	}
+	if err := validateBootstrapPath(target); err != nil {
+		return output.Wrap(output.CodeUsage, "invalid adoption target", false, err)
+	}
+	backups := filepath.Join(home, ".local", "share", "agentctl", "adoption-backups")
+	if relative, err := filepath.Rel(target, backups); err != nil || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+		return output.NewError(output.CodeConflict, "backup directory must be outside the selected skills root", false)
+	}
 	path := filepath.Join(target, "agentctl-portable")
 	files, releases, err := adoptionSnapshot(path)
 	if err != nil {
@@ -170,7 +177,7 @@ func (a *app) bootstrapAdopt(renderer output.Renderer, args []string) *output.Er
 		if err != nil {
 			return output.Wrap(output.CodeInternal, "load manifest", false, err)
 		}
-		backups := filepath.Join(target, ".agentctl-adoption-backups")
+
 		if err := validateBootstrapPath(backups); err != nil {
 			return output.Wrap(output.CodeConflict, "unsafe backup path", false, err)
 		}

@@ -75,8 +75,9 @@ bundles continue to use their existing distribution installer.
 Only bundled published release hashes are eligible. An optional release manifest
 must match the same release, and an optional ownership marker must bind both
 assets. Extra files, edited content, symlinks, or writable-by-others assets return
-`conflict` without adoption. The original directory is retained below the hidden
-`.agentctl-adoption-backups` directory in the selected skills root, then replaced
+`conflict` without adoption. The original directory is retained below
+`HOME/.local/share/agentctl/adoption-backups`, outside the skill discovery roots,
+then replaced
 with current embedded assets and ownership metadata. If writing fails, the old
 directory is restored or its backup location is reported. A repeated apply with
 an old digest is a conflict and does not create another backup. Adoption does not
