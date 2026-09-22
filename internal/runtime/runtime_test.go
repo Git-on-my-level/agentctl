@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -906,5 +907,52 @@ func TestStableAdapterErrorMapping(t *testing.T) {
 	var runtimeErr *Error
 	if !errors.As(err, &runtimeErr) || runtimeErr.Code != CodeDependencyUnavailable || !runtimeErr.Retryable || runtimeErr.Adapter != "fixture" {
 		t.Fatalf("mapped error = %#v", err)
+	}
+}
+
+func TestProbeRevisionRacePreservesNewerNonterminalEvidence(t *testing.T) {
+	for _, authority := range []model.Authority{model.AuthorityNative, model.AuthorityMultica} {
+		for _, interleave := range []int{1, 2} {
+			t.Run(fmt.Sprintf("%s/read-%d", authority, interleave), func(t *testing.T) {
+				session := fixtureSession("fixture", "fixture_session", "probe-revision-race", adapter.StateRunning)
+				fake := &fakeAdapter{name: "fixture", launch: adapter.LaunchResult{Session: session}}
+				registry := NewRegistry()
+				_ = registry.Register("fixture", func(AdapterSpec) (adapter.Adapter, error) { return fake, nil })
+				engine, journal, _ := testEngine(t, registry)
+				execution, err := engine.Launch(context.Background(), LaunchOptions{Adapter: AdapterSpec{Name: "fixture", Executable: "/opt/fixture"}, Request: adapter.LaunchRequest{Argv: []string{"/opt/fixture"}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				execution.Authority = authority
+				if authority == model.AuthorityMultica {
+					execution.Mode = model.ModeMultica
+				}
+				journal.executions[execution.ID] = execution
+				stale := unreachableProbe(execution, fixtureNow)
+				journal.getExecutionCall = 0
+				journal.beforeGetReturn = func(j *fakeJournal, id ids.ExecutionID, call int) {
+					if call != interleave || id != execution.ID {
+						return
+					}
+					current := j.executions[id]
+					current.Revision++
+					current.State = model.StateAttention
+					current.Liveness = model.LivenessBlocked
+					current.Observation = model.Observation{Source: model.ObservationDurableOutbox, Integrity: model.IntegrityVerified, ObservedAt: fixtureNow.Add(time.Second)}
+					current.LastOperationFailure = &model.OperationFailure{Stage: "issue_read", Category: "timeout", UpstreamExitCode: -1, Retryable: true, RecordedAt: fixtureNow}
+					j.executions[id] = current
+				}
+				if err := (SupervisorExecutions{Engine: engine}).ApplyProbe(context.Background(), execution.ID.String(), stale); err != nil {
+					t.Fatal(err)
+				}
+				stored, err := journal.GetExecution(context.Background(), execution.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if stored.Revision != execution.Revision+1 || stored.State != model.StateAttention || stored.Liveness != model.LivenessBlocked || stored.Observation.Integrity != model.IntegrityVerified || stored.LastOperationFailure == nil {
+					t.Fatalf("stale probe overwrote newer authority evidence: %#v", stored)
+				}
+			})
+		}
 	}
 }

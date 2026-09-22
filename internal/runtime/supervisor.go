@@ -232,20 +232,10 @@ func (b SupervisorExecutions) ApplyProbe(ctx context.Context, id string, result 
 		// envelope ApplyProbe actually read.
 		sourceRevision = execution.Revision
 	}
-	// Reprobe and ApplyProbe are separated by adapter work and a journal read.
-	// Once a newer revision has terminalized, a probe computed from the older
-	// envelope cannot add current authority evidence. In particular, never let
-	// an old restart-recovery failure replace verified terminal liveness and
-	// integrity with unreachable/unknown uncertainty.
-	staleProbe := result.Revision != 0 && result.Revision < execution.Revision
-	if staleProbe && execution.State.Terminal() {
-		return nil
-	}
-	// A live native runner may renew its lease in the same gap. Never let an
-	// unreachable/unknown conclusion computed from an older revision overwrite
-	// the newer verified runner lease.
-	staleNativeProbe := execution.Authority == model.AuthorityNative && staleProbe && activeNativeRunnerLease(execution, b.Engine.now())
-	if staleNativeProbe {
+	// A probe is evidence for exactly the revision it read. A newer envelope
+	// may contain a runner lease, authority progress, bindings or diagnostics;
+	// never replay the stale whole-envelope observation over it.
+	if result.Revision != 0 && result.Revision < execution.Revision {
 		return nil
 	}
 	nativeRunnerEcho := result.Source == string(model.ObservationNativeStream) && (result.Liveness == string(model.LivenessAlive) || result.Liveness == string(model.LivenessBlocked))
@@ -277,7 +267,7 @@ func (b SupervisorExecutions) ApplyProbe(ctx context.Context, id string, result 
 	if result.Liveness == string(model.LivenessUnreachable) || source == model.ObservationUnknown {
 		integrity = model.IntegrityDegraded
 	}
-	targetLiveness := normalizeLiveness(result.Liveness, execution.Liveness)
+	targetLiveness := normalizeLiveness(result.Liveness, livenessForState(state, execution.Liveness))
 	targetSourceState := sourceState(result.State)
 	if unchangedUnreachableUnknown(execution, state, targetLiveness, targetSourceState, source, integrity) {
 		// Reprobing an authority that cannot be observed after restart adds no new
@@ -286,18 +276,22 @@ func (b SupervisorExecutions) ApplyProbe(ctx context.Context, id string, result 
 		// execution revision on every supervisor cycle.
 		return nil
 	}
+	if execution.State.Terminal() && execution.State != state {
+		integrity = model.IntegrityConflicted
+		targetLiveness = model.LivenessUnknown
+	} else {
+		execution.State = state
+		execution.SourceState = targetSourceState
+		if state.Terminal() {
+			execution.TerminalAt = &observedAt
+		}
+	}
+	// Commit state and explicit liveness together. A second write would either
+	// race newer evidence or be rejected as stale after our own first write.
 	execution.Liveness = targetLiveness
-	updated, err := b.Engine.applyObservedStateFromRevision(ctx, execution, state, sourceState(result.State), model.Observation{Source: source, Integrity: integrity, ObservedAt: observedAt}, sourceRevision)
-	if err != nil {
-		return err
-	}
-	// applyObservedState derives ordinary liveness; preserve explicit
-	// unreachable/unknown evidence from restart recovery.
-	if result.Liveness == string(model.LivenessUnreachable) || result.Liveness == string(model.LivenessUnknown) {
-		updated.Liveness = normalizeLiveness(result.Liveness, updated.Liveness)
-		updated.Observation.Integrity = integrity
-		_, err = b.Engine.updateCASFromRevision(ctx, updated, sourceRevision)
-	}
+	execution.Observation = model.Observation{Source: source, Integrity: integrity, ObservedAt: observedAt}
+	execution.UpdatedAt = observedAt
+	_, err = b.Engine.updateCASFromRevision(ctx, execution, sourceRevision)
 	return err
 }
 

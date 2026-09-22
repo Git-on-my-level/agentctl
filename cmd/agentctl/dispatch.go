@@ -21,6 +21,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/route"
+	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
 type dispatchOptions struct {
@@ -208,34 +209,22 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 			if errors.Is(createErr, errMulticaIssueConflict) {
 				return output.Wrap(output.CodeConflict, "Multica issue client key conflicts with changed dispatch semantics", false, createErr).WithDetail("client_key", clientKey).WithDetail("execution_id", prepared.ID.String()).WithDetail("profile", profileName)
 			}
-			return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, createErr)
+			return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_create", createErr)
 		}
 		issueID, _ = issue["id"].(string)
 		identifier, _ = issue["identifier"].(string)
 		if strings.TrimSpace(issueID) == "" {
-			return output.NewError(output.CodeRemoteFailure, "Multica response omitted issue ID", true).WithDetail("client_key", clientKey).WithDetail("execution_id", prepared.ID.String())
+			return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_create", &operationDiagnostic{Category: "invalid_json", ExitCode: 0, Retryable: true, RemoteCreationUncertain: true})
 		}
-		if prepared.State != model.StateStarting {
-			return output.NewError(output.CodeInvalidState, "prepared dispatch changed before authority binding", false).WithDetail("execution_id", prepared.ID.String()).WithDetail("state", prepared.State)
+		bound, bindErr := bindDispatchIssue(ctx, journal, prepared.ID, issueID, a.now().UTC())
+		if bindErr != nil {
+			return mapStoreError("bind dispatched execution", bindErr).WithDetail("client_key", clientKey).WithDetail("execution_id", prepared.ID.String()).WithDetail("multica_identifier", identifier)
 		}
-		issueBinding, bindingErr := newDispatchBinding("multica_issue", issueID, ids.TypeIssue)
-		if bindingErr != nil {
-			return output.Wrap(output.CodeInternal, "create dispatch issue alias", false, bindingErr)
-		}
-		now := a.now().UTC()
-		prepared.SourceBindings = append(prepared.SourceBindings, issueBinding)
-		prepared.SourceState = dispatchStringPointer("issue_bound")
-		prepared.Capabilities = promotedCapabilities(now)
-		prepared.UpdatedAt = now
-		prepared.Observation = model.Observation{Source: model.ObservationDurableOutbox, Integrity: model.IntegrityVerified, ObservedAt: now}
-		prepared, err = journal.UpdateExecution(ctx, prepared, prepared.Revision)
-		if err != nil {
-			return mapStoreError("bind dispatched execution", err).WithDetail("client_key", clientKey).WithDetail("execution_id", prepared.ID.String()).WithDetail("multica_identifier", identifier)
-		}
+		prepared = bound
 	}
 	var currentIssue map[string]any
 	if err := runMulticaJSON(ctx, multicaBaseArgv(m, "issue", "get", issueID, "--output", "json"), &currentIssue); err != nil {
-		return output.Wrap(output.CodeRemoteFailure, "read tracked Multica dispatch issue", true, err).WithDetail("client_key", clientKey).WithDetail("execution_id", prepared.ID.String()).WithDetail("multica_identifier", identifier)
+		return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_read", err)
 	}
 	if currentIdentifier, _ := currentIssue["identifier"].(string); currentIdentifier != "" {
 		identifier = currentIdentifier
@@ -243,26 +232,19 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 	currentStatus, _ := currentIssue["status"].(string)
 	currentStatus = strings.ToLower(strings.TrimSpace(currentStatus))
 	if currentStatus == "" {
-		return output.NewError(output.CodeRemoteFailure, "Multica response omitted issue status", true).WithDetail("client_key", clientKey).WithDetail("execution_id", prepared.ID.String()).WithDetail("multica_identifier", identifier)
+		return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_read", &operationDiagnostic{Category: "invalid_json", ExitCode: 0, Retryable: true})
 	}
 	if currentStatus == "backlog" && dispatchStatus != "backlog" {
 		updateArgv := multicaBaseArgv(m, "issue", "update", issueID, "--status", dispatchStatus, "--output", "json")
 		if _, err := runMulticaIssueUpdate(ctx, updateArgv); err != nil {
-			return output.Wrap(output.CodeRemoteFailure, "activate recovered Multica dispatch issue", true, err).WithDetail("client_key", clientKey).WithDetail("execution_id", prepared.ID.String()).WithDetail("multica_identifier", identifier)
+			return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_activate", err)
 		}
 	}
-	if prepared.State == model.StateStarting {
-		now := a.now().UTC()
-		prepared.State = model.StateWaiting
-		prepared.Liveness = model.LivenessUnknown
-		prepared.SourceState = dispatchStringPointer("issue_created")
-		prepared.UpdatedAt = now
-		prepared.Observation = model.Observation{Source: model.ObservationDurableOutbox, Integrity: model.IntegrityVerified, ObservedAt: now}
-		prepared, err = journal.UpdateExecution(ctx, prepared, prepared.Revision)
-		if err != nil {
-			return mapStoreError("finalize dispatched execution", err).WithDetail("client_key", clientKey).WithDetail("execution_id", prepared.ID.String()).WithDetail("multica_identifier", identifier)
-		}
+	finalized, finalizeErr := finalizeDispatch(ctx, journal, prepared.ID, a.now().UTC())
+	if finalizeErr != nil {
+		return mapStoreError("finalize dispatched execution", finalizeErr).WithDetail("client_key", clientKey).WithDetail("execution_id", prepared.ID.String()).WithDetail("multica_identifier", identifier)
 	}
+	prepared = finalized
 	created := prepared
 	publicTarget := publicDispatchTarget(target)
 	issueAlias, ok := bindingAlias(created.SourceBindings, "multica_issue")
@@ -289,6 +271,60 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil
+}
+
+// Re-read inside a short local write lease after external I/O. Replays may
+// already have bound or advanced this execution; preserve their current state.
+func bindDispatchIssue(ctx context.Context, journal scopedJournal, id ids.ExecutionID, issueID string, now time.Time) (result model.Execution, err error) {
+	err = journal.with(ctx, false, func(j *store.Journal) error {
+		current, err := j.GetExecution(ctx, id)
+		if err != nil {
+			return err
+		}
+		if bound, ok := dispatchBindingOpaque(current.SourceBindings, "multica_issue"); ok {
+			if bound != issueID {
+				return fmt.Errorf("%w: dispatch issue binding differs", store.ErrConflict)
+			}
+			result = current
+			return nil
+		}
+		if current.State != model.StateStarting {
+			return fmt.Errorf("%w: dispatch advanced before issue binding", store.ErrConflict)
+		}
+		binding, err := newDispatchBinding("multica_issue", issueID, ids.TypeIssue)
+		if err != nil {
+			return err
+		}
+		current.SourceBindings = append(current.SourceBindings, binding)
+		current.SourceState = dispatchStringPointer("issue_bound")
+		current.Capabilities = promotedCapabilities(now)
+		current.UpdatedAt = now
+		current.Observation = model.Observation{Source: model.ObservationDurableOutbox, Integrity: model.IntegrityVerified, ObservedAt: now}
+		result, err = j.UpdateExecution(ctx, current, current.Revision)
+		return err
+	})
+	return
+}
+
+func finalizeDispatch(ctx context.Context, journal scopedJournal, id ids.ExecutionID, now time.Time) (result model.Execution, err error) {
+	err = journal.with(ctx, false, func(j *store.Journal) error {
+		current, err := j.GetExecution(ctx, id)
+		if err != nil {
+			return err
+		}
+		if current.State != model.StateStarting {
+			result = current
+			return nil
+		}
+		current.State = model.StateWaiting
+		current.Liveness = model.LivenessUnknown
+		current.SourceState = dispatchStringPointer("issue_created")
+		current.UpdatedAt = now
+		current.Observation = model.Observation{Source: model.ObservationDurableOutbox, Integrity: model.IntegrityVerified, ObservedAt: now}
+		result, err = j.UpdateExecution(ctx, current, current.Revision)
+		return err
+	})
+	return
 }
 
 func parseDispatch(args []string) (dispatchOptions, *output.Error) {
@@ -557,16 +593,16 @@ func runMulticaJSON(ctx context.Context, argv []string, destination any) error {
 	stderr.limit = 64 << 10
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("Multica read failed (%T)", err)
+		return classifyOperation(ctx, err, stderr.String())
 	}
 	dec := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
 	dec.UseNumber()
 	if err := dec.Decode(destination); err != nil {
-		return errors.New("Multica returned invalid JSON")
+		return &operationDiagnostic{Category: "invalid_json", ExitCode: 0, Retryable: true}
 	}
 	var extra any
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return errors.New("Multica returned trailing output")
+		return &operationDiagnostic{Category: "trailing_output", ExitCode: 0, Retryable: true}
 	}
 	return nil
 }

@@ -41,7 +41,7 @@
       ],
       "properties": {
         "stage": {
-          "const": "issue_create"
+          "enum": ["issue_create", "issue_read", "issue_activate"]
         },
         "category": {
           "enum": [

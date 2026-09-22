@@ -1,6 +1,6 @@
 module github.com/Git-on-my-level/agentctl
 
-go 1.25.12
+go 1.26.6
 
 require go.etcd.io/bbolt v1.3.11
 

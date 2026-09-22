@@ -10,14 +10,8 @@ permissions:
 
 jobs:
   verify:
-    name: Verify (Go ${{ matrix.go-version }})
+    name: Verify
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # Keep 1.26.5 as a compatibility-only check because branch protection
-        # still names it. Security scanning and release builds use 1.26.6.
-        go-version: ['1.25.12', '1.26.5', '1.26.6']
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -26,7 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: '1.26.6'
           cache: true
       - name: Run formatting, static checks, tests, schemas, links, and build
         run: make ci

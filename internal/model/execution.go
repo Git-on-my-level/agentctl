@@ -376,7 +376,7 @@ func (e Execution) Validate() error {
 		}
 	}
 	if f := e.LastOperationFailure; f != nil {
-		if f.Stage != "issue_create" || f.RecordedAt.IsZero() || f.UpstreamExitCode < -1 || f.UpstreamExitCode > 255 {
+		if (f.Stage != "issue_create" && f.Stage != "issue_read" && f.Stage != "issue_activate") || f.RecordedAt.IsZero() || f.UpstreamExitCode < -1 || f.UpstreamExitCode > 255 {
 			return errors.New("invalid operation failure metadata")
 		}
 		switch f.Category {

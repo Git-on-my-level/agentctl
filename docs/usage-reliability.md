@@ -1,16 +1,29 @@
 # Usage reliability and recovery
 
-Supervisor recovery uses a journal facade that opens bbolt only for each store
-operation. Adapter/network calls hold no journal handle. CAS revisions and event
-idempotency remain store-authoritative. Supervisor reprobes have a ten-second bound; explicit awaits retain their
-caller-selected deadline. Repeated
+Supervisor recovery and dispatch use a journal facade that opens bbolt only for
+each store operation. Promotion and cancellation close their read lease before
+external I/O and reacquire a write lease only for local commits. Adapter/network
+calls hold no journal handle. Promotion plans open the journal read-only. CAS
+revisions and event idempotency remain store-authoritative. Supervisor reprobes
+have a ten-second bound; explicit awaits retain their caller-selected deadline.
+Repeated
 failures back off per execution/revision from 10 to 160 seconds. A revised
 execution is eligible immediately. Deferred failures still count as degraded
 health. Backoff is in-memory scheduling, not an execution authority.
 
+A probe applies only to the revision it read, including the final CAS check;
+newer nonterminal evidence is preserved as well as terminal outcomes. State and
+liveness commit together. Dispatch re-reads under short local write leases when
+binding/finalizing, so concurrent same-key recovery preserves the same execution
+and issue alias, historical diagnostics, and any newer authority progress.
+
 `status` may contain `last_operation_failure` with `stage`, allowlisted
 `category`, `upstream_exit_code`, `retryable`, `remote_creation_uncertain`, and
-`recorded_at`. It is historical failure metadata, not a terminal outcome. No raw
+`recorded_at`. Stages are `issue_create`, `issue_read`, and `issue_activate`.
+Missing issue IDs/statuses are bounded `invalid_json` failures. Stderr can
+classify a problem but cannot prove that creation did not occur; only an already
+bound issue makes `remote_creation_uncertain` false for read/activation failures.
+It is historical failure metadata, not a terminal outcome. No raw
 upstream stderr, prompt or credential is stored. Failed dispatches keep their
 reserved key and bindings. The caller fixes the category then replays exactly
 the same inputs and key; a timeout or malformed response does not prove that the
@@ -26,8 +39,9 @@ Inspect `bootstrap status` for installed skill compatibility. These commands are
 read-only; neither a mismatch nor a failed check implicitly updates/restarts.
 
 A pending `result` supplies a mutating `await` next action for ordinary running
-work, read-only event inspection for attention, and read-only status inspection
-for a failed starting dispatch. An uncertain dispatch must first be resolved
+work, the attention escapes (read-only evidence, a read-only status re-check, and
+`--ignore-attention` wait) when attention is required, and read-only status
+inspection for a failed starting dispatch. An uncertain dispatch must first be resolved
 using its original key. Unknown adapter errors enumerate
 known names. Unknown `ps`/`list` and `agents` commands direct help to `recent` and
 `delegate`. Prompt-root errors include a structured `repair`: remove the file

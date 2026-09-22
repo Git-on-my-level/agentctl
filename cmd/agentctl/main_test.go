@@ -24,6 +24,28 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
+// Tests that omit --journal must never contend with or mutate the operator's
+// live journal. Individual tests can still select a fixture with t.Setenv.
+func TestMain(m *testing.M) {
+	root, err := os.MkdirTemp("", "agentctl-cli-tests-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	resolved, err := filepath.EvalSymlinks(root)
+	if err == nil {
+		err = os.Setenv("AGENTCTL_STATE_HOME", resolved)
+	}
+	if err != nil {
+		_ = os.RemoveAll(root)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(root)
+	os.Exit(code)
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("delivery failed") }
