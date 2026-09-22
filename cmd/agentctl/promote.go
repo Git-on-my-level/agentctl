@@ -130,12 +130,12 @@ func (a *app) promoteCommand(ctx context.Context, renderer output.Renderer, c co
 	if problem != nil {
 		return problem
 	}
-	journal, problem := a.openWrite(c)
+	journal, problem := a.openRead(c)
 	if problem != nil {
 		return problem
 	}
-	defer journal.Close()
 	source, err := journal.GetExecution(ctx, sourceID)
+	_ = journal.Close()
 	if err != nil {
 		return mapStoreError("read source execution", err)
 	}
@@ -209,6 +209,12 @@ func (a *app) promoteCommand(ctx context.Context, renderer output.Renderer, c co
 	if supersede {
 		destination.Supersedes = []ids.ExecutionID{source.ID}
 	}
+	// Hold the write lease only for local linking, after remote creation.
+	journal, problem = a.openWrite(c)
+	if problem != nil {
+		return problem.WithDetail("client_key", clientKey)
+	}
+	defer journal.Close()
 	created, reused, err := journal.CreateExecution(ctx, destination, contracts.MutationKey{Scope: "promotion:create", Key: clientKey, InputDigest: inputDigest})
 	if err != nil {
 		return mapStoreError("record promoted execution", err)

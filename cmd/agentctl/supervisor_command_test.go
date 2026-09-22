@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/model"
+	agentruntime "github.com/Git-on-my-level/agentctl/internal/runtime"
+	"github.com/Git-on-my-level/agentctl/internal/store"
 	"github.com/Git-on-my-level/agentctl/internal/supervisor"
 )
 
@@ -169,5 +172,36 @@ func TestLongRunningSupervisorReleasesJournalBetweenCycles(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("supervisor did not shut down")
+	}
+}
+
+func TestSupervisorJournalOperationsHonorCancellationWhileLocked(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	journal, err := store.Open(path, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	outbox := journalSupervisorOutbox{path: path}
+	for _, operation := range []func() error{
+		func() error { _, err := outbox.ListPending(ctx); return err },
+		func() error { return outbox.MarkAcknowledged(ctx, "unused") },
+		func() error { return outbox.ScheduleRetry(ctx, "unused", time.Now(), "test") },
+		func() error { return outbox.MarkDeadLetter(ctx, "unused", "test") },
+		func() error { _, err := outbox.BeginAttempt(ctx, "unused"); return err },
+		func() error { return (callbackTransport{journalPath: path}).Deliver(ctx, agentruntime.OutboxRecord{}) },
+	} {
+		done := make(chan error, 1)
+		go func() { done <- operation() }()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("got %v; want cancellation", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("cancelled operation waited for journal lock")
+		}
 	}
 }

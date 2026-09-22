@@ -13,9 +13,9 @@ func TestOperationDiagnosticNeverRetainsUpstreamText(t *testing.T) {
 		text, category   string
 		retry, uncertain bool
 	}{
-		{"unknown flag: --description-stdin secret=private-prompt", "invalid_arguments", false, false},
-		{"not authenticated: token=private-prompt", "authentication_required", false, false},
-		{"permission denied private-prompt", "authorization_denied", false, false},
+		{"unknown flag: --description-stdin secret=private-prompt", "invalid_arguments", false, true},
+		{"not authenticated: token=private-prompt", "authentication_required", false, true},
+		{"permission denied private-prompt", "authorization_denied", false, true},
 		{"network timeout private-prompt", "timeout", true, true},
 		{"private-prompt arbitrary upstream error", "upstream_failure", true, true},
 	} {
