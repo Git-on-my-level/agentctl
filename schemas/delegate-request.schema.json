@@ -81,6 +81,9 @@
               "minLength": 1,
               "maxLength": 256,
               "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+            },
+            "access": {
+              "enum": ["coding", "read_only"]
             }
           }
         }
