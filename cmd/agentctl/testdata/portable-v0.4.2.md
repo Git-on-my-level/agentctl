@@ -14,43 +14,6 @@ Resolve the binary from `AGENTCTL_BIN`, `PATH`, or
 `$HOME/.local/bin/agentctl`. If it is unavailable, stop with
 `dependency_unavailable`; do not inspect native session stores as a fallback.
 
-## First recipe for Hermes, Claude Code, and Codex
-
-For an explicitly requested model, use `delegate` with a schema-versioned
-request file and only the user's constraints. Read `help delegate`, plan with
-`--plan`, then execute the same request and key with `--wait --content` (remove
-`--plan`). Do not reconstruct a native model slug from an alias. Bare adapters
-or missing remote runtimes are unresolved constraints, never substitution grants.
-
-Hermes terminal processes, Claude Code Bash tasks, and Codex terminal sessions
-can own a foreground agentctl process using their supported process lifecycle.
-Retain that process handle and collect its completion. `run --background` is
-rejected since v0.6.0. Use explicit Multica dispatch for durable task ownership.
-The delegate plan reports ownership and collection semantics before launch.
-
-For an external scratch prompt, replace `--prompt-file` with `--prompt-stdin`
-and redirect the file into agentctl. Keep the verified `--prompt-delivery`
-unchanged: source describes agentctl input, delivery describes native input.
-An error includes a structured repair; it never copies prompt bytes into logs.
-
-For results, prefer `result <id> --content` for exact text, `--summary` for compact
-metadata, and `result --unreconciled --summary` for bounded bulk collection.
-A pending result supplies an `await` action. Check the agentctl exit status and
-JSON `ok` before inspecting fields; piping through `head` can hide a failing
-exit code. Completion, delivery, and acceptance remain distinct.
-
-A failed dispatch retains `last_operation_failure` in `status`. Resolve its
-category and retry the original inputs with the original idempotency key.
-Uncertain remote creation is never a reason to allocate a new key.
-`update status` distinguishes observed binary version from installation records;
-inspect bootstrap and supervisor status before treating an update as complete.
-A failed installer reports rollback separately from bootstrap assets retained.
-For a legacy skill collision, `help bootstrap adopt` describes a read-only plan
-and explicit digest-bound adoption with a backup. Never overwrite custom skills.
-A supervisor holds one state-directory lock through shutdown. Existing custom
-launchers require explicit hash-bound wrapper registration; ordinary upgrades
-preserve registered wrappers and refuse drift.
-
 ## Discover just in time
 
 Start with the one question relevant to the task:
@@ -60,18 +23,15 @@ agentctl doctor
 agentctl help <topic>
 ```
 
-Useful topics include `delegate`, `run`, `dispatch`, `recent`, `fanout`, `result`, `await`, `subscribe`, `capabilities`,
+Useful topics include `run`, `dispatch`, `recent`, `fanout`, `result`, `await`, `subscribe`, `capabilities`,
 `bootstrap update`, `skills`, `promote`, `knowledge`, and `context`. Follow returned
 read-only `next_actions` for deeper discovery. Do not preload every topic or
 memorize version-specific flags in place of help.
 
 `agentctl bootstrap update` reconciles the embedded portable skill and a short
-delegation pointer in detected harness instruction files. It appends a marked
-block to existing unmarked files, creates missing documented files except OMP,
-and repairs truncated or duplicate agentctl markers. Opt out with
-`bootstrap.instruction_pointers=off` or `--no-instruction-pointers`. Use
-`--dry-run` when inspecting another home or narrowing an unfamiliar
-installation.
+delegation pointer in detected, existing harness instruction files; it never
+creates those instruction files. Use `--dry-run` when inspecting another home
+or narrowing an unfamiliar installation.
 
 Exact release builds default to automatic updates. The first work-creating
 invocation due on each UTC day starts a detached short-lived worker that verifies the matching
@@ -100,49 +60,7 @@ Never infer a capability from an adapter name. If doctor or capabilities says
 a requirement is unavailable, report it; do not weaken the operation, invent a
 native command, or scrape private harness state.
 
-## Structured delegation: default for named-model requests
-
-Read `agentctl help delegate`. Translate the user's explicit constraints into a
-request; leave everything else absent. “grok” means `{"family":"grok"}`;
-“cursor grok 4.6” means `{"harness":"cursor","family":"grok","version":"4.6"}`.
-Other word orders produce the same constraints. Never guess a version or native
-slug from memory. Add explicit speed/effort under `settings` when requested.
-
-```json
-{"schema_version":1,"request_key":"review-01","selector":{"family":"grok"}}
-```
-
-```bash
-agentctl delegate --request-file request.json --prompt-file task.md --plan
-agentctl delegate --request-file request.json --prompt-file task.md --wait
-```
-
-Agentctl resolves reviewed preferred entries, fills compatible defaults, and
-builds native flags. Inspect `requested`, `resolved`, and `provenance`. Conflicts
-or ambiguity launch nothing; use returned candidates to resolve only the missing
-choice. Config needs explicit family/version metadata. Omitted host or `local` selects
-this machine; `route.this_host` optionally supplies its configured name.
-Workspace trust is a separate `delegation.cursor_workspace_trust` grant, never
-implied by a model preference. Unavailable settings or hosts must not trigger
-silent substitution or fallback to expert `run`.
-
-Keep one stable request key for one logical task. Retry the same inputs to recover
-its original execution and answer, including after defaults change. A changed
-prompt/selector/cwd/authority/timeout/labels conflicts. An uncertain launch is
-reported unknown and never automatically relaunched. A new key starts new work.
-Keys are local to the profile and journal; retain that context with the execution
-ID. Do not put secrets in request metadata. Prompt bytes remain separate.
-
-`--wait` requires completed work with a nonempty stored answer and acknowledges
-collection after delivery. `--content` returns exact answer text. Explicit
-`--require-result-source` and `--min-result-bytes` assertions are available.
-This is foreground-owned native work, with optional `--timeout`; background and
-external context handles are not supported by delegate yet. Plans are read-only.
-Multica delegation is rejected until its result/settings contract is available;
-explicit `dispatch` retains its existing lifecycle-only guarantees. Requested
-model/settings are not proof of provider-side model identity or task correctness.
-
-## Expert native path
+## Golden path
 
 Pass native argv exactly after `--`; agentctl does not shell-reparse it:
 
@@ -159,52 +77,41 @@ mechanism. Prompt bytes are bounded and are not persisted by agentctl:
 ```bash
 agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- codex exec --json
 agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust
-agentctl run --prompt-stdin --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust < "/absolute/path/task.md"
+agentctl run --background --prompt-stdin --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust < "/absolute/path/task.md"
 agentctl run --prompt-stdin --prompt-delivery stdin -- codex exec --json - < "$PWD/task.md"
 ```
 
 Never infer prompt delivery from an adapter name. Use `argv` only for a native
 form that expects a positional prompt and `stdin` only for a verified
-stdin-reading form. Use `agentctl fanout --manifest <path>` to delegate shared
-or distinct tasks through explicit native argv vectors. It is foreground-owned,
-returns independent child IDs, and never synthesizes results or creates a group
-authority. The v1 manifest requires `schema_version`, `children[].argv`, and a
-shared or per-child `prompt_file`. Child prompts replace the shared prompt;
-`prompt_delivery` also supports a child override. Optional unique child `name`
-values correlate responses; shared and child `labels` persist for rediscovery.
-Prompt paths and explicit relative child working directories are manifest-relative;
-an omitted child `cwd` inherits the invoking directory.
-
-Every batch preflights all children before any task launch. Preflight can run
-native read-only version probes and is not an atomic launch reservation.
-`--fail-fast` cancels admitted siblings and skips queued children. Inspect
-`launch_attempted`, `recorded`, `state`, and `error` separately: an allocated ID
-or an attempted launch is not proof of a journaled execution or successful work.
-On failure the report is in `error.details.fanout`. Existing IDs conflict;
-fan-out has no automatic replay, retry, or restart durability. Do not blindly
-rerun a partially executed manifest. Collect journaled results individually.
-Discover the normative shape and limits with `agentctl help fanout` and
-`agentctl schema list`.
+stdin-reading form. Use `agentctl fanout --manifest <path>` when one prompt must
+run through several explicit native argv vectors; fan-out is foreground-owned,
+returns independent child execution IDs, and does not synthesize their results.
+The v1 manifest requires `schema_version`, `prompt_file`, and `children[].argv`;
+set `prompt_delivery` globally or per child. Prompt files and relative child
+working directories resolve from the manifest directory, while an omitted
+child `cwd` inherits the invoking process directory. Discover the normative
+shape with `agentctl help fanout` and `agentctl schema list`.
 
 `run` has no default wall-clock timeout. Add `--timeout` only when the caller
 requires a bound. Native work remains owned by the invoking agentctl process;
 the callback supervisor does not change launch ownership or durability.
 
-For long work that must outlive this process, use Multica `dispatch`. Do not
-pass `run --background`; that flag is rejected because agents treat its
-journaled exit 0 as task completion. Parent-background a foreground
-`agentctl run` when the parent already owns process lifetime.
+For long work that should outlive the launching shell, use explicit background
+ownership and exact metadata labels:
 
 ```bash
-agentctl run --label review --prompt-file "$PWD/task.md" --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust
+agentctl run --background --label review --prompt-file "$PWD/task.md" --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust
 agentctl recent --state nonterminal --liveness alive --label review
 agentctl recent --liveness unreachable
 agentctl recent --unreconciled
 ```
 
-Native work remains owned by the invoking agentctl process. A direct adapter
+The detached host-local worker remains the native owner; it is not
+restart-durable authority and has no controlling terminal. A direct adapter
 does not gain cross-process cancellation; add `--timeout` when a hard stop is
-required unless capabilities advertise a durable cancel route. Use `recent` to recover
+required unless capabilities advertise a durable cancel route. Background mode
+accepts argv, prompt files, and prompt stdin; the parent materializes prompt
+bytes through a one-shot pipe before detaching. Use `recent` to recover
 execution IDs from the local journal. It is read-only, newest-first,
 prompt/result-record-free, and does not aggregate other hosts. Repeated label
 filters use AND semantics. `--unreconciled` lists terminal executions whose

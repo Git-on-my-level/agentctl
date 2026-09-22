@@ -44,6 +44,12 @@ category and retry the original inputs with the original idempotency key.
 Uncertain remote creation is never a reason to allocate a new key.
 `update status` distinguishes observed binary version from installation records;
 inspect bootstrap and supervisor status before treating an update as complete.
+A failed installer reports rollback separately from bootstrap assets retained.
+For a legacy skill collision, `help bootstrap adopt` describes a read-only plan
+and explicit digest-bound adoption with a backup. Never overwrite custom skills.
+A supervisor holds one state-directory lock through shutdown. Existing custom
+launchers require explicit hash-bound wrapper registration; ordinary upgrades
+preserve registered wrappers and refuse drift.
 
 ## Discover just in time
 

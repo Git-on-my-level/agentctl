@@ -31,6 +31,8 @@ type probeRetry struct {
 
 type Supervisor struct {
 	probeRetries map[string]probeRetry
+	startMu      sync.Mutex
+	stateLock    *os.File
 	mu           sync.RWMutex
 	cycle        sync.Mutex
 	cfg          Config
@@ -149,6 +151,8 @@ func (s *Supervisor) Config() Config {
 // and periodic cycle loop.  It does not start Tailnet HTTP; that interface is
 // exposed only through ServeTailnetHTTP with an explicit enabled config.
 func (s *Supervisor) Start(ctx context.Context) error {
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -168,6 +172,17 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		s.setFailed(err)
 		return err
 	}
+	lock, err := lockStateDir(s.cfg.StateDir)
+	if err != nil {
+		s.setFailed(err)
+		return err
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			_ = lock.Close()
+		}
+	}()
 	if err := ensureOwnerStateFile(s.cfg.StatePath); err != nil {
 		s.setFailed(err)
 		return err
@@ -181,6 +196,8 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	runCtx, startupCancel := context.WithCancel(ctx)
 	s.mu.Lock()
 	s.ln = ln
+	s.stateLock = lock
+	transferred = true
 	s.stop = make(chan struct{})
 	s.done = make(chan struct{})
 	s.shutdownDone = make(chan struct{})
@@ -288,6 +305,7 @@ type RPCResponse struct {
 
 func (s *Supervisor) serveConn(conn net.Conn) {
 	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	// A request is bounded and one JSON document per connection.  This avoids
 	// turning the local socket into an unbounded transcript or command channel.
 	dec := json.NewDecoder(io.LimitReader(conn, 64<<10))
@@ -377,8 +395,11 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 func (s *Supervisor) finishShutdown(done, shutdownDone chan struct{}) {
 	<-done
 	s.wg.Wait()
-	_ = removeOwnedSocket(s.cfg.SocketPath)
+	s.cycle.Lock()
+	s.cycle.Unlock()
 	s.mu.Lock()
+	_ = s.stateLock.Close()
+	s.stateLock = nil
 	s.health.State = HealthStopped
 	s.ln = nil
 	s.stopping = false
@@ -408,8 +429,9 @@ func (s *Supervisor) abortStartup(err error) {
 	close(stop)
 	_ = ln.Close()
 	close(done)
-	_ = removeOwnedSocket(s.cfg.SocketPath)
 	s.mu.Lock()
+	_ = s.stateLock.Close()
+	s.stateLock = nil
 	s.health.State = HealthStopped
 	s.stopping = false
 	s.workersStarted = false
@@ -730,6 +752,7 @@ func (s *Supervisor) Status() Status {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return Status{
+		PID:     os.Getpid(),
 		Version: s.cfg.Version, ExecutableSHA256: s.cfg.ExecutableSHA256,
 		Running:    s.running,
 		SocketPath: s.cfg.SocketPath,
@@ -907,6 +930,20 @@ func listenOwnerSocket(path string) (net.Listener, error) {
 		if !ownedByCurrentUser(info) {
 			return nil, fmt.Errorf("%w: socket %s is not owned by the current user", ErrInsecurePermissions, path)
 		}
+		// A pre-lock-version supervisor may still own this socket. A successful
+		// connect proves liveness even while its startup recovery blocks RPCs.
+		conn, dialErr := net.DialTimeout("unix", path, 250*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close()
+			return nil, ErrAlreadyRunning
+		}
+		if !errors.Is(dialErr, syscall.ECONNREFUSED) {
+			return nil, fmt.Errorf("%w: cannot prove socket stale", ErrSocketExists)
+		}
+		current, statErr := os.Lstat(path)
+		if statErr != nil || !os.SameFile(info, current) {
+			return nil, ErrSocketExists
+		}
 		if err := os.Remove(path); err != nil {
 			return nil, err
 		}
@@ -917,32 +954,18 @@ func listenOwnerSocket(path string) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, 0600); err != nil {
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	identity, err := os.Lstat(path)
+	if err != nil {
 		_ = ln.Close()
-		_ = os.Remove(path)
 		return nil, err
 	}
-	return ln, nil
-}
-
-func removeOwnedSocket(path string) error {
-	if err := rejectSymlinkComponents(path); err != nil {
-		return err
+	owned := &ownedListener{Listener: ln, path: path, identity: identity}
+	if err := os.Chmod(path, 0600); err != nil {
+		_ = owned.Close()
+		return nil, err
 	}
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSocket == 0 || info.Mode()&os.ModeSymlink != 0 {
-		return nil
-	}
-	if !ownedByCurrentUser(info) {
-		return fmt.Errorf("%w: socket %s is not owned by the current user", ErrInsecurePermissions, path)
-	}
-	return os.Remove(path)
+	return owned, nil
 }
 
 // rejectSymlinkComponents inspects every existing component with Lstat before

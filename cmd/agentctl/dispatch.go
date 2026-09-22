@@ -273,10 +273,33 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 	return nil
 }
 
+// Remote issue creation has already succeeded. Retry only the local write
+// lease, with the same identity and a bounded budget; never repeat remote I/O.
+func withDispatchMutation(ctx context.Context, journal scopedJournal, fn func(*store.Journal) error) error {
+	leaseCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	for {
+		err := journal.with(leaseCtx, false, fn)
+		if !errors.Is(err, store.ErrBusy) {
+			return err
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-leaseCtx.Done():
+			timer.Stop()
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return store.ErrBusy
+		case <-timer.C:
+		}
+	}
+}
+
 // Re-read inside a short local write lease after external I/O. Replays may
 // already have bound or advanced this execution; preserve their current state.
 func bindDispatchIssue(ctx context.Context, journal scopedJournal, id ids.ExecutionID, issueID string, now time.Time) (result model.Execution, err error) {
-	err = journal.with(ctx, false, func(j *store.Journal) error {
+	err = withDispatchMutation(ctx, journal, func(j *store.Journal) error {
 		current, err := j.GetExecution(ctx, id)
 		if err != nil {
 			return err
@@ -307,7 +330,7 @@ func bindDispatchIssue(ctx context.Context, journal scopedJournal, id ids.Execut
 }
 
 func finalizeDispatch(ctx context.Context, journal scopedJournal, id ids.ExecutionID, now time.Time) (result model.Execution, err error) {
-	err = journal.with(ctx, false, func(j *store.Journal) error {
+	err = withDispatchMutation(ctx, journal, func(j *store.Journal) error {
 		current, err := j.GetExecution(ctx, id)
 		if err != nil {
 			return err

@@ -109,6 +109,8 @@ manifest=$sharedir/install-manifest
 
 # Refuse symlinked installation directories before mkdir/copy. Checking after
 # mkdir would allow a symlinked bindir/share directory to redirect writes.
+[ ! -L "$target" ] || die "refusing symlinked executable: $target"
+[ ! -L "$manifest" ] || die "refusing symlinked manifest: $manifest"
 [ ! -L "$bindir" ] || die "refusing symlinked bin directory: $bindir"
 [ ! -L "$sharedir" ] || die "refusing symlinked share directory: $sharedir"
 
@@ -199,17 +201,59 @@ INSTALL_STAGE=binary_replace
 umask 077
 mkdir -p "$bindir" "$sharedir"
 
+# Keep old executable bytes until every required service check has passed.
+# Bootstrap owns separate file transactions; if it ran, report that its new
+# assets remain instead of claiming a whole-install rollback.
+transaction=$(mktemp -d "$sharedir/.install-transaction.XXXXXX")
+old_binary=0
+old_manifest=0
+[ ! -f "$target" ] || { cp -p "$target" "$transaction/binary"; old_binary=1; }
+[ ! -f "$manifest" ] || { cp -p "$manifest" "$transaction/manifest"; old_manifest=1; }
+committed=0
+bootstrap_attempted=0
+binary_changed=0
+tmp=
+manifest_tmp=
+finish_transaction() {
+  rc=$?
+  trap - EXIT
+  if [ "$committed" -eq 0 ] && [ "$binary_changed" -eq 1 ]; then
+    restored=1
+    if [ "$old_binary" -eq 1 ]; then mv -f "$transaction/binary" "$target" || restored=0; else rm -f "$target" || restored=0; fi
+    if [ "$old_manifest" -eq 1 ]; then mv -f "$transaction/manifest" "$manifest" || restored=0; else rm -f "$manifest" || restored=0; fi
+    service_restored=1
+    if [ "$supervisor_required" -eq 1 ] && [ "$INSTALL_STAGE" = supervisor_apply ]; then
+      if [ "$restored" -eq 1 ] && [ "$old_binary" -eq 1 ]; then
+        "$SUPERVISOR_INSTALLER" --agentctl "$target" --plan-with "$source_absolute" --state-dir "$supervisor_state_dir" --output json >/dev/null || service_restored=0
+      else service_restored=0; fi
+    fi
+    if [ "$restored" -eq 0 ] || [ "$service_restored" -eq 0 ]; then
+      printf 'AGENTCTL_INSTALL_ROLLBACK=incomplete\n' >&2
+      printf 'recovery backup: %s\n' "$transaction" >&2
+    else
+      if [ "$bootstrap_attempted" -eq 1 ]; then
+        printf 'AGENTCTL_INSTALL_ROLLBACK=binary_restored_bootstrap_retained\n' >&2
+      else printf 'AGENTCTL_INSTALL_ROLLBACK=restored\n' >&2; fi
+      rm -rf "$transaction"
+    fi
+  else rm -rf "$transaction"; fi
+  [ -z "$tmp" ] || rm -f "$tmp"
+  [ -z "$manifest_tmp" ] || rm -f "$manifest_tmp"
+  exit "$rc"
+}
+trap finish_transaction EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+
 tmp=$(mktemp "$bindir/.agentctl-install.XXXXXX")
-trap 'rm -f "$tmp"' EXIT
 cp "$SOURCE" "$tmp"
 chmod 0755 "$tmp"
 mv -f "$tmp" "$target"
-trap - EXIT
+binary_changed=1
 
 INSTALL_STAGE=manifest_write
 hash=$(sha256_file "$target")
 manifest_tmp=$(mktemp "$sharedir/.install-manifest.XXXXXX")
-trap 'rm -f "$manifest_tmp"' EXIT
 {
   printf '%s\n' 'manifest_version=1'
   printf 'target=%s\n' "$target"
@@ -217,13 +261,16 @@ trap 'rm -f "$manifest_tmp"' EXIT
 } >"$manifest_tmp"
 chmod 0600 "$manifest_tmp"
 mv -f "$manifest_tmp" "$manifest"
-trap - EXIT
-printf 'installed %s\n' "$target"
+
 
 if [ "$BINARY_ONLY" -eq 0 ]; then
   # Run the exact binary now installed, not the caller-supplied source path.
   INSTALL_STAGE=bootstrap_apply
+  bootstrap_attempted=1
   "$target" bootstrap update || die 'bootstrap update failed after binary installation'
   INSTALL_STAGE=supervisor_apply
   reconcile_supervisor "$target" "$target"
 fi
+
+committed=1
+printf 'installed %s\n' "$target"

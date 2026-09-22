@@ -125,3 +125,20 @@ fi
 [ ! -e "$target" ] && [ ! -e "$manifest" ] || fail 'uninstall left managed files'
 
 printf 'ok: binary install lifecycle is explicit, path-safe, and manifest-bound\n'
+
+# A failed bootstrap apply restores executable and manifest bytes, and reports
+# the separate bootstrap boundary rather than claiming a complete rollback.
+"$INSTALL" --binary "$SOURCE" --prefix "$PREFIX" --binary-only >/dev/null
+cp "$target" "$TMP/old-binary"
+cp "$manifest" "$TMP/old-manifest"
+BAD="$TMP/failing-agentctl"
+cat >"$BAD" <<'SH'
+#!/bin/sh
+if [ "${1:-}" = bootstrap ] && [ "${2:-}" = update ] && [ "${3:-}" != --dry-run ]; then exit 71; fi
+exit 0
+SH
+chmod 0755 "$BAD"
+if "$INSTALL" --binary "$BAD" --prefix "$PREFIX" >"$TMP/failure.out" 2>"$TMP/failure.err"; then fail 'failed apply reported success'; fi
+cmp -s "$target" "$TMP/old-binary" || fail 'failed apply did not restore binary'
+cmp -s "$manifest" "$TMP/old-manifest" || fail 'failed apply did not restore manifest'
+grep -qx 'AGENTCTL_INSTALL_ROLLBACK=binary_restored_bootstrap_retained' "$TMP/failure.err" || fail 'rollback boundary was not reported'
