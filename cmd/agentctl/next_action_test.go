@@ -172,6 +172,21 @@ func TestAttentionOffersAnEscapeFromItsOwnStopCondition(t *testing.T) {
 		t.Fatalf("await document=%s", stdout.String())
 	}
 	assertAttentionActions(t, awaited.Error.NextActions)
+
+	// result's non-terminal branch must use the same attention escapes. A
+	// plain await recommended here would stop immediately and loop the caller.
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "result", execution.ID.String()}); code != output.ExitCodeFor(output.CodeInvalidState) {
+		t.Fatalf("result exit=%d output=%s", code, stdout.String())
+	}
+	var resultDoc nextActionDocument
+	if err := json.Unmarshal(stdout.Bytes(), &resultDoc); err != nil {
+		t.Fatal(err)
+	}
+	if resultDoc.Error == nil || resultDoc.Error.Code != output.CodeInvalidState {
+		t.Fatalf("result document=%s", stdout.String())
+	}
+	assertAttentionActions(t, resultDoc.Error.NextActions)
 }
 
 func assertAttentionActions(t *testing.T, actions []output.NextAction) {

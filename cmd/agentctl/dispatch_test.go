@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
@@ -320,7 +320,7 @@ func TestAwaitRetriesTransientMulticaRefreshFailures(t *testing.T) {
 		t.Fatalf("transient failure count=%d log=%q", got, failures)
 	}
 	stdout.Reset()
-	if code := a.run(context.Background(), []string{"--journal", journalPath, "result", dispatched.Result.Execution.ID.String()}); code != output.ExitCodeFor(output.CodeInvalidState) || !strings.Contains(stdout.String(), `"events"`) || strings.Contains(stdout.String(), `"await"`) {
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "result", dispatched.Result.Execution.ID.String()}); code != output.ExitCodeFor(output.CodeInvalidState) || !strings.Contains(stdout.String(), `"events"`) || !strings.Contains(stdout.String(), `"--ignore-attention"`) {
 		t.Fatalf("attention result action exit=%d output=%s", code, stdout.String())
 	}
 }
@@ -558,7 +558,7 @@ func TestDispatchRejectsUnavailableAgentBeforeIssueCreation(t *testing.T) {
 	a.stdin = strings.NewReader("Review the change.")
 	a.stdinIsTerminal = func() bool { return false }
 	code := a.run(context.Background(), []string{"--config", configPath, "dispatch", "--route", "m5 sol", "--title", "Unavailable guard", "--prompt-stdin", "--idempotency-key", "unavailable-agent", "--plan"})
-	if code == 0 || !strings.Contains(stdout.String(), `"code":"capability_unavailable"`) {
+	if code == 0 || !strings.Contains(stdout.String(), `"code":"capability_unavailable"`) || !strings.Contains(stdout.String(), `"agent_status_unavailable":1`) {
 		t.Fatalf("unavailable target exit=%d output=%s", code, stdout.String())
 	}
 	if _, err := os.Stat(capture + ".argv"); !os.IsNotExist(err) {

@@ -496,7 +496,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		if problem != nil {
 			return problem.WithDetail("execution_id", execution.ID.String())
 		}
-		_, value, problem := dereferenceResult(ctx, journal, execution.ID, resultOptions{requireContent: true, requireSource: opts.requireSource, minResultBytes: opts.minBytes})
+		_, value, problem := dereferenceResult(ctx, journal, execution.ID, resultOptions{requireContent: true, requireSource: opts.requireSource, minResultBytes: opts.minBytes}, renderer.Mode)
 		journal.Close()
 		if problem != nil {
 			return problem.WithDetail("execution_id", execution.ID.String())

@@ -26,8 +26,9 @@ Inspect `bootstrap status` for installed skill compatibility. These commands are
 read-only; neither a mismatch nor a failed check implicitly updates/restarts.
 
 A pending `result` supplies a mutating `await` next action for ordinary running
-work, read-only event inspection for attention, and read-only status inspection
-for a failed starting dispatch. An uncertain dispatch must first be resolved
+work, the attention escapes (read-only evidence, a read-only status re-check, and
+`--ignore-attention` wait) when attention is required, and read-only status
+inspection for a failed starting dispatch. An uncertain dispatch must first be resolved
 using its original key. Unknown adapter errors enumerate
 known names. Unknown `ps`/`list` and `agents` commands direct help to `recent` and
 `delegate`. Prompt-root errors include a structured `repair`: remove the file
