@@ -25,11 +25,13 @@ type DelegationBinding struct {
 type DelegationNativePlan struct {
 	Argv           []string `json:"argv"`
 	PromptDelivery string   `json:"prompt_delivery"`
+	Permissions    string   `json:"permissions,omitempty"`
 }
 
 type DelegationSettings struct {
 	Speed  string `json:"speed,omitempty"`
 	Effort string `json:"effort,omitempty"`
+	Access string `json:"access,omitempty"`
 }
 
 type DelegationTarget struct {
@@ -60,7 +62,7 @@ func (b DelegationBinding) Validate() error {
 	if !adapterPattern.MatchString(b.Resolved.Harness) || b.Resolved.Model == "" || b.Resolved.Host == "" {
 		return errors.New("incomplete delegation target")
 	}
-	for _, v := range []string{b.Resolved.Model, b.Resolved.Family, b.Resolved.Version, b.Resolved.Host, b.Resolved.Settings.Speed, b.Resolved.Settings.Effort} {
+	for _, v := range []string{b.Resolved.Model, b.Resolved.Family, b.Resolved.Version, b.Resolved.Host, b.Resolved.Settings.Speed, b.Resolved.Settings.Effort, b.Resolved.Settings.Access} {
 		if utf8.RuneCountInString(v) > 256 || !utf8.ValidString(v) || strings.IndexFunc(v, unicode.IsControl) >= 0 {
 			return errors.New("invalid delegation target value")
 		}
@@ -80,7 +82,7 @@ func (b DelegationBinding) Validate() error {
 	}
 	for _, field := range b.Defaulted {
 		switch field {
-		case "harness", "family", "version", "model", "host", "settings.speed", "settings.effort", "speed", "effort":
+		case "harness", "family", "version", "model", "host", "settings.speed", "settings.effort", "settings.access", "speed", "effort":
 		default:
 			return errors.New("invalid delegation default field")
 		}

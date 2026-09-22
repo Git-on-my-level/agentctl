@@ -9,23 +9,36 @@ import (
 const (
 	PromptDeliveryArgv  = "argv"
 	PromptDeliveryStdin = "stdin"
+
+	AccessCoding   = "coding"
+	AccessReadOnly = "read_only"
+
+	PermissionsFull        = "full"
+	PermissionsConstrained = "constrained"
+	PermissionsReadOnly    = "read_only"
+	PermissionsUnsupported = "unsupported"
 )
 
 // Input carries the resolved harness tuple. Prompt text is supplied separately
 // through agentctl's prompt channel; it is never embedded in Recipe.Argv.
 type Input struct {
-	Harness              string
-	Model                string
-	Speed                string
-	Effort               string
-	Executable           string
-	CursorWorkspaceTrust bool
+	Harness                     string
+	Model                       string
+	Speed                       string
+	Effort                      string
+	Executable                  string
+	CursorWorkspaceTrust        bool
+	Access                      string
+	UnattendedCodingPermissions bool
 }
 
 // Recipe is the exact native invocation plan before prompt attachment.
 type Recipe struct {
 	Argv           []string
 	PromptDelivery string
+	// Permissions is full, constrained, read_only, or unsupported.
+	// It describes which reviewed flags were applied. It is not provider attestation.
+	Permissions string
 }
 
 // Error is a typed build failure with a stable diagnostic for callers.
@@ -69,18 +82,73 @@ func Build(in Input) (Recipe, error) {
 		return Recipe{}, err
 	}
 
+	access, err := normalizeAccess(in.Access)
+	if err != nil {
+		return Recipe{}, err
+	}
+	if err := requireReviewedAccess(harness, access); err != nil {
+		return Recipe{}, err
+	}
+	var recipe Recipe
 	switch harness {
 	case "cursor":
-		return buildCursor(in.Executable, model, speed, effort, in.CursorWorkspaceTrust)
+		recipe, err = buildCursor(in.Executable, model, speed, effort, in.CursorWorkspaceTrust, access, in.UnattendedCodingPermissions)
 	case "codex":
-		return buildCodex(in.Executable, model, speed, effort)
+		recipe, err = buildCodex(in.Executable, model, speed, effort, access, in.UnattendedCodingPermissions)
 	case "omp":
-		return buildOMP(in.Executable, model, speed, effort)
+		recipe, err = buildOMP(in.Executable, model, speed, effort)
 	case "claude-code":
-		return buildClaudeCode(in.Executable, model, speed, effort)
+		recipe, err = buildClaudeCode(in.Executable, model, speed, effort)
 	default:
 		return Recipe{}, fail("unsupported_harness", fmt.Sprintf("harness %q is not supported by launch recipes", in.Harness))
 	}
+	if err != nil {
+		return Recipe{}, err
+	}
+	recipe.Permissions = permissionLabel(harness, access, in.UnattendedCodingPermissions)
+	return recipe, nil
+}
+
+func normalizeAccess(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", AccessCoding:
+		return AccessCoding, nil
+	case AccessReadOnly:
+		return AccessReadOnly, nil
+	default:
+		return "", fail("unsupported_access", fmt.Sprintf("access %q is not coding or read_only", raw))
+	}
+}
+
+func requireReviewedAccess(harness, access string) error {
+	if access != AccessReadOnly {
+		return nil
+	}
+	switch harness {
+	case "cursor", "codex":
+		return nil
+	default:
+		return fail("access_unavailable", fmt.Sprintf("%s cannot guarantee read-only access; omit access or choose another harness", harness))
+	}
+}
+
+func permissionLabel(harness, access string, grant bool) string {
+	if access == AccessReadOnly {
+		return PermissionsReadOnly
+	}
+	if !grant {
+		return PermissionsConstrained
+	}
+	switch harness {
+	case "cursor", "codex":
+		return PermissionsFull
+	default:
+		return PermissionsUnsupported
+	}
+}
+
+func applyCodingPermissions(access string, grant bool) bool {
+	return access == AccessCoding && grant
 }
 
 func fail(code, diagnostic string) *Error {

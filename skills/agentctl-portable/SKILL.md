@@ -14,6 +14,24 @@ Resolve the binary from `AGENTCTL_BIN`, `PATH`, or
 `$HOME/.local/bin/agentctl`. If it is unavailable, stop with
 `dependency_unavailable`; do not inspect native session stores as a fallback.
 
+## Default launch
+
+Kick off a new native agent with `delegate`, not `run`.
+
+```bash
+agentctl help delegate
+agentctl delegate --request-file request.json --prompt-file task.md --plan
+agentctl delegate --request-file request.json --prompt-file task.md --wait
+```
+
+Inspect `native.argv` and `native.permissions` on the plan before launching.
+Coding is the default access. It adds Cursor `--force` and Codex
+`--dangerously-bypass-approvals-and-sandbox` only when
+`delegation.unattended_coding_permissions` is true. `settings.access:
+"read_only"` never adds those flags. Expert `run` does not apply this grant.
+Do not hand-write cursor or codex argv for a new agent, and do not edit a
+global CLI allowlist to widen permissions.
+
 ## Discover just in time
 
 Start with the one question relevant to the task:
@@ -63,9 +81,9 @@ Never infer a capability from an adapter name. If doctor or capabilities says
 a requirement is unavailable, report it; do not weaken the operation, invent a
 native command, or scrape private harness state.
 
-## Structured delegation: default for named-model requests
+## Structured delegation: default for new agents
 
-Read `agentctl help delegate`. Translate the user's explicit constraints into a
+Read `agentctl help delegate` before `run`. Translate the user's explicit constraints into a
 request; leave everything else absent. “grok” means `{"family":"grok"}`;
 “cursor grok 4.6” means `{"harness":"cursor","family":"grok","version":"4.6"}`.
 Other word orders produce the same constraints. Never guess a version or native
@@ -86,7 +104,14 @@ or ambiguity launch nothing; use returned candidates to resolve only the missing
 choice. Config needs explicit family/version metadata. Omitted host or `local` selects
 this machine; `route.this_host` optionally supplies its configured name.
 Workspace trust is a separate `delegation.cursor_workspace_trust` grant, never
-implied by a model preference. Unavailable settings or hosts must not trigger
+implied by a model preference. Unattended coding permissions are a separate
+`delegation.unattended_coding_permissions` grant. When it is true, coding
+launches (omitted `settings.access`, or `"coding"`) include Cursor `--force`
+and Codex `--dangerously-bypass-approvals-and-sandbox`. Set
+`settings.access` to `read_only` for Cursor `--mode ask` and Codex
+`--sandbox read-only`; that access never receives the bypass flags.
+Harnesses without a reviewed bypass flag report `permissions: unsupported`
+and are not given an inferred flag. Unavailable settings or hosts must not trigger
 silent substitution or fallback to expert `run`.
 
 Keep one stable request key for one logical task. Retry the same inputs to recover
@@ -107,6 +132,8 @@ model/settings are not proof of provider-side model identity or task correctness
 
 ## Expert native path
 
+`run` is for an exact argv you already decided. It does not apply delegate
+permission defaults and must not be the path for kicking off a new agent.
 Pass native argv exactly after `--`; agentctl does not shell-reparse it:
 
 ```bash
@@ -237,11 +264,13 @@ at-least-once, so deduplicate by the full event key. A receipt proves delivery,
 not successful work. A managed supervisor is required only for cross-restart
 delivery and must not be silently installed as a new service.
 
-Permission-granting native flags remain explicit in argv. Consult
-`agentctl config doctor` for advisory operator preferences: pass Cursor
-`--trust` when that exact authorization is present, otherwise preserve the
+Permission-granting native flags remain explicit on expert `run` argv. `delegate`
+applies Cursor `--force` and the Codex bypass only from
+`delegation.unattended_coding_permissions`, and never on read-only access.
+Consult `agentctl config doctor` for advisory operator preferences: pass Cursor
+`--trust` on expert `run` when that exact authorization is present, otherwise preserve the
 native trust prompt. Never infer authorization for force/yolo, sandbox changes,
-or MCP approval. For Cursor, omit `--mode` for normal Agent work, use
+or MCP approval on `run`. For Cursor, omit `--mode` for normal Agent work, use
 `--mode ask` for bounded read-only Q&A, and avoid `--plan`/`--mode plan` because
 Cursor's one-shot plan completion is not reliably represented; agentctl rejects
 it unless `--allow-unreliable-result` is explicit. `run --no-store-result` is

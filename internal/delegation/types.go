@@ -8,6 +8,7 @@ package delegation
 type Settings struct {
 	Speed  string `json:"speed,omitempty"`
 	Effort string `json:"effort,omitempty"`
+	Access string `json:"access,omitempty"`
 }
 
 // Selector is the parent-supplied constraint set. Omitted fields stay empty

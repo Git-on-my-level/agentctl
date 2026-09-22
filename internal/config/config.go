@@ -57,9 +57,11 @@ type Profile struct {
 }
 
 // DelegationPolicy is an explicit, machine-readable native permission grant.
-// It never supplies argv. Cursor workspace trust is the only initial grant.
+// It never rewrites expert `run` argv. Cursor workspace trust and unattended
+// coding permissions are separate grants. Neither is implied by a model alias.
 type DelegationPolicy struct {
-	CursorWorkspaceTrust bool `json:"cursor_workspace_trust,omitempty"`
+	CursorWorkspaceTrust        bool `json:"cursor_workspace_trust,omitempty"`
+	UnattendedCodingPermissions bool `json:"unattended_coding_permissions,omitempty"`
 }
 
 type Adapter struct {
