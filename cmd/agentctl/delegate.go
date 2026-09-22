@@ -314,12 +314,17 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 			WithActions(output.NextAction{Label: "Inspect explicit Multica dispatch", Argv: []string{"agentctl", "help", "dispatch"}, SideEffectClass: output.ReadOnly}))
 	}
 	selected := resolution.Resolved
-	permission := profile.Delegation != nil && profile.Delegation.CursorWorkspaceTrust
+	trust := profile.Delegation != nil && profile.Delegation.CursorWorkspaceTrust
+	codingGrant := profile.Delegation != nil && profile.Delegation.UnattendedCodingPermissions
+	access := ""
+	if request.Selector.Settings != nil {
+		access = request.Selector.Settings.Access
+	}
 	executable, problem := delegateExecutable(profile, selected.Harness)
 	if problem != nil {
 		return recoverAdmission(problem)
 	}
-	recipe, err := launchrecipe.Build(launchrecipe.Input{Harness: selected.Harness, Model: selected.Model, Speed: selected.Speed, Effort: selected.Effort, Executable: executable, CursorWorkspaceTrust: permission})
+	recipe, err := launchrecipe.Build(launchrecipe.Input{Harness: selected.Harness, Model: selected.Model, Speed: selected.Speed, Effort: selected.Effort, Executable: executable, CursorWorkspaceTrust: trust, Access: access, UnattendedCodingPermissions: codingGrant})
 	if err != nil {
 		problem := delegateError(output.CodeCapabilityUnavailable, "delegate_recipe_unavailable", err.Error())
 		var issue *launchrecipe.Error
@@ -337,9 +342,12 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	if request.Selector.Host == "" {
 		defaulted = append(defaulted, "host")
 	}
-	binding := &model.DelegationBinding{RequestSHA256: inputDigest, ConfigurationSHA256: configDigest, Requested: requested, NativePlan: &model.DelegationNativePlan{Argv: append([]string(nil), recipe.Argv...), PromptDelivery: recipe.PromptDelivery},
+	if access == "" {
+		defaulted = append(defaulted, "settings.access")
+	}
+	binding := &model.DelegationBinding{RequestSHA256: inputDigest, ConfigurationSHA256: configDigest, Requested: requested, NativePlan: &model.DelegationNativePlan{Argv: append([]string(nil), recipe.Argv...), PromptDelivery: recipe.PromptDelivery, Permissions: recipe.Permissions},
 		Resolved: model.DelegationTarget{Harness: selected.Harness, Family: selected.Family, Version: selected.Version, Model: selected.Model, Host: host, Authority: model.AuthorityNative,
-			Settings: model.DelegationSettings{Speed: selected.Speed, Effort: selected.Effort}}, Defaulted: defaulted}
+			Settings: model.DelegationSettings{Speed: selected.Speed, Effort: selected.Effort, Access: resolvedAccess(access)}}, Defaulted: defaulted}
 	prompt.Delivery = recipe.PromptDelivery
 	admissionReused := false
 	admissionRecorded := false
@@ -364,7 +372,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 		if err := json.Unmarshal(captured.Bytes(), &document); err != nil {
 			return output.Wrap(output.CodeInternal, "decode native preflight", false, err)
 		}
-		return writeDelegatePlan(renderer, *binding, map[string]any{"argv": recipe.Argv, "prompt_delivery": recipe.PromptDelivery, "preflight": document.Result}, "")
+		return writeDelegatePlan(renderer, *binding, map[string]any{"argv": recipe.Argv, "prompt_delivery": recipe.PromptDelivery, "permissions": recipe.Permissions, "preflight": document.Result}, "")
 	}
 	execution, found, problem := a.findDelegation(ctx, c, mutation)
 	if problem != nil {
@@ -374,6 +382,13 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 		return delegateError(output.CodeInternal, "delegate_receipt_missing", "native launch returned without a delegated execution receipt")
 	}
 	return a.collectDelegation(ctx, renderer, c, execution, opts, admissionReused)
+}
+
+func resolvedAccess(access string) string {
+	if strings.TrimSpace(access) == "" {
+		return launchrecipe.AccessCoding
+	}
+	return strings.ToLower(strings.TrimSpace(access))
 }
 
 // Canonicalize identifier spelling for replay while preserving the original
@@ -391,7 +406,8 @@ func canonicalDelegateSelector(in delegation.Selector) delegation.Selector {
 		settings := *in.Settings
 		settings.Speed = strings.ToLower(strings.TrimSpace(settings.Speed))
 		settings.Effort = strings.ToLower(strings.TrimSpace(settings.Effort))
-		if settings.Speed == "" && settings.Effort == "" {
+		settings.Access = strings.ToLower(strings.TrimSpace(settings.Access))
+		if settings.Speed == "" && settings.Effort == "" && settings.Access == "" {
 			in.Settings = nil
 		} else {
 			in.Settings = &settings
@@ -435,7 +451,7 @@ func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding
 	if native != nil {
 		result["native"] = native
 	} else if binding.NativePlan != nil {
-		result["native"] = map[string]any{"argv": binding.NativePlan.Argv, "prompt_delivery": binding.NativePlan.PromptDelivery, "source": "frozen_admission", "preflight_repeated": false}
+		result["native"] = map[string]any{"argv": binding.NativePlan.Argv, "prompt_delivery": binding.NativePlan.PromptDelivery, "permissions": binding.NativePlan.Permissions, "source": "frozen_admission", "preflight_repeated": false}
 	}
 	if reusedID != "" {
 		result["id"] = reusedID

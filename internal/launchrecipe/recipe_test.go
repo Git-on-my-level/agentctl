@@ -219,6 +219,88 @@ func TestCodexConfigArgvIsSingleElementWithoutShellReparsing(t *testing.T) {
 	}
 }
 
+func TestCursorFullPermissionsAppendsForce(t *testing.T) {
+	got, err := Build(Input{
+		Harness:                     "cursor",
+		Model:                       "grok-4.7-high",
+		CursorWorkspaceTrust:        true,
+		UnattendedCodingPermissions: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Permissions != PermissionsFull || !contains(got.Argv, "--force") || !contains(got.Argv, "--trust") || contains(got.Argv, "--mode") {
+		t.Fatalf("argv=%v permissions=%s", got.Argv, got.Permissions)
+	}
+}
+
+func TestCursorReadOnlyOmitsForce(t *testing.T) {
+	got, err := Build(Input{
+		Harness:                     "cursor",
+		Model:                       "grok-4.7-high",
+		Access:                      AccessReadOnly,
+		CursorWorkspaceTrust:        true,
+		UnattendedCodingPermissions: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Permissions != PermissionsReadOnly || contains(got.Argv, "--force") || !contains(got.Argv, "ask") {
+		t.Fatalf("argv=%v permissions=%s", got.Argv, got.Permissions)
+	}
+}
+
+func TestCursorGrantAbsentStaysConstrained(t *testing.T) {
+	got, err := Build(Input{Harness: "cursor", Model: "grok-4.7-high", CursorWorkspaceTrust: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Permissions != PermissionsConstrained || contains(got.Argv, "--force") {
+		t.Fatalf("argv=%v permissions=%s", got.Argv, got.Permissions)
+	}
+}
+
+func TestCodexFullPermissionsUsesReviewedBypass(t *testing.T) {
+	got, err := Build(Input{Harness: "codex", Model: "gpt-6-astra", UnattendedCodingPermissions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Permissions != PermissionsFull || !contains(got.Argv, "--dangerously-bypass-approvals-and-sandbox") || contains(got.Argv, "--sandbox") {
+		t.Fatalf("argv=%v permissions=%s", got.Argv, got.Permissions)
+	}
+	if got.Argv[len(got.Argv)-1] != "-" {
+		t.Fatalf("stdin sentinel moved: %v", got.Argv)
+	}
+}
+
+func TestCodexReadOnlyUsesSandbox(t *testing.T) {
+	got, err := Build(Input{Harness: "codex", Model: "gpt-6-astra", Access: AccessReadOnly, UnattendedCodingPermissions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Permissions != PermissionsReadOnly || !contains(got.Argv, "read-only") || contains(got.Argv, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Fatalf("argv=%v permissions=%s", got.Argv, got.Permissions)
+	}
+}
+
+func TestOMPDoesNotInferBypassWhenGrantIsOn(t *testing.T) {
+	got, err := Build(Input{Harness: "omp", Model: "zai/glm-5.3", UnattendedCodingPermissions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Permissions != PermissionsUnsupported || contains(got.Argv, "--force") || contains(got.Argv, "--yolo") {
+		t.Fatalf("argv=%v permissions=%s", got.Argv, got.Permissions)
+	}
+}
+
+func TestRejectUnknownAccess(t *testing.T) {
+	_, err := Build(Input{Harness: "cursor", Model: "grok-4.7-high", Access: "yolo"})
+	var buildErr *Error
+	if !errors.As(err, &buildErr) || buildErr.Code != "unsupported_access" {
+		t.Fatalf("err=%v want unsupported_access", err)
+	}
+}
+
 func contains(argv []string, want string) bool {
 	for _, arg := range argv {
 		if arg == want {

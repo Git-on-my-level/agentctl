@@ -6,7 +6,7 @@ import (
 
 // Codex service-tier overrides are verified against ~/.codex/config.toml
 // (service_tier = "default") and models_cache.json (tier id "priority", name "Fast").
-func buildCodex(executable, model, speed, effort string) (Recipe, error) {
+func buildCodex(executable, model, speed, effort, access string, grant bool) (Recipe, error) {
 	exe, err := resolveExecutable("codex", executable)
 	if err != nil {
 		return Recipe{}, err
@@ -23,6 +23,11 @@ func buildCodex(executable, model, speed, effort string) (Recipe, error) {
 			return Recipe{}, fail("effort_unavailable", fmt.Sprintf("codex does not support effort %q", effort))
 		}
 		argv = append(argv, "-c", codexConfigOverride("model_reasoning_effort", effort))
+	}
+	if access == AccessReadOnly {
+		argv = append(argv, "--sandbox", "read-only")
+	} else if applyCodingPermissions(access, grant) {
+		argv = append(argv, "--dangerously-bypass-approvals-and-sandbox")
 	}
 	argv = append(argv, "-")
 	return Recipe{Argv: argv, PromptDelivery: PromptDeliveryStdin}, nil

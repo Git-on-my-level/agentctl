@@ -451,7 +451,7 @@ func instructionPointerBlock(revision, skillDigest string) string {
 
 func instructionPointerBody() string {
 	return strings.Join([]string{
-		"CLI agents (`cursor-agent`, `codex`, `omp`, and similar) go through `agentctl`; load skill `agentctl-portable` or run `agentctl help run`.",
+		"CLI agents (`cursor-agent`, `codex`, `omp`, and similar) go through `agentctl`. Kick off a new agent with `delegate` (`agentctl help delegate`); `run` is the expert exact-argv path and does not inject permission flags.",
 		"Do not manage native agent work with raw background shells; parent-background a foreground `agentctl run`, or use `dispatch` for work that must outlive this process.",
 	}, "\n") + "\n"
 }

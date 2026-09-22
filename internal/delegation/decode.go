@@ -18,7 +18,7 @@ const (
 var allowedKeys = map[string]map[string]struct{}{
 	"":         {"schema_version": {}, "request_key": {}, "selector": {}},
 	"selector": {"harness": {}, "family": {}, "version": {}, "model": {}, "host": {}, "settings": {}},
-	"settings": {"speed": {}, "effort": {}},
+	"settings": {"speed": {}, "effort": {}, "access": {}},
 }
 
 // DecodeRequest accepts exactly one bounded UTF-8 JSON object. Unknown,
@@ -167,6 +167,13 @@ func validateRequest(req Request) error {
 	}
 	if !selectorConstraintPresent(req.Selector) {
 		return usageError("selector requires family or model")
+	}
+	if req.Selector.Settings != nil {
+		switch strings.ToLower(strings.TrimSpace(req.Selector.Settings.Access)) {
+		case "", "coding", "read_only":
+		default:
+			return usageError("settings.access must be coding or read_only")
+		}
 	}
 	return nil
 }
