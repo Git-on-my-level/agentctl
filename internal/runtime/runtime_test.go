@@ -956,3 +956,73 @@ func TestProbeRevisionRacePreservesNewerNonterminalEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestReprobeBoundIssueMulticaUsesStatusSnapshotWithoutEvents(t *testing.T) {
+	config := adapter.MulticaConfig{Binary: "/opt/multica", Profile: "private", Endpoint: "https://multica.internal", Workspace: "workspace-1", Issue: "issue-2"}
+	spec := AdapterSpec{Name: "multica", Executable: config.Binary, Multica: &config}
+	fake := &fakeAdapter{name: "multica"}
+	registry := NewRegistry()
+	if err := registry.Register("multica", func(resolved AdapterSpec) (adapter.Adapter, error) {
+		if resolved.Multica == nil || resolved.Multica.Issue != "issue-2" {
+			t.Fatalf("resolved spec=%#v", resolved)
+		}
+		return fake, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	engine, journal, _ := testEngine(t, registry)
+	bindings, err := engine.configBindings(model.AuthorityMultica, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsReason := "workspace event capture is unavailable for this authority"
+	capabilities := model.CapabilitySnapshot{
+		NegotiatedAt: fixtureNow, AdapterVersion: "fixture-v1",
+		Items: []model.CapabilityItem{
+			{Name: string(adapter.CapabilitySnapshot), Status: model.CapabilitySupported, Source: "native_cli", SemanticsVersion: adapter.SemanticsVersion, Constraints: map[string]any{"cross_restart": true, "scope": "bound_issue", "source": "native_cli"}},
+			{Name: string(adapter.CapabilityEvents), Status: model.CapabilityUnavailable, Source: "multica_api", SemanticsVersion: adapter.SemanticsVersion, Reason: &eventsReason},
+		},
+	}
+	created, _, err := journal.CreateExecution(context.Background(), model.Execution{
+		Authority: model.AuthorityMultica, Adapter: "multica", Mode: model.ModeMultica,
+		Acquisition: model.AcquisitionLaunched, State: model.StateWaiting, Liveness: model.LivenessUnknown,
+		SourceBindings: bindings, Capabilities: capabilities, Supersedes: []ids.ExecutionID{},
+		Observation: model.Observation{Source: model.ObservationStatusAPI, Integrity: model.IntegrityVerified, ObservedAt: fixtureNow},
+	}, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge := SupervisorExecutions{Engine: engine}
+	steps := []struct {
+		state    adapter.State
+		liveness adapter.Liveness
+		want     model.State
+	}{
+		{adapter.StateWaiting, adapter.LivenessBlocked, model.StateWaiting},
+		{adapter.StateAttention, adapter.LivenessBlocked, model.StateAttention},
+		{adapter.StateCompleted, adapter.LivenessExited, model.StateCompleted},
+	}
+	for index, step := range steps {
+		fake.snapshot = adapter.Snapshot{Session: adapter.Session{Ref: adapter.SourceRef{Adapter: "multica", Kind: "multica_issue", OpaqueID: "issue-2"}, State: step.state, Liveness: step.liveness, Observation: adapter.Observation{Source: "status_api", Integrity: "verified", ObservedAt: fixtureNow.Add(time.Duration(index+1) * time.Second)}}}
+		probe, err := bridge.Reprobe(context.Background(), supervisor.Execution{ID: created.ID.String(), State: string(step.state), Revision: 0})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if probe.Source != string(model.ObservationStatusAPI) {
+			t.Fatalf("step %d probe source=%q", index, probe.Source)
+		}
+		if err := bridge.ApplyProbe(context.Background(), created.ID.String(), probe); err != nil {
+			t.Fatal(err)
+		}
+		stored, err := journal.GetExecution(context.Background(), created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.State != step.want || stored.Observation.Source != model.ObservationStatusAPI || stored.Observation.Integrity != model.IntegrityVerified {
+			t.Fatalf("step %d stored=%#v", index, stored)
+		}
+	}
+	if len(fake.eventRequests) != 0 || len(fake.pageRequests) != 0 {
+		t.Fatalf("issue snapshot reprobe consulted workspace events: %#v %#v", fake.eventRequests, fake.pageRequests)
+	}
+}

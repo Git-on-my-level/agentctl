@@ -69,9 +69,25 @@ state. Once the issue binding exists, replay reads the exact issue rather than
 re-running assignment discovery.
 
 Remove `--plan` only after reviewing the remote side effect. Dispatch, promotion,
-and durable event observation require a compatible Multica deployment; consult
+and bound-issue observation require a compatible Multica deployment; consult
 `capabilities multica` rather than assuming compatibility from the executable
 name.
+
+For a tracked issue-bound Multica execution, `await` and the managed supervisor
+refresh the exact bound issue through the native CLI's read-only `issue get`.
+The issue's `status_category` (or built-in status when no category is reported)
+maps onto normalized state: `backlog`/`todo` wait, `in_progress` runs,
+`in_review`/`blocked` require attention, `done` completes, and `cancelled`
+cancels; an unrecognized value requires attention rather than inferring a
+terminal state. The response must echo the bound issue and configured workspace
+or the observation is rejected. An issue-status snapshot is not proof that a
+run succeeded or that its answer was captured; read the authoritative issue or
+run in Multica for final output.
+
+Workspace event capture is disabled on deployments where the capture triggers
+were dropped, so `events` reports unavailable for new issue-bound executions and
+an empty event page is never a completion signal. `result --content` is
+unavailable for snapshot-only executions.
 
 ## Network and fleet tools
 

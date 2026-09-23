@@ -235,14 +235,7 @@ recovers them by semantic mutation key instead of requiring the current fleet
 topology to match again. Prompt bytes go only to
 Multica stdin; agentctl stores their digest and authority bindings, not the
 prompt. Retain the
-returned `exec-*` ID and attach subscriptions immediately when unattended
-notification matters. `await` refreshes Multica workspace events itself;
-it tolerates two consecutive retryable refresh failures and returns the third
-failure with its authority diagnostic. This absorbs a brief observation fault
-without hiding a persistently unavailable authority.
-`status`, `events`, and `recent` remain cached read-only views, while the managed
-supervisor provides continuous cross-restart reconciliation and callback
-delivery.
+returned `exec-*` ID. For issue-backed Multica executions, `await` and the managed supervisor refresh the exact bound issue via the native CLI. `done` is an issue-level terminal state; `in_review` and `blocked` require attention. An issue-status snapshot is not proof that a run succeeded or that its answer was captured. Workspace events are unavailable where capture triggers are disabled; an empty event page is never a completion signal. `status`, `events`, and `recent` remain cached views. Read the authoritative issue/run in Multica for final output; do not promise event-based callbacks or `result --content` for snapshot-only executions.
 
 Retain the returned full `exec-*` ID when practical; otherwise recover it with
 `recent`. `await` stops on attention by default and

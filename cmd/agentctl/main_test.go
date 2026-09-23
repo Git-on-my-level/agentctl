@@ -2267,7 +2267,7 @@ func TestPromotionExecuteReplayReturnsPersistedAliasAndOneLifecycle(t *testing.T
 	journalPath := filepath.Join(root, "state", "journal.db")
 	configPath := filepath.Join(root, "config", "config.json")
 	fakeMultica := filepath.Join(root, "fake-multica")
-	if err := os.WriteFile(fakeMultica, []byte("#!/bin/sh\nprintf '%s\\n' '{\"id\":\"opaque-multica-uuid\",\"identifier\":\"SCA-777\"}'\n"), 0o700); err != nil {
+	if err := os.WriteFile(fakeMultica, []byte("#!/bin/sh\ncase \"$*\" in\n  *\"issue get\"*) printf '%s\\n' '{\"id\":\"opaque-multica-uuid\",\"identifier\":\"SCA-777\",\"workspace_id\":\"workspace-test\",\"status\":\"backlog\"}' ;;\n  *) printf '%s\\n' '{\"id\":\"opaque-multica-uuid\",\"identifier\":\"SCA-777\"}' ;;\nesac\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
@@ -2315,14 +2315,18 @@ func TestPromotionExecuteReplayReturnsPersistedAliasAndOneLifecycle(t *testing.T
 	if first.Result.Reused || !second.Result.Reused {
 		t.Fatalf("unexpected replay flags: first=%v second=%v", first.Result.Reused, second.Result.Reused)
 	}
-	foundDurableEvents := false
+	foundIssueSnapshot := false
+	foundEventsUnavailable := false
 	for _, capability := range first.Result.Execution.Capabilities.Items {
-		if capability.Name == "events" {
-			foundDurableEvents = capability.Constraints["cross_restart"] == true && capability.Constraints["scope"] == "workspace_events"
+		switch capability.Name {
+		case "snapshot":
+			foundIssueSnapshot = capability.Status == model.CapabilitySupported && capability.Constraints["cross_restart"] == true && capability.Constraints["scope"] == "bound_issue"
+		case "events":
+			foundEventsUnavailable = capability.Status == model.CapabilityUnavailable
 		}
 	}
-	if !foundDurableEvents {
-		t.Fatalf("promotion omitted cross-restart durable event capability: %#v", first.Result.Execution.Capabilities)
+	if !foundIssueSnapshot || !foundEventsUnavailable {
+		t.Fatalf("promotion omitted bound-issue snapshot or reported unavailable events: %#v", first.Result.Execution.Capabilities)
 	}
 	if err := os.WriteFile(fakeMultica, []byte("#!/bin/sh\nprintf '%s\\n' 'The request conflicts with the current state of the resource.' >&2\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
@@ -2347,6 +2351,57 @@ func TestPromotionExecuteReplayReturnsPersistedAliasAndOneLifecycle(t *testing.T
 	}
 }
 
+func TestPromotionRejectsMismatchedIssueReadBeforeClaimingSnapshot(t *testing.T) {
+	root := t.TempDir()
+	journalPath := filepath.Join(root, "state", "journal.db")
+	configPath := filepath.Join(root, "config", "config.json")
+	fakeMultica := filepath.Join(root, "fake-multica")
+	writeFixture := func(workspace string) {
+		body := "#!/bin/sh\ncase \"$*\" in\n  *\"issue get\"*) printf '%s\\n' '{\"id\":\"opaque-multica-uuid\",\"identifier\":\"SCA-777\",\"workspace_id\":\"" + workspace + "\",\"status\":\"backlog\"}' ;;\n  *) printf '%s\\n' '{\"id\":\"opaque-multica-uuid\",\"identifier\":\"SCA-777\"}' ;;\nesac\n"
+		if err := os.WriteFile(fakeMultica, []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFixture("workspace-foreign")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	native := `{"type":"result","status":"completed","result":{"summary":"done"}}`
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "run", "--adapter", "generic-process", "--", "/bin/echo", native}); code != 0 {
+		t.Fatalf("run exit=%d output=%s", code, stdout.String())
+	}
+	var runDoc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &runDoc); err != nil {
+		t.Fatal(err)
+	}
+	if code := a.run(context.Background(), []string{"--output", "json", "--config", configPath, "config", "set-profile", "--name", "fleet", "--multica-executable", fakeMultica, "--multica-profile", "desktop", "--workspace-id", "workspace-test", "--server-url", "https://multica.example.test", "--app-url", "https://multica.example.test", "--default"}); code != 0 {
+		t.Fatalf("config exit=%d output=%s", code, stdout.String())
+	}
+	args := []string{"--output", "json", "--journal", journalPath, "--config", configPath, "--profile", "fleet", "promote", runDoc.Result.ID.String(), "--title", "Continue durable work"}
+	stdout.Reset()
+	if code := a.run(context.Background(), args); code != output.ExitCodeFor(output.CodeRemoteFailure) || !strings.Contains(stdout.String(), "different issue or workspace identity") {
+		t.Fatalf("mismatched promote exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	writeFixture("workspace-test")
+	stdout.Reset()
+	if code := a.run(context.Background(), args); code != 0 {
+		t.Fatalf("replayed promote exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	executions, err := journal.ListExecutions(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(executions) != 2 {
+		t.Fatalf("mismatched promote created %d lifecycles; want source plus one target", len(executions))
+	}
+}
+
 func TestPromotionSendsContentBoundProvenanceOnStdin(t *testing.T) {
 	root := t.TempDir()
 	journalPath := filepath.Join(root, "state", "journal.db")
@@ -2364,7 +2419,7 @@ func TestPromotionSendsContentBoundProvenanceOnStdin(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(fakeMultica, []byte("#!/bin/sh\ncat >\"$AGENTCTL_TEST_CAPTURE\"\nprintf '%s\\n' '{\"id\":\"opaque-multica-uuid\",\"identifier\":\"SCA-888\"}'\n"), 0o700); err != nil {
+	if err := os.WriteFile(fakeMultica, []byte("#!/bin/sh\ncase \"$*\" in\n  *\"issue create\"*) cat >\"$AGENTCTL_TEST_CAPTURE\"; printf '%s\\n' '{\"id\":\"opaque-multica-uuid\",\"identifier\":\"SCA-888\"}' ;;\n  *\"issue get\"*) printf '%s\\n' '{\"id\":\"opaque-multica-uuid\",\"identifier\":\"SCA-888\",\"workspace_id\":\"workspace-test\",\"status\":\"backlog\"}' ;;\nesac\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	previousCWD, err := os.Getwd()

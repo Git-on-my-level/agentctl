@@ -200,6 +200,13 @@ func (a *app) promoteCommand(ctx context.Context, renderer output.Renderer, c co
 	if issueID == "" {
 		return output.NewError(output.CodeRemoteFailure, "Multica response omitted issue ID", true).WithDetail("client_key", clientKey)
 	}
+	var verified map[string]any
+	if err := runMulticaJSON(ctx, multicaBaseArgv(m, "issue", "get", issueID, "--output", "json"), &verified); err != nil {
+		return output.Wrap(output.CodeRemoteFailure, "verify created Multica issue", true, err).WithDetail("client_key", clientKey).WithDetail("profile", profileName)
+	}
+	if !multicaIDMatches(verified["id"], issueID) || !multicaIDMatches(verified["workspace_id"], m.WorkspaceID) {
+		return output.NewError(output.CodeRemoteFailure, "Multica issue read returned a different issue or workspace identity", true).WithDetail("client_key", clientKey).WithDetail("profile", profileName)
+	}
 	now := a.now().UTC()
 	bindings, err := promotionBindings(m, issueID)
 	if err != nil {
@@ -358,8 +365,9 @@ func bindingAlias(bindings []model.SourceBinding, kind string) (ids.ID, bool) {
 }
 
 func promotedCapabilities(now time.Time) model.CapabilitySnapshot {
-	reason := "issue is durable; a concrete run is bound when Multica dispatches"
-	return model.CapabilitySnapshot{NegotiatedAt: now, AdapterVersion: "0.1.0", Items: []model.CapabilityItem{{Name: "durable_idempotency", Status: model.CapabilitySupported, Source: "multica_api", SemanticsVersion: 1}, {Name: "events", Status: model.CapabilityDegraded, Source: "multica_api", SemanticsVersion: 1, Reason: &reason, Constraints: map[string]any{"cross_restart": true, "scope": "workspace_events", "source": "native_cli"}}, {Name: "snapshot", Status: model.CapabilityUnavailable, Source: "manifest", SemanticsVersion: 1, Reason: &reason}}}
+	eventsReason := "workspace event capture is unavailable for this authority; the bound issue is observed directly"
+	resultReason := "an issue-level status snapshot is not proof a run succeeded or that its answer was captured"
+	return model.CapabilitySnapshot{NegotiatedAt: now, AdapterVersion: "0.1.0", Items: []model.CapabilityItem{{Name: "durable_idempotency", Status: model.CapabilitySupported, Source: "multica_api", SemanticsVersion: 1}, {Name: "snapshot", Status: model.CapabilitySupported, Source: "native_cli", SemanticsVersion: 1, Constraints: map[string]any{"scope": "bound_issue", "cross_restart": true, "source": "native_cli"}}, {Name: "events", Status: model.CapabilityUnavailable, Source: "multica_api", SemanticsVersion: 1, Reason: &eventsReason}, {Name: "result_content", Status: model.CapabilityUnavailable, Source: "multica_api", SemanticsVersion: 1, Reason: &resultReason}}}
 }
 
 func appendPromotionEvent(ctx context.Context, journal contracts.Journal, source model.Execution, destination ids.ExecutionID, key string, provenance model.ExecutionProvenance, now time.Time) error {

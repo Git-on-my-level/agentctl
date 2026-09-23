@@ -3,7 +3,10 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -126,8 +129,12 @@ func MulticaArgv(config MulticaConfig, operation string, extra ...string) []stri
 		command = []string{"event", "list"}
 	case "event watch":
 		command = []string{"event", "watch"}
+	case "issue get":
+		command = []string{"issue", "get"}
 	case "issue cancel-task":
 		command = []string{"issue", "cancel-task"}
+	case "workspace get":
+		command = []string{"workspace", "get"}
 	default:
 		return nil
 	}
@@ -173,15 +180,22 @@ func (m *multicaAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResu
 	if err != nil {
 		return ProbeResult{}, err
 	}
-	probe := &multicaAdapter{NativeAdapter: m.NativeAdapter, config: m.config}
-	probe.config.EventPageLimit = 1
-	if _, err := probe.EventsPage(ctx, EventsRequest{Ref: SourceRef{Adapter: "multica", Kind: "multica_event", Profile: m.config.Profile, Workspace: m.config.Workspace}, Cursor: "0"}); err != nil {
-		return ProbeResult{}, fmt.Errorf("verify Multica workspace event capability: %w", err)
+	workspace, err := m.readMulticaJSON(ctx, "workspace get", m.config.Workspace, "--output", "json")
+	if err != nil {
+		return ProbeResult{}, fmt.Errorf("verify Multica workspace authority: %w", err)
 	}
-	for i := range result.Capabilities {
-		if result.Capabilities[i].Name == CapabilityEvents {
-			result.Capabilities[i].Status = CapabilitySupported
-			result.Capabilities[i].Source = "live_probe"
+	if id, _ := workspace["id"].(string); !strings.EqualFold(strings.TrimSpace(id), strings.TrimSpace(m.config.Workspace)) {
+		return ProbeResult{}, fmt.Errorf("verify Multica workspace authority: %w", &AdapterError{Code: ErrExecutionFailed, Message: "Multica workspace get returned a different workspace identity"})
+	}
+	if m.config.Issue != "" {
+		if _, err := m.issueStatus(ctx); err != nil {
+			return ProbeResult{}, fmt.Errorf("verify Multica bound issue authority: %w", err)
+		}
+		for i := range result.Capabilities {
+			if result.Capabilities[i].Name == CapabilitySnapshot {
+				result.Capabilities[i].Status = CapabilitySupported
+				result.Capabilities[i].Source = "live_probe"
+			}
 		}
 	}
 	return result, nil
@@ -194,8 +208,159 @@ func (m *multicaAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchR
 func (m *multicaAdapter) Attach(ctx context.Context, req AttachRequest) (Attachment, error) {
 	return Attachment{}, capabilityError(CapabilityAttach, "Multica issue/run attachment route is not verified for the current CLI")
 }
+
 func (m *multicaAdapter) Snapshot(ctx context.Context, req SnapshotRequest) (Snapshot, error) {
-	return Snapshot{}, capabilityError(CapabilitySnapshot, "Multica issue/run status route is not verified for the current CLI")
+	if m.config.Profile == "" || m.config.Workspace == "" {
+		return Snapshot{}, invalidRequest("Multica issue snapshot requires exact profile and workspace-id")
+	}
+	if m.config.Issue == "" {
+		return Snapshot{}, capabilityError(CapabilitySnapshot, "Multica issue snapshot requires a bound issue")
+	}
+	if req.Ref.Adapter != "" && req.Ref.Adapter != "multica" {
+		return Snapshot{}, invalidRequest("Multica snapshot adapter does not match configured authority")
+	}
+	if req.Ref.Kind != "" && req.Ref.Kind != "multica_issue" {
+		return Snapshot{}, invalidRequest("Multica snapshot source kind does not match the bound issue")
+	}
+	if req.Ref.OpaqueID != "" && req.Ref.OpaqueID != m.config.Issue {
+		return Snapshot{}, invalidRequest("Multica snapshot opaque ID does not match configured binding")
+	}
+	if req.Ref.Fingerprint != "" && req.Ref.Fingerprint != Fingerprint("multica", "multica_issue", m.config.Issue) {
+		return Snapshot{}, invalidRequest("Multica snapshot fingerprint does not match configured binding")
+	}
+	if req.Ref.Endpoint != "" && req.Ref.Endpoint != m.config.Endpoint {
+		return Snapshot{}, invalidRequest("Multica snapshot endpoint does not match configured authority")
+	}
+	if req.Ref.Profile != "" && req.Ref.Profile != m.config.Profile {
+		return Snapshot{}, invalidRequest("Multica snapshot profile does not match configured authority")
+	}
+	if req.Ref.Workspace != "" && req.Ref.Workspace != m.config.Workspace {
+		return Snapshot{}, invalidRequest("Multica snapshot workspace does not match configured authority")
+	}
+	if req.Ref.Issue != "" && req.Ref.Issue != m.config.Issue {
+		return Snapshot{}, invalidRequest("Multica snapshot issue does not match configured binding")
+	}
+	if req.Ref.Run != "" && req.Ref.Run != m.config.Run {
+		return Snapshot{}, invalidRequest("Multica snapshot run does not match configured binding")
+	}
+	ref := req.Ref
+	if ref.Empty() {
+		ref = SourceRef{Adapter: "multica", Kind: "multica_issue", OpaqueID: m.config.Issue, Profile: m.config.Profile, Endpoint: m.config.Endpoint, Workspace: m.config.Workspace, Issue: m.config.Issue, Run: m.config.Run}
+	}
+	if ref.Kind == "" {
+		ref.Kind = "multica_issue"
+	}
+	if ref.OpaqueID == "" {
+		ref.OpaqueID = m.config.Issue
+	}
+	issue, err := m.issueStatus(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	state, liveness := multicaIssueObservation(issue.statusCategory, issue.status)
+	now := time.Now().UTC()
+	session := Session{Ref: ref, State: state, Liveness: liveness, UpdatedAt: now, Observation: Observation{Source: "status_api", Integrity: "verified", ObservedAt: now}}
+	if !issue.updatedAt.IsZero() {
+		session.UpdatedAt = issue.updatedAt
+	}
+	return Snapshot{Session: session}, nil
+}
+
+type multicaIssueSnapshot struct {
+	id             string
+	workspaceID    string
+	status         string
+	statusCategory string
+	updatedAt      time.Time
+}
+
+func (m *multicaAdapter) issueStatus(ctx context.Context) (multicaIssueSnapshot, error) {
+	document, err := m.readMulticaJSON(ctx, "issue get", m.config.Issue, "--output", "json")
+	if err != nil {
+		return multicaIssueSnapshot{}, err
+	}
+	snapshot := multicaIssueSnapshot{
+		id:             multicaStringField(document, "id"),
+		workspaceID:    multicaStringField(document, "workspace_id"),
+		status:         multicaStringField(document, "status"),
+		statusCategory: multicaStringField(document, "status_category"),
+	}
+	if updated, _ := document["updated_at"].(string); updated != "" {
+		if parsed, parseErr := time.Parse(time.RFC3339Nano, updated); parseErr == nil {
+			snapshot.updatedAt = parsed.UTC()
+		}
+	}
+	if snapshot.id == "" || !strings.EqualFold(snapshot.id, strings.TrimSpace(m.config.Issue)) {
+		return multicaIssueSnapshot{}, &AdapterError{Code: ErrExecutionFailed, Message: "Multica issue get returned a different issue identity"}
+	}
+	if snapshot.workspaceID == "" || !strings.EqualFold(snapshot.workspaceID, strings.TrimSpace(m.config.Workspace)) {
+		return multicaIssueSnapshot{}, &AdapterError{Code: ErrExecutionFailed, Message: "Multica issue get returned a different workspace identity"}
+	}
+	return snapshot, nil
+}
+
+func multicaIssueObservation(category, status string) (State, Liveness) {
+	key := strings.ToLower(strings.TrimSpace(category))
+	if key == "" {
+		key = strings.ToLower(strings.TrimSpace(status))
+	}
+	switch key {
+	case "backlog", "todo":
+		return StateWaiting, LivenessBlocked
+	case "in_progress":
+		return StateRunning, LivenessAlive
+	case "in_review", "blocked":
+		return StateAttention, LivenessBlocked
+	case "done":
+		return StateCompleted, LivenessExited
+	case "cancelled":
+		return StateCancelled, LivenessExited
+	default:
+		return StateAttention, LivenessBlocked
+	}
+}
+
+func multicaStringField(document map[string]any, key string) string {
+	value, _ := document[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func (m *multicaAdapter) readMulticaJSON(ctx context.Context, operation string, args ...string) (map[string]any, error) {
+	argv := MulticaArgv(m.config, operation, args...)
+	if argv == nil {
+		return nil, capabilityError(CapabilitySnapshot, "Multica "+operation+" route is not verified for the current CLI")
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = os.Environ()
+	prepareProcess(cmd)
+	cmd.Cancel = func() error { return killProcess(cmd) }
+	cmd.WaitDelay = 5 * time.Second
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &limitedWriter{w: &stdout, n: 1 << 20}
+	cmd.Stderr = &limitedWriter{w: &stderr, n: 64 << 10}
+	if err := cmd.Run(); err != nil {
+		exitCode := -1
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+		details := map[string]any{"operation": operation, "upstream_exit_code": exitCode}
+		if ctx.Err() != nil {
+			return nil, &AdapterError{Code: ErrExecutionFailed, Message: "Multica " + operation + " did not complete", Retryable: true, Cause: ctx.Err(), Details: details}
+		}
+		return nil, &AdapterError{Code: ErrExecutionFailed, Message: "Multica " + operation + " was rejected", Retryable: true, Details: details}
+	}
+	var document map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
+	decoder.UseNumber()
+	if err := decoder.Decode(&document); err != nil || document == nil {
+		return nil, &AdapterError{Code: ErrExecutionFailed, Message: "Multica " + operation + " did not return a JSON object", Retryable: true}
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return nil, &AdapterError{Code: ErrExecutionFailed, Message: "Multica " + operation + " returned trailing output", Retryable: true}
+	}
+	return document, nil
 }
 func (m *multicaAdapter) Events(ctx context.Context, req EventsRequest) ([]Event, error) {
 	page, err := m.EventsPage(ctx, req)
@@ -459,12 +624,12 @@ func ompManifest() Manifest {
 }
 
 func multicaManifest() Manifest {
-	events := capDecl(CapabilityEvents, CapabilityDegraded)
-	events.Constraints = map[string]any{"scope": "workspace_events", "cross_restart": true, "source": "native_cli"}
+	snapshot := capDecl(CapabilitySnapshot, CapabilityDegraded)
+	snapshot.Constraints = map[string]any{"scope": "bound_issue", "cross_restart": true, "source": "native_cli"}
 	cancel := capDecl(CapabilityCancel, CapabilitySupported)
 	cancel.Constraints = map[string]any{"scope": "authority_forward", "cross_restart": true, "acceptance_semantics": "cancel_request_not_terminal"}
 	m := baseManifest("multica", "0.1.0", "multica_run", "multica-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilityUnavailable), capDecl(CapabilityAttach, CapabilityUnavailable), capDecl(CapabilitySnapshot, CapabilityUnavailable), events, capDecl(CapabilityResult, CapabilityUnavailable), capDecl(CapabilityResultContent, CapabilityUnavailable), capDecl(CapabilityResume, CapabilityUnavailable), cancel, capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilityUnavailable), capDecl(CapabilityAttach, CapabilityUnavailable), snapshot, capDecl(CapabilityEvents, CapabilityUnavailable), capDecl(CapabilityResult, CapabilityUnavailable), capDecl(CapabilityResultContent, CapabilityUnavailable), capDecl(CapabilityResume, CapabilityUnavailable), cancel, capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 	m.ContextInjection = ContextInjection{Mechanisms: []ContextMechanism{ContextEnvironmentPath, ContextAuthorityArtifact}, Guaranteed: false, Reason: "delivery must be explicitly verified by the Multica worker"}
 	return m
