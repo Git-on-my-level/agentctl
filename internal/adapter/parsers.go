@@ -142,6 +142,68 @@ func (zcodeParser) Parse(line []byte, stderr bool) parsedObservation {
 	return obs
 }
 
+// devinPrintTrailer is the last line of the one-time welcome banner observed
+// from `devin -p` before the answer. Print mode is plain text, not JSON.
+const devinPrintTrailer = "You're all set. Run devin to get started."
+
+type devinParser struct{}
+
+func (devinParser) Name() string { return "devin-print" }
+func (devinParser) Parse(line []byte, stderr bool) parsedObservation {
+	if stderr {
+		return parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "stderr", Data: map[string]any{"stream": "stderr", "structured": false}}
+	}
+	// Print text is the answer candidate. Completion is decided when the process
+	// is reaped, so cancellation, timeout, and a nonzero exit are not stamped
+	// as success from stdout alone.
+	obs := parsedObservation{State: StateRunning, Liveness: LivenessAlive, Data: map[string]any{"family": "devin"}, SourceState: "devin.print"}
+	response := devinPrintAnswer(line)
+	if response == "" {
+		obs.Data["diagnostic_code"] = "empty_terminal_result"
+		return obs
+	}
+	obs.Content = boundedUTF8(response, 1<<20)
+	obs.ContentType = "text/plain"
+	obs.ContentSource = "assistant_terminal_result"
+	obs.ContentTruncated = len(response) > len(obs.Content)
+	return obs
+}
+
+// devinPrintAnswer returns the answer from an observed `devin -p` stdout blob.
+// A first-run welcome banner may precede it; the answer is the text after that
+// banner. Later runs are only the answer.
+func devinPrintAnswer(raw []byte) string {
+	text := stripANSI(string(raw))
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	if idx := strings.Index(text, devinPrintTrailer); idx >= 0 {
+		text = text[idx+len(devinPrintTrailer):]
+	}
+	text = strings.TrimSpace(text)
+	if strings.Contains(text, "Welcome to Devin CLI") || strings.Contains(text, "Logged in as ") {
+		return ""
+	}
+	return text
+}
+
+func stripANSI(value string) string {
+	var b strings.Builder
+	b.Grow(len(value))
+	for i := 0; i < len(value); i++ {
+		if value[i] == 0x1b && i+1 < len(value) && value[i+1] == '[' {
+			j := i + 2
+			for j < len(value) && value[j] < 0x40 {
+				j++
+			}
+			if j < len(value) {
+				i = j
+				continue
+			}
+		}
+		b.WriteByte(value[i])
+	}
+	return b.String()
+}
+
 type claudeParser struct{}
 
 func (claudeParser) Name() string { return "claude-stream-json" }

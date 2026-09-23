@@ -61,6 +61,48 @@ func NewZCode() Adapter {
 	return &zcodeAdapter{NativeAdapter: base}
 }
 
+// NewDevin launches the Devin CLI. Print mode (`-p`) writes one plain-text
+// answer, optionally after a welcome banner. It is not JSON. `devin acp` is a
+// separate newline JSON-RPC server and is not the print payload.
+func NewDevin() Adapter {
+	bin := resolveDevinBinary()
+	base := newNativeAdapter(nativeConfig{
+		Manifest: devinManifest(), Binary: bin, Parser: devinParser{},
+		LaunchKind: "devin_session", WholeStdout: true, TransformArgv: rewriteDevinArgv,
+	})
+	return &devinAdapter{NativeAdapter: base}
+}
+
+type devinAdapter struct{ *NativeAdapter }
+
+func (d *devinAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, error) {
+	if req.Executable == "" || req.Executable == "devin" {
+		req.Executable = resolveDevinBinary()
+	}
+	return d.NativeAdapter.Probe(ctx, req)
+}
+
+func resolveDevinBinary() string {
+	if path, err := exec.LookPath("devin"); err == nil {
+		return path
+	}
+	return "devin"
+}
+
+func rewriteDevinArgv(argv []string) []string {
+	if len(argv) == 0 || argv[0] != "devin" {
+		return argv
+	}
+	resolved := resolveDevinBinary()
+	if resolved == "" || resolved == argv[0] {
+		return argv
+	}
+	out := make([]string, len(argv))
+	out[0] = resolved
+	copy(out[1:], argv[1:])
+	return out
+}
+
 type zcodeAdapter struct{ *NativeAdapter }
 
 func (z *zcodeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, error) {
@@ -603,6 +645,15 @@ func claudeManifest() Manifest {
 	})
 }
 
+func devinManifest() Manifest {
+	resultContent := resultContentDecl(CapabilitySupported, "print")
+	resultContent.Constraints["required_output_mode"] = "print"
+	resultContent.Constraints["required_argv"] = map[string]any{"flag": "-p", "kind": "presence"}
+	return baseManifest("devin", "0.1.0", "devin_session", "devin-print", []CapabilityDeclaration{
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+	})
+}
+
 func zcodeManifest() Manifest {
 	resultContent := resultContentDecl(CapabilitySupported, "response")
 	resultContent.Constraints["required_output_mode"] = "json"
@@ -648,6 +699,8 @@ func baseManifest(name, version, kind, format string, capabilities []CapabilityD
 		executable = "omp"
 	case "zcode":
 		executable = "zcode"
+	case "devin":
+		executable = "devin"
 	case "multica":
 		executable = "multica"
 	case "generic-process":

@@ -656,7 +656,7 @@ func TestStartOnlyDeadlineCancelsAndReapsChild(t *testing.T) {
 }
 
 func TestBuiltInManifestsHaveSchemaRequiredShapes(t *testing.T) {
-	for _, a := range []Adapter{NewGenericProcess(), NewCodex(), NewCursor(), NewClaudeCode(), NewOMP(), NewMultica(MulticaConfig{Profile: "p", Workspace: "w", Issue: "i", Run: "r"})} {
+	for _, a := range []Adapter{NewGenericProcess(), NewCodex(), NewCursor(), NewClaudeCode(), NewOMP(), NewZCode(), NewDevin(), NewMultica(MulticaConfig{Profile: "p", Workspace: "w", Issue: "i", Run: "r"})} {
 		manifest := a.Manifest()
 		encoded, err := json.Marshal(manifest)
 		if err != nil {
@@ -702,6 +702,7 @@ func TestResultContentNegotiationUsesExactInvocation(t *testing.T) {
 		{name: "cursor", manifest: cursorManifest(), good: []string{"cursor-agent", "--print", "--output-format", "stream-json", "review"}, bad: []string{"cursor-agent", "--print", "review"}, afterDelimiter: []string{"--output-format", "stream-json"}},
 		{name: "claude", manifest: claudeManifest(), good: []string{"claude", "--output-format=stream-json", "review"}, bad: []string{"claude", "review"}, afterDelimiter: []string{"--output-format=stream-json"}},
 		{name: "omp", manifest: ompManifest(), good: []string{"omp", "-p", "--mode=json", "review"}, bad: []string{"omp", "-p", "review"}, afterDelimiter: []string{"--mode=json"}},
+		{name: "devin", manifest: devinManifest(), good: []string{"devin", "--model", "swe-2-high", "-p", "--respect-workspace-trust", "false", "--"}, bad: []string{"devin", "--model", "swe-2-high", "--"}, afterDelimiter: []string{"-p"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

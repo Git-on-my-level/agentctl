@@ -212,6 +212,34 @@ func TestZCodeRecipeUsesConfiguredModelOnly(t *testing.T) {
 	}
 }
 
+func TestDevinRecipePassesModelAndPrint(t *testing.T) {
+	for _, model := range []string{"swe-2-high", "fusion-gpt-6-sol-high-sidekick-swe-2-high"} {
+		got, err := Build(Input{Harness: "devin", Model: model})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"devin", "--model", model, "-p", "--respect-workspace-trust", "false", "--"}
+		if strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") || got.PromptDelivery != PromptDeliveryArgv {
+			t.Fatalf("argv=%v delivery=%s", got.Argv, got.PromptDelivery)
+		}
+	}
+	explicit, err := Build(Input{Harness: "devin", Model: "swe-2-high", Executable: "/opt/bin/devin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Argv[0] != "/opt/bin/devin" {
+		t.Fatalf("explicit path = %q", explicit.Argv[0])
+	}
+	for _, model := range []string{"swe-2-high-fast", "swe-2-high-priority", "claude-sonnet-4"} {
+		if _, err := Build(Input{Harness: "devin", Model: model}); err == nil {
+			t.Fatalf("expected %s to be refused", model)
+		}
+	}
+	if _, err := Build(Input{Harness: "devin", Model: "swe-2-high", Speed: "fast"}); err == nil {
+		t.Fatal("expected fast speed to be refused")
+	}
+}
+
 func TestUnsupportedHarnessRejected(t *testing.T) {
 	_, err := Build(Input{Harness: "multica", Model: "anything"})
 	var buildErr *Error
