@@ -96,6 +96,8 @@ type processRecord struct {
 	events           []Event
 	result           *Result
 	finalContent     string
+	sawDevinPrint    bool
+	devinPrintAnswer string
 	contentType      string
 	contentSource    string
 	contentTruncated bool
@@ -200,6 +202,12 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 	}
 	if obs.BackendVersion != "" {
 		p.ref.Endpoint = obs.BackendVersion
+	}
+	if obs.SourceState == "devin.print" && !obs.Terminal {
+		p.sawDevinPrint = true
+		if obs.Content != "" {
+			p.devinPrintAnswer = obs.Content
+		}
 	}
 	if obs.Content != "" {
 		p.finalContent = obs.Content
@@ -307,6 +315,14 @@ func (p *processRecord) finish(err error) {
 			}
 		}
 		p.exitCode = &code
+	}
+	if p.result == nil && p.sawDevinPrint && !p.cancelled && p.exitCode != nil && *p.exitCode == 0 {
+		if strings.TrimSpace(p.devinPrintAnswer) == "" {
+			p.result = &Result{Success: false, State: StateFailed, ExitCode: p.exitCode, SessionRef: p.ref, Error: "devin print exited without an answer", Data: map[string]any{"diagnostic_code": "empty_terminal_result", "terminal_source_state": "devin.print"}}
+		} else {
+			content := p.devinPrintAnswer
+			p.result = &Result{Success: true, State: StateCompleted, Summary: boundedString(content, 2048), Content: content, ContentType: "text/plain", ExitCode: p.exitCode, SessionRef: p.ref, Data: map[string]any{"result_content_source": "assistant_terminal_result", "terminal_source_state": "devin.print"}}
+		}
 	}
 	if p.result == nil && p.resultPath != "" {
 		if data, readErr := os.ReadFile(p.resultPath); readErr == nil && len(data) <= p.maxOutput {

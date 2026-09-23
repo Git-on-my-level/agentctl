@@ -153,22 +153,19 @@ func (devinParser) Parse(line []byte, stderr bool) parsedObservation {
 	if stderr {
 		return parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "stderr", Data: map[string]any{"stream": "stderr", "structured": false}}
 	}
+	// Print text is the answer candidate. Completion is decided when the process
+	// is reaped, so cancellation, timeout, and a nonzero exit are not stamped
+	// as success from stdout alone.
 	obs := parsedObservation{State: StateRunning, Liveness: LivenessAlive, Data: map[string]any{"family": "devin"}, SourceState: "devin.print"}
 	response := devinPrintAnswer(line)
 	if response == "" {
 		obs.Data["diagnostic_code"] = "empty_terminal_result"
-		obs.Terminal = true
-		obs.Success = false
-		obs.State = StateFailed
 		return obs
 	}
 	obs.Content = boundedUTF8(response, 1<<20)
 	obs.ContentType = "text/plain"
 	obs.ContentSource = "assistant_terminal_result"
 	obs.ContentTruncated = len(response) > len(obs.Content)
-	obs.Terminal = true
-	obs.Success = true
-	obs.State = StateCompleted
 	return obs
 }
 
@@ -181,7 +178,11 @@ func devinPrintAnswer(raw []byte) string {
 	if idx := strings.Index(text, devinPrintTrailer); idx >= 0 {
 		text = text[idx+len(devinPrintTrailer):]
 	}
-	return strings.TrimSpace(text)
+	text = strings.TrimSpace(text)
+	if strings.Contains(text, "Welcome to Devin CLI") || strings.Contains(text, "Logged in as ") {
+		return ""
+	}
+	return text
 }
 
 func stripANSI(value string) string {
