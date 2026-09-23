@@ -76,6 +76,8 @@ func Build(in Input) (Recipe, error) {
 		return buildCodex(in.Executable, model, speed, effort)
 	case "omp":
 		return buildOMP(in.Executable, model, speed, effort)
+	case "zcode":
+		return buildZCode(in.Executable, model, speed, effort)
 	case "claude-code":
 		return buildClaudeCode(in.Executable, model, speed, effort)
 	default:
@@ -96,6 +98,8 @@ func CanonicalHarness(raw string) (string, error) {
 		return "codex", nil
 	case "omp", "oh-my-pi":
 		return "omp", nil
+	case "zcode":
+		return "zcode", nil
 	case "claude", "claude-code":
 		return "claude-code", nil
 	case "":
@@ -145,6 +149,8 @@ func defaultExecutable(harness string) string {
 		return "codex"
 	case "omp":
 		return "omp"
+	case "zcode":
+		return "zcode"
 	case "claude-code":
 		return "claude"
 	default:

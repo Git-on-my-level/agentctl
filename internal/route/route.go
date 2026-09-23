@@ -22,6 +22,8 @@ func AdapterForModelFamily(family string) (string, error) {
 		return "cursor", nil
 	case "glm", "open-weight", "open_weight", "openweight", "omp":
 		return "omp", nil
+	case "zcode":
+		return "zcode", nil
 	default:
 		return "", fmt.Errorf("unknown model family %q; select an adapter explicitly", family)
 	}

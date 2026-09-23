@@ -6,6 +6,7 @@ func TestAdapterForModelFamily(t *testing.T) {
 	cases := map[string]string{
 		"":       "",
 		"auto":   "",
+		"zcode":  "zcode",
 		"glm":    "omp",
 		"gpt":    "codex",
 		"grok":   "cursor",

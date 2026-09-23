@@ -104,6 +104,44 @@ func cursorAssistantText(value any) string {
 	}
 }
 
+type zcodeParser struct{}
+
+func (zcodeParser) Name() string { return "zcode-json" }
+func (zcodeParser) Parse(line []byte, stderr bool) parsedObservation {
+	if stderr {
+		return parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "stderr", Data: map[string]any{"stream": "stderr", "structured": false}}
+	}
+	value, ok := decodeLine(line)
+	if !ok {
+		return parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "malformed_output", Data: map[string]any{"parse_error": "malformed structured output"}}
+	}
+	obs := parsedObservation{State: StateRunning, Liveness: LivenessAlive, Data: map[string]any{"family": "zcode"}, SourceState: "zcode.response"}
+	obs.SessionID = firstString(value, "sessionId", "session_id")
+	if errText := errorText(value); errText != "" {
+		obs.Error = boundedString(errText, 1024)
+		obs.Terminal = true
+		obs.Success = false
+		obs.State = StateFailed
+		return obs
+	}
+	response := strings.TrimSpace(firstString(value, "response"))
+	if response == "" {
+		obs.Data["diagnostic_code"] = "empty_terminal_result"
+		obs.Terminal = true
+		obs.Success = false
+		obs.State = StateFailed
+		return obs
+	}
+	obs.Content = boundedUTF8(response, 1<<20)
+	obs.ContentType = "text/plain"
+	obs.ContentSource = "assistant_terminal_result"
+	obs.ContentTruncated = len(response) > len(obs.Content)
+	obs.Terminal = true
+	obs.Success = true
+	obs.State = StateCompleted
+	return obs
+}
+
 type claudeParser struct{}
 
 func (claudeParser) Name() string { return "claude-stream-json" }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -44,6 +45,55 @@ func NewClaudeCode() Adapter {
 func NewClaude() Adapter { return NewClaudeCode() }
 func NewOMP() Adapter {
 	return newNativeAdapter(nativeConfig{Manifest: ompManifest(), Binary: "omp", Parser: ompParser{}, PollStatus: true, LaunchKind: "omp_session"})
+}
+
+// NewZCode launches the ZCode CLI. Headless runs print one JSON document, not
+// JSONL. The model and effort live in the CLI config, not argv.
+func NewZCode() Adapter {
+	bin := resolveZCodeBinary()
+	base := newNativeAdapter(nativeConfig{
+		Manifest: zcodeManifest(), Binary: bin, Parser: zcodeParser{},
+		LaunchKind: "zcode_session", WholeStdout: true, TransformArgv: rewriteZCodeArgv,
+	})
+	return &zcodeAdapter{NativeAdapter: base}
+}
+
+type zcodeAdapter struct{ *NativeAdapter }
+
+func (z *zcodeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, error) {
+	if req.Executable == "" || req.Executable == "zcode" || filepath.Base(req.Executable) == "zcode" {
+		req.Executable = resolveZCodeBinary()
+	}
+	return z.NativeAdapter.Probe(ctx, req)
+}
+
+func resolveZCodeBinary() string {
+	if path, err := exec.LookPath("zcode"); err == nil {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "zcode"
+	}
+	candidate := filepath.Join(home, ".zcode", "server", "agents", "glm", "zcode-agent")
+	if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+		return candidate
+	}
+	return "zcode"
+}
+
+func rewriteZCodeArgv(argv []string) []string {
+	if len(argv) == 0 || (argv[0] != "zcode" && filepath.Base(argv[0]) != "zcode") {
+		return argv
+	}
+	resolved := resolveZCodeBinary()
+	if resolved == "" || resolved == argv[0] {
+		return argv
+	}
+	out := make([]string, len(argv))
+	out[0] = resolved
+	copy(out[1:], argv[1:])
+	return out
 }
 
 type MulticaConfig struct {
@@ -388,6 +438,15 @@ func claudeManifest() Manifest {
 	})
 }
 
+func zcodeManifest() Manifest {
+	resultContent := resultContentDecl(CapabilitySupported, "response")
+	resultContent.Constraints["required_output_mode"] = "json"
+	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--json", "kind": "presence"}
+	return baseManifest("zcode", "0.1.0", "zcode_session", "zcode-json", []CapabilityDeclaration{
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+	})
+}
+
 func ompManifest() Manifest {
 	resultContent := resultContentDecl(CapabilitySupported, "agent_end_or_assistant_message")
 	resultContent.Constraints["required_output_mode"] = "json"
@@ -422,6 +481,8 @@ func baseManifest(name, version, kind, format string, capabilities []CapabilityD
 		executable = "claude"
 	case "omp":
 		executable = "omp"
+	case "zcode":
+		executable = "zcode"
 	case "multica":
 		executable = "multica"
 	case "generic-process":
