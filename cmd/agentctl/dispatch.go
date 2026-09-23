@@ -226,6 +226,9 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 	if err := runMulticaJSON(ctx, multicaBaseArgv(m, "issue", "get", issueID, "--output", "json"), &currentIssue); err != nil {
 		return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_read", err)
 	}
+	if !multicaIDMatches(currentIssue["id"], issueID) || !multicaIDMatches(currentIssue["workspace_id"], m.WorkspaceID) {
+		return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_read", &operationDiagnostic{Category: "identity_mismatch", ExitCode: 0, Retryable: true})
+	}
 	if currentIdentifier, _ := currentIssue["identifier"].(string); currentIdentifier != "" {
 		identifier = currentIdentifier
 	}
@@ -320,7 +323,6 @@ func bindDispatchIssue(ctx context.Context, journal scopedJournal, id ids.Execut
 		}
 		current.SourceBindings = append(current.SourceBindings, binding)
 		current.SourceState = dispatchStringPointer("issue_bound")
-		current.Capabilities = promotedCapabilities(now)
 		current.UpdatedAt = now
 		current.Observation = model.Observation{Source: model.ObservationDurableOutbox, Integrity: model.IntegrityVerified, ObservedAt: now}
 		result, err = j.UpdateExecution(ctx, current, current.Revision)
@@ -342,6 +344,7 @@ func finalizeDispatch(ctx context.Context, journal scopedJournal, id ids.Executi
 		current.State = model.StateWaiting
 		current.Liveness = model.LivenessUnknown
 		current.SourceState = dispatchStringPointer("issue_created")
+		current.Capabilities = promotedCapabilities(now)
 		current.UpdatedAt = now
 		current.Observation = model.Observation{Source: model.ObservationDurableOutbox, Integrity: model.IntegrityVerified, ObservedAt: now}
 		result, err = j.UpdateExecution(ctx, current, current.Revision)
@@ -561,9 +564,7 @@ func resolveMulticaDispatchTarget(ctx context.Context, m *config.Multica, catalo
 			rejected["host_unmatched_or_mismatch"]++
 			continue
 		}
-		modelMatch := route.Match(agent.Model, catalog)
-		modelHit, ok := uniqueTopDispatchModel(modelMatch.Models)
-		if !ok || canonicalProvider(modelHit.Adapter) != canonicalProvider(selected.Adapter) || modelHit.Model != selected.Model {
+		if !strings.EqualFold(strings.TrimSpace(agent.Model), selected.Model) {
 			rejected["model_unmatched_or_mismatch"]++
 			continue
 		}
@@ -591,6 +592,12 @@ func canonicalProvider(value string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(value))
 	}
+}
+
+func multicaIDMatches(actual any, expected string) bool {
+	value, _ := actual.(string)
+	value = strings.TrimSpace(value)
+	return value != "" && strings.EqualFold(value, strings.TrimSpace(expected))
 }
 
 func multicaBaseArgv(m *config.Multica, command ...string) []string {

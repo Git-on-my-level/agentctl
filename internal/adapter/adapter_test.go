@@ -484,12 +484,15 @@ func TestNativeLaunchClassifiesCancellationBeforeChildAcceptance(t *testing.T) {
 	}
 }
 
-func TestMulticaProbeVerifiesBoundedWorkspaceEventGrammar(t *testing.T) {
+func TestMulticaProbeVerifiesExactWorkspaceAuthority(t *testing.T) {
 	argsPath := filepath.Join(t.TempDir(), "args")
 	path := fixtureExecutable(t, `
 if [ "${1:-}" = "--version" ]; then printf '%s\n' 'multica 0.4.17'; exit 0; fi
-printf '%s\n' "$*" > "`+argsPath+`"
-printf '%s\n' '{"events":[],"next_cursor":"0","has_more":false}'
+printf '%s\n' "$*" >> "`+argsPath+`"
+case "$*" in
+  *"workspace get"*) printf '%s\n' '{"id":"workspace-test","slug":"test"}' ;;
+  *) printf 'unexpected argv: %s\n' "$*" >&2; exit 9 ;;
+esac
 `)
 	a := NewMultica(MulticaConfig{Binary: path, Profile: "desktop", Endpoint: "https://multica.example.test", Workspace: "workspace-test"})
 	result, err := a.Probe(context.Background(), ProbeRequest{Timeout: 5 * time.Second})
@@ -501,14 +504,56 @@ printf '%s\n' '{"events":[],"next_cursor":"0","has_more":false}'
 		t.Fatal(err)
 	}
 	got := string(argv)
-	for _, required := range []string{"--profile desktop", "--workspace-id workspace-test", "--server-url https://multica.example.test", "event list", "--cursor 0", "--limit 1"} {
+	for _, required := range []string{"--profile desktop", "--workspace-id workspace-test", "--server-url https://multica.example.test", "workspace get workspace-test --output json"} {
 		if !strings.Contains(got, required) {
 			t.Fatalf("probe argv %q missing %q", got, required)
 		}
 	}
+	if strings.Contains(got, "event list") {
+		t.Fatalf("probe used the workspace event page as capability proof: %q", got)
+	}
+	sawEvents, sawSnapshot := false, false
 	for _, capability := range result.Capabilities {
-		if capability.Name == CapabilityEvents && (capability.Status != CapabilitySupported || capability.Source != "live_probe") {
-			t.Fatalf("event capability was not verified: %#v", capability)
+		switch capability.Name {
+		case CapabilityEvents:
+			sawEvents = capability.Status == CapabilityUnavailable
+		case CapabilitySnapshot:
+			sawSnapshot = capability.Status == CapabilityDegraded
+		}
+	}
+	if !sawEvents || !sawSnapshot {
+		t.Fatalf("probe did not report unavailable events and issue-bound conditional snapshot: %#v", result.Capabilities)
+	}
+}
+
+func TestMulticaProbeRejectsMismatchedWorkspaceIdentity(t *testing.T) {
+	path := fixtureExecutable(t, `
+if [ "${1:-}" = "--version" ]; then printf '%s\n' 'multica 0.4.17'; exit 0; fi
+printf '%s\n' '{"id":"workspace-other","slug":"other"}'
+`)
+	a := NewMultica(MulticaConfig{Binary: path, Profile: "desktop", Endpoint: "https://multica.example.test", Workspace: "workspace-test"})
+	if _, err := a.Probe(context.Background(), ProbeRequest{Timeout: 5 * time.Second}); err == nil || !strings.Contains(err.Error(), "different workspace identity") {
+		t.Fatalf("probe accepted mismatched workspace: %v", err)
+	}
+}
+
+func TestMulticaProbeVerifiesBoundIssueForSnapshot(t *testing.T) {
+	path := fixtureExecutable(t, `
+if [ "${1:-}" = "--version" ]; then printf '%s\n' 'multica 0.4.17'; exit 0; fi
+case "$*" in
+  *"workspace get"*) printf '%s\n' '{"id":"workspace-test","slug":"test"}' ;;
+  *"issue get"*) printf '%s\n' '{"id":"issue-bound","workspace_id":"workspace-test","status":"in_progress","status_category":"in_progress"}' ;;
+  *) printf 'unexpected argv: %s\n' "$*" >&2; exit 9 ;;
+esac
+`)
+	a := NewMultica(MulticaConfig{Binary: path, Profile: "desktop", Endpoint: "https://multica.example.test", Workspace: "workspace-test", Issue: "issue-bound"})
+	result, err := a.Probe(context.Background(), ProbeRequest{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range result.Capabilities {
+		if capability.Name == CapabilitySnapshot && (capability.Status != CapabilitySupported || capability.Source != "live_probe") {
+			t.Fatalf("bound-issue snapshot capability was not verified: %#v", capability)
 		}
 	}
 }
@@ -894,5 +939,165 @@ func TestNativeFailurePreservesCauseBeforeUsageFooter(t *testing.T) {
 	record.ingest([]byte("For more information, try '--help'."), true)
 	if !strings.Contains(record.stderrDiagnostic, "--bad-flag") {
 		t.Fatalf("lost cause: %s", record.stderrDiagnostic)
+	}
+}
+
+func TestMulticaSnapshotMapsExactIssueStatus(t *testing.T) {
+	cases := []struct {
+		name     string
+		document string
+		state    State
+		liveness Liveness
+	}{
+		{"backlog", `{"id":"issue-fixture","workspace_id":"workspace-fixture","status":"backlog","status_category":"backlog"}`, StateWaiting, LivenessBlocked},
+		{"todo", `{"id":"issue-fixture","workspace_id":"workspace-fixture","status":"todo","status_category":"todo"}`, StateWaiting, LivenessBlocked},
+		{"in progress", `{"id":"issue-fixture","workspace_id":"workspace-fixture","status":"in_progress","status_category":"in_progress","updated_at":"2026-09-23T10:00:00Z"}`, StateRunning, LivenessAlive},
+		{"in review", `{"id":"issue-fixture","workspace_id":"workspace-fixture","status":"in_review","status_category":"in_review"}`, StateAttention, LivenessBlocked},
+		{"blocked", `{"id":"issue-fixture","workspace_id":"workspace-fixture","status":"blocked","status_category":"blocked"}`, StateAttention, LivenessBlocked},
+		{"done", `{"id":"issue-fixture","workspace_id":"workspace-fixture","status":"done","status_category":"done"}`, StateCompleted, LivenessExited},
+		{"cancelled", `{"id":"issue-fixture","workspace_id":"workspace-fixture","status":"cancelled","status_category":"cancelled"}`, StateCancelled, LivenessExited},
+		{"custom review-category status", `{"id":"issue-fixture","workspace_id":"workspace-fixture","status":"qa_gate","status_category":"in_review"}`, StateAttention, LivenessBlocked},
+		{"custom status without category uses builtin status", `{"id":"issue-fixture","workspace_id":"workspace-fixture","status":"in_progress"}`, StateRunning, LivenessAlive},
+		{"unknown category never infers terminal", `{"id":"issue-fixture","workspace_id":"workspace-fixture","status":"mystery","status_category":"mystery"}`, StateAttention, LivenessBlocked},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			argsPath := filepath.Join(t.TempDir(), "args")
+			path := fixtureExecutable(t, `printf '%s\n' "$*" > "`+argsPath+`"
+printf '%s\n' '`+tc.document+`'`)
+			config := MulticaConfig{Binary: path, Profile: "profile-fixture", Workspace: "workspace-fixture", Issue: "issue-fixture"}
+			snapshot, err := NewMultica(config).Snapshot(context.Background(), SnapshotRequest{Ref: SourceRef{Adapter: "multica", Kind: "multica_issue", Profile: config.Profile, Workspace: config.Workspace, Issue: config.Issue}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session := snapshot.Session
+			if session.State != tc.state || session.Liveness != tc.liveness {
+				t.Fatalf("%s mapped to %s/%s", tc.name, session.State, session.Liveness)
+			}
+			if session.Observation.Source != "status_api" || session.Observation.Integrity != "verified" {
+				t.Fatalf("snapshot observation=%#v", session.Observation)
+			}
+			if session.Ref.OpaqueID != config.Issue || session.Ref.Kind != "multica_issue" {
+				t.Fatalf("snapshot ref=%#v", session.Ref)
+			}
+			argv, err := os.ReadFile(argsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(argv), "issue get issue-fixture --output json") {
+				t.Fatalf("snapshot argv=%q", argv)
+			}
+		})
+	}
+}
+
+func TestMulticaSnapshotRequiresBoundIssue(t *testing.T) {
+	config := MulticaConfig{Binary: "/bin/true", Profile: "profile-fixture", Workspace: "workspace-fixture"}
+	_, err := NewMultica(config).Snapshot(context.Background(), SnapshotRequest{})
+	var adapterErr *AdapterError
+	if !errors.As(err, &adapterErr) || adapterErr.Code != ErrCapabilityUnavailable {
+		t.Fatalf("unbound snapshot error=%v", err)
+	}
+}
+
+func TestMulticaSnapshotRejectsMismatchedAuthority(t *testing.T) {
+	cases := []struct {
+		name     string
+		document string
+		want     string
+	}{
+		{"different issue", `{"id":"issue-other","workspace_id":"workspace-fixture","status":"done"}`, "different issue identity"},
+		{"different workspace", `{"id":"issue-fixture","workspace_id":"workspace-other","status":"done"}`, "different workspace identity"},
+		{"missing workspace", `{"id":"issue-fixture","status":"done"}`, "different workspace identity"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := fixtureExecutable(t, `printf '%s\n' '`+tc.document+`'`)
+			config := MulticaConfig{Binary: path, Profile: "profile-fixture", Workspace: "workspace-fixture", Issue: "issue-fixture"}
+			_, err := NewMultica(config).Snapshot(context.Background(), SnapshotRequest{Ref: SourceRef{Issue: config.Issue, Workspace: config.Workspace, Profile: config.Profile}})
+			var adapterErr *AdapterError
+			if !errors.As(err, &adapterErr) || adapterErr.Code != ErrExecutionFailed || !strings.Contains(adapterErr.Message, tc.want) {
+				t.Fatalf("%s error=%v", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestMulticaSnapshotRejectsMalformedAndFailedReads(t *testing.T) {
+	t.Run("malformed json", func(t *testing.T) {
+		path := fixtureExecutable(t, `printf '%s\n' 'not json'`)
+		config := MulticaConfig{Binary: path, Profile: "profile-fixture", Workspace: "workspace-fixture", Issue: "issue-fixture"}
+		_, err := NewMultica(config).Snapshot(context.Background(), SnapshotRequest{})
+		var adapterErr *AdapterError
+		if !errors.As(err, &adapterErr) || adapterErr.Code != ErrExecutionFailed || !adapterErr.Retryable {
+			t.Fatalf("malformed snapshot error=%v", err)
+		}
+	})
+	t.Run("cli failure does not leak output", func(t *testing.T) {
+		path := fixtureExecutable(t, `printf '%s\n' '{"id":"issue-fixture","workspace_id":"workspace-fixture","status":"done","token":"stdout-secret-9x"}'; printf '%s\n' 'stderr-secret-7q credential' >&2; exit 23`)
+		config := MulticaConfig{Binary: path, Profile: "profile-fixture", Workspace: "workspace-fixture", Issue: "issue-fixture"}
+		_, err := NewMultica(config).Snapshot(context.Background(), SnapshotRequest{})
+		var adapterErr *AdapterError
+		if !errors.As(err, &adapterErr) || adapterErr.Code != ErrExecutionFailed {
+			t.Fatalf("cli failure error=%v", err)
+		}
+		serialized, marshalErr := json.Marshal(adapterErr)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		surfaces := string(serialized) + " " + adapterErr.Error()
+		for _, secret := range []string{"stdout-secret-9x", "stderr-secret-7q"} {
+			if strings.Contains(surfaces, secret) {
+				t.Fatalf("cli failure leaked command output into error surface: %s", surfaces)
+			}
+		}
+		if adapterErr.Details["operation"] != "issue get" || adapterErr.Details["upstream_exit_code"] != 23 {
+			t.Fatalf("cli failure lost typed diagnostic: %#v", adapterErr.Details)
+		}
+	})
+}
+
+func TestMulticaSnapshotRejectsForeignRef(t *testing.T) {
+	called := filepath.Join(t.TempDir(), "called")
+	path := fixtureExecutable(t, `touch "`+called+`"; printf '%s\n' '{}'`)
+	config := MulticaConfig{Binary: path, Profile: "profile-fixture", Workspace: "workspace-fixture", Issue: "issue-fixture"}
+	cases := []struct {
+		name string
+		ref  SourceRef
+	}{
+		{"foreign issue", SourceRef{Adapter: "multica", Kind: "multica_issue", Issue: "issue-other"}},
+		{"foreign opaque id", SourceRef{Adapter: "multica", Kind: "multica_issue", OpaqueID: "issue-other"}},
+		{"foreign kind", SourceRef{Adapter: "multica", Kind: "multica_run", Issue: "issue-fixture"}},
+		{"foreign adapter", SourceRef{Adapter: "other", Kind: "multica_issue", Issue: "issue-fixture"}},
+		{"foreign workspace", SourceRef{Adapter: "multica", Kind: "multica_issue", Workspace: "workspace-other", Issue: "issue-fixture"}},
+		{"foreign profile", SourceRef{Adapter: "multica", Kind: "multica_issue", Profile: "other", Issue: "issue-fixture"}},
+		{"foreign run", SourceRef{Adapter: "multica", Kind: "multica_issue", Issue: "issue-fixture", Run: "run-other"}},
+		{"foreign endpoint", SourceRef{Adapter: "multica", Kind: "multica_issue", Issue: "issue-fixture", Endpoint: "https://other.example.test"}},
+		{"foreign fingerprint", SourceRef{Adapter: "multica", Kind: "multica_issue", Issue: "issue-fixture", Fingerprint: Fingerprint("multica", "multica_issue", "issue-other")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewMultica(config).Snapshot(context.Background(), SnapshotRequest{Ref: tc.ref})
+			var adapterErr *AdapterError
+			if !errors.As(err, &adapterErr) || adapterErr.Code != ErrUsage {
+				t.Fatalf("%s error=%v", tc.name, err)
+			}
+			if _, statErr := os.Stat(called); !os.IsNotExist(statErr) {
+				t.Fatalf("%s reached the authority CLI", tc.name)
+			}
+		})
+	}
+}
+
+func TestMulticaSnapshotAcceptsExactJournaledFingerprint(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s\n' '{"id":"issue-fixture","workspace_id":"workspace-fixture","status":"in_progress","status_category":"in_progress"}'`)
+	config := MulticaConfig{Binary: path, Profile: "profile-fixture", Endpoint: "https://multica.example.test", Workspace: "workspace-fixture", Issue: "issue-fixture"}
+	ref := SourceRef{Adapter: "multica", Kind: "multica_issue", OpaqueID: config.Issue, Fingerprint: Fingerprint("multica", "multica_issue", config.Issue), Profile: config.Profile, Endpoint: config.Endpoint, Workspace: config.Workspace, Issue: config.Issue}
+	snapshot, err := NewMultica(config).Snapshot(context.Background(), SnapshotRequest{Ref: ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Session.Ref.Fingerprint != ref.Fingerprint || snapshot.Session.State != StateRunning {
+		t.Fatalf("journaled ref snapshot=%#v", snapshot.Session)
 	}
 }

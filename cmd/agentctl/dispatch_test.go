@@ -88,11 +88,33 @@ case "$*" in
 	printf '%s\n' '{"id":"opaque-multica-issue","identifier":"SCA-932","status":"todo"}'
     ;;
   *"issue get"*)
+    if [ -n "${AGENTCTL_TEST_ISSUE_GET_DELAY:-}" ]; then
+      : > "$AGENTCTL_TEST_CAPTURE.issue.get.started"
+      if [ "${AGENTCTL_TEST_ISSUE_GET_IGNORE_TERM:-}" = "1" ]; then
+        trap '' TERM
+      fi
+      sleep "$AGENTCTL_TEST_ISSUE_GET_DELAY"
+    fi
+    if [ -n "${AGENTCTL_TEST_ISSUE_GET_FAILURES:-}" ]; then
+      count=0
+      if [ -f "$AGENTCTL_TEST_CAPTURE.issue.get.failures" ]; then
+        count=$(wc -l < "$AGENTCTL_TEST_CAPTURE.issue.get.failures" | tr -d ' ')
+      fi
+      if [ "$count" -lt "$AGENTCTL_TEST_ISSUE_GET_FAILURES" ]; then
+        printf '%s\n' failure >> "$AGENTCTL_TEST_CAPTURE.issue.get.failures"
+        printf '%s\n' 'transient issue get failure' >&2
+        exit 19
+      fi
+    fi
     if [ -n "${AGENTCTL_TEST_READ_ERROR:-}" ]; then printf '%s\n' "$AGENTCTL_TEST_READ_ERROR" >&2; exit 23; fi
-	if [ -f "$AGENTCTL_TEST_CAPTURE.updated" ]; then
-	  printf '%s\n' '{"id":"opaque-multica-issue","identifier":"SCA-932","status":"todo"}'
+	issue_id="${AGENTCTL_TEST_ISSUE_GET_ID:-opaque-multica-issue}"
+	issue_ws="${AGENTCTL_TEST_ISSUE_GET_WORKSPACE:-workspace-test}"
+	if [ -n "${AGENTCTL_TEST_ISSUE_STATUS:-}" ]; then
+	  printf '%s\n' "{\"id\":\"${issue_id}\",\"identifier\":\"SCA-932\",\"workspace_id\":\"${issue_ws}\",\"status\":\"${AGENTCTL_TEST_ISSUE_STATUS}\"}"
+	elif [ -f "$AGENTCTL_TEST_CAPTURE.updated" ]; then
+	  printf '%s\n' "{\"id\":\"${issue_id}\",\"identifier\":\"SCA-932\",\"workspace_id\":\"${issue_ws}\",\"status\":\"todo\"}"
 	else
-	  printf '%s\n' '{"id":"opaque-multica-issue","identifier":"SCA-932","status":"backlog"}'
+	  printf '%s\n' "{\"id\":\"${issue_id}\",\"identifier\":\"SCA-932\",\"workspace_id\":\"${issue_ws}\",\"status\":\"backlog\"}"
 	fi
 	;;
   *)
@@ -263,7 +285,7 @@ func TestDispatchExecuteReplayTracksOneExecutionWithoutPromptRetention(t *testin
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("AGENTCTL_TEST_EVENTS", `{"events":[{"type":"issue.updated","aggregate_kind":"issue","aggregate_id":"opaque-multica-issue","sequence":2,"payload":{"status":"done"}}],"next_cursor":"2","has_more":false}`)
+	t.Setenv("AGENTCTL_TEST_ISSUE_STATUS", "done")
 	if problem := a.reprobeAwaitedMultica(context.Background(), common{journalPath: journalPath}, executions[0]); problem != nil {
 		t.Fatalf("reprobe dispatched execution: %v", problem)
 	}
@@ -282,6 +304,77 @@ func TestDispatchExecuteReplayTracksOneExecutionWithoutPromptRetention(t *testin
 	stdout.Reset()
 	if code := a.run(context.Background(), []string{"--journal", journalPath, "recent", "--unreconciled"}); code != 0 || strings.Contains(stdout.String(), first.Result.Execution.ID.String()) {
 		t.Fatalf("await did not acknowledge dispatch exit=%d output=%s", code, stdout.String())
+	}
+}
+
+func TestDispatchRejectsMismatchedIssueReadWithoutActivation(t *testing.T) {
+	for _, env := range []struct{ key, value string }{
+		{"AGENTCTL_TEST_ISSUE_GET_ID", "issue-foreign"},
+		{"AGENTCTL_TEST_ISSUE_GET_WORKSPACE", "workspace-foreign"},
+	} {
+		t.Run(env.key, func(t *testing.T) {
+			root := t.TempDir()
+			agents := `[{"id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol","runtime_id":"runtime-m5-codex","status":"idle","archived_at":null}]`
+			runtimes := `[{"id":"runtime-m5-codex","custom_name":"M5 MBP","provider":"codex","status":"online"}]`
+			fake, capture := writeDispatchFixture(t, root, agents, runtimes)
+			configPath := filepath.Join(root, "config", "config.json")
+			journalPath := filepath.Join(root, "state", "journal.db")
+			writeDispatchConfig(t, configPath, fake,
+				[]any{map[string]any{"agent": "codex", "model": "gpt-5.6-sol", "speed": "regular", "use_for": "alias:sol"}},
+				map[string]any{"m5": "m5-mbp"})
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			a.stdin = strings.NewReader("Review the release candidate.")
+			a.stdinIsTerminal = func() bool { return false }
+			plan := a.run(context.Background(), []string{"--config", configPath, "--journal", journalPath, "dispatch", "--route", "m5 sol", "--title", "Review release", "--prompt-stdin", "--idempotency-key", "mismatch-v1", "--plan"})
+			if plan != 0 {
+				t.Fatalf("plan exit=%d output=%s stderr=%s", plan, stdout.String(), stderr.String())
+			}
+			if _, err := os.Stat(capture + ".argv"); !os.IsNotExist(err) {
+				t.Fatalf("plan created Multica issue: %v", err)
+			}
+			t.Setenv(env.key, env.value)
+			args := []string{"--config", configPath, "--journal", journalPath, "dispatch", "--route", "m5 sol", "--title", "Review release", "--prompt-stdin", "--idempotency-key", "mismatch-v1"}
+			for attempt := 0; attempt < 2; attempt++ {
+				a.stdin = strings.NewReader("Review the release candidate.")
+				stdout.Reset()
+				if code := a.run(context.Background(), args); code != output.ExitCodeFor(output.CodeRemoteFailure) {
+					t.Fatalf("attempt %d exit=%d output=%s stderr=%s", attempt, code, stdout.String(), stderr.String())
+				}
+				if !strings.Contains(stdout.String(), `"identity_mismatch"`) {
+					t.Fatalf("attempt %d output=%s", attempt, stdout.String())
+				}
+			}
+			created, err := os.ReadFile(capture + ".argv")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Count(strings.TrimSpace(string(created)), "\n") + 1; got != 1 {
+				t.Fatalf("issue create ran %d times: %q", got, created)
+			}
+			if _, err := os.Stat(capture + ".update.argv"); !os.IsNotExist(err) {
+				t.Fatalf("mismatched issue was activated: %v", err)
+			}
+			journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			executions, err := journal.ListExecutions(context.Background(), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(executions) != 1 {
+				t.Fatalf("mismatch created %d executions", len(executions))
+			}
+			for _, item := range executions[0].Capabilities.Items {
+				if item.Name == "snapshot" && item.Status == model.CapabilitySupported {
+					t.Fatalf("unverified issue read claimed supported snapshot: %#v", item)
+				}
+			}
+			if err := journal.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -310,8 +403,8 @@ func TestAwaitRetriesTransientMulticaRefreshFailures(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &dispatched); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("AGENTCTL_TEST_EVENT_FAILURES", "2")
-	t.Setenv("AGENTCTL_TEST_EVENTS", `{"events":[{"type":"issue.updated","aggregate_kind":"issue","aggregate_id":"opaque-multica-issue","sequence":2,"payload":{"status":"in_review"}}],"next_cursor":"2","has_more":false}`)
+	t.Setenv("AGENTCTL_TEST_ISSUE_GET_FAILURES", "2")
+	t.Setenv("AGENTCTL_TEST_ISSUE_STATUS", "in_review")
 	now := time.Now().UTC()
 	a.now = func() time.Time {
 		now = now.Add(awaitMulticaReprobeInterval)
@@ -321,7 +414,7 @@ func TestAwaitRetriesTransientMulticaRefreshFailures(t *testing.T) {
 	if code := a.run(context.Background(), []string{"--journal", journalPath, "await", dispatched.Result.Execution.ID.String(), "--no-timeout"}); code != output.ExitCodeFor(output.CodeAttentionRequired) {
 		t.Fatalf("await exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	failures, err := os.ReadFile(capture + ".event.failures")
+	failures, err := os.ReadFile(capture + ".issue.get.failures")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +452,7 @@ func TestAwaitReturnsThirdConsecutiveMulticaRefreshFailure(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &dispatched); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("AGENTCTL_TEST_EVENT_FAILURES", "99")
+	t.Setenv("AGENTCTL_TEST_ISSUE_GET_FAILURES", "99")
 	now := time.Now().UTC()
 	a.now = func() time.Time {
 		now = now.Add(awaitMulticaReprobeInterval)
@@ -369,10 +462,10 @@ func TestAwaitReturnsThirdConsecutiveMulticaRefreshFailure(t *testing.T) {
 	if code := a.run(context.Background(), []string{"--journal", journalPath, "await", dispatched.Result.Execution.ID.String(), "--no-timeout"}); code != output.ExitCodeFor(output.CodeRemoteFailure) {
 		t.Fatalf("await exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), `"consecutive_failures":3`) || !strings.Contains(stdout.String(), `"diagnostic_message":"Multica event list did not return a structured page"`) {
+	if !strings.Contains(stdout.String(), `"consecutive_failures":3`) || !strings.Contains(stdout.String(), `"diagnostic_message":"Multica issue get was rejected"`) {
 		t.Fatalf("await lost bounded failure diagnostic: %s", stdout.String())
 	}
-	failures, err := os.ReadFile(capture + ".event.failures")
+	failures, err := os.ReadFile(capture + ".issue.get.failures")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,22 +499,22 @@ func TestMulticaAwaitCancellationWinsOverRetry(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &dispatched); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("AGENTCTL_TEST_EVENT_DELAY", "5")
-	t.Setenv("AGENTCTL_TEST_EVENT_IGNORE_TERM", "1")
+	t.Setenv("AGENTCTL_TEST_ISSUE_GET_DELAY", "5")
+	t.Setenv("AGENTCTL_TEST_ISSUE_GET_IGNORE_TERM", "1")
 	stdout.Reset()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
 	go func() {
 		done <- a.run(ctx, []string{"--journal", journalPath, "await", dispatched.Result.Execution.ID.String(), "--no-timeout"})
 	}()
-	started := capture + ".event.started"
+	started := capture + ".issue.get.started"
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if _, err := os.Stat(started); err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("Multica event reprobe did not start")
+			t.Fatal("Multica issue reprobe did not start")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -461,8 +554,8 @@ func TestMulticaAwaitTimeoutBoundsInflightReprobe(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &dispatched); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("AGENTCTL_TEST_EVENT_DELAY", "5")
-	t.Setenv("AGENTCTL_TEST_EVENT_IGNORE_TERM", "1")
+	t.Setenv("AGENTCTL_TEST_ISSUE_GET_DELAY", "5")
+	t.Setenv("AGENTCTL_TEST_ISSUE_GET_IGNORE_TERM", "1")
 	stdout.Reset()
 	startedAt := time.Now()
 	if code := a.run(context.Background(), []string{"--journal", journalPath, "await", dispatched.Result.Execution.ID.String(), "--timeout", "1s"}); code != output.ExitCodeFor(output.CodeTimeout) {
@@ -474,7 +567,7 @@ func TestMulticaAwaitTimeoutBoundsInflightReprobe(t *testing.T) {
 	if !strings.Contains(stdout.String(), `"code":"timeout"`) || !strings.Contains(stdout.String(), `"state":"waiting"`) {
 		t.Fatalf("await timeout lost execution outcome: %s", stdout.String())
 	}
-	if _, err := os.Stat(capture + ".event.started"); err != nil {
+	if _, err := os.Stat(capture + ".issue.get.started"); err != nil {
 		t.Fatalf("Multica event reprobe did not start: %v", err)
 	}
 }
@@ -619,6 +712,43 @@ func TestDispatchPlanAcceptsInTableGrok(t *testing.T) {
 	}
 }
 
+func TestDispatchPlanExactModelSelectsOnlyReviewedMatch(t *testing.T) {
+	root := t.TempDir()
+	agents := `[
+      {"id":"agent-fusion","name":"M5 Devin (Fusion)","model":"fusion-gpt-6-sol-high-sidekick-swe-2-high","runtime_id":"runtime-m5-devin","status":"idle","archived_at":null},
+      {"id":"agent-swe2","name":"M5 Devin (SWE-2)","model":"swe-2-high","runtime_id":"runtime-m5-devin","status":"idle","archived_at":null}
+    ]`
+	runtimes := `[{"id":"runtime-m5-devin","custom_name":"M5 MBP","provider":"devin","status":"online"}]`
+	fake, capture := writeDispatchFixture(t, root, agents, runtimes)
+	configPath := filepath.Join(root, "config", "config.json")
+	writeDispatchConfig(t, configPath, fake,
+		[]any{map[string]any{"agent": "devin", "model": "fusion-gpt-6-sol-high-sidekick-swe-2-high", "speed": "regular", "use_for": "alias:fusion"}},
+		map[string]any{"m5": "m5-mbp"})
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	a.stdin = strings.NewReader("Review the exact diff.")
+	a.stdinIsTerminal = func() bool { return false }
+	code := a.run(context.Background(), []string{"--config", configPath, "dispatch", "--route", "m5 fusion", "--title", "Exact model", "--prompt-stdin", "--idempotency-key", "exact-model-v1", "--plan"})
+	if code != 0 || !strings.Contains(stdout.String(), `"agent_name":"M5 Devin (Fusion)"`) || strings.Contains(stdout.String(), "SWE-2") {
+		t.Fatalf("exact-model plan exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(capture + ".argv"); !os.IsNotExist(err) {
+		t.Fatalf("plan created Multica issue: %v", err)
+	}
+
+	t.Setenv("AGENTCTL_TEST_AGENTS", `[{"id":"agent-swe2","name":"M5 Devin (SWE-2)","model":"swe-2-high","runtime_id":"runtime-m5-devin","status":"idle","archived_at":null}]`)
+	stdout.Reset()
+	stderr.Reset()
+	a.stdin = strings.NewReader("Review the exact diff.")
+	code = a.run(context.Background(), []string{"--config", configPath, "dispatch", "--route", "m5 fusion", "--title", "Exact model", "--prompt-stdin", "--idempotency-key", "exact-model-v2", "--plan"})
+	if code == 0 || !strings.Contains(stdout.String(), `"code":"capability_unavailable"`) {
+		t.Fatalf("substring-only plan exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(capture + ".argv"); !os.IsNotExist(err) {
+		t.Fatalf("substring-only plan created Multica issue: %v", err)
+	}
+}
+
 func TestDispatchReplayDoesNotRegressAdvancedIssue(t *testing.T) {
 	root := t.TempDir()
 	agents := `[{"id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol","runtime_id":"runtime-m5-codex","status":"working","archived_at":null}]`
@@ -684,7 +814,7 @@ func TestSupervisorCycleDoesNotBlockAnotherProcessJournal(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &dispatched); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("AGENTCTL_TEST_EVENT_DELAY", "2")
+	t.Setenv("AGENTCTL_TEST_ISSUE_GET_DELAY", "2")
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	done := make(chan string, 1)
@@ -700,7 +830,7 @@ func TestSupervisorCycleDoesNotBlockAnotherProcessJournal(t *testing.T) {
 	}()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if _, err := os.Stat(capture + ".event.started"); err == nil {
+		if _, err := os.Stat(capture + ".issue.get.started"); err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
