@@ -292,7 +292,7 @@ func probeCapabilityProjection(probe adapter.ProbeResult) map[adapter.Capability
 func doctorCapabilitySummary(name string, values map[adapter.CapabilityName]any) map[adapter.CapabilityName]any {
 	required := []adapter.CapabilityName{adapter.CapabilityLaunch, adapter.CapabilityResultContent}
 	if name == "multica" {
-		required = []adapter.CapabilityName{adapter.CapabilityEvents}
+		required = []adapter.CapabilityName{adapter.CapabilitySnapshot, adapter.CapabilityEvents}
 	}
 	result := map[adapter.CapabilityName]any{}
 	for _, capability := range required {
@@ -314,14 +314,14 @@ func manifestCapabilityReady(manifest adapter.Manifest, name adapter.CapabilityN
 
 func doctorManifestReady(name string, manifest adapter.Manifest) bool {
 	if name == "multica" {
-		return manifestCapabilityReady(manifest, adapter.CapabilityEvents)
+		return manifestCapabilityReady(manifest, adapter.CapabilitySnapshot) || manifestCapabilityReady(manifest, adapter.CapabilityEvents)
 	}
 	return manifestCapabilityReady(manifest, adapter.CapabilityLaunch) && manifestCapabilityReady(manifest, adapter.CapabilityResultContent)
 }
 
 func doctorProbeReady(name string, probe adapter.ProbeResult) bool {
 	if name == "multica" {
-		return capabilityReady(probe, adapter.CapabilityEvents)
+		return capabilityReady(probe, adapter.CapabilitySnapshot) || capabilityReady(probe, adapter.CapabilityEvents)
 	}
 	return capabilityReady(probe, adapter.CapabilityLaunch) && capabilityReady(probe, adapter.CapabilityResultContent)
 }
