@@ -103,7 +103,7 @@ agentctl run -- codex exec --json -m gpt-5.6-sol "task"
 ```
 
 For known executable names, `run` infers the adapter (`codex`, `cursor-agent`,
-`claude`, and `omp`). `--adapter <name>` remains an explicit override when an
+`claude`, `omp`, `zcode`, and `devin`). `--adapter <name>` remains an explicit override when an
 executable is ambiguous or the caller has a reviewed authority mapping. The
 argv after `--` is passed unchanged in either case.
 
@@ -121,9 +121,9 @@ output.
 
 Capability negotiation is invocation-scoped. Backend probing establishes what
 an installed adapter can support; the exact argv establishes what this launch
-actually supports. When stored result content is required, Codex requires
-`--json`, Cursor and Claude require `--output-format stream-json`, and OMP
-requires `--mode json`. A missing or conflicting mode fails before dependency
+actually supports. When stored result content is required, Codex and ZCode require
+`--json`, Cursor and Claude require `--output-format stream-json`, OMP
+requires `--mode json`, and Devin requires `-p`. A missing or conflicting mode fails before dependency
 probing, journal creation, or child launch. agentctl reports the required mode
 but never silently rewrites the caller's argv.
 
@@ -187,6 +187,16 @@ meaning.
 - Consume structured streaming output when available.
 - Preserve native permission mode and hooks.
 - Do not read unrelated Claude project/session history during attachment.
+
+### Devin
+
+Print mode (`-p`) writes plain text, not JSON. A one-time welcome banner may
+precede the answer; the answer is the text after that banner. Launch recipes
+pass `--model` with an accepted account id (`swe-2-high` or
+`fusion-gpt-6-sol-high-sidekick-swe-2-high`) and `-p`, and disable workspace
+trust so print mode can run in an untrusted directory. Fast and priority model
+ids are refused. `devin acp` is a separate JSON-RPC server and is not the print
+payload.
 
 ### OMP
 
