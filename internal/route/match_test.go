@@ -176,6 +176,16 @@ func TestMatchBuiltinFamilyWithoutPreferred(t *testing.T) {
 	}
 }
 
+func TestMatchZCodeGlmDoesNotSelectOMP(t *testing.T) {
+	got := Match("zcode glm", Catalog{Models: BuiltinModelCatalog()})
+	if len(got.Models) != 1 || got.Models[0].Adapter != "zcode" {
+		t.Fatalf("models = %#v unmatched=%v", got.Models, got.Unmatched)
+	}
+	if len(got.Unmatched) != 0 {
+		t.Fatalf("glm should be consumed, unmatched=%v", got.Unmatched)
+	}
+}
+
 func TestMatchMacHitsSeveralHosts(t *testing.T) {
 	got := Match("mac", testCatalog())
 	if len(got.Hosts) < 2 {

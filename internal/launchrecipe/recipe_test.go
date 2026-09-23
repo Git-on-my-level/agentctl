@@ -187,6 +187,31 @@ func TestClaudeCodeRejectsEffort(t *testing.T) {
 	}
 }
 
+func TestZCodeRecipeUsesConfiguredModelOnly(t *testing.T) {
+	got, err := Build(Input{Harness: "zcode", Model: "zai/glm-5.3", Effort: "high"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"zcode", "--json", "--mode", "yolo", "--prompt"}
+	if len(got.Argv) != len(want) {
+		t.Fatalf("argv = %#v", got.Argv)
+	}
+	for i := range want {
+		if got.Argv[i] != want[i] {
+			t.Fatalf("argv = %#v", got.Argv)
+		}
+	}
+	if got.PromptDelivery != PromptDeliveryArgv {
+		t.Fatalf("delivery = %q", got.PromptDelivery)
+	}
+	if _, err := Build(Input{Harness: "zcode", Model: "zai/glm-4.7"}); err == nil {
+		t.Fatal("expected a different model to be refused")
+	}
+	if _, err := Build(Input{Harness: "zcode", Model: "zai/glm-5.3", Effort: "low"}); err == nil {
+		t.Fatal("expected a non-high effort to be refused")
+	}
+}
+
 func TestUnsupportedHarnessRejected(t *testing.T) {
 	_, err := Build(Input{Harness: "multica", Model: "anything"})
 	var buildErr *Error

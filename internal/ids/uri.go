@@ -14,7 +14,7 @@ type PortableURI struct {
 
 var uriTypes = map[string][]Type{
 	"agentctl": {TypeExecution},
-	"codex":    {TypeSource}, "cursor": {TypeSource}, "claude": {TypeSource}, "omp": {TypeSource},
+	"codex":    {TypeSource}, "cursor": {TypeSource}, "claude": {TypeSource}, "omp": {TypeSource}, "zcode": {TypeSource},
 	"multica": {TypeProject, TypeIssue, TypeRun},
 }
 

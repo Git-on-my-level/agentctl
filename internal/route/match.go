@@ -83,6 +83,7 @@ func BuiltinModelCatalog() []ModelRecord {
 		{Adapter: "claude", Aliases: []string{"claude", "anthropic", "anthropic-claude"}},
 		{Adapter: "cursor", Aliases: []string{"cursor", "composer", "grok", "cursor-composer", "cursor-grok"}},
 		{Adapter: "omp", Aliases: []string{"glm", "omp", "open-weight", "open_weight", "openweight"}},
+		{Adapter: "zcode", Aliases: []string{"zcode"}},
 	}
 }
 
@@ -118,7 +119,7 @@ func Match(query string, catalog Catalog) MatchResult {
 	for _, hit := range modelHits {
 		consumed[hit.Hit] = struct{}{}
 	}
-	models := collapseModels(modelHits)
+	models := preferNamedAdapter(tokens, collapseModels(modelHits))
 	var unmatched []string
 	for _, tok := range tokens {
 		if _, ok := consumed[tok]; !ok {
@@ -319,6 +320,32 @@ func uniqueTopHostIDs(hosts []HostHit, top int) []string {
 		ids = append(ids, hit.ID)
 	}
 	return ids
+}
+
+// preferNamedAdapter keeps a hit whose adapter name was typed exactly, and
+// drops other adapters selected only by a family alias. "zcode glm" is ZCode.
+// "glm" alone stays omp.
+func preferNamedAdapter(tokens []string, hits []ModelHit) []ModelHit {
+	named := map[string]struct{}{}
+	tokenSet := map[string]struct{}{}
+	for _, tok := range tokens {
+		tokenSet[tok] = struct{}{}
+	}
+	for _, hit := range hits {
+		if _, ok := tokenSet[normalizeKeyword(hit.Adapter)]; ok {
+			named[hit.Adapter] = struct{}{}
+		}
+	}
+	if len(named) == 0 {
+		return hits
+	}
+	out := make([]ModelHit, 0, len(hits))
+	for _, hit := range hits {
+		if _, ok := named[hit.Adapter]; ok {
+			out = append(out, hit)
+		}
+	}
+	return out
 }
 
 func collapseModels(hits []ModelHit) []ModelHit {
