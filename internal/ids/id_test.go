@@ -91,6 +91,19 @@ func TestWordListContract(t *testing.T) {
 	}
 }
 
+func TestDevinURIScheme(t *testing.T) {
+	host, _ := FromPayload(TypeHost, 1)
+	source, _ := FromPayload(TypeSource, 2)
+	value := "devin://" + host.String() + "/" + source.String()
+	parsed, err := ParseURI(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.String() != value || parsed.Scheme != "devin" {
+		t.Fatalf("parsed=%#v", parsed)
+	}
+}
+
 func TestPortableURIFixtures(t *testing.T) {
 	host, _ := FromPayload(TypeHost, 1)
 	source, _ := FromPayload(TypeSource, 2)

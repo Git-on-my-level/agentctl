@@ -176,6 +176,52 @@ func TestMatchBuiltinFamilyWithoutPreferred(t *testing.T) {
 	}
 }
 
+func TestMatchDevinSelectorsStayOnDevin(t *testing.T) {
+	catalog := Catalog{Models: append(BuiltinModelCatalog(),
+		ModelRecord{Adapter: "omp", Model: "glm-5.3", Aliases: []string{"glm", "omp"}},
+		ModelRecord{Adapter: "codex", Model: "gpt-6-sol", Aliases: []string{"sol"}},
+		ModelRecord{Adapter: "devin", Model: "swe-2-high", Aliases: []string{"devin", "swe", "swe-2", "swe-2-high"}},
+		ModelRecord{Adapter: "devin", Model: "fusion-gpt-6-sol-high-sidekick-swe-2-high", Aliases: []string{"fusion"}},
+	)}
+	got := Match("devin", catalog)
+	if len(got.Models) != 1 || got.Models[0].Adapter != "devin" || got.Models[0].Model != "swe-2-high" {
+		t.Fatalf("devin = %#v", got.Models)
+	}
+	got = Match("devin swe-2", catalog)
+	if len(got.Models) == 0 || got.Models[0].Adapter != "devin" || got.Models[0].Model != "swe-2-high" {
+		t.Fatalf("devin swe-2 = %#v unmatched=%v", got.Models, got.Unmatched)
+	}
+	for _, model := range got.Models {
+		if model.Adapter != "devin" {
+			t.Fatalf("devin swe-2 selected %s: %#v", model.Adapter, got.Models)
+		}
+	}
+	got = Match("devin fusion", catalog)
+	if len(got.Models) == 0 {
+		t.Fatal("devin fusion matched nothing")
+	}
+	sawFusion := false
+	for _, model := range got.Models {
+		if model.Adapter != "devin" {
+			t.Fatalf("devin fusion selected %s: %#v", model.Adapter, got.Models)
+		}
+		if model.Model == "fusion-gpt-6-sol-high-sidekick-swe-2-high" {
+			sawFusion = true
+		}
+	}
+	if !sawFusion {
+		t.Fatalf("devin fusion = %#v", got.Models)
+	}
+	got = Match("glm", catalog)
+	if len(got.Models) != 1 || got.Models[0].Adapter != "omp" {
+		t.Fatalf("glm = %#v", got.Models)
+	}
+	got = Match("sol", catalog)
+	if len(got.Models) != 1 || got.Models[0].Adapter != "codex" || got.Models[0].Model != "gpt-6-sol" {
+		t.Fatalf("sol = %#v", got.Models)
+	}
+}
+
 func TestMatchZCodeGlmDoesNotSelectOMP(t *testing.T) {
 	got := Match("zcode glm", Catalog{Models: BuiltinModelCatalog()})
 	if len(got.Models) != 1 || got.Models[0].Adapter != "zcode" {
