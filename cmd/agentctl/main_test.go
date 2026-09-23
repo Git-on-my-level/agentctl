@@ -308,7 +308,7 @@ func TestHelpAwaitDefaultHasNoTimeout(t *testing.T) {
 
 func TestRunDefaultsInferAdapterWithoutWallTimeout(t *testing.T) {
 	tests := []struct{ executable, adapter string }{
-		{"/opt/bin/codex", "codex"}, {"cursor-agent", "cursor"}, {"claude.exe", "claude"}, {"omp", "omp"}, {"/bin/echo", "generic-process"},
+		{"/opt/bin/codex", "codex"}, {"cursor-agent", "cursor"}, {"claude.exe", "claude"}, {"omp", "omp"}, {"zcode", "zcode"}, {"/bin/echo", "generic-process"},
 	}
 	for _, test := range tests {
 		opts, problem := parseRun([]string{"--", test.executable, "task"})

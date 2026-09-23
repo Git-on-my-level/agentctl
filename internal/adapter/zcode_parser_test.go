@@ -2,6 +2,14 @@ package adapter
 
 import "testing"
 
+func TestRewriteZCodeArgvKeepsExplicitPath(t *testing.T) {
+	argv := []string{"/opt/zcode/bin/zcode", "--json", "--prompt", "hi"}
+	got := rewriteZCodeArgv(argv)
+	if len(got) != len(argv) || got[0] != argv[0] {
+		t.Fatalf("explicit path rewritten: %#v", got)
+	}
+}
+
 func TestZCodeParserReadsResponseDocument(t *testing.T) {
 	raw := []byte(`{
   "sessionId": "sess_example",

@@ -61,7 +61,7 @@ func NewZCode() Adapter {
 type zcodeAdapter struct{ *NativeAdapter }
 
 func (z *zcodeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, error) {
-	if req.Executable == "" || req.Executable == "zcode" || filepath.Base(req.Executable) == "zcode" {
+	if req.Executable == "" || req.Executable == "zcode" {
 		req.Executable = resolveZCodeBinary()
 	}
 	return z.NativeAdapter.Probe(ctx, req)
@@ -83,7 +83,7 @@ func resolveZCodeBinary() string {
 }
 
 func rewriteZCodeArgv(argv []string) []string {
-	if len(argv) == 0 || (argv[0] != "zcode" && filepath.Base(argv[0]) != "zcode") {
+	if len(argv) == 0 || argv[0] != "zcode" {
 		return argv
 	}
 	resolved := resolveZCodeBinary()
