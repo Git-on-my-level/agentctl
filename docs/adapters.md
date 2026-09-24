@@ -130,6 +130,16 @@ but never silently rewrites the caller's argv.
 If an existing native flag conflicts with supervision, launch fails with a
 structured explanation instead of overriding the caller silently.
 
+ZCode discovery checks `zcode` on PATH, then the legacy
+`~/.zcode/server/agents/glm/zcode-agent`. Current ZCode.app builds bundle the
+CLI (`Contents/Resources/glm/zcode.cjs`) but install neither of those. In that
+case the probe fails with `diagnostic_code: zcode_launcher_missing`. Its
+details list the searched paths and, when the bundled CLI exists, name it in
+`app_bundled_cli` and give a remediation. The remediation is a PATH launcher
+that runs the bundle under `ELECTRON_RUN_AS_NODE=1` with both provider-config
+environment variables set. agentctl does not launch the app bundle itself,
+because the model default lives in a provider config that the operator owns.
+
 Context injection is separately negotiated. An adapter declares one or more
 reviewed mechanisms (`environment_path`, `native_argument`,
 `native_instruction_file`, `authority_artifact_ref`) and whether the harness

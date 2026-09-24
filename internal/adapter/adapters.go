@@ -109,7 +109,54 @@ func (z *zcodeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResult
 	if req.Executable == "" || req.Executable == "zcode" {
 		req.Executable = resolveZCodeBinary()
 	}
-	return z.NativeAdapter.Probe(ctx, req)
+	result, err := z.NativeAdapter.Probe(ctx, req)
+	if err != nil && req.Executable == "zcode" {
+		var adapterErr *AdapterError
+		if errors.As(err, &adapterErr) && adapterErr.Code == ErrDependencyUnavailable && adapterErr.Message == "native executable is unavailable" {
+			return result, zcodeLauncherMissing(err)
+		}
+	}
+	return result, err
+}
+
+// zcodeAppBundles lists where ZCode.app may be installed. Current app builds
+// bundle the CLI at Contents/Resources/glm/zcode.cjs but install no `zcode`
+// command and no standalone node, so a missing launcher is the common case.
+var zcodeAppBundles = func() []string {
+	bundles := []string{"/Applications/ZCode.app"}
+	if home, err := os.UserHomeDir(); err == nil {
+		bundles = append(bundles, filepath.Join(home, "Applications", "ZCode.app"))
+	}
+	return bundles
+}
+
+// zcodeLauncherMissing names the fix instead of the generic "native executable
+// is unavailable": which paths were searched, and whether an app-bundled CLI
+// exists that only needs a PATH launcher.
+func zcodeLauncherMissing(cause error) error {
+	searched := []string{"PATH: zcode"}
+	if home, err := os.UserHomeDir(); err == nil {
+		searched = append(searched, filepath.Join(home, ".zcode", "server", "agents", "glm", "zcode-agent"))
+	}
+	details := map[string]any{
+		"diagnostic_code": "zcode_launcher_missing",
+		"searched":        searched,
+		"remediation":     "install ZCode.app (it bundles the CLI), then put a `zcode` launcher on PATH",
+	}
+	for _, bundle := range zcodeAppBundles() {
+		entry := filepath.Join(bundle, "Contents", "Resources", "glm", "zcode.cjs")
+		runtime := filepath.Join(bundle, "Contents", "MacOS", "ZCode")
+		if st, err := os.Stat(entry); err != nil || st.IsDir() {
+			continue
+		}
+		details["app_bundled_cli"] = entry
+		details["remediation"] = "ZCode.app bundles the CLI but installs no `zcode` command. Put a `zcode` launcher on PATH that runs " +
+			"`ELECTRON_RUN_AS_NODE=1 " + runtime + " " + entry + " \"$@\"` with ZCODE_BUILTIN_PROVIDER_CONFIG_FILE=" +
+			filepath.Join(bundle, "Contents", "Resources", "config", "provider", "zcode-builtin.json") +
+			" and ZCODE_PERSONAL_PROVIDER_CONFIG_FILE set to a CLI-owned provider_config.json that has a default model"
+		break
+	}
+	return &AdapterError{Code: ErrDependencyUnavailable, Message: "zcode launcher is not on PATH", Retryable: true, Details: details, Cause: cause}
 }
 
 func resolveZCodeBinary() string {
