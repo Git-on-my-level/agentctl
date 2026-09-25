@@ -320,12 +320,20 @@ func (p *processRecord) finish(err error) {
 	// owned process exit is authoritative for this one-shot command.
 	if p.parser.Name() == "openclaw-json" && p.result != nil {
 		p.result.ExitCode = p.exitCode
-		if p.cancelled {
-			p.result.Success, p.result.State, p.result.Content = false, StateCancelled, ""
-			p.result.Error = "native process cancelled"
-		} else if p.exitCode != nil && *p.exitCode != 0 {
-			p.result.Success, p.result.State, p.result.Content = false, StateFailed, ""
-			p.result.Error = firstNonEmpty(p.stderrDiagnostic, p.result.Error, "OpenClaw agent exited unsuccessfully")
+		if p.cancelled || (p.exitCode != nil && *p.exitCode != 0) {
+			p.result.Success = false
+			p.result.Content = ""
+			p.result.Summary = ""
+			p.result.ContentType = ""
+			p.result.ContentTruncated = false
+			delete(p.result.Data, "result_content_source")
+			if p.cancelled {
+				p.result.State = StateCancelled
+				p.result.Error = "native process cancelled"
+			} else {
+				p.result.State = StateFailed
+				p.result.Error = firstNonEmpty(p.stderrDiagnostic, p.result.Error, "OpenClaw agent exited unsuccessfully")
+			}
 		}
 	}
 	if p.result == nil && p.sawDevinPrint && !p.cancelled && p.exitCode != nil && *p.exitCode == 0 {

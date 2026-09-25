@@ -37,8 +37,11 @@ func TestOpenClawExitAndSessionIsolation(t *testing.T) {
 	}
 	bad := fixtureExecutable(t, `printf '%s\n' '{"payloads":[{"text":"partial"}]}'; printf '%s\n' 'OAuthRefreshFailureError: invalid refresh token' >&2; exit 1`)
 	got, err = a.Launch(context.Background(), LaunchRequest{Argv: []string{bad, "agent", "--local", "--agent", "main", "--json", "-m", "hello"}, DiscoveryWindow: time.Second})
-	if err != nil || got.Result == nil || got.Result.Success || got.Result.State != StateFailed || got.Result.Content != "" || !strings.Contains(got.Result.Error, "OAuthRefreshFailureError") {
+	if err != nil || got.Result == nil || got.Result.Success || got.Result.State != StateFailed || got.Result.Content != "" || got.Result.Summary != "" || got.Result.ContentType != "" || got.Result.ContentTruncated || !strings.Contains(got.Result.Error, "OAuthRefreshFailureError") {
 		t.Fatalf("failed launch = %#v err=%v", got, err)
+	}
+	if _, ok := got.Result.Data["result_content_source"]; ok {
+		t.Fatalf("failed launch kept discarded answer provenance: %#v", got.Result.Data)
 	}
 	one := rewriteOpenClawArgv([]string{"openclaw", "agent", "--local", "--agent", "ops", "--json", "-m", "hi"})
 	two := rewriteOpenClawArgv([]string{"openclaw", "agent", "--local", "--agent", "ops", "--json", "-m", "hi"})
