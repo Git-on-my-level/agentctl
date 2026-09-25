@@ -82,38 +82,41 @@ type outputParser interface {
 }
 
 type processRecord struct {
-	mu               sync.Mutex
-	cmd              *exec.Cmd
-	parser           outputParser
-	ref              SourceRef
-	binding          SourceBinding
-	startedAt        time.Time
-	updatedAt        time.Time
-	done             chan struct{}
-	waitErr          error
-	exitCode         *int
-	observations     []parsedObservation
-	events           []Event
-	result           *Result
-	finalContent     string
-	sawDevinPrint    bool
-	devinPrintAnswer string
-	contentType      string
-	contentSource    string
-	contentTruncated bool
-	lastError        string
-	stderrDiagnostic string
-	parseWarnings    []string
-	metadataSeen     map[string]bool
-	metadataState    State
-	stdoutBytes      int
-	stderrBytes      int
-	maxOutput        int
-	cancelled        bool
-	pipes            sync.WaitGroup
-	resultPath       string
-	page             *parsedPage
-	wholeStdout      bool
+	mu                sync.Mutex
+	cmd               *exec.Cmd
+	parser            outputParser
+	ref               SourceRef
+	binding           SourceBinding
+	startedAt         time.Time
+	updatedAt         time.Time
+	done              chan struct{}
+	waitErr           error
+	exitCode          *int
+	observations      []parsedObservation
+	events            []Event
+	result            *Result
+	finalContent      string
+	sawDevinPrint     bool
+	devinPrintAnswer  string
+	sawOpenCode       bool
+	opencodeParts     []string
+	opencodeTruncated bool
+	contentType       string
+	contentSource     string
+	contentTruncated  bool
+	lastError         string
+	stderrDiagnostic  string
+	parseWarnings     []string
+	metadataSeen      map[string]bool
+	metadataState     State
+	stdoutBytes       int
+	stderrBytes       int
+	maxOutput         int
+	cancelled         bool
+	pipes             sync.WaitGroup
+	resultPath        string
+	page              *parsedPage
+	wholeStdout       bool
 }
 
 func (p *processRecord) ingest(line []byte, stderr bool) {
@@ -161,7 +164,9 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 }
 
 func retainObservationAfterLimit(obs parsedObservation) bool {
-	return obs.Terminal || obs.Content != "" || obs.Error != "" || obs.State == StateAttention || obs.State == StateWaiting || obs.Kind == "attention"
+	// OpenCode step_finish lines carry no content, but a tool-calls reason
+	// must still clear earlier-step assistant text after the stream budget.
+	return obs.Terminal || obs.Content != "" || obs.Error != "" || obs.State == StateAttention || obs.State == StateWaiting || obs.Kind == "attention" || obs.SourceState == "opencode.step_finish"
 }
 
 func (p *processRecord) addParseWarningLocked(code string) {
@@ -207,6 +212,19 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 		p.sawDevinPrint = true
 		if obs.Content != "" {
 			p.devinPrintAnswer = obs.Content
+		}
+	}
+	if strings.HasPrefix(obs.SourceState, "opencode.") {
+		p.sawOpenCode = true
+		if obs.SourceState == "opencode.text" && obs.Content != "" {
+			p.opencodeParts = append(p.opencodeParts, obs.Content)
+			if obs.ContentTruncated {
+				p.opencodeTruncated = true
+			}
+		}
+		if obs.SourceState == "opencode.step_finish" && obs.Data["reason"] == "tool-calls" {
+			p.opencodeParts = nil
+			p.opencodeTruncated = false
 		}
 	}
 	if obs.Content != "" {
@@ -322,6 +340,21 @@ func (p *processRecord) finish(err error) {
 		} else {
 			content := p.devinPrintAnswer
 			p.result = &Result{Success: true, State: StateCompleted, Summary: boundedString(content, 2048), Content: content, ContentType: "text/plain", ExitCode: p.exitCode, SessionRef: p.ref, Data: map[string]any{"result_content_source": "assistant_terminal_result", "terminal_source_state": "devin.print"}}
+		}
+	}
+	if p.result == nil && p.sawOpenCode && !p.cancelled && p.exitCode != nil && *p.exitCode == 0 {
+		joined := strings.Join(p.opencodeParts, "\n")
+		content := boundedUTF8(joined, 1<<20)
+		data := map[string]any{"terminal_source_state": "opencode.run"}
+		switch {
+		case p.lastError != "":
+			p.result = &Result{Success: false, State: StateFailed, Error: p.lastError, ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
+		case strings.TrimSpace(content) == "":
+			data["diagnostic_code"] = "empty_terminal_result"
+			p.result = &Result{Success: false, State: StateFailed, Error: "opencode run exited without an assistant answer", ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
+		default:
+			data["result_content_source"] = "assistant_terminal_result"
+			p.result = &Result{Success: true, State: StateCompleted, Summary: boundedString(content, 2048), Content: content, ContentType: "text/plain", ContentTruncated: p.opencodeTruncated || len(joined) > len(content), ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
 		}
 	}
 	if p.result == nil && p.resultPath != "" {
@@ -476,6 +509,13 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 	}
 	scope := Fingerprint(a.Name(), backendVersion, digest, req.Profile, req.Endpoint, req.Workspace, invocationFingerprint)
 	return ProbeResult{AdapterVersion: a.config.Manifest.AdapterVersion, BackendVersion: backendVersion, Executable: resolved, ExecutableDigest: digest, ScopeFingerprint: scope, ProbedAt: started, FreshFor: time.Minute, ReadOnly: true, Capabilities: capabilities}, nil
+}
+
+func invocationSatisfied(argv []string, constraints map[string]any) bool {
+	if subcommand, _ := constraints["required_subcommand"].(string); subcommand != "" && (len(argv) < 2 || argv[1] != subcommand) {
+		return false
+	}
+	return invocationRequirementSatisfied(argv, constraints)
 }
 
 func invocationRequirementSatisfied(argv []string, constraints map[string]any) bool {

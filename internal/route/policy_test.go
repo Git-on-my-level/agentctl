@@ -64,4 +64,31 @@ func TestNativeArgvModel(t *testing.T) {
 	if got := NativeArgvModel("codex", []string{"codex", "exec", "--json", "--", "--model", "ignored"}); got != "" {
 		t.Fatalf("model after -- should be ignored: %q", got)
 	}
+	for _, argv := range [][]string{
+		{"opencode", "run", "--format", "json", "-m", "zai/glm-5.3"},
+		{"opencode", "run", "--format", "json", "-m=zai/glm-5.3"},
+		{"opencode", "run", "--format", "json", "--model", "zai/glm-5.3"},
+		{"opencode", "run", "--format", "json", "--model=zai/glm-5.3"},
+	} {
+		if got := NativeArgvModel("opencode", argv); got != "zai/glm-5.3" {
+			t.Fatalf("opencode argv %v model = %q", argv, got)
+		}
+	}
+	if got := NativeArgvModel("opencode", []string{"opencode", "run", "--", "-m", "zai/glm-5.3"}); got != "" {
+		t.Fatalf("opencode model after -- should be ignored: %q", got)
+	}
+}
+
+func TestBuiltinCatalogRoutesOpenCodeWithoutStealingFamilies(t *testing.T) {
+	catalog := NewCatalog("", nil, nil, "")
+	got := Match("opencode", catalog)
+	if len(got.Models) == 0 || got.Models[0].Adapter != "opencode" {
+		t.Fatalf("builtin opencode = %#v", got.Models)
+	}
+	for query, want := range map[string]string{"glm": "omp", "openai": "codex"} {
+		got := Match(query, catalog)
+		if len(got.Models) == 0 || got.Models[0].Adapter != want {
+			t.Fatalf("%s routed to %#v want %s", query, got.Models, want)
+		}
+	}
 }

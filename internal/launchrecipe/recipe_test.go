@@ -240,6 +240,53 @@ func TestDevinRecipePassesModelAndPrint(t *testing.T) {
 	}
 }
 
+func TestOpenCodeRecipeArgv(t *testing.T) {
+	got, err := Build(Input{Harness: "opencode", Model: "zai/glm-5.3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"opencode", "run", "--format", "json", "--model", "zai/glm-5.3", "--"}
+	if strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("argv=%v want=%v", got.Argv, want)
+	}
+	if got.PromptDelivery != PromptDeliveryArgv {
+		t.Fatalf("prompt delivery=%q want argv", got.PromptDelivery)
+	}
+	for _, arg := range got.Argv {
+		if strings.Contains(arg, "review this") {
+			t.Fatalf("prompt bytes leaked into argv: %v", got.Argv)
+		}
+	}
+	explicit, err := Build(Input{Harness: "opencode", Model: "openai/gpt-5", Executable: "/opt/bin/opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Argv[0] != "/opt/bin/opencode" {
+		t.Fatalf("explicit path = %q", explicit.Argv[0])
+	}
+}
+
+func TestOpenCodeRecipeRejectsSpeedEffortAndBadModels(t *testing.T) {
+	var buildErr *Error
+	if _, err := Build(Input{Harness: "opencode", Model: "zai/glm-5.3", Speed: "regular"}); !errors.As(err, &buildErr) || buildErr.Code != "speed_unavailable" {
+		t.Fatalf("speed err=%v want speed_unavailable", err)
+	}
+	if _, err := Build(Input{Harness: "opencode", Model: "zai/glm-5.3", Speed: "fast"}); !errors.As(err, &buildErr) || buildErr.Code != "speed_unavailable" {
+		t.Fatalf("fast err=%v want speed_unavailable", err)
+	}
+	if _, err := Build(Input{Harness: "opencode", Model: "zai/glm-5.3", Effort: "high"}); !errors.As(err, &buildErr) || buildErr.Code != "effort_unavailable" {
+		t.Fatalf("effort err=%v want effort_unavailable", err)
+	}
+	for _, model := range []string{"glm-5.3", "zai/", "/glm-5.3", "zai/glm-5.3[effort=high]", "zai /glm-5.3"} {
+		if _, err := Build(Input{Harness: "opencode", Model: model}); err == nil {
+			t.Fatalf("accepted %q", model)
+		}
+	}
+	if _, err := Build(Input{Harness: "opencode"}); err == nil {
+		t.Fatal("empty model was accepted")
+	}
+}
+
 func TestUnsupportedHarnessRejected(t *testing.T) {
 	_, err := Build(Input{Harness: "multica", Model: "anything"})
 	var buildErr *Error

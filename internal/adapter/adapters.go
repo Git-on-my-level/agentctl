@@ -49,6 +49,9 @@ func NewClaude() Adapter { return NewClaudeCode() }
 func NewOMP() Adapter {
 	return newNativeAdapter(nativeConfig{Manifest: ompManifest(), Binary: "omp", Parser: ompParser{}, PollStatus: true, LaunchKind: "omp_session"})
 }
+func NewOpenCode() Adapter {
+	return newNativeAdapter(nativeConfig{Manifest: opencodeManifest(), Binary: "opencode", Parser: opencodeJSONParser{}, LaunchKind: "opencode_session"})
+}
 
 // NewZCode launches the ZCode CLI. Headless runs print one JSON document, not
 // JSONL. The model and effort live in the CLI config, not argv.
@@ -721,6 +724,18 @@ func ompManifest() Manifest {
 	return m
 }
 
+func opencodeManifest() Manifest {
+	resultContent := resultContentDecl(CapabilitySupported, "assistant_terminal_result")
+	resultContent.Constraints["required_output_mode"] = "json"
+	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--format", "kind": "value", "value": "json"}
+	resultContent.Constraints["required_subcommand"] = "run"
+	events := sameProcessDecl(CapabilityEvents, CapabilityDegraded)
+	events.Constraints["content"] = "metadata_only"
+	return baseManifest("opencode", "0.1.0", "opencode_session", "opencode-json", []CapabilityDeclaration{
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), events, sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+	})
+}
+
 func multicaManifest() Manifest {
 	snapshot := capDecl(CapabilitySnapshot, CapabilityDegraded)
 	snapshot.Constraints = map[string]any{"scope": "bound_issue", "cross_restart": true, "source": "native_cli"}
@@ -744,6 +759,8 @@ func baseManifest(name, version, kind, format string, capabilities []CapabilityD
 		executable = "claude"
 	case "omp":
 		executable = "omp"
+	case "opencode":
+		executable = "opencode"
 	case "zcode":
 		executable = "zcode"
 	case "devin":
@@ -797,7 +814,7 @@ func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName) 
 		}
 		constraints := cloneMap(declaration.Constraints)
 		reason := ""
-		if len(argv) != 0 && name == CapabilityResultContent && !invocationRequirementSatisfied(argv, constraints) {
+		if len(argv) != 0 && name == CapabilityResultContent && !invocationSatisfied(argv, constraints) {
 			status = CapabilityUnavailable
 			constraints["invocation_satisfied"] = false
 			reason = "exact invocation does not satisfy the structured-output requirement"

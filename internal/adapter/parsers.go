@@ -685,6 +685,106 @@ func errorText(value map[string]any) string {
 	}
 	return ""
 }
+
+type opencodeJSONParser struct{}
+
+func (opencodeJSONParser) Name() string { return "opencode-json" }
+
+func (opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
+	if stderr {
+		return parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "stderr", Data: map[string]any{"stream": "stderr", "structured": false}}
+	}
+	value, ok := decodeLine(line)
+	if !ok {
+		if classified := classifyUnstructured(line, "opencode"); classified.Kind != "" {
+			return classified
+		}
+		return parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "malformed_output", Data: map[string]any{"parse_error": "malformed structured output"}}
+	}
+	typ := strings.ToLower(firstString(value, "type"))
+	obs := parsedObservation{Kind: "progress", State: StateRunning, Liveness: LivenessAlive, SourceState: boundedString("opencode."+firstNonEmpty(typ, "event"), 128), Data: map[string]any{"family": "opencode"}}
+	obs.SessionID = firstString(value, "sessionID", "sessionId", "session_id")
+	if typ != "" {
+		obs.Data["type"] = boundedString(typ, 128)
+	}
+	if obs.SessionID != "" {
+		obs.Data["session_id"] = boundedString(obs.SessionID, 256)
+	}
+	part, _ := value["part"].(map[string]any)
+	if partType := firstString(part, "type"); partType != "" {
+		obs.Data["part_type"] = boundedString(strings.ToLower(partType), 128)
+	}
+	switch typ {
+	case "text":
+		if !opencodeTextPartComplete(part) {
+			break
+		}
+		obs.Data["completed"] = true
+		text, _ := part["text"].(string)
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" {
+			break
+		}
+		obs.Content = boundedUTF8(trimmed, 1<<20)
+		obs.ContentType = "text/plain"
+		obs.ContentSource = "assistant"
+		obs.ContentTruncated = len(trimmed) > len(obs.Content)
+	case "step_finish":
+		if reason := firstString(part, "reason"); reason != "" {
+			obs.Data["reason"] = boundedString(strings.ToLower(reason), 64)
+		}
+	case "error":
+		obs.Error = safeFailureDiagnostic(opencodeErrorMessage(value))
+		if obs.Error == "" {
+			obs.Error = "opencode reported an error"
+		}
+		obs.State = StateFailed
+	}
+	return obs
+}
+
+func opencodeTextPartComplete(part map[string]any) bool {
+	if part == nil || !strings.EqualFold(firstString(part, "type"), "text") {
+		return false
+	}
+	timing, ok := part["time"].(map[string]any)
+	if !ok {
+		return false
+	}
+	end, ok := timing["end"]
+	if !ok || end == nil {
+		return false
+	}
+	switch v := end.(type) {
+	case float64:
+		return v != 0
+	case string:
+		return strings.TrimSpace(v) != ""
+	default:
+		return true
+	}
+}
+
+func opencodeErrorMessage(value map[string]any) string {
+	raw, ok := value["error"]
+	if !ok {
+		return firstString(value, "message")
+	}
+	switch e := raw.(type) {
+	case string:
+		return strings.TrimSpace(e)
+	case map[string]any:
+		if data, ok := e["data"].(map[string]any); ok {
+			if s := firstString(data, "message", "detail"); s != "" {
+				return s
+			}
+		}
+		return firstString(e, "message", "detail", "name")
+	default:
+		return ""
+	}
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if v != "" {

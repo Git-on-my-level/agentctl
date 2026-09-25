@@ -71,6 +71,7 @@ func DefaultRegistry() *Registry {
 	registerSingleton([]string{"cursor"}, adapter.NewCursor())
 	registerSingleton([]string{"claude", "claude-code"}, adapter.NewClaudeCode())
 	registerSingleton([]string{"omp"}, adapter.NewOMP())
+	registerSingleton([]string{"opencode"}, adapter.NewOpenCode())
 	registerSingleton([]string{"zcode"}, adapter.NewZCode())
 	registerSingleton([]string{"devin"}, adapter.NewDevin())
 	registerSingleton([]string{"generic", "generic-process"}, adapter.NewGenericProcess())
