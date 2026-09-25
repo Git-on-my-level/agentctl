@@ -151,6 +151,7 @@ agentctl run -- codex exec --json "<bounded objective>"
 agentctl run -- cursor-agent --print --output-format stream-json --trust "<bounded objective>"
 agentctl run -- cursor-agent --print --output-format stream-json --mode ask --trust "<bounded read-only question>"
 agentctl run -- omp -p --mode json "<bounded objective>"
+agentctl run -- opencode run --format json --model provider/model "<bounded objective>"
 ```
 
 For a reusable multi-line prompt, select an explicit source and delivery
@@ -161,7 +162,12 @@ agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- codex exec -
 agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust
 agentctl run --prompt-stdin --prompt-delivery argv -- cursor-agent --print --output-format stream-json --trust < "/absolute/path/task.md"
 agentctl run --prompt-stdin --prompt-delivery stdin -- codex exec --json - < "$PWD/task.md"
+agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- opencode run --format json --model provider/model --
 ```
+
+OpenCode answer extraction requires the noninteractive `run --format json`
+form; other invocations are not result-capable. Cancellation is process-scoped
+and resume is unavailable; no permission auto-approval flags are used.
 
 Never infer prompt delivery from an adapter name. Use `argv` only for a native
 form that expects a positional prompt and `stdin` only for a verified
