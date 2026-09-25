@@ -69,6 +69,7 @@ func NewDevin() Adapter {
 	base := newNativeAdapter(nativeConfig{
 		Manifest: devinManifest(), Binary: bin, Parser: devinParser{},
 		LaunchKind: "devin_session", WholeStdout: true, TransformArgv: rewriteDevinArgv,
+		ResumeArgs: devinResumeArgs,
 	})
 	return &devinAdapter{NativeAdapter: base}
 }
@@ -80,6 +81,86 @@ func (d *devinAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResult
 		req.Executable = resolveDevinBinary()
 	}
 	return d.NativeAdapter.Probe(ctx, req)
+}
+
+func devinResumeArgs(ref SourceRef, argv []string) []string {
+	args := []string{"devin", "-r", ref.OpaqueID}
+	return append(args, argv...)
+}
+
+func (d *devinAdapter) Resume(ctx context.Context, req ResumeRequest) (LaunchResult, error) {
+	if err := validateDevinResume(req); err != nil {
+		return LaunchResult{}, err
+	}
+	return d.NativeAdapter.Resume(ctx, req)
+}
+
+func validateDevinResume(req ResumeRequest) error {
+	ref := req.Ref
+	if ref.Adapter != "devin" {
+		return invalidRequest("devin resume requires a source ref with adapter \"devin\"")
+	}
+	if ref.Kind != "devin_session" {
+		return invalidRequest("devin resume requires a devin_session source ref")
+	}
+	if ref.PID != 0 {
+		return invalidRequest("devin resume requires the native session ID; a launch PID is not a devin session ID")
+	}
+	id := ref.OpaqueID
+	if id == "" || strings.TrimSpace(id) != id || strings.ContainsAny(id, " \t\r\n") || strings.HasPrefix(id, "-") {
+		return invalidRequest("devin resume requires an explicit native session ID in opaque_id")
+	}
+	if devinNumericID(id) {
+		return invalidRequest("devin resume requires the native session ID; a numeric PID is not a devin session ID")
+	}
+	printFlag, prompt := false, false
+	for i, arg := range req.Argv {
+		if arg == "--" {
+			for _, tail := range req.Argv[i+1:] {
+				if strings.TrimSpace(tail) != "" {
+					prompt = true
+				}
+			}
+			break
+		}
+		switch {
+		case arg == "-r" || arg == "--resume" || arg == "-c" || arg == "--continue":
+			return invalidRequest("devin resume argv must not select a session; the source ref owns the native session ID")
+		case strings.HasPrefix(arg, "-r=") || strings.HasPrefix(arg, "--resume=") || strings.HasPrefix(arg, "-c=") || strings.HasPrefix(arg, "--continue="):
+			return invalidRequest("devin resume argv must not select a session; the source ref owns the native session ID")
+		case arg == "-p" || arg == "--print":
+			printFlag = true
+			if i+1 < len(req.Argv) && req.Argv[i+1] != "--" && !strings.HasPrefix(req.Argv[i+1], "-") && strings.TrimSpace(req.Argv[i+1]) != "" {
+				prompt = true
+			}
+		case strings.HasPrefix(arg, "-p="):
+			printFlag = true
+			if strings.TrimSpace(arg[len("-p="):]) != "" {
+				prompt = true
+			}
+		case strings.HasPrefix(arg, "--print="):
+			printFlag = true
+			if strings.TrimSpace(arg[len("--print="):]) != "" {
+				prompt = true
+			}
+		}
+	}
+	if !printFlag {
+		return invalidRequest("devin resume requires a new -p/--print prompt in argv")
+	}
+	if !prompt {
+		return invalidRequest("devin resume requires a prompt argument for -p/--print")
+	}
+	return nil
+}
+
+func devinNumericID(value string) bool {
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return len(value) > 0
 }
 
 func resolveDevinBinary() string {
@@ -696,8 +777,10 @@ func devinManifest() Manifest {
 	resultContent := resultContentDecl(CapabilitySupported, "print")
 	resultContent.Constraints["required_output_mode"] = "print"
 	resultContent.Constraints["required_argv"] = map[string]any{"flag": "-p", "kind": "presence"}
+	resume := capDecl(CapabilityResume, CapabilitySupported)
+	resume.Constraints = map[string]any{"scope": "explicit_native_session_id", "cross_restart": true, "requires_session_id": true, "session_id_source": "caller_supplied", "required_output_mode": "print", "accepted_print_flags": []string{"-p", "--print"}}
 	return baseManifest("devin", "0.1.0", "devin_session", "devin-print", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, resume, sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 }
 
