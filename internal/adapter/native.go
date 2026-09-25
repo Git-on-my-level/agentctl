@@ -164,7 +164,9 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 }
 
 func retainObservationAfterLimit(obs parsedObservation) bool {
-	return obs.Terminal || obs.Content != "" || obs.Error != "" || obs.State == StateAttention || obs.State == StateWaiting || obs.Kind == "attention"
+	// OpenCode step_finish lines carry no content, but a tool-calls reason
+	// must still clear earlier-step assistant text after the stream budget.
+	return obs.Terminal || obs.Content != "" || obs.Error != "" || obs.State == StateAttention || obs.State == StateWaiting || obs.Kind == "attention" || obs.SourceState == "opencode.step_finish"
 }
 
 func (p *processRecord) addParseWarningLocked(code string) {

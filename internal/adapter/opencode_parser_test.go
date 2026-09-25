@@ -161,6 +161,21 @@ func TestOpenCodeRunAssemblesOrderedTextParts(t *testing.T) {
 	}
 }
 
+func TestOpenCodeStepFinishResetsPartsAfterStreamLimit(t *testing.T) {
+	pretool := []byte(`{"type":"text","sessionID":"s","part":{"type":"text","text":"pretool narration","time":{"end":1}}}`)
+	record := &processRecord{parser: opencodeJSONParser{}, maxOutput: len(pretool)}
+	record.ingest(pretool, false)
+	record.ingest([]byte(`{"type":"tool_use","sessionID":"s","part":{"type":"tool","tool":"bash","input":{"command":"`+strings.Repeat("x", 80)+`"},"output":"huge"}}`), false)
+	record.ingest([]byte(`{"type":"step_finish","sessionID":"s","part":{"type":"step-finish","reason":"tool-calls"}}`), false)
+	record.ingest([]byte(`{"type":"text","sessionID":"s","part":{"type":"text","text":"final answer","time":{"end":2}}}`), false)
+	if got := strings.Join(record.opencodeParts, "\n"); got != "final answer" {
+		t.Fatalf("assembled parts after stream-limit step reset = %q", got)
+	}
+	if len(record.parseWarnings) == 0 || record.parseWarnings[0] != diagnosticStreamLimitExceeded {
+		t.Fatalf("parse warnings = %#v", record.parseWarnings)
+	}
+}
+
 func TestOpenCodeRunFailureModes(t *testing.T) {
 	t.Run("nonzero exit beats collected text", func(t *testing.T) {
 		path := fixtureExecutable(t, `printf '%s\n' '{"type":"text","sessionID":"s","part":{"type":"text","text":"partial","time":{"end":1}}}'; exit 3`)
