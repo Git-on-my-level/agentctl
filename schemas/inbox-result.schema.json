@@ -48,6 +48,8 @@
         "updated_at": {"type": "string", "format": "date-time"},
         "observation_age_seconds": {"type": "number", "minimum": 0},
         "unreconciled": {"type": "boolean"},
+        "renotify_age_tier": {"enum": ["fresh", "aging", "persistent"]},
+        "renotify_age_seconds": {"type": "number", "minimum": 0},
         "reasons": {
           "type": "array",
           "minItems": 1,

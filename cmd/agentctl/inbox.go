@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -46,10 +47,36 @@ type inboxExecution struct {
 	UpdatedAt             time.Time       `json:"updated_at"`
 	ObservationAgeSeconds float64         `json:"observation_age_seconds"`
 	Unreconciled          bool            `json:"unreconciled"`
+	RenotifyAgeTier       string          `json:"renotify_age_tier,omitempty"`
+	RenotifyAgeSeconds    *float64        `json:"renotify_age_seconds,omitempty"`
 	Reasons               []inboxReason   `json:"reasons"`
 	// NextActions is per item because inbox reports many executions at once and
 	// a document-level action cannot name which one it applies to.
 	NextActions []output.NextAction `json:"next_actions"`
+}
+
+// Re-notify age tiers are a pure function of time since the terminal event, so
+// the nag ladder is deterministic and needs no daemon or timer. An
+// unacknowledged terminal never leaves the inbox on its own: it only climbs
+// tiers. Only a recorded acknowledgement removes it, and that stamp is a
+// deliberate, final act (see docs/agent-ergonomics.md).
+var renotifyTiers = []struct {
+	name string
+	age  time.Duration
+}{
+	{"fresh", 24 * time.Hour},
+	{"aging", 72 * time.Hour},
+}
+
+// renotifyTierFor reports the re-notify ladder position for one unacknowledged
+// terminal: fresh under a day, aging under three days, persistent beyond.
+func renotifyTierFor(age time.Duration) string {
+	for _, tier := range renotifyTiers {
+		if age < tier.age {
+			return tier.name
+		}
+	}
+	return "persistent"
 }
 
 func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
@@ -73,6 +100,10 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 	now := a.now().UTC()
 	items := make([]inboxExecution, 0, opts.limit)
 	matched := 0
+	// Re-notify ordering: unacknowledged terminals come first, oldest terminal
+	// age first, so an old uncollected result can never be buried under newer
+	// activity. The remainder keeps the newest-first recency order.
+	unacked, ordered := make([]inboxExecution, 0, opts.limit), make([]inboxExecution, 0, opts.limit)
 	for i := len(executions) - 1; i >= 0; i-- {
 		execution := executions[i]
 		if !inboxFilterMatches(execution, opts) {
@@ -82,7 +113,28 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 		if !actionable {
 			continue
 		}
+		if item.Unreconciled && item.RenotifyAgeSeconds != nil {
+			unacked = append(unacked, item)
+		} else {
+			ordered = append(ordered, item)
+		}
 		matched++
+	}
+	// count is the returned projection; total is the full actionable set, so a
+	// caller can size the backlog without paging to discover it. Unacknowledged
+	// terminals lead the page, oldest terminal age first, so persistent
+	// re-notification survives the default limit; the rest keeps newest-first
+	// recency order. Both windows are capped at limit, so cost stays bounded.
+	sort.SliceStable(unacked, func(a, b int) bool {
+		return *unacked[a].RenotifyAgeSeconds > *unacked[b].RenotifyAgeSeconds
+	})
+	items = items[:0]
+	for _, item := range unacked {
+		if len(items) < opts.limit {
+			items = append(items, item)
+		}
+	}
+	for _, item := range ordered {
 		if len(items) < opts.limit {
 			items = append(items, item)
 		}
@@ -178,6 +230,17 @@ func projectInbox(execution model.Execution, now time.Time, staleAfter time.Dura
 		observationAge = 0
 	}
 	unreconciled := acks.Unreconciled(execution)
+	// Re-notify age is time since the terminal event, independent of the
+	// observation age used for stale-running detection.
+	var renotifyAgeSeconds *float64
+	if unreconciled && execution.TerminalAt != nil {
+		age := now.Sub(*execution.TerminalAt)
+		if age < 0 {
+			age = 0
+		}
+		seconds := age.Seconds()
+		renotifyAgeSeconds = &seconds
+	}
 	reasons := make([]inboxReason, 0, 4)
 	workHealth := "active"
 	integrityConflicted := execution.Observation.Integrity == model.IntegrityConflicted
@@ -205,7 +268,7 @@ func projectInbox(execution model.Execution, now time.Time, staleAfter time.Dura
 		if workHealth == "active" {
 			workHealth = "result_ready"
 		}
-		reasons = append(reasons, inboxReason{Code: "result_unreconciled", Domain: "collection", Summary: "the terminal result has not been collected with result or await"})
+		reasons = append(reasons, inboxReason{Code: "result_unreconciled", Domain: "collection", Summary: "the terminal result has not been collected with result or await", AgeSeconds: renotifyAgeSeconds})
 	}
 	if execution.State == model.StateRunning && observationAge >= staleAfter {
 		age := observationAge.Seconds()
@@ -227,7 +290,11 @@ func projectInbox(execution model.Execution, now time.Time, staleAfter time.Dura
 		ID: execution.ID, Labels: labels, Authority: execution.Authority, Adapter: execution.Adapter, Mode: execution.Mode,
 		State: execution.State, Liveness: execution.Liveness, WorkHealth: workHealth, ToolHealth: string(execution.Liveness),
 		CreatedAt: execution.CreatedAt, UpdatedAt: execution.UpdatedAt, ObservationAgeSeconds: observationAge.Seconds(),
-		Unreconciled: unreconciled, Reasons: reasons, NextActions: actions,
+		Unreconciled: unreconciled, RenotifyAgeSeconds: renotifyAgeSeconds, Reasons: reasons, NextActions: actions,
+	}
+	// Unreconciled implies TerminalAt != nil, so the tier lookup is safe here.
+	if unreconciled {
+		item.RenotifyAgeTier = renotifyTierFor(now.Sub(*execution.TerminalAt))
 	}
 	return item, len(reasons) != 0
 }

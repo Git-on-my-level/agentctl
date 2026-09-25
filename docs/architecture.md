@@ -201,7 +201,12 @@ The host-local `inbox` is also a journal projection, not a new authority. It
 combines unreconciled terminals, attention state, and bounded observation age.
 It never polls a native CLI. Task/collection health and normalized tool
 liveness are separate fields so transport loss is not promoted into a false
-task failure.
+task failure. Unacknowledged terminals re-notify as a pure function of
+terminal age — they lead the page oldest-first and climb `fresh`/`aging`/
+`persistent` tiers — so finished work is never silently buried. Only a
+deliberate acknowledgement (`result` or a terminal `await`) removes an item,
+and that stamp is final; the inbox is an inbox that never forgets until
+acknowledged, without a daemon, timer, or second store.
 
 A short selector such as `studio omp` is ranked against optional config
 keywords (`route.hosts`, `agent_preferences.preferred`, plus built-in adapter
