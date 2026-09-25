@@ -208,6 +208,13 @@ trust so print mode can run in an untrusted directory. Fast and priority model
 ids are refused. `devin acp` is a separate JSON-RPC server and is not the print
 payload.
 
+Resume maps to `devin -r <session-id>` followed by the caller's argv, which must
+carry a new `-p`/`--print` prompt. The session ID is explicit and
+caller-supplied: agentctl never discovers, persists, or guesses native Devin
+session IDs, so resume works across restarts only because the caller already
+knows the ID. A launch ref's PID is not a session ID and is refused, as are
+argv that repeat `-r`/`--resume`/`-c`/`--continue`.
+
 ### OMP
 
 - Consume `--mode json` session events for direct one-shot runs. Retain bounded
