@@ -85,6 +85,7 @@ func BuiltinModelCatalog() []ModelRecord {
 		{Adapter: "omp", Aliases: []string{"glm", "omp", "open-weight", "open_weight", "openweight"}},
 		{Adapter: "zcode", Aliases: []string{"zcode"}},
 		{Adapter: "devin", Aliases: []string{"devin", "swe", "swe-2", "swe-2-high", "fusion"}},
+		{Adapter: "openclaw", Aliases: []string{"openclaw"}},
 	}
 }
 

@@ -308,7 +308,7 @@ func TestHelpAwaitDefaultHasNoTimeout(t *testing.T) {
 
 func TestRunDefaultsInferAdapterWithoutWallTimeout(t *testing.T) {
 	tests := []struct{ executable, adapter string }{
-		{"/opt/bin/codex", "codex"}, {"cursor-agent", "cursor"}, {"claude.exe", "claude"}, {"omp", "omp"}, {"zcode", "zcode"}, {"/opt/bin/devin", "devin"}, {"/bin/echo", "generic-process"},
+		{"/opt/bin/codex", "codex"}, {"cursor-agent", "cursor"}, {"claude.exe", "claude"}, {"omp", "omp"}, {"zcode", "zcode"}, {"/opt/bin/devin", "devin"}, {"openclaw", "openclaw"}, {"/bin/echo", "generic-process"},
 	}
 	for _, test := range tests {
 		opts, problem := parseRun([]string{"--", test.executable, "task"})
@@ -1853,6 +1853,19 @@ func TestCapabilitiesSummaryCanRequireResultContent(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"viable":true`) || !strings.Contains(stdout.String(), `"result_content"`) || strings.Contains(stdout.String(), `"manifest"`) {
 		t.Fatalf("unexpected summary: %s", stdout.String())
+	}
+}
+
+func TestOpenClawCapabilitiesWithLocalBinary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "openclaw")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho 'OpenClaw 2026.6.10 (aa69b12)'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	code := a.run(context.Background(), []string{"--output", "json", "capabilities", "openclaw", "--executable", path, "--require", "launch,result_content,cancel"})
+	if code != 0 || !strings.Contains(stdout.String(), `"viable":true`) || !strings.Contains(stdout.String(), `"blocking":[]`) {
+		t.Fatalf("exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 }
 

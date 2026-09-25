@@ -703,6 +703,7 @@ func TestResultContentNegotiationUsesExactInvocation(t *testing.T) {
 		{name: "claude", manifest: claudeManifest(), good: []string{"claude", "--output-format=stream-json", "review"}, bad: []string{"claude", "review"}, afterDelimiter: []string{"--output-format=stream-json"}},
 		{name: "omp", manifest: ompManifest(), good: []string{"omp", "-p", "--mode=json", "review"}, bad: []string{"omp", "-p", "review"}, afterDelimiter: []string{"--mode=json"}},
 		{name: "devin", manifest: devinManifest(), good: []string{"devin", "--model", "swe-2-high", "-p", "--respect-workspace-trust", "false", "--"}, bad: []string{"devin", "--model", "swe-2-high", "--"}, afterDelimiter: []string{"-p"}},
+		{name: "openclaw", manifest: openclawManifest(), good: []string{"openclaw", "agent", "--local", "--agent", "main", "--json", "-m", "hi"}, bad: []string{"openclaw", "agent", "--local", "--agent", "main", "-m", "hi"}, afterDelimiter: []string{"--json"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

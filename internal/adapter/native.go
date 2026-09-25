@@ -316,6 +316,26 @@ func (p *processRecord) finish(err error) {
 		}
 		p.exitCode = &code
 	}
+	// OpenClaw may print a JSON answer before a later local-run failure. The
+	// owned process exit is authoritative for this one-shot command.
+	if p.parser.Name() == "openclaw-json" && p.result != nil {
+		p.result.ExitCode = p.exitCode
+		if p.cancelled || (p.exitCode != nil && *p.exitCode != 0) {
+			p.result.Success = false
+			p.result.Content = ""
+			p.result.Summary = ""
+			p.result.ContentType = ""
+			p.result.ContentTruncated = false
+			delete(p.result.Data, "result_content_source")
+			if p.cancelled {
+				p.result.State = StateCancelled
+				p.result.Error = "native process cancelled"
+			} else {
+				p.result.State = StateFailed
+				p.result.Error = firstNonEmpty(p.stderrDiagnostic, p.result.Error, "OpenClaw agent exited unsuccessfully")
+			}
+		}
+	}
 	if p.result == nil && p.sawDevinPrint && !p.cancelled && p.exitCode != nil && *p.exitCode == 0 {
 		if strings.TrimSpace(p.devinPrintAnswer) == "" {
 			p.result = &Result{Success: false, State: StateFailed, ExitCode: p.exitCode, SessionRef: p.ref, Error: "devin print exited without an answer", Data: map[string]any{"diagnostic_code": "empty_terminal_result", "terminal_source_state": "devin.print"}}
