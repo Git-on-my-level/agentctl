@@ -3,6 +3,7 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,6 +72,92 @@ func NewDevin() Adapter {
 		LaunchKind: "devin_session", WholeStdout: true, TransformArgv: rewriteDevinArgv,
 	})
 	return &devinAdapter{NativeAdapter: base}
+}
+
+// NewOpenClaw runs an embedded local agent turn. The gateway-backed ACP bridge
+// is deliberately outside this adapter's authority.
+func NewOpenClaw() Adapter {
+	base := newNativeAdapter(nativeConfig{
+		Manifest: openclawManifest(), Binary: resolveOpenClawBinary(), Parser: openclawParser{},
+		LaunchKind: "openclaw_session", WholeStdout: true, TransformArgv: rewriteOpenClawArgv,
+	})
+	return &openclawAdapter{NativeAdapter: base}
+}
+
+type openclawAdapter struct{ *NativeAdapter }
+
+func (o *openclawAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, error) {
+	if !openclawInvocationSatisfied(req.Argv) {
+		return LaunchResult{}, invalidRequest("openclaw adapter requires agent --local --json")
+	}
+	return o.NativeAdapter.Launch(ctx, req)
+}
+
+func argvHasFlag(argv []string, flag string) bool {
+	for _, arg := range argv[1:] {
+		if arg == "--" {
+			break
+		}
+		if arg == flag {
+			return true
+		}
+	}
+	return false
+}
+
+func argvHasOption(argv []string, option string) bool {
+	for _, arg := range argv[1:] {
+		if arg == "--" {
+			break
+		}
+		if arg == option || strings.HasPrefix(arg, option+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func openclawInvocationSatisfied(argv []string) bool {
+	return len(argv) > 1 && argv[1] == "agent" && argvHasFlag(argv, "--local") && argvHasFlag(argv, "--json")
+}
+
+func (o *openclawAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, error) {
+	if req.Executable == "" || req.Executable == "openclaw" {
+		req.Executable = resolveOpenClawBinary()
+	}
+	return o.NativeAdapter.Probe(ctx, req)
+}
+
+func resolveOpenClawBinary() string {
+	if path, err := exec.LookPath("openclaw"); err == nil {
+		return path
+	}
+	return "openclaw"
+}
+
+func rewriteOpenClawArgv(argv []string) []string {
+	if len(argv) == 0 {
+		return argv
+	}
+	out := append([]string(nil), argv...)
+	if out[0] == "openclaw" {
+		out[0] = resolveOpenClawBinary()
+	}
+	if len(out) > 1 && out[1] == "agent" && !argvHasOption(out, "--session-key") && !argvHasOption(out, "--session-id") && !argvHasOption(out, "--to") && !argvHasOption(out, "-t") {
+		// A new local session for each invocation avoids accidental transcript
+		// reuse through OpenClaw's default agent session.
+		agentID := "main"
+		for i := 2; i < len(out); i++ {
+			if out[i] == "--agent" && i+1 < len(out) {
+				agentID = out[i+1]
+			} else if value, ok := strings.CutPrefix(out[i], "--agent="); ok {
+				agentID = value
+			}
+		}
+		key := "agent:" + agentID + ":agentctl-" + rand.Text()
+		out = append([]string{out[0], out[1], "--session-key", key}, out[2:]...)
+	}
+	return out
 }
 
 type devinAdapter struct{ *NativeAdapter }
@@ -701,6 +788,31 @@ func devinManifest() Manifest {
 	})
 }
 
+func openclawManifest() Manifest {
+	resultContent := resultContentDecl(CapabilitySupported, "payloads[].text")
+	resultContent.Constraints["required_output_mode"] = "json"
+	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--json", "kind": "presence"}
+	resultContent.Constraints["transport"] = "embedded_local"
+	capabilities := []CapabilityDeclaration{
+		capDecl(CapabilityLaunch, CapabilitySupported),
+		sameProcessDecl(CapabilityAttach, CapabilityUnavailable),
+		sameProcessDecl(CapabilitySnapshot, CapabilityDegraded),
+		sameProcessDecl(CapabilityEvents, CapabilityDegraded),
+		sameProcessDecl(CapabilityResult, CapabilitySupported),
+		resultContent,
+		capDecl(CapabilityResume, CapabilityUnavailable),
+		sameProcessDecl(CapabilityCancel, CapabilitySupported),
+		capDecl(CapabilityContextInjection, CapabilityDegraded),
+	}
+	capabilities[0].Constraints = map[string]any{"transport": "embedded_local", "required_flags": []string{"agent", "--local", "--json", "-m"}, "session_selector": "--agent, --session-key, --session-id, or --to"}
+	capabilities[1].Constraints["reason"] = "no verified attach to a running local CLI process"
+	capabilities[2].Constraints["reason"] = "only the agentctl-owned process can be observed"
+	capabilities[3].Constraints["reason"] = "only local process observations; no durable native event stream"
+	capabilities[6].Constraints = map[string]any{"reason": "CLI session flags exist, but agentctl does not bind verified continuation to a prior run"}
+	capabilities[8].Constraints = map[string]any{"reason": "environment context handle is not guaranteed to reach the model"}
+	return baseManifest("openclaw", "0.1.0", "openclaw_session", "openclaw-json", capabilities)
+}
+
 func zcodeManifest() Manifest {
 	resultContent := resultContentDecl(CapabilitySupported, "response")
 	resultContent.Constraints["required_output_mode"] = "json"
@@ -748,6 +860,8 @@ func baseManifest(name, version, kind, format string, capabilities []CapabilityD
 		executable = "zcode"
 	case "devin":
 		executable = "devin"
+	case "openclaw":
+		executable = "openclaw"
 	case "multica":
 		executable = "multica"
 	case "generic-process":
@@ -797,7 +911,10 @@ func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName) 
 		}
 		constraints := cloneMap(declaration.Constraints)
 		reason := ""
-		if len(argv) != 0 && name == CapabilityResultContent && !invocationRequirementSatisfied(argv, constraints) {
+		if declaredReason, ok := constraints["reason"].(string); ok {
+			reason = declaredReason
+		}
+		if len(argv) != 0 && name == CapabilityResultContent && (!invocationRequirementSatisfied(argv, constraints) || manifest.Adapter == "openclaw" && !openclawInvocationSatisfied(argv)) {
 			status = CapabilityUnavailable
 			constraints["invocation_satisfied"] = false
 			reason = "exact invocation does not satisfy the structured-output requirement"

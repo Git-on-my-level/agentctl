@@ -22,6 +22,13 @@ request file and only the user's constraints. Read `help delegate`, plan with
 `--plan`). Do not reconstruct a native model slug from an alias. Bare adapters
 or missing remote runtimes are unresolved constraints, never substitution grants.
 
+For an explicit OpenClaw preference, use the `openclaw` adapter with a
+`provider/model` id. Its reviewed recipe runs `agent --local --json`, uses
+`--agent main` as the required session selector, and supplies the prompt with
+`-m`. The local process gets a fresh session key at launch. A successful
+version probe does not prove provider authentication; inspect the run result
+for CLI errors. Gateway-backed `acp` is outside this adapter.
+
 Hermes terminal processes, Claude Code Bash tasks, and Codex terminal sessions
 can own a foreground agentctl process using their supported process lifecycle.
 Retain that process handle and collect its completion. `run --background` is

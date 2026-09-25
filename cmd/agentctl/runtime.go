@@ -871,6 +871,8 @@ func inferAdapter(executable string) string {
 		return "zcode"
 	case "devin":
 		return "devin"
+	case "openclaw":
+		return "openclaw"
 	default:
 		return "generic-process"
 	}
@@ -1090,6 +1092,8 @@ func (a *app) runtimeAdapter(c common, name, issue, run string) (adapter.Adapter
 		return adapter.NewZCode(), "", nil
 	case "devin":
 		return adapter.NewDevin(), "", nil
+	case "openclaw":
+		return adapter.NewOpenClaw(), "", nil
 	case "process", "generic", "generic-process":
 		return adapter.NewGenericProcess(), "", nil
 	case "multica":

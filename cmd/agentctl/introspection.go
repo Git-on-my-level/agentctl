@@ -56,7 +56,7 @@ func (a *app) capabilitiesCommand(ctx context.Context, renderer output.Renderer,
 	if probe && (name != "generic" && name != "generic-process" || executable != "") {
 		observation, err := value.Probe(ctx, adapter.ProbeRequest{Executable: executable, Profile: c.profile, Fresh: true})
 		if err != nil {
-			return mapAdapterError("adapter probe failed", err).WithDetail("adapter", name).WithDetail("known_adapters", []string{"codex", "cursor", "claude", "omp", "zcode", "devin", "generic-process", "multica"})
+			return mapAdapterError("adapter probe failed", err).WithDetail("adapter", name).WithDetail("known_adapters", []string{"codex", "cursor", "claude", "omp", "zcode", "devin", "openclaw", "generic-process", "multica"})
 		}
 		result["probe"] = observation
 		lines = append(lines, output.Line{Lead: "probe", Fields: []output.Field{{Name: "adapter", Value: manifest.Adapter}, {Name: "version", Value: observation.AdapterVersion}, {Name: "capabilities", Value: len(observation.Capabilities)}}})
@@ -125,6 +125,8 @@ func (a *app) adapterForIntrospection(name string, c common) (adapter.Adapter, *
 		return adapter.NewZCode(), nil
 	case "devin":
 		return adapter.NewDevin(), nil
+	case "openclaw":
+		return adapter.NewOpenClaw(), nil
 	case "multica":
 		resolution, err := configResolution(c)
 		if err != nil {
@@ -140,7 +142,7 @@ func (a *app) adapterForIntrospection(name string, c common) (adapter.Adapter, *
 		m := profile.Multica
 		return adapter.NewMultica(adapter.MulticaConfig{Binary: m.Executable, Profile: m.Profile, Endpoint: m.ServerURL, Workspace: m.WorkspaceID}), nil
 	default:
-		return nil, output.NewError(output.CodeUsage, "unknown adapter", false).WithDetail("adapter", name).WithDetail("known_adapters", []string{"codex", "cursor", "claude", "omp", "zcode", "devin", "generic-process", "multica"})
+		return nil, output.NewError(output.CodeUsage, "unknown adapter", false).WithDetail("adapter", name).WithDetail("known_adapters", []string{"codex", "cursor", "claude", "omp", "zcode", "devin", "openclaw", "generic-process", "multica"})
 	}
 }
 

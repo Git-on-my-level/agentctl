@@ -81,6 +81,31 @@ func TestDelegatePlanNoMutationOrPromptLeak(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenClawPreferenceBuildsLocalDelegatePlan(t *testing.T) {
+	f := newDelegateFixture(t, delegateSuccessScript)
+	path := filepath.Join(f.root, "openclaw")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho 'OpenClaw 2026.6.10 (aa69b12)'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	profile := map[string]any{"schema_version": 1, "default_profile": "test", "profiles": map[string]any{"test": map[string]any{
+		"adapters":          map[string]any{"openclaw": map[string]any{"executable": path}},
+		"route":             map[string]any{"this_host": "workstation"},
+		"agent_preferences": map[string]any{"mode": "advisory", "preferred": []any{map[string]any{"agent": "openclaw", "model": "xai/grok-4.3", "family": "grok", "speed": "regular", "default": true}}},
+	}}}
+	data, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.config, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.selectRequest(t, `{"model":"xai/grok-4.3"}`)
+	code, out := f.invoke("private-task-token", "--plan")
+	if code != 0 || !strings.Contains(out, `"openclaw"`) || !strings.Contains(out, `"--local"`) || !strings.Contains(out, `"--json"`) || strings.Contains(out, "private-task-token") {
+		t.Fatalf("exit=%d output=%s", code, out)
+	}
+}
 func TestDelegateWaitReplayAndConflict(t *testing.T) {
 	f := newDelegateFixture(t, delegateSuccessScript)
 	code, out := f.invoke("private-task-token", "--wait")
