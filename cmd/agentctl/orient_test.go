@@ -139,6 +139,29 @@ func TestDiscoveredOrientAdaptersCoverEveryKnownNativeAdapter(t *testing.T) {
 		}
 	}
 
+	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
+	_, problem := a.adapterForIntrospection("agentctl-test-unknown-adapter", common{})
+	if problem == nil {
+		t.Fatal("adapterForIntrospection resolved an unknown adapter")
+	}
+	knownAdapters, ok := problem.Details["known_adapters"].([]string)
+	if !ok {
+		t.Fatalf("known_adapters detail missing or not []string: %#v", problem.Details["known_adapters"])
+	}
+	discovered := make(map[string]orientAdapter, len(adapters))
+	for _, value := range adapters {
+		discovered[value.Name] = value
+	}
+	for _, name := range knownAdapters {
+		if name == "generic-process" || name == "multica" {
+			continue
+		}
+		got, found := discovered[name]
+		if !found || got.Health != "healthy" || got.HealthBasis != "executable_present" {
+			t.Fatalf("capabilities-known native adapter %q missing from healthy orient discovery: %+v", name, got)
+		}
+	}
+
 	delete(installed, "devin")
 	delete(installed, "zcode")
 	adapters = discoveredOrientAdapters(deps)
@@ -155,7 +178,6 @@ func TestDiscoveredOrientAdaptersCoverEveryKnownNativeAdapter(t *testing.T) {
 		}
 	}
 
-	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
 	for _, item := range want {
 		value, problem := a.adapterForIntrospection(item.name, common{})
 		if problem != nil || value == nil {
