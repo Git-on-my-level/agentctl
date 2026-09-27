@@ -221,7 +221,8 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	// must be able to observe the execution while it is running.
 	journal.Close()
 	launchCtx := operationCtx
-	launchRequest := adapter.LaunchRequest{Argv: opts.argv, Cwd: opts.cwd, Context: contextInput(c), DiscoveryWindow: 250 * time.Millisecond, StartOnly: true}
+	launchRequest := adapter.LaunchRequest{Argv: opts.argv, Cwd: opts.cwd, Context: contextInput(c), DiscoveryWindow: 250 * time.Millisecond, StartOnly: true,
+		ExecutionContext: &adapter.ExecutionContext{ExecutionID: execution.ID.String(), Adapter: execution.Adapter, HostID: execution.OriginHostID.String(), Labels: append([]string(nil), execution.Labels...), Authority: string(execution.Authority)}}
 	if prompt != nil && prompt.Delivery == "stdin" {
 		launchRequest.Stdin = prompt.Bytes
 	}
@@ -565,7 +566,7 @@ func parseRun(args []string) (runOptions, *output.Error) {
 			i++
 			label := strings.TrimSpace(args[i])
 			if !validRunLabel(label) {
-				return o, output.NewError(output.CodeUsage, "--label must match ^[a-z][a-z0-9_.-]{0,63}$", false).WithDetail("label", label)
+				return o, output.NewError(output.CodeUsage, "--label must match ^[a-z][a-z0-9_.-]{0,127}$", false).WithDetail("label", label)
 			}
 			if containsArg(o.labels, label) {
 				return o, output.NewError(output.CodeUsage, "--label values must be unique", false).WithDetail("label", label)
@@ -623,7 +624,7 @@ func parseRun(args []string) (runOptions, *output.Error) {
 }
 
 func validRunLabel(label string) bool {
-	if label == "" || len(label) > 64 || label[0] < 'a' || label[0] > 'z' {
+	if label == "" || len(label) > 128 || label[0] < 'a' || label[0] > 'z' {
 		return false
 	}
 	for _, ch := range label[1:] {

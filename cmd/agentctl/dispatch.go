@@ -411,7 +411,7 @@ func parseDispatch(args []string) (dispatchOptions, *output.Error) {
 				return opts, problem
 			}
 			if !validRunLabel(value) {
-				return opts, output.NewError(output.CodeUsage, "--label must match ^[a-z][a-z0-9_.-]{0,63}$", false).WithDetail("label", value)
+				return opts, output.NewError(output.CodeUsage, "--label must match ^[a-z][a-z0-9_.-]{0,127}$", false).WithDetail("label", value)
 			}
 			if containsArg(opts.labels, value) {
 				return opts, output.NewError(output.CodeUsage, "--label values must be unique", false).WithDetail("label", value)

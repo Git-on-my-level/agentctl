@@ -66,8 +66,10 @@ callbacks. Concurrency is 2 when omitted or explicitly 0; a CLI `--concurrency`
 override must be 1–16. JSON must be one UTF-8 document: trailing documents,
 unknown or case-aliased keys, duplicate object keys, and nulls fail closed.
 Empty native argv entries are preserved, but NUL bytes are rejected. Native
-argv vectors have at most 256 entries. Names and labels match
-`^[a-z][a-z0-9_.-]{0,63}$`. Typed IDs additionally require their real checksum;
+argv vectors have at most 256 entries. Correlation names match
+`^[a-z][a-z0-9_.-]{0,63}$`; labels match
+`^[a-z][a-z0-9_.-]{0,127}$` and are at most 128 characters. Typed IDs
+additionally require their real checksum;
 JSON Schema alone cannot check it. Cross-child name and execution-ID uniqueness
 and the combined-label limit are enforced by the decoder.
 

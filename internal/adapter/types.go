@@ -246,14 +246,17 @@ type ContextInput struct {
 }
 
 type LaunchRequest struct {
-	Argv            []string
-	Stdin           []byte
-	Cwd             string
-	Env             []string
-	Context         *ContextInput
-	Timeout         time.Duration
-	DiscoveryWindow time.Duration
-	ResultPath      string
+	Argv  []string
+	Stdin []byte
+	Cwd   string
+	Env   []string
+	// ExecutionContext is copied from the durable native execution record.
+	// It is exported only to local native children, never Multica.
+	ExecutionContext *ExecutionContext
+	Context          *ContextInput
+	Timeout          time.Duration
+	DiscoveryWindow  time.Duration
+	ResultPath       string
 	// StartOnly keeps the process under this adapter's same-process
 	// supervision and returns after discovery. The default is false: a
 	// daemonless caller owns the child only while it remains alive, so normal
@@ -262,6 +265,14 @@ type LaunchRequest struct {
 	// hardContextDeadline is reserved for finite adapter probes whose caller
 	// deadline must not inherit native work's graceful cancellation window.
 	hardContextDeadline bool
+}
+
+type ExecutionContext struct {
+	ExecutionID string
+	Adapter     string
+	HostID      string
+	Labels      []string
+	Authority   string
 }
 
 type AttachRequest struct {
@@ -305,11 +316,12 @@ type ResultRequest struct {
 }
 
 type ResumeRequest struct {
-	Ref             SourceRef
-	Argv            []string
-	Context         *ContextInput
-	Timeout         time.Duration
-	DiscoveryWindow time.Duration
+	Ref              SourceRef
+	Argv             []string
+	Context          *ContextInput
+	ExecutionContext *ExecutionContext
+	Timeout          time.Duration
+	DiscoveryWindow  time.Duration
 }
 
 type CancelRequest struct {

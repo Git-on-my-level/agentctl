@@ -145,8 +145,10 @@ reviewed mechanisms (`environment_path`, `native_argument`,
 `native_instruction_file`, `authority_artifact_ref`) and whether the harness
 actually guarantees delivery to the worker. If required context cannot be
 delivered, launch fails before starting the native command. The generic process
-adapter may provide `AGENTCTL_CONTEXT` and `AGENTCTL_EXECUTION` environment
-handles but cannot claim the child model read them.
+adapter may provide `AGENTCTL_CONTEXT` and
+`AGENTCTL_CONTEXT_FINGERPRINT` environment handles but cannot claim the child
+model read them. Native child execution metadata is defined in the
+[execution envelope](execution-envelope.md#native-child-environment).
 
 ## Initial adapters
 

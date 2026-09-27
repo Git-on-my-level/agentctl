@@ -43,7 +43,8 @@
       "uniqueItems": true,
       "items": {
         "type": "string",
-        "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+        "maxLength": 128,
+        "pattern": "^[a-z][a-z0-9_.-]{0,127}$"
       }
     }
   },
@@ -110,7 +111,8 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9_.-]{0,127}$"
           }
         }
       }

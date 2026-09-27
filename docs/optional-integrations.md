@@ -89,6 +89,23 @@ were dropped, so `events` reports unavailable for new issue-bound executions and
 an empty event page is never a completion signal. `result --content` is
 unavailable for snapshot-only executions.
 
+## Agent Nexus
+
+Agent Nexus (ANX) can mirror agentctl executions for display. Add an ANX card
+reference as an execution label using the agentctl-safe form
+`anx.card.<card-slug>` (for example, `--label anx.card.card-123`). The full
+label is a lowercase token of at most 128 characters, leaving up to 119
+characters for the slug. Labels cannot contain the colons in the conceptual
+`anx:card:<ref>` notation. Configure a subscription filtered to those labels
+with a `command` destination that runs `anx runs ingest`. The destination
+receives the callback envelope on stdin according to the existing command
+destination contract.
+
+ANX credentials belong only in the ANX command's own credential store and
+environment. agentctl neither reads nor forwards them. ANX mirrors run data for
+display; a completed run never implies that its task or card was accepted.
+Acceptance remains owned by the relevant task authority.
+
 ## Network and fleet tools
 
 Tailscale or another network layer may provide authenticated reachability for

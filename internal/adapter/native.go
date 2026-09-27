@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -398,6 +399,27 @@ type NativeAdapter struct {
 	byPID  map[int]*processRecord
 }
 
+func setEnvironment(env []string, values map[string]string) []string {
+	filtered := env[:0]
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if _, replace := values[key]; ok && replace {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := values[key]
+		filtered = append(filtered, key+"="+value)
+	}
+	return filtered
+}
+
 func newNativeAdapter(config nativeConfig) *NativeAdapter {
 	if config.OutputLimit <= 0 {
 		config.OutputLimit = defaultOutputLimit
@@ -607,6 +629,15 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		cmd.Dir = req.Cwd
 	}
 	cmd.Env = append(os.Environ(), req.Env...)
+	if context := req.ExecutionContext; context != nil && context.Authority == "native" {
+		cmd.Env = setEnvironment(cmd.Env, map[string]string{
+			"AGENTCTL_EXECUTION_ID": context.ExecutionID,
+			"AGENTCTL_ADAPTER":      context.Adapter,
+			"AGENTCTL_HOST_ID":      context.HostID,
+			"AGENTCTL_LABELS":       strings.Join(context.Labels, ","),
+			"AGENTCTL_AUTHORITY":    context.Authority,
+		})
+	}
 	if req.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(req.Stdin)
 	}
@@ -620,7 +651,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 			cmd.Env = append(cmd.Env, "AGENTCTL_CONTEXT="+req.Context.ArtifactRef)
 		}
 		if req.Context.Instruction != "" {
-			cmd.Env = append(cmd.Env, "AGENTCTL_EXECUTION="+Fingerprint(a.Name(), req.Context.Instruction))
+			cmd.Env = setEnvironment(cmd.Env, map[string]string{"AGENTCTL_CONTEXT_FINGERPRINT": Fingerprint(a.Name(), req.Context.Instruction)})
 		}
 	}
 	prepareProcess(cmd)
@@ -1008,7 +1039,7 @@ func (a *NativeAdapter) Resume(ctx context.Context, req ResumeRequest) (LaunchRe
 	if len(args) == 0 {
 		return LaunchResult{}, invalidRequest("native resume route returned empty argv")
 	}
-	return a.Launch(ctx, LaunchRequest{Argv: args, Context: req.Context, Timeout: req.Timeout, DiscoveryWindow: req.DiscoveryWindow})
+	return a.Launch(ctx, LaunchRequest{Argv: args, Context: req.Context, ExecutionContext: req.ExecutionContext, Timeout: req.Timeout, DiscoveryWindow: req.DiscoveryWindow})
 }
 
 func (a *NativeAdapter) Cancel(ctx context.Context, req CancelRequest) error {
