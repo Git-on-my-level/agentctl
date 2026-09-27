@@ -446,7 +446,7 @@ func TestRunLifecycleThroughBuiltBinary(t *testing.T) {
 		t.Fatalf("rejected --background created a journal: %v", err)
 	}
 	journal := filepath.Join(root, "state", "journal.db")
-	native := `printf '%s\n' '{"type":"result","status":"completed","result":"RUN_INTEGRATION_OK"}'`
+	native := `printf '{"type":"result","status":"completed","result":"%s|%s|%s|%s|%s"}\n' "$AGENTCTL_EXECUTION_ID" "$AGENTCTL_ADAPTER" "$AGENTCTL_HOST_ID" "$AGENTCTL_LABELS" "$AGENTCTL_AUTHORITY"`
 	launch := exec.Command(binary, "--journal", journal, "run", "--label", "integration", "--timeout", "30s", "--adapter", "generic-process", "--", "/bin/sh", "-c", native)
 	launchOutput, err := launch.CombinedOutput()
 	if err != nil {
@@ -472,7 +472,8 @@ func TestRunLifecycleThroughBuiltBinary(t *testing.T) {
 	}
 	result := exec.Command(binary, "--journal", journal, "result", launchDoc.Result.ID.String(), "--min-result-bytes", "10")
 	resultOutput, err := result.CombinedOutput()
-	if err != nil || !bytes.Contains(resultOutput, []byte("RUN_INTEGRATION_OK")) {
+	expectedContext := launchDoc.Result.ID.String() + "|generic-process|" + launchDoc.Result.OriginHostID.String() + "|integration|native"
+	if err != nil || !bytes.Contains(resultOutput, []byte(expectedContext)) {
 		t.Fatalf("result: %v\n%s", err, resultOutput)
 	}
 	promptNative := `IFS= read -r value; printf '{"type":"result","status":"completed","result":"%s"}\n' "$value"`

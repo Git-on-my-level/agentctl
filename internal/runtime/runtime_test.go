@@ -43,6 +43,7 @@ type fakeAdapter struct {
 	resultErr         error
 	cancelErr         error
 	launchCalls       int
+	lastLaunchRequest adapter.LaunchRequest
 	lastSnapshotRef   adapter.SourceRef
 	unavailable       map[adapter.CapabilityName]bool
 	constraints       map[adapter.CapabilityName]map[string]any
@@ -70,8 +71,9 @@ func (f *fakeAdapter) Probe(context.Context, adapter.ProbeRequest) (adapter.Prob
 	}
 	return adapter.ProbeResult{AdapterVersion: "fixture-v1", BackendVersion: "backend-v1", ProbedAt: fixtureNow, Capabilities: capabilities}, nil
 }
-func (f *fakeAdapter) Launch(context.Context, adapter.LaunchRequest) (adapter.LaunchResult, error) {
+func (f *fakeAdapter) Launch(_ context.Context, request adapter.LaunchRequest) (adapter.LaunchResult, error) {
 	f.launchCalls++
+	f.lastLaunchRequest = request
 	return f.launch, f.launchErr
 }
 func (f *fakeAdapter) Attach(context.Context, adapter.AttachRequest) (adapter.Attachment, error) {
@@ -261,6 +263,9 @@ func TestDirectLifecycleNormalizesWithoutTranscriptPersistence(t *testing.T) {
 	}
 	if execution.State != model.StateRunning || execution.Authority != model.AuthorityNative || len(execution.SourceBindings) != 2 {
 		t.Fatalf("execution = %#v", execution)
+	}
+	if context := fake.lastLaunchRequest.ExecutionContext; context == nil || context.ExecutionID != execution.ID.String() || context.HostID != execution.OriginHostID.String() || context.Adapter != execution.Adapter || context.Authority != string(execution.Authority) || len(context.Labels) != 0 {
+		t.Fatalf("launch context=%#v execution=%#v", context, execution)
 	}
 	fake.events = []adapter.Event{{Sequence: 1, Cursor: "source-1", Kind: "terminal", State: adapter.StateCompleted, SourceState: "turn.completed", ObservedAt: fixtureNow, Ordering: "source", DedupeKey: "native-event-1", Payload: map[string]any{"result_available": true}}}
 	events, err := engine.Events(context.Background(), execution.ID, "", adapter.PollOptions{})

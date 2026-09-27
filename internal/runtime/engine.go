@@ -120,6 +120,9 @@ func (e *Engine) Launch(ctx context.Context, options LaunchOptions) (model.Execu
 	if reused {
 		return execution, nil
 	}
+	if execution.Authority == model.AuthorityNative {
+		options.Request.ExecutionContext = &adapter.ExecutionContext{ExecutionID: execution.ID.String(), Adapter: execution.Adapter, HostID: execution.OriginHostID.String(), Labels: append([]string(nil), execution.Labels...), Authority: string(execution.Authority)}
+	}
 	launched, launchErr := value.Launch(ctx, options.Request)
 	if launchErr != nil {
 		failed, updateErr := e.recordOperationFailure(ctx, execution, "launch", launchErr)

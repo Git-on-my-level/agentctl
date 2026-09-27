@@ -933,6 +933,20 @@ func TestRequiredContextFailsBeforeChildLaunch(t *testing.T) {
 	}
 }
 
+func TestNativeLaunchExportsPersistedExecutionContext(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s\\n' "{\"type\":\"result\",\"status\":\"completed\",\"result\":\"$AGENTCTL_EXECUTION_ID|$AGENTCTL_ADAPTER|$AGENTCTL_HOST_ID|$AGENTCTL_LABELS|$AGENTCTL_AUTHORITY\"}"`)
+	got, err := NewGenericProcess().Launch(context.Background(), LaunchRequest{
+		Argv: []string{path}, DiscoveryWindow: time.Second,
+		ExecutionContext: &ExecutionContext{ExecutionID: "exec-test", Adapter: "generic-process", HostID: "host-test", Labels: []string{"anx.card.abc-123", "review"}, Authority: "native"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || got.Result.Content != "exec-test|generic-process|host-test|anx.card.abc-123,review|native" {
+		t.Fatalf("result=%#v", got.Result)
+	}
+}
+
 func TestNativeFailurePreservesCauseBeforeUsageFooter(t *testing.T) {
 	record := &processRecord{parser: codexParser{}, maxOutput: 1 << 20}
 	record.ingest([]byte("error: unexpected argument '--bad-flag' found"), true)
