@@ -3,6 +3,7 @@ package updatecheck
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -195,6 +196,30 @@ func TestCheckDoesNotNotifyForCurrentOrOlderRelease(t *testing.T) {
 			t.Fatalf("latest=%s notice=%#v err=%v", latest, notice, err)
 		}
 		server.Close()
+	}
+}
+
+func TestCheckReportsBusyLockAsFailure(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v0.3.3"})
+	}))
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "state", "update-check.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".lock", []byte("1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notice, err := Check(context.Background(), Options{CurrentVersion: "v0.3.2", StatePath: path, Endpoint: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }, Force: true})
+	var classified *checkError
+	if notice != nil || !errors.As(err, &classified) || classified.code != "state_lock_failed" {
+		t.Fatalf("notice=%#v err=%v", notice, err)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("busy lock still performed %d release lookups", requests.Load())
 	}
 }
 

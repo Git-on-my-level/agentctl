@@ -110,6 +110,9 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 
 	release, acquired, err := acquireLock(options.StatePath+".lock", now)
 	if err != nil || !acquired {
+		if err == nil {
+			err = errors.New("update state is busy")
+		}
 		return nil, classifyCheckError("state_lock_failed", err)
 	}
 	defer release()

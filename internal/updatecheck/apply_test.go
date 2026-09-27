@@ -147,6 +147,30 @@ func TestApplyCurrentNoopClearsPreviousUpdateFailure(t *testing.T) {
 	}
 }
 
+func TestApplyReportsBusyLockInsteadOfCurrent(t *testing.T) {
+	var releaseChecks atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		releaseChecks.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": "v0.11.2"})
+	}))
+	defer server.Close()
+	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	if err := writeState(statePath, cacheState{SchemaVersion: stateSchema, InstalledVersion: "v0.11.1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath+".lock", []byte("1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Apply(context.Background(), ApplyOptions{Check: Options{CurrentVersion: "v0.11.1", StatePath: statePath, Endpoint: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }, Force: true}, Executable: filepath.Join(t.TempDir(), "not-managed")})
+	var applyError *ApplyError
+	if result.Updated || result.InstalledVersion != "" || !errors.As(err, &applyError) || applyError.Code != "state_lock_failed" || !applyError.Retryable {
+		t.Fatalf("result=%#v error=%#v raw=%v", result, applyError, err)
+	}
+	if releaseChecks.Load() != 0 {
+		t.Fatalf("busy lock still performed %d release lookups", releaseChecks.Load())
+	}
+}
+
 func TestApplyClassifiesRateLimitedReleaseCheckAndReconcilesInstalledVersion(t *testing.T) {
 	prefix := t.TempDir()
 	executable := filepath.Join(prefix, "bin", "agentctl")
