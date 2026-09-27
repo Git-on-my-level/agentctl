@@ -38,6 +38,17 @@ func TestManifestLabelLengthBoundary(t *testing.T) {
 	}
 }
 
+func TestManifestNameLengthBoundary(t *testing.T) {
+	manifest := Manifest{SchemaVersion: 1, PromptFile: "task.md", Children: []Child{{Name: "a" + strings.Repeat("b", 63), Argv: []string{"agent"}}}}
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("64-character name rejected: %v", err)
+	}
+	manifest.Children[0].Name = "a" + strings.Repeat("b", 64)
+	if err := manifest.Validate(); err == nil {
+		t.Fatal("65-character name accepted")
+	}
+}
+
 func TestDecodeRejectsAmbiguousOrInvalidJSON(t *testing.T) {
 	valid := `{"schema_version":1,"prompt_file":"task.md","children":[{"argv":["agent"]}]}`
 	for name, body := range map[string]string{

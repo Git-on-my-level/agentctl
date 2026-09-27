@@ -173,7 +173,7 @@ func (m Manifest) Validate() error {
 }
 
 func validateChild(c Child) error {
-	if c.Name != "" && !validLabel(c.Name) {
+	if c.Name != "" && !validName(c.Name) {
 		return errors.New("name must match ^[a-z][a-z0-9_.-]{0,63}$")
 	}
 	if len(c.Argv) < 1 || strings.TrimSpace(c.Argv[0]) == "" || len(c.Argv) > 256 {
@@ -215,11 +215,15 @@ func validateLabels(labels []string) error {
 	return nil
 }
 
-func validLabel(label string) bool {
-	if len(label) == 0 || len(label) > 128 || label[0] < 'a' || label[0] > 'z' {
+func validName(name string) bool { return validIdent(name, 64) }
+
+func validLabel(label string) bool { return validIdent(label, 128) }
+
+func validIdent(value string, maxLen int) bool {
+	if len(value) == 0 || len(value) > maxLen || value[0] < 'a' || value[0] > 'z' {
 		return false
 	}
-	for _, c := range label[1:] {
+	for _, c := range value[1:] {
 		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '.' || c == '-') {
 			return false
 		}
