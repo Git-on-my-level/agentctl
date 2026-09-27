@@ -1,0 +1,4 @@
+<!-- agentctl-delegation -->
+CLI agents (`cursor-agent`, `codex`, `omp`, and similar) go through `agentctl`; load skill `agentctl-portable` or run `agentctl help run`.
+Do not manage native agent work with raw background shells; parent-background a foreground `agentctl run`, or use `dispatch` for work that must outlive this process.
+<!-- /agentctl-delegation -->

@@ -376,8 +376,8 @@ escape for callers that intentionally need weaker or broader behavior:
   portable skills, and adopts digest-matching unmarked copies, but refuses
   drifted assets with a different digest, does not delete legacy copies, and
   never creates a new supervisor service implicitly. Instruction pointers
-  append, create documented files except OMP, and repair truncated or duplicate
-  agentctl markers unless `bootstrap.instruction_pointers=off` or
+  append, create documented files except OMP, repair a truncated agentctl marker,
+  and upgrade exact shipped pointers unless `bootstrap.instruction_pointers=off` or
   `--no-instruction-pointers` is set. `--dry-run` previews the exact paths and
   `--harness` narrows detection.
 - `run` infers an adapter from a known executable, has no default wall-clock

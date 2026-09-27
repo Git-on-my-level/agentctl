@@ -452,11 +452,23 @@ func instructionPointerBlock(revision, skillDigest string) string {
 	return instructionPointerStart + "\n" + instructionPointerBody() + instructionPointerEnd + "\n"
 }
 
+// Append a new entry when pointer guidance changes. Older entries are the
+// ownership proof for installed, unbound pointers and must remain immutable.
+// bootstrap_test.go pins the released entries to independently stored bytes.
+var shippedInstructionPointerRevisions = []struct {
+	release string
+	body    string
+}{
+	{"pre-v0.6", "CLI agents (`cursor-agent`, `codex`, `omp`, and similar) go through `agentctl`; load skill `agentctl-portable` or run `agentctl help run`.\n" +
+		"Do not manage native agent work with raw background shells; use `agentctl` foreground/background lifecycle and just-in-time help.\n"},
+	{"v0.6.0-v0.10.2", "CLI agents (`cursor-agent`, `codex`, `omp`, and similar) go through `agentctl`; load skill `agentctl-portable` or run `agentctl help run`.\n" +
+		"Do not manage native agent work with raw background shells; parent-background a foreground `agentctl run`, or use `dispatch` for work that must outlive this process.\n"},
+	{"v0.11.0", "CLI agents (`cursor-agent`, `codex`, `omp`, and similar) go through `agentctl`. Kick off a new agent with `delegate` (`agentctl help delegate`); `run` is the expert exact-argv path and does not inject permission flags.\n" +
+		"Do not manage native agent work with raw background shells; parent-background a foreground `agentctl run`, or use `dispatch` for work that must outlive this process.\n"},
+}
+
 func instructionPointerBody() string {
-	return strings.Join([]string{
-		"CLI agents (`cursor-agent`, `codex`, `omp`, and similar) go through `agentctl`. Kick off a new agent with `delegate` (`agentctl help delegate`); `run` is the expert exact-argv path and does not inject permission flags.",
-		"Do not manage native agent work with raw background shells; parent-background a foreground `agentctl run`, or use `dispatch` for work that must outlive this process.",
-	}, "\n") + "\n"
+	return shippedInstructionPointerRevisions[len(shippedInstructionPointerRevisions)-1].body
 }
 
 func instructionPointerBlockWithBody(body, revision, skillDigest string) string {
@@ -595,7 +607,7 @@ func inspectInstructionPointerBytes(path string, data []byte, expected string) i
 		inspection.State = "stale"
 		return inspection
 	}
-	inspection.State = "repair"
+	inspection.State = "conflict"
 	return inspection
 }
 
@@ -641,8 +653,13 @@ func instructionPointerBlockIsManaged(block, expected string) bool {
 	if expected != "" && block == expected {
 		return true
 	}
-	if strings.HasPrefix(block, instructionPointerStart+"\n") && strings.HasSuffix(strings.TrimRight(block, "\r\n"), instructionPointerEnd) && knownInstructionPointerBody(innerInstructionPointerBody(block)) {
-		return true
+	if !strings.Contains(block, instructionPointerMetadataPrefix) {
+		for _, shipped := range shippedInstructionPointerRevisions {
+			if block == instructionPointerStart+"\n"+shipped.body+instructionPointerEnd+"\n" {
+				return true
+			}
+		}
+		return false
 	}
 	revision, skillDigest := instructionPointerMetadata(block)
 	if revision == "" {
@@ -655,30 +672,12 @@ func instructionPointerBlockIsManaged(block, expected string) bool {
 // Only exact previously shipped bodies may be migrated. Arbitrary edits within
 // markers remain conflicts; matching a marker alone is not ownership proof.
 func knownInstructionPointerBody(body string) bool {
-	if body == instructionPointerBody() {
-		return true
+	for _, shipped := range shippedInstructionPointerRevisions {
+		if body == shipped.body {
+			return true
+		}
 	}
-	return body == strings.Join([]string{
-		"CLI agents (`cursor-agent`, `codex`, `omp`, and similar) go through `agentctl`; load skill `agentctl-portable` or run `agentctl help run`.",
-		"Do not manage native agent work with raw background shells; use `agentctl` foreground/background lifecycle and just-in-time help.",
-	}, "\n")+"\n"
-}
-
-func innerInstructionPointerBody(block string) string {
-	if !strings.HasPrefix(block, instructionPointerStart+"\n") {
-		return ""
-	}
-	inner := strings.TrimPrefix(block, instructionPointerStart+"\n")
-	inner = strings.TrimSuffix(inner, "\n")
-	inner = strings.TrimSuffix(inner, instructionPointerEnd)
-	inner = strings.TrimSuffix(inner, "\n")
-	if strings.Contains(inner, instructionPointerMetadataPrefix) {
-		inner = inner[:strings.Index(inner, instructionPointerMetadataPrefix)]
-	}
-	if !strings.HasSuffix(inner, "\n") {
-		inner += "\n"
-	}
-	return inner
+	return false
 }
 
 func instructionPointerBodyFromSHABlock(block string) string {
@@ -708,16 +707,6 @@ func instructionPointerMetadata(block string) (revision, skillDigest string) {
 
 func repairInstructionPointerContent(content, expected string, inspection instructionPointerInspection) (string, error) {
 	if inspection.State == "repair" && inspection.Start >= 0 && inspection.End >= inspection.Start && inspection.End <= len(content) {
-		spans, ok := instructionPointerSpans(content)
-		if ok && len(spans) > 1 {
-			rebuilt := content[:spans[0][0]] + expected
-			prev := spans[0][1]
-			for _, span := range spans[1:] {
-				rebuilt += content[prev:span[0]]
-				prev = span[1]
-			}
-			return rebuilt + content[prev:], nil
-		}
 		return content[:inspection.Start] + expected + content[inspection.End:], nil
 	}
 	return "", fmt.Errorf("instruction pointer is %s", inspection.State)
@@ -1045,7 +1034,7 @@ func (a *app) bootstrapUpdateOpts(renderer output.Renderer, home string, selecte
 			action.State = "append"
 			action.Changed = true
 		case "stale":
-			action.State = "update"
+			action.State = "upgrade"
 			action.Changed = true
 		case "repair":
 			action.State = "repair"

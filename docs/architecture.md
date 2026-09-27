@@ -152,9 +152,10 @@ installs or upgrades only manifest-bound portable-skill assets. Digest-matching
 unmarked copies are adopted by writing the managed marker. Instruction pointers
 are reconciled independently of skill-root health: existing unmarked files
 receive an appended marked block, missing documented files are created with
-only that block (except OMP), and truncated or duplicate agentctl markers are
-repaired. User-edited pointer bodies remain conflicts. `--dry-run` shows exact
-paths and side effects. Legacy copies, unmanaged skills with a different
+only that block (except OMP), and a truncated agentctl marker is repaired.
+Exact shipped pointer revisions are upgraded; duplicate and user-edited blocks
+remain conflicts. `--dry-run` shows exact paths and side effects. Legacy copies,
+unmanaged skills with a different
 digest, and new supervisor services remain untouched unless an explicit cleanup
 or host-manager operation authorizes them. Live config may set
 `bootstrap.instruction_pointers` to `off`; Git bundles cannot set that field
