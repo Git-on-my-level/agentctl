@@ -42,6 +42,7 @@ func TestUpdateNowFailureAlwaysHasSafeDiagnostic(t *testing.T) {
 		code string
 	}{
 		{"classified", &updatecheck.ApplyError{Code: "release_check_failed", Stage: "release_check_failed", ExitCode: -1, Retryable: true, SafeCause: "release lookup returned HTTP 403", Cause: errors.New("secret /private/path")}, "release_check_failed"},
+		{"busy lock", &updatecheck.ApplyError{Code: "state_lock_failed", Stage: "state_lock_failed", ExitCode: -1, Retryable: true, SafeCause: "update state lock could not be acquired", Cause: errors.New("secret /private/path")}, "state_lock_failed"},
 		{"unexpected", errors.New("secret /private/path"), "unexpected_update_failure"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

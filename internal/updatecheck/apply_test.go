@@ -78,6 +78,87 @@ func TestApplyUpdatesManagedInstallFromVerifiedArchive(t *testing.T) {
 	}
 }
 
+func TestApplyRejectsNoncanonicalReleaseTagBeforeDownload(t *testing.T) {
+	for _, tag := range []string{"v0.3.4/../../evil", "v0.3.4;touch", "v0.3.4..", "v0.3.4-rc1", "v0.03.4", "0.3.4"} {
+		t.Run(tag, func(t *testing.T) {
+			prefix := t.TempDir()
+			executable := filepath.Join(prefix, "bin", "agentctl")
+			oldBinary := []byte("#!/bin/sh\nexit 0\n")
+			writeManagedInstall(t, prefix, executable, oldBinary)
+			var downloads atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				if request.URL.Path != "/latest" {
+					downloads.Add(1)
+					http.NotFound(w, request)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": tag})
+			}))
+			defer server.Close()
+			statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+			_, err := Apply(context.Background(), ApplyOptions{Check: Options{CurrentVersion: "v0.3.3", StatePath: statePath, Endpoint: server.URL + "/latest", Client: server.Client(), Getenv: func(string) string { return "" }, Force: true}, Executable: executable, ReleaseBaseURL: server.URL, Client: server.Client()})
+			var failure *ApplyError
+			if !errors.As(err, &failure) || (failure.Code != "invalid_release_version" && failure.Code != "release_check_failed") || downloads.Load() != 0 {
+				t.Fatalf("tag=%q error=%#v downloads=%d", tag, failure, downloads.Load())
+			}
+			installed, readErr := os.ReadFile(executable)
+			if readErr != nil || !bytes.Equal(installed, oldBinary) {
+				t.Fatalf("executable changed: %q (%v)", installed, readErr)
+			}
+		})
+	}
+}
+
+func TestApplyRejectsNoncanonicalCachedTagBeforeDownload(t *testing.T) {
+	prefix := t.TempDir()
+	executable := filepath.Join(prefix, "bin", "agentctl")
+	writeManagedInstall(t, prefix, executable, []byte("#!/bin/sh\nexit 0\n"))
+	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	if err := writeState(statePath, cacheState{SchemaVersion: stateSchema, CheckedOn: time.Now().UTC().Format("2006-01-02"), LatestVersion: "v0.03.4"}); err != nil {
+		t.Fatal(err)
+	}
+	var downloads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		downloads.Add(1)
+		http.Error(w, "unexpected download", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	_, err := Apply(context.Background(), ApplyOptions{Check: Options{CurrentVersion: "v0.3.3", StatePath: statePath, Endpoint: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }}, Executable: executable, ReleaseBaseURL: server.URL, Client: server.Client()})
+	var failure *ApplyError
+	if !errors.As(err, &failure) || failure.Code != "invalid_release_version" || downloads.Load() != 0 {
+		t.Fatalf("apply error=%#v downloads=%d", failure, downloads.Load())
+	}
+}
+
+func TestApplyManagedInstallReportsBusyStateLock(t *testing.T) {
+	prefix := t.TempDir()
+	executable := filepath.Join(prefix, "bin", "agentctl")
+	writeManagedInstall(t, prefix, executable, []byte("#!/bin/sh\nexit 0\n"))
+	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	state := cacheState{SchemaVersion: stateSchema, InstalledVersion: "v0.3.2"}
+	if err := writeState(statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, acquired, err := acquireLock(statePath+".lock", time.Now().UTC())
+	if err != nil || !acquired {
+		t.Fatalf("acquire lock: acquired=%t err=%v", acquired, err)
+	}
+	defer release()
+	_, err = Apply(context.Background(), ApplyOptions{Check: Options{CurrentVersion: "v0.3.3", StatePath: statePath, Getenv: func(string) string { return "" }, Force: true}, Executable: executable})
+	var failure *ApplyError
+	if !errors.As(err, &failure) || failure.Code != "state_lock_failed" || !failure.Retryable {
+		t.Fatalf("apply error=%#v raw=%v", failure, err)
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("busy state changed: %q (%v)", after, err)
+	}
+}
+
 func TestApplyNoopReconcilesVersionAfterManualInstall(t *testing.T) {
 	prefix := t.TempDir()
 	executable := filepath.Join(prefix, "bin", "agentctl")

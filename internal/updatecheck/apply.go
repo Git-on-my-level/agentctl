@@ -63,6 +63,9 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 		if executable != "" {
 			if _, ownershipErr := managedPrefix(executable); ownershipErr == nil {
 				if err := ReconcileInstalledVersion(options.Check.StatePath, options.Check.CurrentVersion); err != nil {
+					if errors.Is(err, errUpdateCheckBusy) {
+						return result, recordApplyError(options.Check.StatePath, "state_lock_failed", err)
+					}
 					return result, recordApplyError(options.Check.StatePath, "state_reconcile_failed", err)
 				}
 				result.InstalledVersion = options.Check.CurrentVersion
@@ -87,6 +90,10 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 		}
 		return result, nil
 	}
+	version, valid := canonicalReleaseVersion(notice.LatestVersion)
+	if !valid {
+		return result, recordApplyError(options.Check.StatePath, "invalid_release_version", errors.New("release check returned a noncanonical version"))
+	}
 	executable := options.Executable
 	if executable == "" {
 		executable, err = os.Executable()
@@ -107,8 +114,8 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	if base == "" {
 		base = defaultReleaseBase
 	}
-	archiveName := fmt.Sprintf("agentctl_%s_%s_%s.tar.gz", notice.LatestVersion, runtime.GOOS, runtime.GOARCH)
-	checksums, err := download(ctx, client, base+"/"+notice.LatestVersion+"/SHA256SUMS", maxChecksumBytes)
+	archiveName := fmt.Sprintf("agentctl_%s_%s_%s.tar.gz", version, runtime.GOOS, runtime.GOARCH)
+	checksums, err := download(ctx, client, base+"/"+version+"/SHA256SUMS", maxChecksumBytes)
 	if err != nil {
 		return result, recordApplyError(options.Check.StatePath, "checksum_download_failed", err)
 	}
@@ -116,7 +123,7 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	if err != nil {
 		return result, recordApplyError(options.Check.StatePath, "checksum_missing", err)
 	}
-	archive, err := download(ctx, client, base+"/"+notice.LatestVersion+"/"+archiveName, maxArchiveBytes)
+	archive, err := download(ctx, client, base+"/"+version+"/"+archiveName, maxArchiveBytes)
 	if err != nil {
 		return result, recordApplyError(options.Check.StatePath, "archive_download_failed", err)
 	}
@@ -149,8 +156,8 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	if err := command.Run(); err != nil {
 		return result, recordApplyError(options.Check.StatePath, "install_failed", installerDiagnostic(err, output.String()))
 	}
-	result.InstalledVersion, result.Updated = notice.LatestVersion, true
-	if err := recordInstalled(options.Check.StatePath, notice.LatestVersion); err != nil {
+	result.InstalledVersion, result.Updated = version, true
+	if err := recordInstalled(options.Check.StatePath, version); err != nil {
 		return result, recordApplyError(options.Check.StatePath, "state_record_failed", err)
 	}
 	return result, nil
@@ -168,7 +175,7 @@ func ReconcileInstalledVersion(path, current string) error {
 		return err
 	}
 	if !acquired {
-		return errors.New("update state is busy")
+		return errUpdateCheckBusy
 	}
 	defer release()
 	state, err := readState(path)
@@ -443,9 +450,12 @@ func recordInstalled(path, installed string) error {
 }
 
 func recordApplyError(path, code string, cause error) error {
-	state, err := readState(path)
 	retryable := retryableApplyError(code)
 	stage, exitCode := code, -1
+	if code == "state_lock_failed" {
+		return &ApplyError{Code: code, Stage: stage, ExitCode: exitCode, Retryable: retryable, SafeCause: safeApplyCause(code, cause), Cause: cause}
+	}
+	state, err := readState(path)
 	var install *installerFailure
 	if errors.As(cause, &install) {
 		stage, exitCode = install.stage, install.exitCode
@@ -485,6 +495,8 @@ func safeApplyCause(code string, cause error) string {
 		return "update state could not be read safely"
 	case "state_lock_failed":
 		return "update state lock could not be acquired"
+	case "invalid_release_version":
+		return "release lookup returned a noncanonical version tag"
 	case "state_write_failed":
 		return "update state could not be written"
 	case "executable_unavailable":

@@ -14,6 +14,25 @@ import (
 	"time"
 )
 
+func TestCheckLockContentionFailsForcedLookupButSkipsDailyCheck(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "update-check.json")
+	release, acquired, err := acquireLock(path+".lock", time.Now().UTC())
+	if err != nil || !acquired {
+		t.Fatalf("acquire lock: acquired=%t err=%v", acquired, err)
+	}
+	defer release()
+	options := Options{CurrentVersion: "v0.3.2", StatePath: path, Getenv: func(string) string { return "" }}
+	if notice, err := Check(context.Background(), options); notice != nil || err != nil {
+		t.Fatalf("daily check notice=%#v err=%v", notice, err)
+	}
+	options.Force = true
+	notice, err := Check(context.Background(), options)
+	var failure *checkError
+	if notice != nil || !errors.As(err, &failure) || failure.code != "state_lock_failed" {
+		t.Fatalf("forced check notice=%#v err=%#v", notice, err)
+	}
+}
+
 func TestCheckNotifiesOncePerUTCDay(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

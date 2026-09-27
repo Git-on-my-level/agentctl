@@ -70,6 +70,8 @@ type checkError struct {
 	cause error
 }
 
+var errUpdateCheckBusy = errors.New("update check is already in progress")
+
 func (e *checkError) Error() string { return e.cause.Error() }
 func (e *checkError) Unwrap() error { return e.cause }
 
@@ -109,11 +111,14 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 	}
 
 	release, acquired, err := acquireLock(options.StatePath+".lock", now)
-	if err != nil || !acquired {
-		if err == nil {
-			err = errors.New("update state is busy")
-		}
+	if err != nil {
 		return nil, classifyCheckError("state_lock_failed", err)
+	}
+	if !acquired {
+		if options.Force {
+			return nil, classifyCheckError("state_lock_failed", errUpdateCheckBusy)
+		}
+		return nil, nil
 	}
 	defer release()
 
@@ -211,10 +216,11 @@ func fetchLatest(ctx context.Context, options Options) (string, error) {
 	if err := decoder.Decode(&document); err != nil {
 		return "", err
 	}
-	if _, valid := parseVersion(document.TagName); !valid {
+	version, valid := canonicalReleaseVersion(document.TagName)
+	if !valid {
 		return "", errors.New("release check returned an invalid version")
 	}
-	return document.TagName, nil
+	return version, nil
 }
 
 type releaseHTTPError struct{ status int }
@@ -263,10 +269,11 @@ func fetchLatestFromReleasePage(ctx context.Context, client *http.Client, page s
 		return "", errors.New("release redirect did not resolve to a version tag")
 	}
 	tag := strings.TrimPrefix(final.Path, tagPrefix)
-	if _, valid := parseVersion(tag); !valid || strings.Contains(tag, "/") {
+	version, valid := canonicalReleaseVersion(tag)
+	if !valid {
 		return "", errors.New("release redirect did not resolve to a version tag")
 	}
-	return tag, nil
+	return version, nil
 }
 
 func updateCheckDisabled(getenv func(string) string) bool {
@@ -415,6 +422,17 @@ func parseVersion(value string) (semanticVersion, bool) {
 		parsed[index] = number
 	}
 	return parsed, true
+}
+
+// Only canonical shipped tags may be used to construct release URLs or paths.
+// Formatting numeric components also breaks the data flow from remote text.
+func canonicalReleaseVersion(raw string) (string, bool) {
+	version, valid := parseVersion(raw)
+	if !valid {
+		return "", false
+	}
+	canonical := fmt.Sprintf("v%d.%d.%d", version[0], version[1], version[2])
+	return canonical, canonical == raw
 }
 
 func (version semanticVersion) greaterThan(other semanticVersion) bool {
