@@ -1,6 +1,6 @@
 package launchrecipe
 
-func buildCursor(executable, model, speed, effort string, trust bool) (Recipe, error) {
+func buildCursor(executable, model, speed, effort string, trust bool, access string, grant bool) (Recipe, error) {
 	exe, err := resolveExecutable("cursor", executable)
 	if err != nil {
 		return Recipe{}, err
@@ -37,8 +37,14 @@ func buildCursor(executable, model, speed, effort string, trust bool) (Recipe, e
 	}
 	modelArg := applyBracketModel(base, bracket)
 	argv := []string{exe, "--print", "--output-format", "stream-json", "--model", modelArg}
+	if access == AccessReadOnly {
+		argv = append(argv, "--mode", "ask")
+	}
 	if trust {
 		argv = append(argv, "--trust")
+	}
+	if applyCodingPermissions(access, grant) {
+		argv = append(argv, "--force")
 	}
 	return Recipe{Argv: argv, PromptDelivery: PromptDeliveryArgv}, nil
 }

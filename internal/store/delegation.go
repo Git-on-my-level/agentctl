@@ -45,7 +45,7 @@ func decodeExecution(tx *bbolt.Tx, raw []byte, execution *model.Execution) error
 	if err := record.Delegation.Validate(); err != nil {
 		return fmt.Errorf("%w: invalid delegation metadata", ErrCorrupt)
 	}
-	if execution.Delegation != nil && !reflect.DeepEqual(execution.Delegation, record.Delegation) {
+	if execution.Delegation != nil && !projectionAgreesWithSnapshot(execution.Delegation, record.Delegation) {
 		return fmt.Errorf("%w: conflicting delegation bindings", ErrCorrupt)
 	}
 	record.Delegation.NativePlan = record.NativePlan
@@ -54,4 +54,15 @@ func decodeExecution(tx *bbolt.Tx, raw []byte, execution *model.Execution) error
 	}
 	execution.Delegation = record.Delegation
 	return nil
+}
+
+// Older supervisors rewrite execution projections without fields added after
+// they shipped. Recover those from the immutable snapshot unless the
+// projection contradicts it.
+func projectionAgreesWithSnapshot(projection, snapshot *model.DelegationBinding) bool {
+	comparable := *snapshot
+	if projection.Resolved.Settings.Access == "" {
+		comparable.Resolved.Settings.Access = ""
+	}
+	return reflect.DeepEqual(projection, &comparable)
 }

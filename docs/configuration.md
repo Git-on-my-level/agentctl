@@ -103,8 +103,10 @@ Structured `delegate` also accepts optional `family`, `version`, `effort`, and
 `default` metadata on preferred entries. `speed` may be omitted when a harness
 has no service-speed control. Explicit requested settings must match a reviewed
 entry and a supported native recipe. `delegation.cursor_workspace_trust` is a
-separate boolean grant for Cursor workspace trust; it does not grant force/yolo,
-sandbox changes, or MCP approval. See [structured delegation](structured-delegation.md)
+separate boolean grant for Cursor workspace trust. `delegation.unattended_coding_permissions`
+is a separate boolean grant that lets `delegate` add Cursor `--force` and Codex
+`--dangerously-bypass-approvals-and-sandbox` on coding launches. Neither grant
+is implied by a model alias, and neither rewrites expert `run` argv. See [structured delegation](structured-delegation.md)
 for the request schema, deterministic defaults, and replay contract. Upgrade the
 binary before applying config fields an older version does not recognize.
 
