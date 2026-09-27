@@ -72,10 +72,10 @@ operator-private and omitted or redacted in normal output. Alias IDs and source
 fingerprints follow [Identifiers](identifiers.md).
 
 `labels` are optional exact operator metadata used for host-local discovery.
-An execution accepts at most 16 unique lowercase names matching
-`^[a-z][a-z0-9_.-]{0,63}$`. Labels are visible metadata; callers must not put
-secrets or prompt/result content in them. They never authorize dispatch or
-mutation.
+An execution accepts at most 16 unique lowercase tokens, each at most 128
+characters and matching `^[a-z][a-z0-9_.-]{0,127}$`. Labels are visible
+metadata; callers must not put secrets or prompt/result content in them. They
+never authorize dispatch or mutation.
 
 `deadline_at` is the optional absolute UTC deadline negotiated for the native
 execution. It is distinct from an observer's wait budget. Generated continuation
@@ -180,7 +180,7 @@ variables, sourced from the execution record after it is committed:
 | `AGENTCTL_LABELS` | Labels joined with commas, preserving record order |
 | `AGENTCTL_AUTHORITY` | `native` |
 
-Labels match `^[a-z][a-z0-9_.-]{0,63}$`, so commas cannot occur in a label
+Labels match `^[a-z][a-z0-9_.-]{0,127}$`, so commas cannot occur in a label
 and the joined value is unambiguous. These variables carry no credentials.
 Existing context handles keep their meanings: `AGENTCTL_CONTEXT_PATH` is a
 local path and `AGENTCTL_CONTEXT` is an artifact reference.
@@ -262,11 +262,11 @@ nesting level fail before launch, the file must be a regular non-symlink no
 larger than 64 KiB, and stdin remains available for explicit prompt delivery.
 `objective_summary` is at most 2048 bytes;
 `side_effect_boundary` and up to 16 unique `expected_artifact_kinds` use the
-same bounded lowercase-name vocabulary as labels. The summary must be bounded
-and redacted; prompts, reasoning, transcripts, and native session databases are
-excluded. Status and result retain this metadata, but execution terminal state
-always renders acceptance as externally required rather than claiming that an
-artifact or acceptance authority was verified.
+bounded lowercase-name vocabulary, with names at most 64 characters. The
+summary must be bounded and redacted; prompts, reasoning, transcripts, and
+native session databases are excluded. Status and result retain this metadata,
+but execution terminal state always renders acceptance as externally required
+rather than claiming that an artifact or acceptance authority was verified.
 
 The strict launch-file contract is published as
 `schemas/task-contract-input.schema.json`. It does not retroactively tighten

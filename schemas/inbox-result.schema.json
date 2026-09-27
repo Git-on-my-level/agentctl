@@ -35,7 +35,8 @@
         "id": {"$ref": "#/$defs/execution_id"},
         "labels": {
           "type": "array",
-          "items": {"type": "string"}
+          "maxItems": 16,
+          "items": {"type": "string", "maxLength": 128, "pattern": "^[a-z][a-z0-9_.-]{0,127}$"}
         },
         "authority": {"enum": ["native", "multica"]},
         "adapter": {"type": "string", "minLength": 1},

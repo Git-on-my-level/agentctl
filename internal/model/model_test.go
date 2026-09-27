@@ -1,6 +1,7 @@
 package model
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +55,18 @@ func TestExecutionLabelsAreBoundedUniqueMetadata(t *testing.T) {
 	next.Labels = []string{"changed"}
 	if err := ValidateTransition(previous, next); err == nil {
 		t.Fatal("label mutation accepted")
+	}
+}
+
+func TestExecutionLabelLengthBoundary(t *testing.T) {
+	value := fixtureExecution(t)
+	value.Labels = []string{"a" + strings.Repeat("b", 127)}
+	if err := value.Validate(); err != nil {
+		t.Fatalf("128-character label rejected: %v", err)
+	}
+	value.Labels = []string{"a" + strings.Repeat("b", 128)}
+	if err := value.Validate(); err == nil {
+		t.Fatal("129-character label accepted")
 	}
 }
 

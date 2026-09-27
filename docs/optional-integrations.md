@@ -93,8 +93,9 @@ unavailable for snapshot-only executions.
 
 Agent Nexus (ANX) can mirror agentctl executions for display. Add an ANX card
 reference as an execution label using the agentctl-safe form
-`anx.card.<ref>` (for example, `--label anx.card.card-123`); labels are
-lowercase tokens and cannot contain the colons in the conceptual
+`anx.card.<card-slug>` (for example, `--label anx.card.card-123`). The full
+label is a lowercase token of at most 128 characters, leaving up to 119
+characters for the slug. Labels cannot contain the colons in the conceptual
 `anx:card:<ref>` notation. Configure a subscription filtered to those labels
 with a `command` destination that runs `anx runs ingest`. The destination
 receives the callback envelope on stdin according to the existing command

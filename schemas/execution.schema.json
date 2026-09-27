@@ -105,7 +105,7 @@
       "type": "array",
       "maxItems": 16,
       "uniqueItems": true,
-      "items": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,63}$"}
+      "items": {"type": "string", "maxLength": 128, "pattern": "^[a-z][a-z0-9_.-]{0,127}$"}
     },
     "cwd": {"type": ["string", "null"]},
     "repository": {"type": ["string", "null"]},

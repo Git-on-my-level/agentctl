@@ -208,7 +208,7 @@ func validateLabels(labels []string) error {
 	seen := map[string]bool{}
 	for _, label := range labels {
 		if !validLabel(label) || seen[label] {
-			return errors.New("labels must be unique and match ^[a-z][a-z0-9_.-]{0,63}$")
+			return errors.New("labels must be unique and match ^[a-z][a-z0-9_.-]{0,127}$")
 		}
 		seen[label] = true
 	}
@@ -216,7 +216,7 @@ func validateLabels(labels []string) error {
 }
 
 func validLabel(label string) bool {
-	if len(label) == 0 || len(label) > 64 || label[0] < 'a' || label[0] > 'z' {
+	if len(label) == 0 || len(label) > 128 || label[0] < 'a' || label[0] > 'z' {
 		return false
 	}
 	for _, c := range label[1:] {

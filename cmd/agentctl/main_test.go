@@ -405,6 +405,14 @@ func TestRunParsesLabelsAndRejectsBackground(t *testing.T) {
 	if !reflect.DeepEqual(opts.labels, []string{"review", "model.grok"}) {
 		t.Fatalf("opts=%#v", opts)
 	}
+	longLabel := "a" + strings.Repeat("b", 127)
+	if opts, problem := parseRun([]string{"--label", longLabel, "--", "/bin/echo"}); problem != nil || !reflect.DeepEqual(opts.labels, []string{longLabel}) {
+		t.Fatalf("128-character label rejected: opts=%#v problem=%#v", opts, problem)
+	}
+	tooLongLabel := "a" + strings.Repeat("b", 128)
+	if _, problem := parseRun([]string{"--label", tooLongLabel, "--", "/bin/echo"}); problem == nil || problem.Code != output.CodeUsage {
+		t.Fatalf("129-character label accepted: problem=%#v", problem)
+	}
 	for _, args := range [][]string{
 		{"--label", "Not-Lowercase", "--", "/bin/echo"},
 		{"--label", "review", "--label", "review", "--", "/bin/echo"},

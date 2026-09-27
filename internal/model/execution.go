@@ -278,6 +278,7 @@ type Execution struct {
 var (
 	adapterPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,31}$`)
 	namePattern    = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
+	labelPattern   = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,127}$`)
 	hashPattern    = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 	gitOIDPattern  = regexp.MustCompile(`^(?:[a-f0-9]{40}|[a-f0-9]{64})$`)
 )
@@ -341,7 +342,7 @@ func (e Execution) Validate() error {
 	}
 	seenLabels := map[string]struct{}{}
 	for _, label := range e.Labels {
-		if !namePattern.MatchString(label) {
+		if !labelPattern.MatchString(label) {
 			return errors.New("invalid label")
 		}
 		if _, exists := seenLabels[label]; exists {
