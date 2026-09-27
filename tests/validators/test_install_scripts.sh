@@ -66,11 +66,24 @@ manifest="$PREFIX/share/agentctl/install-manifest"
 [ -e "$FAKE_RUN" ] || fail 'default install did not run installed bootstrap update'
 grep -q '^bootstrap update --dry-run$' "$FAKE_LOG" || fail 'default install used the wrong bootstrap preflight argv'
 grep -q '^bootstrap update$' "$FAKE_LOG" || fail 'default install did not use the installed binary for bootstrap update'
+grep -q '^_update-installed$' "$FAKE_LOG" || fail 'successful install did not reconcile version state'
 first_hash=$(shasum -a 256 "$target" | cut -d ' ' -f 1)
 rm -f "$FAKE_DRY" "$FAKE_RUN" "$FAKE_LOG"
 "$INSTALL" --binary "$SOURCE" --prefix "$PREFIX" --binary-only >/dev/null
-[ ! -e "$FAKE_DRY" ] && [ ! -e "$FAKE_RUN" ] && [ ! -e "$FAKE_LOG" ] || fail '--binary-only unexpectedly reconciled bootstrap skills'
+[ ! -e "$FAKE_DRY" ] && [ ! -e "$FAKE_RUN" ] && [ ! -e "$FAKE_LOG" ] || fail '--binary-only unexpectedly ran the installed binary'
 [ "$(shasum -a 256 "$target" | cut -d ' ' -f 1)" = "$first_hash" ] || fail 'idempotent install changed binary'
+
+state_failure_source="$TMP/state-failure-agentctl"
+cat >"$state_failure_source" <<'SH'
+#!/bin/sh
+if [ "${1:-}" = _update-installed ]; then exit 41; fi
+exit 0
+SH
+chmod 0755 "$state_failure_source"
+state_failure_prefix="$TMP/state-failure-prefix"
+"$INSTALL" --binary "$state_failure_source" --prefix "$state_failure_prefix" >"$TMP/state-failure.out" 2>"$TMP/state-failure.err"
+[ -x "$state_failure_prefix/bin/agentctl" ] || fail 'state reconciliation failure rolled back a committed binary'
+grep -qx 'AGENTCTL_INSTALL_STATE=stale' "$TMP/state-failure.err" || fail 'state reconciliation failure was not reported'
 
 dry_prefix="$TMP/dry-prefix"
 rm -f "$FAKE_DRY" "$FAKE_RUN" "$FAKE_LOG"

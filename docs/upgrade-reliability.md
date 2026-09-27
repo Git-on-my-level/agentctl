@@ -32,6 +32,17 @@ and pointers may remain, and are never described as rolled back. An incomplete
 rollback prints a local recovery-backup path; updater state never stores raw
 installer output. Abrupt power loss or SIGKILL may require manual recovery.
 
+After a default install commits the binary and manifest, `scripts/install.sh`
+asks the installed binary to reconcile `installed_version`. `--binary-only`
+does not execute the binary. A failure in default-install bookkeeping leaves the committed
+installation intact and emits `AGENTCTL_INSTALL_STATE=stale`; `update now` retries
+that reconciliation before a forced release lookup. It remains a clean no-op
+when the running version is current. Release lookup falls back from API HTTP 403
+or 429 to the public latest-release redirect, accepting only a same-origin tag
+for this repository. Archive installation still requires the published checksum.
+Update errors expose stable `update_error_code` and allowlisted `safe_cause`
+details; raw HTTP and installer output remain out of the response and cache.
+
 This automatic service upgrade contract applies to existing managed launchd
 services. It does not install a new service, change native/Multica task authority,
 or imply automatic systemd reconciliation.

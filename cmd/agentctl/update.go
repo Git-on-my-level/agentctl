@@ -39,6 +39,23 @@ func updateWorkerCommand(executable string, c common) *exec.Cmd {
 	return exec.Command(executable, args...)
 }
 
+// The packaged installer calls this only after committing the executable and
+// its manifest. It is silent because installer stdout has its own contract.
+func (a *app) updateInstalled(args []string) int {
+	if len(args) != 0 {
+		return 2
+	}
+	statePath, _, err := updatecheck.DefaultPaths(a.getenv)
+	if err == nil {
+		err = updatecheck.ReconcileInstalledVersion(statePath, version)
+	}
+	if err != nil {
+		_, _ = fmt.Fprintln(a.stderr, "agentctl: installed version state reconciliation failed")
+		return 1
+	}
+	return 0
+}
+
 func (a *app) updateWorker(parent context.Context, c common) int {
 	statePath, policyPath, err := updatecheck.DefaultPaths(a.getenv)
 	if err != nil {
@@ -57,7 +74,7 @@ func (a *app) updateWorker(parent context.Context, c common) int {
 func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	statePath, policyPath, err := updatecheck.DefaultPaths(a.getenv)
 	if err != nil {
-		return output.Wrap(output.CodeInternal, "resolve update state", false, err)
+		return output.Wrap(output.CodeInternal, "resolve update state", false, err).WithDetail("update_error_code", "state_path_invalid").WithDetail("safe_cause", "update state path could not be resolved")
 	}
 	if len(args) == 0 {
 		return output.NewError(output.CodeUsage, "usage: agentctl update status|now|policy auto|notify|off", false)
@@ -69,7 +86,7 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c com
 		}
 		status, err := updatecheck.ReadStatus(statePath, policyPath, a.getenv)
 		if err != nil {
-			return output.Wrap(output.CodeInternal, "read update status", false, err)
+			return output.Wrap(output.CodeInternal, "read update status", false, err).WithDetail("update_error_code", "status_unavailable").WithDetail("safe_cause", "update status could not be read")
 		}
 		skills := a.skillsUpdateStatus(ctx, c)
 		observed := map[string]any{"version": version, "bookkeeping_matches": status.InstalledVersion == version}
@@ -99,21 +116,40 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c com
 		}
 		result, err := updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv, Force: true}})
 		if err != nil {
-			var applyError *updatecheck.ApplyError
-			if errors.As(err, &applyError) {
-				return output.Wrap(output.CodeConflict, "apply agentctl update", applyError.Retryable, err).WithDetail("update_error_code", applyError.Code).WithDetail("stage", applyError.Stage).WithDetail("upstream_exit_code", applyError.ExitCode).WithActions(output.NextAction{Label: "Inspect update state", Argv: []string{"agentctl", "update", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
-			}
-			return output.Wrap(output.CodeInternal, "apply agentctl update", false, err)
+			return mapUpdateApplyError(err)
 		}
 		skills, skillsErr := a.updateSkillsAutoClean(ctx, c, true)
 		if skillsErr != nil {
-			return mapSkillpackError("apply Skill Hub update", skills, skillsErr)
+			problem := mapSkillpackError("apply Skill Hub update", skills, skillsErr)
+			if problem.Code == output.CodeInternal {
+				problem.WithDetail("update_error_code", "skill_update_failed").WithDetail("safe_cause", "optional skill update failed")
+			}
+			return problem
 		}
 		_ = renderer.Success(output.Success{Result: map[string]any{"binary": result, "skills": skills}, Lines: []output.Line{{Lead: "update.binary", Fields: []output.Field{{Name: "current_version", Value: result.CurrentVersion}, {Name: "installed_version", Value: result.InstalledVersion}, {Name: "updated", Value: result.Updated}}}, {Lead: "update.skills", Fields: []output.Field{{Name: "healthy", Value: skills.Healthy}, {Name: "applied", Value: skills.Applied}, {Name: "conflicts", Value: skills.Conflicts}}}}})
 		return nil
 	default:
 		return output.NewError(output.CodeUsage, "usage: agentctl update status|now|policy auto|notify|off", false)
 	}
+}
+
+func mapUpdateApplyError(err error) *output.Error {
+	var applyError *updatecheck.ApplyError
+	if errors.As(err, &applyError) {
+		code := output.CodeConflict
+		if applyError.Code == "release_check_failed" || applyError.Code == "checksum_download_failed" || applyError.Code == "archive_download_failed" {
+			code = output.CodeDependencyUnavailable
+		}
+		return output.Wrap(code, "apply agentctl update", applyError.Retryable, err).
+			WithDetail("update_error_code", applyError.Code).
+			WithDetail("safe_cause", applyError.SafeCause).
+			WithDetail("stage", applyError.Stage).
+			WithDetail("upstream_exit_code", applyError.ExitCode).
+			WithActions(output.NextAction{Label: "Inspect update state", Argv: []string{"agentctl", "update", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+	}
+	return output.Wrap(output.CodeInternal, "apply agentctl update", false, err).
+		WithDetail("update_error_code", "unexpected_update_failure").
+		WithDetail("safe_cause", "update failed without a classified cause")
 }
 
 func (a *app) skillsUpdateStatus(ctx context.Context, c common) map[string]any {

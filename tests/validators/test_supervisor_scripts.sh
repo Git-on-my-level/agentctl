@@ -38,6 +38,7 @@ cat >"$AGENTCTL" <<'SH'
 set -eu
 printf '%s\n' "$*" >>"$AGENTCTL_ARGS_LOG"
 if [ "${1:-}" = bootstrap ]; then exit 0; fi
+if [ "${1:-}" = _update-installed ]; then exit 0; fi
 state=
 exe=
 prev=

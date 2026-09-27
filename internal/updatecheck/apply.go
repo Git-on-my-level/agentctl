@@ -44,6 +44,7 @@ type ApplyError struct {
 	Stage     string
 	ExitCode  int
 	Retryable bool
+	SafeCause string
 	Cause     error
 }
 
@@ -54,10 +55,44 @@ func (e *ApplyError) Unwrap() error { return e.Cause }
 // owned by the packaged agentctl installer.
 func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	result := ApplyResult{CurrentVersion: options.Check.CurrentVersion}
+	if _, valid := parseVersion(options.Check.CurrentVersion); valid && options.Check.StatePath != "" {
+		executable := options.Executable
+		if executable == "" {
+			executable, _ = os.Executable()
+		}
+		if executable != "" {
+			if _, ownershipErr := managedPrefix(executable); ownershipErr == nil {
+				if err := ReconcileInstalledVersion(options.Check.StatePath, options.Check.CurrentVersion); err != nil {
+					if errors.Is(err, errUpdateCheckBusy) {
+						return result, recordApplyError(options.Check.StatePath, "state_lock_failed", err)
+					}
+					return result, recordApplyError(options.Check.StatePath, "state_reconcile_failed", err)
+				}
+				result.InstalledVersion = options.Check.CurrentVersion
+			}
+		}
+	}
 	options.Check.DiscoveryOnly = true
 	notice, err := Check(ctx, options.Check)
-	if err != nil || notice == nil {
-		return result, err
+	if err != nil {
+		code := "release_check_failed"
+		var checkFailure *checkError
+		if errors.As(err, &checkFailure) {
+			code = checkFailure.code
+		}
+		return result, recordApplyError(options.Check.StatePath, code, err)
+	}
+	if notice == nil {
+		if result.InstalledVersion != "" && !updateCheckDisabled(options.Check.Getenv) {
+			if err := clearCurrentUpdateFailure(options.Check.StatePath, options.Check.CurrentVersion, options.Check.Now); err != nil {
+				return result, recordApplyError(options.Check.StatePath, "state_record_failed", err)
+			}
+		}
+		return result, nil
+	}
+	version, valid := canonicalReleaseVersion(notice.LatestVersion)
+	if !valid {
+		return result, recordApplyError(options.Check.StatePath, "invalid_release_version", errors.New("release check returned a noncanonical version"))
 	}
 	executable := options.Executable
 	if executable == "" {
@@ -79,8 +114,8 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	if base == "" {
 		base = defaultReleaseBase
 	}
-	archiveName := fmt.Sprintf("agentctl_%s_%s_%s.tar.gz", notice.LatestVersion, runtime.GOOS, runtime.GOARCH)
-	checksums, err := download(ctx, client, base+"/"+notice.LatestVersion+"/SHA256SUMS", maxChecksumBytes)
+	archiveName := fmt.Sprintf("agentctl_%s_%s_%s.tar.gz", version, runtime.GOOS, runtime.GOARCH)
+	checksums, err := download(ctx, client, base+"/"+version+"/SHA256SUMS", maxChecksumBytes)
 	if err != nil {
 		return result, recordApplyError(options.Check.StatePath, "checksum_download_failed", err)
 	}
@@ -88,7 +123,7 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	if err != nil {
 		return result, recordApplyError(options.Check.StatePath, "checksum_missing", err)
 	}
-	archive, err := download(ctx, client, base+"/"+notice.LatestVersion+"/"+archiveName, maxArchiveBytes)
+	archive, err := download(ctx, client, base+"/"+version+"/"+archiveName, maxArchiveBytes)
 	if err != nil {
 		return result, recordApplyError(options.Check.StatePath, "archive_download_failed", err)
 	}
@@ -121,11 +156,79 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	if err := command.Run(); err != nil {
 		return result, recordApplyError(options.Check.StatePath, "install_failed", installerDiagnostic(err, output.String()))
 	}
-	if err := recordInstalled(options.Check.StatePath, notice.LatestVersion); err != nil {
-		return result, err
+	result.InstalledVersion, result.Updated = version, true
+	if err := recordInstalled(options.Check.StatePath, version); err != nil {
+		return result, recordApplyError(options.Check.StatePath, "state_record_failed", err)
 	}
-	result.InstalledVersion, result.Updated = notice.LatestVersion, true
 	return result, nil
+}
+
+// ReconcileInstalledVersion records the running binary after a manual install
+// or before an explicit release check. Clearing installed_at avoids attributing
+// the previous binary's install time to this one.
+func ReconcileInstalledVersion(path, current string) error {
+	if _, valid := parseVersion(current); !valid {
+		return nil
+	}
+	release, acquired, err := acquireLock(path+".lock", time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return errUpdateCheckBusy
+	}
+	defer release()
+	state, err := readState(path)
+	if errors.Is(err, os.ErrNotExist) {
+		state = cacheState{SchemaVersion: stateSchema}
+	} else if err != nil {
+		return err
+	}
+	if state.InstalledVersion == current {
+		return nil
+	}
+	state.InstalledVersion = current
+	state.InstalledAt = time.Time{}
+	clearUpdateFailure(&state)
+	return writeState(path, state)
+}
+
+func clearCurrentUpdateFailure(path, current string, clock func() time.Time) error {
+	if _, valid := parseVersion(current); path == "" || !valid {
+		return nil
+	}
+	now := time.Now().UTC()
+	if clock != nil {
+		now = clock().UTC()
+	}
+	release, acquired, err := acquireLock(path+".lock", now)
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return nil // another updater owns the optional error cleanup
+	}
+	defer release()
+	state, err := readState(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	latest, latestValid := parseVersion(state.LatestVersion)
+	observed, currentValid := parseVersion(current)
+	if state.LastErrorCode == "" || !latestValid || !currentValid || state.CheckedOn != now.Format("2006-01-02") || latest.greaterThan(observed) {
+		return nil
+	}
+	clearUpdateFailure(&state)
+	return writeState(path, state)
+}
+
+func clearUpdateFailure(state *cacheState) {
+	state.LastErrorCode, state.LastErrorAt = "", time.Time{}
+	state.LastErrorStage, state.LastErrorExitCode = "", 0
+	state.LastErrorRollback = ""
 }
 
 func download(ctx context.Context, client *http.Client, url string, limit int64) ([]byte, error) {
@@ -342,16 +445,17 @@ func recordInstalled(path, installed string) error {
 	}
 	state.InstalledVersion = installed
 	state.InstalledAt = time.Now().UTC()
-	state.LastErrorCode, state.LastErrorAt = "", time.Time{}
-	state.LastErrorStage, state.LastErrorExitCode = "", 0
-	state.LastErrorRollback = ""
+	clearUpdateFailure(&state)
 	return writeState(path, state)
 }
 
 func recordApplyError(path, code string, cause error) error {
-	state, err := readState(path)
 	retryable := retryableApplyError(code)
 	stage, exitCode := code, -1
+	if code == "state_lock_failed" {
+		return &ApplyError{Code: code, Stage: stage, ExitCode: exitCode, Retryable: retryable, SafeCause: safeApplyCause(code, cause), Cause: cause}
+	}
+	state, err := readState(path)
 	var install *installerFailure
 	if errors.As(cause, &install) {
 		stage, exitCode = install.stage, install.exitCode
@@ -370,12 +474,57 @@ func recordApplyError(path, code string, cause error) error {
 		}
 		err = writeState(path, state)
 	}
-	return &ApplyError{Code: code, Stage: stage, ExitCode: exitCode, Retryable: retryable, Cause: errors.Join(cause, err)}
+	return &ApplyError{Code: code, Stage: stage, ExitCode: exitCode, Retryable: retryable, SafeCause: safeApplyCause(code, cause), Cause: errors.Join(cause, err)}
+}
+
+func safeApplyCause(code string, cause error) string {
+	switch code {
+	case "release_check_failed":
+		var httpError *releaseHTTPError
+		if errors.As(cause, &httpError) {
+			return fmt.Sprintf("release lookup returned HTTP %d", httpError.status)
+		}
+		return "release lookup failed"
+	case "state_reconcile_failed":
+		return "installed version could not be reconciled"
+	case "state_record_failed":
+		return "installed version could not be recorded"
+	case "state_access_failed":
+		return "update state directory is not safely accessible"
+	case "state_read_failed":
+		return "update state could not be read safely"
+	case "state_lock_failed":
+		return "update state lock could not be acquired"
+	case "invalid_release_version":
+		return "release lookup returned a noncanonical version tag"
+	case "state_write_failed":
+		return "update state could not be written"
+	case "executable_unavailable":
+		return "current executable is unavailable"
+	case "unmanaged_install":
+		return "current executable is not a verified managed install"
+	case "checksum_download_failed":
+		return "release checksums could not be downloaded"
+	case "checksum_missing":
+		return "release archive checksum is missing or invalid"
+	case "archive_download_failed":
+		return "release archive could not be downloaded"
+	case "checksum_mismatch":
+		return "release archive checksum did not match"
+	case "staging_failed":
+		return "release staging could not be prepared"
+	case "archive_invalid":
+		return "release archive is invalid"
+	case "install_failed":
+		return "packaged installer failed"
+	default:
+		return "update failed"
+	}
 }
 
 func retryableApplyError(code string) bool {
 	switch code {
-	case "checksum_download_failed", "archive_download_failed", "staging_failed", "install_failed":
+	case "release_check_failed", "state_reconcile_failed", "state_record_failed", "state_lock_failed", "state_write_failed", "checksum_download_failed", "archive_download_failed", "staging_failed", "install_failed":
 		return true
 	default:
 		return false

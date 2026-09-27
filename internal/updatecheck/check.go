@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,11 +19,12 @@ import (
 )
 
 const (
-	DefaultEndpoint = "https://api.github.com/repos/Git-on-my-level/agentctl/releases/latest"
-	stateSchema     = 1
-	maxResponseSize = 64 << 10
-	retryInterval   = time.Hour
-	staleLockAge    = 2 * time.Minute
+	DefaultEndpoint       = "https://api.github.com/repos/Git-on-my-level/agentctl/releases/latest"
+	defaultReleasePageURL = "https://github.com/Git-on-my-level/agentctl/releases/latest"
+	stateSchema           = 1
+	maxResponseSize       = 64 << 10
+	retryInterval         = time.Hour
+	staleLockAge          = 2 * time.Minute
 )
 
 type Notice struct {
@@ -35,6 +37,7 @@ type Options struct {
 	CurrentVersion string
 	StatePath      string
 	Endpoint       string
+	ReleasePageURL string
 	Force          bool
 	DiscoveryOnly  bool
 	Now            func() time.Time
@@ -53,13 +56,30 @@ type cacheState struct {
 	ReleaseURL        string    `json:"release_url,omitempty"`
 	NotifiedOn        string    `json:"notified_on,omitempty"`
 	InstalledVersion  string    `json:"installed_version,omitempty"`
-	InstalledAt       time.Time `json:"installed_at,omitempty"`
+	InstalledAt       time.Time `json:"installed_at,omitzero"`
 	LastErrorCode     string    `json:"last_error_code,omitempty"`
 	LastErrorAt       time.Time `json:"last_error_at,omitempty"`
 }
 
 type releaseDocument struct {
 	TagName string `json:"tag_name"`
+}
+
+type checkError struct {
+	code  string
+	cause error
+}
+
+var errUpdateCheckBusy = errors.New("update check is already in progress")
+
+func (e *checkError) Error() string { return e.cause.Error() }
+func (e *checkError) Unwrap() error { return e.cause }
+
+func classifyCheckError(code string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &checkError{code: code, cause: err}
 }
 
 // Check returns at most one notice per UTC day. Operational failures are
@@ -70,7 +90,7 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 		return nil, nil
 	}
 	if err := ensurePrivateRoot(filepath.Dir(options.StatePath)); err != nil {
-		return nil, err
+		return nil, classifyCheckError("state_access_failed", err)
 	}
 	now := time.Now().UTC()
 	if options.Now != nil {
@@ -79,18 +99,26 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 	today := now.Format("2006-01-02")
 	state, stateErr := readState(options.StatePath)
 	if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
-		return nil, stateErr
+		return nil, classifyCheckError("state_read_failed", stateErr)
 	}
 	if state.CheckedOn == today && !options.Force {
-		return cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
+		notice, err := cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
+		return notice, classifyCheckError("state_write_failed", err)
 	}
 	if !options.Force && !state.LastAttemptAt.IsZero() && now.Sub(state.LastAttemptAt) < retryInterval {
-		return cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
+		notice, err := cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
+		return notice, classifyCheckError("state_write_failed", err)
 	}
 
 	release, acquired, err := acquireLock(options.StatePath+".lock", now)
-	if err != nil || !acquired {
-		return nil, err
+	if err != nil {
+		return nil, classifyCheckError("state_lock_failed", err)
+	}
+	if !acquired {
+		if options.Force {
+			return nil, classifyCheckError("state_lock_failed", errUpdateCheckBusy)
+		}
+		return nil, nil
 	}
 	defer release()
 
@@ -98,13 +126,15 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 	// acquired the lock.
 	state, stateErr = readState(options.StatePath)
 	if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
-		return nil, stateErr
+		return nil, classifyCheckError("state_read_failed", stateErr)
 	}
 	if state.CheckedOn == today && !options.Force {
-		return cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
+		notice, err := cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
+		return notice, classifyCheckError("state_write_failed", err)
 	}
 	if !options.Force && !state.LastAttemptAt.IsZero() && now.Sub(state.LastAttemptAt) < retryInterval {
-		return cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
+		notice, err := cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
+		return notice, classifyCheckError("state_write_failed", err)
 	}
 
 	state.SchemaVersion = stateSchema
@@ -113,7 +143,7 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 	if fetchErr != nil {
 		writeErr := writeState(options.StatePath, state)
 		notice, noticeErr := cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
-		return notice, errors.Join(fetchErr, writeErr, noticeErr)
+		return notice, classifyCheckError("release_check_failed", errors.Join(fetchErr, writeErr, noticeErr))
 	}
 	state.CheckedOn = today
 	state.LatestVersion = latest
@@ -121,15 +151,15 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 	if parsedLatest, valid := parseVersion(latest); valid && parsedLatest.greaterThan(current) {
 		if !options.DiscoveryOnly {
 			if state.NotifiedOn == today && !options.Force {
-				return nil, writeState(options.StatePath, state)
+				return nil, classifyCheckError("state_write_failed", writeState(options.StatePath, state))
 			}
 			state.NotifiedOn = today
 		}
 		notice := &Notice{CurrentVersion: options.CurrentVersion, LatestVersion: latest, ReleaseURL: state.ReleaseURL}
-		return notice, writeState(options.StatePath, state)
+		return notice, classifyCheckError("state_write_failed", writeState(options.StatePath, state))
 	}
 	state.NotifiedOn = ""
-	return nil, writeState(options.StatePath, state)
+	return nil, classifyCheckError("state_write_failed", writeState(options.StatePath, state))
 }
 
 func cachedNotice(path string, state cacheState, current semanticVersion, today string, discoveryOnly bool) (*Notice, error) {
@@ -165,17 +195,85 @@ func fetchLatest(ctx context.Context, options Options) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("release check returned HTTP %d", resp.StatusCode)
+		apiErr := &releaseHTTPError{status: resp.StatusCode}
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+			pageURL := options.ReleasePageURL
+			if pageURL == "" && options.Endpoint == "" {
+				pageURL = defaultReleasePageURL
+			}
+			if pageURL != "" {
+				latest, fallbackErr := fetchLatestFromReleasePage(ctx, client, pageURL)
+				if fallbackErr == nil {
+					return latest, nil
+				}
+				return "", errors.Join(apiErr, fallbackErr)
+			}
+		}
+		return "", apiErr
 	}
 	var document releaseDocument
 	decoder := json.NewDecoder(io.LimitReader(resp.Body, maxResponseSize))
 	if err := decoder.Decode(&document); err != nil {
 		return "", err
 	}
-	if _, valid := parseVersion(document.TagName); !valid {
+	version, valid := canonicalReleaseVersion(document.TagName)
+	if !valid {
 		return "", errors.New("release check returned an invalid version")
 	}
-	return document.TagName, nil
+	return version, nil
+}
+
+type releaseHTTPError struct{ status int }
+
+func (e *releaseHTTPError) Error() string {
+	return fmt.Sprintf("release check returned HTTP %d", e.status)
+}
+
+// GitHub's public latest-release redirect is usable when its API quota is
+// exhausted. Accept only a version tag on the same origin and repository path.
+func fetchLatestFromReleasePage(ctx context.Context, client *http.Client, page string) (string, error) {
+	start, err := url.Parse(page)
+	if err != nil || (start.Scheme != "https" && start.Scheme != "http") || start.Host == "" || !strings.HasSuffix(start.Path, "/releases/latest") {
+		return "", errors.New("invalid release page URL")
+	}
+	pageClient := *client
+	if client.Timeout == time.Second {
+		pageClient.Timeout = 5 * time.Second
+	}
+	priorRedirect := pageClient.CheckRedirect
+	pageClient.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if len(via) > 5 || request.URL.Scheme != start.Scheme || request.URL.Host != start.Host {
+			return errors.New("release redirect left its origin")
+		}
+		if priorRedirect != nil {
+			return priorRedirect(request, via)
+		}
+		return nil
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodHead, page, nil)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("User-Agent", "agentctl-updater")
+	response, err := pageClient.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", &releaseHTTPError{status: response.StatusCode}
+	}
+	final := response.Request.URL
+	tagPrefix := strings.TrimSuffix(start.Path, "/latest") + "/tag/"
+	if final.Scheme != start.Scheme || final.Host != start.Host || !strings.HasPrefix(final.Path, tagPrefix) || final.RawQuery != "" {
+		return "", errors.New("release redirect did not resolve to a version tag")
+	}
+	tag := strings.TrimPrefix(final.Path, tagPrefix)
+	version, valid := canonicalReleaseVersion(tag)
+	if !valid {
+		return "", errors.New("release redirect did not resolve to a version tag")
+	}
+	return version, nil
 }
 
 func updateCheckDisabled(getenv func(string) string) bool {
@@ -324,6 +422,17 @@ func parseVersion(value string) (semanticVersion, bool) {
 		parsed[index] = number
 	}
 	return parsed, true
+}
+
+// Only canonical shipped tags may be used to construct release URLs or paths.
+// Formatting numeric components also breaks the data flow from remote text.
+func canonicalReleaseVersion(raw string) (string, bool) {
+	version, valid := parseVersion(raw)
+	if !valid {
+		return "", false
+	}
+	canonical := fmt.Sprintf("v%d.%d.%d", version[0], version[1], version[2])
+	return canonical, canonical == raw
 }
 
 func (version semanticVersion) greaterThan(other semanticVersion) bool {
