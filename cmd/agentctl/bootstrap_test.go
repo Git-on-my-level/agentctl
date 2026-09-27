@@ -657,7 +657,7 @@ func TestBootstrapWritesPointerWhenSkillRootConflicts(t *testing.T) {
 	}
 }
 
-func TestBootstrapInstructionPointerRepairsTruncatedAndDuplicateBlocks(t *testing.T) {
+func TestBootstrapInstructionPointerRepairsTruncatedBlock(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, ".claude", "CLAUDE.md")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -678,17 +678,30 @@ func TestBootstrapInstructionPointerRepairsTruncatedAndDuplicateBlocks(t *testin
 	if err != nil || string(data) != want {
 		t.Fatalf("truncated repair content=%q want=%q (%v)", data, want, err)
 	}
-	duplicate := slimInstructionPointerBlockForTest() + "mid\n" + slimInstructionPointerBlockForTest()
-	if err := os.WriteFile(path, []byte("before\n"+duplicate+"after\n"), 0o600); err != nil {
+}
+
+func TestBootstrapInstructionPointerRefusesDuplicateShippedBlocks(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".claude", "CLAUDE.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	stdout.Reset()
-	if problem := a.bootstrapUpdate(renderer, home, []string{"claude"}, "", false); problem != nil {
-		t.Fatalf("duplicate repair failed: %v\n%s", problem, stdout.String())
+	old := mustReadFile(t, filepath.Join("testdata", "instruction-pointer-v0.10.2.txt"))
+	duplicate := "before\n" + string(old) + "mid\n" + string(old) + "after\n"
+	if err := os.WriteFile(path, []byte(duplicate), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	data, err = os.ReadFile(path)
-	if err != nil || string(data) != "before\n"+slimInstructionPointerBlockForTest()+"mid\n"+"after\n" {
-		t.Fatalf("duplicate repair content=%q (%v)", data, err)
+	var stdout bytes.Buffer
+	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
+	for _, dryRun := range []bool{true, false} {
+		stdout.Reset()
+		problem := a.bootstrapUpdate(output.Renderer{Mode: output.JSON, Writer: &stdout}, home, []string{"claude"}, "", dryRun)
+		if problem == nil || problem.Code != output.CodeConflict {
+			t.Fatalf("duplicate accepted with dryRun=%t: %#v", dryRun, problem)
+		}
+		if data := mustReadFile(t, path); string(data) != duplicate {
+			t.Fatalf("duplicate pointer changed: %q", data)
+		}
 	}
 }
 
@@ -765,6 +778,121 @@ func instructionPointerBodyForTest() string {
 
 func slimInstructionPointerBlockForTest() string {
 	return instructionPointerStart + "\n" + instructionPointerBodyForTest() + instructionPointerEnd + "\n"
+}
+
+func TestBootstrapUpgradesV0102InstructionPointers(t *testing.T) {
+	old, err := os.ReadFile(filepath.Join("testdata", "instruction-pointer-v0.10.2.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	paths := []string{".claude/CLAUDE.md", ".codex/AGENTS.md", ".cursor/AGENTS.md", ".hermes/SOUL.md"}
+	for _, relative := range paths {
+		path := filepath.Join(home, relative)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append([]byte("user prose\n"), old...), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stdout bytes.Buffer
+	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
+	renderer := output.Renderer{Mode: output.JSON, Writer: &stdout}
+	harnesses := []string{"claude", "codex", "cursor", "hermes"}
+	for _, step := range []struct {
+		dryRun bool
+		state  string
+		body   string
+	}{
+		{true, "upgrade", string(old)},
+		{false, "upgrade", slimInstructionPointerBlockForTest()},
+		{true, "noop", slimInstructionPointerBlockForTest()},
+	} {
+		stdout.Reset()
+		if problem := a.bootstrapUpdate(renderer, home, harnesses, "", step.dryRun); problem != nil {
+			t.Fatalf("bootstrap update dryRun=%t failed: %v\n%s", step.dryRun, problem, stdout.String())
+		}
+		var doc struct {
+			Result bootstrapUpdateResult `json:"result"`
+		}
+		if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+			t.Fatal(err)
+		}
+		if len(doc.Result.InstructionPointers) != len(paths) {
+			t.Fatalf("pointer actions: %#v", doc.Result.InstructionPointers)
+		}
+		for _, action := range doc.Result.InstructionPointers {
+			if action.State != step.state {
+				t.Fatalf("pointer action=%#v want %q", action, step.state)
+			}
+		}
+		for _, relative := range paths {
+			data := mustReadFile(t, filepath.Join(home, relative))
+			want := "user prose\n" + step.body
+			if string(data) != want {
+				t.Fatalf("%s contents=%q want %q", relative, data, want)
+			}
+		}
+	}
+}
+
+func TestShippedInstructionPointerRegistry(t *testing.T) {
+	// Keep independent release fixtures: editing the current pointer body must
+	// add a new entry, not replace a previous release's ownership proof.
+	for _, test := range []struct {
+		release string
+		file    string
+	}{
+		{"pre-v0.6", "instruction-pointer-v0.5.0.txt"},
+		{"v0.6.0-v0.10.2", "instruction-pointer-v0.10.2.txt"},
+		{"v0.11.0", "instruction-pointer-v0.11.0.txt"},
+	} {
+		want := string(mustReadFile(t, filepath.Join("testdata", test.file)))
+		found := false
+		for _, shipped := range shippedInstructionPointerRevisions {
+			if shipped.release == test.release {
+				found = true
+				got := instructionPointerStart + "\n" + shipped.body + instructionPointerEnd + "\n"
+				if got != want {
+					t.Fatalf("%s registry differs from released pointer", test.release)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("missing shipped pointer revision %s", test.release)
+		}
+	}
+	if current := shippedInstructionPointerRevisions[len(shippedInstructionPointerRevisions)-1].body; instructionPointerBody() != current {
+		t.Fatal("current pointer must be the latest registered revision")
+	}
+}
+
+func TestBootstrapRejectsModifiedV0102Pointer(t *testing.T) {
+	old := string(mustReadFile(t, filepath.Join("testdata", "instruction-pointer-v0.10.2.txt")))
+	for _, test := range []struct {
+		name  string
+		block string
+	}{
+		{"edited body", strings.Replace(old, "go through", "bypass", 1)},
+		{"injected metadata", strings.Replace(old, instructionPointerEnd, instructionPointerMetadataPrefix+"unbound -->\n"+instructionPointerEnd, 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := inspectInstructionPointerBytes("AGENTS.md", []byte(test.block), slimInstructionPointerBlockForTest())
+			if got.State != "conflict" {
+				t.Fatalf("modified pointer accepted: %#v", got)
+			}
+		})
+	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func TestBootstrapMigratesExactPreV06PointerButPreservesEdits(t *testing.T) {

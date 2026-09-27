@@ -499,8 +499,9 @@ agentctl's embedded portable skill in canonical locations, and reconciles a
 short marked delegation pointer in documented user-global instruction files:
 `~/.hermes/SOUL.md`, `~/.codex/AGENTS.md`, `~/.cursor/AGENTS.md`, and
 `~/.claude/CLAUDE.md`. It appends the pointer to existing unmarked files,
-creates a missing file that contains only the marked block, repairs truncated
-or duplicate agentctl markers, and adopts digest-matching unmarked skill copies.
+creates a missing file that contains only the marked block, repairs a truncated
+agentctl marker, and adopts digest-matching unmarked skill copies. Exact pointers
+from shipped releases are upgraded; duplicate or user-edited blocks conflict.
 It does not rewrite user prose outside the marked block, does not overwrite a
 user-edited pointer body, and does not create `~/.omp/agent/AGENTS.md`. A skill
 root conflict no longer skips independent pointer writes. Opt out with

@@ -63,3 +63,7 @@ its valid revision-bound form) as a managed historical artifact. It replaces
 that body with the current instruction while preserving surrounding text.
 Unknown/customized bodies still conflict. This repairs installations whose
 previously shipped instruction pointer blocked the v0.6 upgrade preflight.
+The pointer revision registry also includes the exact v0.6.0-v0.10.2 and
+v0.11.0 bodies. A pointer change must append a registry entry; release fixtures
+pin the older bytes so `bootstrap update` can upgrade them without accepting
+user edits or duplicate blocks.
