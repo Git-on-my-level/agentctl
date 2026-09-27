@@ -167,6 +167,27 @@ data is absent; terminal events expose only its normalized failure code.
 
 ## Workspace provenance and active owners
 
+### Native child environment
+
+Every native child launched for a persisted execution receives these metadata
+variables, sourced from the execution record after it is committed:
+
+| Variable | Value |
+| --- | --- |
+| `AGENTCTL_EXECUTION_ID` | Typed `exec-*` execution ID |
+| `AGENTCTL_ADAPTER` | Normalized adapter name |
+| `AGENTCTL_HOST_ID` | Journal `origin_host_id` |
+| `AGENTCTL_LABELS` | Labels joined with commas, preserving record order |
+| `AGENTCTL_AUTHORITY` | `native` |
+
+Labels match `^[a-z][a-z0-9_.-]{0,63}$`, so commas cannot occur in a label
+and the joined value is unambiguous. These variables carry no credentials.
+Existing context handles keep their meanings: `AGENTCTL_CONTEXT_PATH` is a
+local path and `AGENTCTL_CONTEXT` is an artifact reference.
+`AGENTCTL_CONTEXT_FINGERPRINT` identifies the selected context instruction;
+it is not an execution ID. Multica-authority dispatch does not launch a local
+child and does not set this native child environment contract.
+
 A direct native launch records `cwd` and, when Git can identify the launch
 directory, an immutable `workspace` snapshot in the host-local execution
 journal. The snapshot contains the repository root, the per-worktree Git
