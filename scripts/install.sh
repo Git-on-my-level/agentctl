@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Install an explicitly supplied agentctl binary into a user-owned prefix.
-# This script never downloads code and never reads or writes agentctl config,
-# journal, credentials, or caches. The default path delegates portable-skill
-# reconciliation to the exact installed binary.
+# This script never downloads code or reads agentctl config, journal, or
+# credentials. After a committed install, the installed binary reconciles its
+# version record. The default path delegates portable-skill reconciliation to
+# the exact installed binary.
 
 set -euo pipefail
 
@@ -273,4 +274,9 @@ if [ "$BINARY_ONLY" -eq 0 ]; then
 fi
 
 committed=1
+if [ "$BINARY_ONLY" -eq 0 ] && ! "$target" _update-installed >/dev/null; then
+  # The binary and manifest are committed. A state-cache problem must not
+  # describe the installation as rolled back; update now can reconcile it.
+  printf 'AGENTCTL_INSTALL_STATE=stale\n' >&2
+fi
 printf 'installed %s\n' "$target"

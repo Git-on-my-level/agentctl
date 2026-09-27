@@ -118,6 +118,15 @@ explicit config selection, malformed config, or unsafe config permissions still
 fail visibly. Explicit `--config` selections are preserved by update status,
 manual updates, and the detached maintenance worker.
 
+`update now` bypasses the daily release-check cache. If GitHub's release API
+returns HTTP 403 or 429, the updater checks GitHub's public latest-release
+redirect and accepts only a version tag on the same repository and origin.
+The default packaged installer records the installed version after a successful
+manual install; a later `update now` also reconciles stale version bookkeeping before
+checking for a release. When the binary is current, it returns `updated=false`
+with the current installed version. Release-check failures expose an allowlisted
+`update_error_code` and `safe_cause` without raw network or installer output.
+
 ## Build from source
 
 Requirements: a supported platform, the Go version declared in `go.mod` or

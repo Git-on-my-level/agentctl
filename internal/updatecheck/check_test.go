@@ -44,6 +44,51 @@ func TestCheckNotifiesOncePerUTCDay(t *testing.T) {
 	}
 }
 
+func TestForceCheckFallsBackFromRateLimitedAPIToReleaseRedirect(t *testing.T) {
+	var apiRequests, pageRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/latest":
+			apiRequests.Add(1)
+			http.Error(w, "rate limit exceeded", http.StatusForbidden)
+		case "/releases/latest":
+			pageRequests.Add(1)
+			http.Redirect(w, request, "/releases/tag/v0.11.1", http.StatusFound)
+		case "/releases/tag/v0.11.1":
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	if err := writeState(statePath, cacheState{SchemaVersion: stateSchema, CheckedOn: time.Now().UTC().Format("2006-01-02"), LatestVersion: "v0.10.2"}); err != nil {
+		t.Fatal(err)
+	}
+	notice, err := Check(context.Background(), Options{CurrentVersion: "v0.10.2", StatePath: statePath, Endpoint: server.URL + "/latest", ReleasePageURL: server.URL + "/releases/latest", Client: server.Client(), Getenv: func(string) string { return "" }, Force: true, DiscoveryOnly: true})
+	if err != nil || notice == nil || notice.LatestVersion != "v0.11.1" || apiRequests.Load() != 1 || pageRequests.Load() != 1 {
+		t.Fatalf("notice=%#v err=%v api=%d page=%d", notice, err, apiRequests.Load(), pageRequests.Load())
+	}
+}
+
+func TestReleaseFallbackRejectsUnrelatedOrInvalidRedirect(t *testing.T) {
+	for _, target := range []string{"/different/tag/v0.11.1", "/releases/tag/not-a-version", "https://example.com/Git-on-my-level/agentctl/releases/tag/v0.11.1"} {
+		t.Run(target, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				if request.URL.Path == "/releases/latest" {
+					http.Redirect(w, request, target, http.StatusFound)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+			if _, err := fetchLatestFromReleasePage(context.Background(), server.Client(), server.URL+"/releases/latest"); err == nil {
+				t.Fatal("unsafe release redirect was accepted")
+			}
+		})
+	}
+}
+
 func TestSuppressedAutoDiscoveryDoesNotConsumeNotification(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -30,10 +31,16 @@ func TestApplyUpdatesManagedInstallFromVerifiedArchive(t *testing.T) {
 	archive := releaseArchive(t, strings.TrimSuffix(archiveName, ".tar.gz"), newBinary)
 	digest := sha256.Sum256(archive)
 
+	var releaseChecks atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		switch {
 		case request.URL.Path == "/latest":
-			_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": "v0.3.4"})
+			releaseChecks.Add(1)
+			http.Error(w, "rate limit exceeded", http.StatusForbidden)
+		case request.URL.Path == "/releases/latest":
+			http.Redirect(w, request, "/releases/tag/v0.3.4", http.StatusFound)
+		case request.URL.Path == "/releases/tag/v0.3.4":
+			w.WriteHeader(http.StatusOK)
 		case strings.HasSuffix(request.URL.Path, "/SHA256SUMS"):
 			fmt.Fprintf(w, "%s  %s\n", hex.EncodeToString(digest[:]), archiveName)
 		case strings.HasSuffix(request.URL.Path, "/"+archiveName):
@@ -45,8 +52,11 @@ func TestApplyUpdatesManagedInstallFromVerifiedArchive(t *testing.T) {
 	defer server.Close()
 
 	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	if err := writeState(statePath, cacheState{SchemaVersion: stateSchema, CheckedOn: time.Now().UTC().Format("2006-01-02"), LatestVersion: "v0.3.3", InstalledVersion: "v0.3.3"}); err != nil {
+		t.Fatal(err)
+	}
 	result, err := Apply(context.Background(), ApplyOptions{
-		Check:      Options{CurrentVersion: "v0.3.3", StatePath: statePath, Endpoint: server.URL + "/latest", Client: server.Client(), Getenv: func(string) string { return "" }},
+		Check:      Options{CurrentVersion: "v0.3.3", StatePath: statePath, Endpoint: server.URL + "/latest", ReleasePageURL: server.URL + "/releases/latest", Client: server.Client(), Getenv: func(string) string { return "" }, Force: true},
 		Executable: executable, ReleaseBaseURL: server.URL + "/downloads", Client: server.Client(),
 	})
 	if err != nil {
@@ -55,6 +65,9 @@ func TestApplyUpdatesManagedInstallFromVerifiedArchive(t *testing.T) {
 	if !result.Updated || result.InstalledVersion != "v0.3.4" {
 		t.Fatalf("result=%#v", result)
 	}
+	if releaseChecks.Load() != 1 {
+		t.Fatalf("forced same-day check made %d requests, want 1", releaseChecks.Load())
+	}
 	installed, err := os.ReadFile(executable)
 	if err != nil || !bytes.Equal(installed, newBinary) {
 		t.Fatalf("installed=%q err=%v", installed, err)
@@ -62,6 +75,98 @@ func TestApplyUpdatesManagedInstallFromVerifiedArchive(t *testing.T) {
 	status, err := ReadStatus(statePath, filepath.Join(t.TempDir(), "missing-policy"), func(string) string { return "" })
 	if err != nil || status.InstalledVersion != "v0.3.4" || status.LastErrorCode != "" {
 		t.Fatalf("status=%#v err=%v", status, err)
+	}
+}
+
+func TestApplyNoopReconcilesVersionAfterManualInstall(t *testing.T) {
+	prefix := t.TempDir()
+	executable := filepath.Join(prefix, "bin", "agentctl")
+	writeManagedInstall(t, prefix, executable, []byte("#!/bin/sh\nexit 0\n"))
+	var releaseChecks atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		releaseChecks.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": "v0.11.1"})
+	}))
+	defer server.Close()
+	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	if err := writeState(statePath, cacheState{SchemaVersion: stateSchema, CheckedOn: time.Now().UTC().Format("2006-01-02"), LatestVersion: "v0.10.2", InstalledVersion: "v0.10.2"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Apply(context.Background(), ApplyOptions{Check: Options{CurrentVersion: "v0.11.1", StatePath: statePath, Endpoint: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }, Force: true}, Executable: executable})
+	if err != nil || result.Updated || result.InstalledVersion != "v0.11.1" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	state, err := readState(statePath)
+	if err != nil || state.InstalledVersion != "v0.11.1" || state.LatestVersion != "v0.11.1" || releaseChecks.Load() != 1 {
+		t.Fatalf("state=%#v err=%v releaseChecks=%d", state, err, releaseChecks.Load())
+	}
+}
+
+func TestApplyCurrentUnmanagedBinaryDoesNotClaimInstalledVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": "v0.11.1"})
+	}))
+	defer server.Close()
+	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	if err := writeState(statePath, cacheState{SchemaVersion: stateSchema, InstalledVersion: "v0.10.2"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Apply(context.Background(), ApplyOptions{Check: Options{CurrentVersion: "v0.11.1", StatePath: statePath, Endpoint: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }, Force: true}, Executable: filepath.Join(t.TempDir(), "not-managed")})
+	if err != nil || result.Updated || result.InstalledVersion != "" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	state, err := readState(statePath)
+	if err != nil || state.InstalledVersion != "v0.10.2" {
+		t.Fatalf("unmanaged executable changed installed record: %#v (%v)", state, err)
+	}
+}
+
+func TestApplyCurrentNoopClearsPreviousUpdateFailure(t *testing.T) {
+	prefix := t.TempDir()
+	executable := filepath.Join(prefix, "bin", "agentctl")
+	writeManagedInstall(t, prefix, executable, []byte("#!/bin/sh\nexit 0\n"))
+	for _, latest := range []string{"v0.11.1", "v0.10.2"} {
+		t.Run(latest, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": latest})
+			}))
+			defer server.Close()
+			statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+			if err := writeState(statePath, cacheState{SchemaVersion: stateSchema, InstalledVersion: "v0.11.1", LastErrorCode: "release_check_failed", LastErrorStage: "release_check_failed"}); err != nil {
+				t.Fatal(err)
+			}
+			result, err := Apply(context.Background(), ApplyOptions{Check: Options{CurrentVersion: "v0.11.1", StatePath: statePath, Endpoint: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }, Force: true}, Executable: executable})
+			if err != nil || result.Updated || result.InstalledVersion != "v0.11.1" {
+				t.Fatalf("result=%#v err=%v", result, err)
+			}
+			state, err := readState(statePath)
+			if err != nil || state.LastErrorCode != "" || state.LastErrorStage != "" || state.LatestVersion != latest {
+				t.Fatalf("noop retained stale update failure: %#v (%v)", state, err)
+			}
+		})
+	}
+}
+
+func TestApplyClassifiesRateLimitedReleaseCheckAndReconcilesInstalledVersion(t *testing.T) {
+	prefix := t.TempDir()
+	executable := filepath.Join(prefix, "bin", "agentctl")
+	writeManagedInstall(t, prefix, executable, []byte("#!/bin/sh\nexit 0\n"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		http.Error(w, "token=secret", http.StatusForbidden)
+	}))
+	defer server.Close()
+	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	if err := writeState(statePath, cacheState{SchemaVersion: stateSchema, CheckedOn: time.Now().UTC().Format("2006-01-02"), LatestVersion: "v0.10.2", InstalledVersion: "v0.10.2"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Apply(context.Background(), ApplyOptions{Check: Options{CurrentVersion: "v0.11.1", StatePath: statePath, Endpoint: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }, Force: true}, Executable: executable})
+	var applyError *ApplyError
+	if !errors.As(err, &applyError) || applyError.Code != "release_check_failed" || applyError.SafeCause != "release lookup returned HTTP 403" || !applyError.Retryable {
+		t.Fatalf("error=%#v raw=%v", applyError, err)
+	}
+	state, err := readState(statePath)
+	if err != nil || state.InstalledVersion != "v0.11.1" || state.LastErrorCode != "release_check_failed" {
+		t.Fatalf("state=%#v err=%v", state, err)
 	}
 }
 
