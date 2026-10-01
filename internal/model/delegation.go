@@ -26,6 +26,18 @@ type DelegationNativePlan struct {
 	Argv           []string `json:"argv"`
 	PromptDelivery string   `json:"prompt_delivery"`
 	Permissions    string   `json:"permissions,omitempty"`
+	// RecipeArgv is set on a follow-up turn, whose Argv already resumes a
+	// native session. It keeps the original reviewed recipe so the next turn
+	// is built from that recipe rather than from an argv that resumes.
+	RecipeArgv []string `json:"recipe_argv,omitempty"`
+}
+
+// Recipe returns the prompt-free, session-free argv a follow-up turn starts from.
+func (p DelegationNativePlan) Recipe() []string {
+	if len(p.RecipeArgv) != 0 {
+		return p.RecipeArgv
+	}
+	return p.Argv
 }
 
 type DelegationSettings struct {
@@ -68,10 +80,13 @@ func (b DelegationBinding) Validate() error {
 		}
 	}
 	if b.NativePlan != nil {
-		if len(b.NativePlan.Argv) == 0 || len(b.NativePlan.Argv) > 64 || (b.NativePlan.PromptDelivery != "argv" && b.NativePlan.PromptDelivery != "stdin") {
+		if len(b.NativePlan.Argv) == 0 || len(b.NativePlan.Argv) > 64 || (b.NativePlan.PromptDelivery != "argv" && b.NativePlan.PromptDelivery != "stdin" && b.NativePlan.PromptDelivery != "stream") {
 			return errors.New("invalid delegation native plan")
 		}
-		for _, arg := range b.NativePlan.Argv {
+		if len(b.NativePlan.RecipeArgv) > 64 {
+			return errors.New("invalid delegation native plan")
+		}
+		for _, arg := range append(append([]string(nil), b.NativePlan.Argv...), b.NativePlan.RecipeArgv...) {
 			if len(arg) > 4096 || strings.ContainsAny(arg, "\x00\r\n") {
 				return errors.New("invalid delegation native argument")
 			}

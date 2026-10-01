@@ -415,7 +415,7 @@ escape for callers that intentionally need weaker or broader behavior:
   resolution database unless its normalized evidence is conflicted; integrity
   conflict remains visible until the execution authority is reconciled.
 - `--prompt-file` and `--prompt-stdin` are mutually exclusive, bounded prompt
-  sources. `--prompt-delivery argv|stdin` is explicit and defaults to `argv`
+  sources. `--prompt-delivery argv|stdin|stream` is explicit and defaults to `argv`
   only after a source is selected. Prompt bytes are excluded from plan output,
   the journal, events, and status; only digest, byte count, source, and delivery
   participate in plan and idempotency metadata.

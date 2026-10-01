@@ -108,6 +108,17 @@ preflight describes prospective launch effects; the plan itself writes no state
 and triggers no automatic maintenance. Health probes establish invocation support,
 not provider authentication or observed model identity. Admission rechecks support.
 
+The nested preflight also reports the `steer` capability negotiated for that
+exact argv. Claude Code is launched with streaming input (`prompt_delivery`
+`stream`), so a delegated Claude Code session takes `agentctl steer` without
+being interrupted. Codex is steerable by interrupt and resume. Other harnesses
+report `steer` unavailable with the reason. See [Steering](steering.md).
+
+After a delegated execution completes, `agentctl continue <id>` sends a
+follow-up turn to the same native session using this frozen recipe. The result
+of a completed, resumable delegation carries that as a `next_action`. See
+[Follow-up turns](follow-up-turns.md).
+
 Request keys are scoped to the selected profile in this host-local journal.
 The semantic digest includes the normalized selector, prompt digest, canonical
 working directory, requested authority, timeout, and sorted labels. Wait/content

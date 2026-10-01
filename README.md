@@ -235,6 +235,17 @@ process. `run --background` is rejected: agents treat its journaled exit 0 as
 task completion. Work that must outlive this process belongs on Multica
 `dispatch`, not a detached agentctl worker.
 
+After a delegated execution completes, send review feedback or the next step
+to the same native session with `agentctl continue <execution-id>
+--request-key <key> --prompt-file feedback.md --wait --content`. The agent
+keeps its conversation, and each turn is its own execution with its own
+result. See [Follow-up turns](docs/follow-up-turns.md).
+
+A running native execution can be redirected from another invocation with
+`agentctl steer <execution-id> --prompt-file steer.md`. Whether it can be
+steered, and whether that interrupts the agent, depends on the route the launch
+negotiated; `steer --plan` reports it. See [Steering](docs/steering.md).
+
 ```bash
 agentctl run --label review --label retrieval -- \
   cursor-agent --print --output-format stream-json --trust "review this change"
@@ -602,6 +613,8 @@ vulnerabilities through the process in [Security](SECURITY.md).
 - [Implementation status](docs/implementation-audit.md)
 - [Roadmap](docs/roadmap.md)
 - [Structured delegation](docs/structured-delegation.md)
+- [Follow-up turns](docs/follow-up-turns.md)
+- [Steering](docs/steering.md)
 
 Machine-readable contracts live under [`schemas/`](schemas/).
 

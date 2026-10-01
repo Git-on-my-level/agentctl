@@ -9,6 +9,9 @@ import (
 const (
 	PromptDeliveryArgv  = "argv"
 	PromptDeliveryStdin = "stdin"
+	// PromptDeliveryStream sends the prompt as the first message of the
+	// harness's live input protocol and keeps that stream open for steering.
+	PromptDeliveryStream = "stream"
 
 	AccessCoding   = "coding"
 	AccessReadOnly = "read_only"

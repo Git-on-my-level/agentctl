@@ -27,7 +27,12 @@ import (
 )
 
 type runOptions struct {
-	delegation                               *model.DelegationBinding
+	delegation *model.DelegationBinding
+	supersedes []ids.ExecutionID
+	// admit runs after the execution is journaled and before anything is
+	// launched. A refusal terminalizes the execution without starting a
+	// native process; it closes check-then-launch races between invocations.
+	admit                                    func(model.Execution) *output.Error
 	mutationOverride                         *contracts.MutationKey
 	preparedPrompt                           *promptPayload
 	admissionReused                          *bool
@@ -100,13 +105,19 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			WithDetail("adapter", "multica").
 			WithActions(output.NextAction{Label: "Review promotion into Multica authority", Argv: []string{"agentctl", "help", "promote"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 	}
+	// promptDelivery and promptArgs record how agentctl attached the prompt,
+	// which is what lets a later steering message use the same channel.
+	promptDelivery, promptArgs := "", 0
 	if prompt != nil {
+		promptDelivery = prompt.Delivery
 		if prompt.Delivery == "argv" {
 			if !utf8.Valid(prompt.Bytes) || strings.IndexByte(string(prompt.Bytes), 0) >= 0 {
 				return output.NewError(output.CodeUsage, "argv prompt must be valid UTF-8 without NUL bytes", false)
 			}
+			promptArgs = 1
 			if len(prompt.Bytes) != 0 && prompt.Bytes[0] == '-' && !containsArg(opts.argv, "--") {
 				opts.argv = append(opts.argv, "--")
+				promptArgs = 2
 			}
 			opts.argv = append(opts.argv, string(prompt.Bytes))
 		}
@@ -135,7 +146,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		operationCtx, operationCancel = context.WithTimeout(ctx, opts.timeout)
 		defer operationCancel()
 	}
-	probe, err := runtime.Probe(operationCtx, adapter.ProbeRequest{Executable: opts.argv[0], Argv: opts.argv, Profile: profileName, Timeout: 5 * time.Second, Fresh: true})
+	probe, err := runtime.Probe(operationCtx, adapter.ProbeRequest{Executable: opts.argv[0], Argv: opts.argv, PromptDelivery: promptDelivery, PromptArgs: promptArgs, Profile: profileName, Timeout: 5 * time.Second, Fresh: true})
 	if err != nil {
 		return mapAdapterError("adapter probe failed", err)
 	}
@@ -147,6 +158,20 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			problem.Message = "adapter cannot reliably return result content"
 			problem.NextActions = append(problem.NextActions, output.NextAction{Label: "Inspect adapter viability", Argv: []string{"agentctl", "capabilities", runtime.Name(), "--require", "launch,result_content"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 			return problem.WithDetail("adapter", runtime.Name())
+		}
+	}
+	if promptDelivery == adapter.PromptDeliveryStream {
+		// Stream delivery is the adapter's live input protocol. It is only
+		// meaningful when the exact argv selects that protocol.
+		for _, capability := range probe.Capabilities {
+			if capability.Name == adapter.CapabilitySteer && capability.Status != adapter.CapabilitySupported {
+				problem := output.NewError(output.CodeCapabilityUnavailable, "--prompt-delivery stream requires the adapter's live input argv", false).
+					WithDetail("adapter", runtime.Name()).WithDetail("diagnostic_code", "stream_delivery_unavailable").WithDetail("reason", capability.Reason)
+				if required, ok := capability.Constraints["required_argv"]; ok {
+					problem.WithDetail("required_argv", required)
+				}
+				return problem
+			}
 		}
 	}
 	if opts.plan {
@@ -184,7 +209,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		deadline = deadline.UTC()
 		deadlineAt = &deadline
 	}
-	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Labels: append([]string(nil), opts.labels...), CWD: launchCWD, Repository: repository, Workspace: workspace, Supersedes: []ids.ExecutionID{}, TaskContract: taskContractValue(taskContract), DeadlineAt: deadlineAt, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
+	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Labels: append([]string(nil), opts.labels...), CWD: launchCWD, Repository: repository, Workspace: workspace, Supersedes: append([]ids.ExecutionID{}, opts.supersedes...), TaskContract: taskContractValue(taskContract), DeadlineAt: deadlineAt, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
 	mutation := contracts.MutationKey{}
 	if opts.idempotencyKey != "" {
 		digest, dErr := mutationDigest(runtime.Name(), opts.cwd, opts.argv, opts.labels, opts.noStoreResult, prompt, taskContract)
@@ -220,10 +245,25 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	// a native child: status/subscription commands and the callback supervisor
 	// must be able to observe the execution while it is running.
 	journal.Close()
+	if opts.admit != nil {
+		if refusal := opts.admit(execution); refusal != nil {
+			writeJournal, current, openProblem := a.openExecutionWrite(context.Background(), c, execution.ID)
+			if openProblem != nil {
+				return openProblem
+			}
+			_, finalizeErr := finalizeResult(context.Background(), writeJournal, current, adapter.Result{Success: false, State: adapter.StateCancelled, Error: refusal.Message}, a.now().UTC(), opts.noStoreResult)
+			writeJournal.Close()
+			if finalizeErr != nil {
+				return mapStoreError("record refused admission", finalizeErr)
+			}
+			return refusal.WithDetail("execution_id", execution.ID.String())
+		}
+	}
 	launchCtx := operationCtx
 	launchRequest := adapter.LaunchRequest{Argv: opts.argv, Cwd: opts.cwd, Context: contextInput(c), DiscoveryWindow: 250 * time.Millisecond, StartOnly: true,
 		ExecutionContext: &adapter.ExecutionContext{ExecutionID: execution.ID.String(), Adapter: execution.Adapter, HostID: execution.OriginHostID.String(), Labels: append([]string(nil), execution.Labels...), Authority: string(execution.Authority)}}
-	if prompt != nil && prompt.Delivery == "stdin" {
+	launchRequest.PromptDelivery, launchRequest.PromptArgs = promptDelivery, promptArgs
+	if prompt != nil && (prompt.Delivery == "stdin" || prompt.Delivery == adapter.PromptDeliveryStream) {
 		launchRequest.Stdin = prompt.Bytes
 	}
 	launch, err := runtime.Launch(launchCtx, launchRequest)
@@ -249,6 +289,12 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	defer func() {
 		_ = runtime.Cancel(context.Background(), adapter.CancelRequest{Ref: launch.Session.Ref, Signal: "term", Grace: 5 * time.Second})
 	}()
+	// This process owns the native child, so it is the only place a steering
+	// request from another agentctl invocation can be applied. The inbox opens
+	// before the execution is journaled as running, so a caller that sees a
+	// running execution can already queue a request.
+	inbox := a.openSteerInbox(c, execution)
+	defer inbox.close()
 	writeJournal, current, openProblem := a.openExecutionWriteOwned(c, execution.ID)
 	if openProblem != nil {
 		return openProblem
@@ -268,6 +314,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		a.serviceSteerInbox(launchCtx, c, runtime, launch.Session.Ref, execution, inbox)
 		if !a.now().Before(nextRunnerHeartbeat) {
 			writeJournal, current, openProblem = a.openExecutionWriteOwned(c, execution.ID)
 			if openProblem != nil {
@@ -611,8 +658,8 @@ func parseRun(args []string) (runOptions, *output.Error) {
 	if o.promptFile == "" && !o.promptStdin && o.promptDelivery != "" {
 		return o, output.NewError(output.CodeUsage, "--prompt-delivery requires --prompt-file or --prompt-stdin", false)
 	}
-	if o.promptDelivery != "" && o.promptDelivery != "argv" && o.promptDelivery != "stdin" {
-		return o, output.NewError(output.CodeUsage, "--prompt-delivery must be argv or stdin", false)
+	if o.promptDelivery != "" && o.promptDelivery != "argv" && o.promptDelivery != "stdin" && o.promptDelivery != adapter.PromptDeliveryStream {
+		return o, output.NewError(output.CodeUsage, "--prompt-delivery must be argv, stdin, or stream", false)
 	}
 	if (o.promptFile != "" || o.promptStdin) && o.promptDelivery == "" {
 		o.promptDelivery = "argv"
@@ -1201,6 +1248,42 @@ func mutationDigest(name, cwd string, argv, labels []string, noStoreResult bool,
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
+// nativeSessionBinding is the source binding that holds the native CLI's own
+// session id. The launch binding is keyed by PID because the session id is
+// usually reported after launch returns; a later `continue` needs the real id.
+const nativeSessionBinding = "native_session"
+
+// recordNativeSession retains the native session id as an opaque resume
+// reference. It is operator-private and redacted from normal output.
+func recordNativeSession(execution *model.Execution, ref adapter.SourceRef) {
+	session := strings.TrimSpace(ref.OpaqueID)
+	if session == "" || len(session) > 256 || (ref.PID != 0 && session == strconv.Itoa(ref.PID)) {
+		return
+	}
+	fingerprint := adapter.Fingerprint(execution.Adapter, nativeSessionBinding, session)
+	for i := range execution.SourceBindings {
+		if execution.SourceBindings[i].Kind == nativeSessionBinding {
+			execution.SourceBindings[i].Fingerprint = fingerprint
+			execution.SourceBindings[i].OpaqueID = &session
+			return
+		}
+	}
+	alias, err := ids.New(ids.TypeSource)
+	if err != nil {
+		return
+	}
+	execution.SourceBindings = append(execution.SourceBindings, model.SourceBinding{Kind: nativeSessionBinding, AliasID: alias, Fingerprint: fingerprint, OpaqueID: &session})
+}
+
+func nativeSessionID(execution model.Execution) string {
+	for _, binding := range execution.SourceBindings {
+		if binding.Kind == nativeSessionBinding && binding.OpaqueID != nil {
+			return *binding.OpaqueID
+		}
+	}
+	return ""
+}
+
 func applySession(journal *store.Journal, execution model.Execution, session adapter.Session, now time.Time) (model.Execution, error) {
 	state := toModelState(session.State)
 	liveness := toModelLiveness(session.Liveness)
@@ -1265,6 +1348,7 @@ func finalizeResult(ctx context.Context, journal *store.Journal, execution model
 		sourceState = strings.TrimSpace(sourceState)
 		execution.SourceState = &sourceState
 	}
+	recordNativeSession(&execution, result.SessionRef)
 	outcome := buildOutcome(execution, result, now, noStoreResult)
 	payload := map[string]any{"result_available": outcome.Availability == model.OutcomeStored, "outcome_execution_id": execution.ID.String(), "availability": outcome.Availability}
 	if outcome.Content != nil {
@@ -1511,7 +1595,7 @@ func stringPointer(value string) *string {
 func mapAdapterError(message string, err error) *output.Error {
 	var adapterErr *adapter.AdapterError
 	if errors.As(err, &adapterErr) {
-		codes := map[adapter.ErrorCode]output.Code{adapter.ErrCapabilityUnavailable: output.CodeCapabilityUnavailable, adapter.ErrDependencyUnavailable: output.CodeDependencyUnavailable, adapter.ErrAuthenticationRequired: output.CodeAuthenticationRequired, adapter.ErrNotFound: output.CodeNotFound, adapter.ErrTimeout: output.CodeTimeout, adapter.ErrExecutionFailed: output.CodeExecutionFailed, adapter.ErrExecutionCancelled: output.CodeExecutionCancelled, adapter.ErrExecutionUnknown: output.CodeExecutionUnknown, adapter.ErrUsage: output.CodeUsage, adapter.ErrInternal: output.CodeInternal}
+		codes := map[adapter.ErrorCode]output.Code{adapter.ErrCapabilityUnavailable: output.CodeCapabilityUnavailable, adapter.ErrDependencyUnavailable: output.CodeDependencyUnavailable, adapter.ErrAuthenticationRequired: output.CodeAuthenticationRequired, adapter.ErrNotFound: output.CodeNotFound, adapter.ErrTimeout: output.CodeTimeout, adapter.ErrExecutionFailed: output.CodeExecutionFailed, adapter.ErrExecutionCancelled: output.CodeExecutionCancelled, adapter.ErrExecutionUnknown: output.CodeExecutionUnknown, adapter.ErrUsage: output.CodeUsage, adapter.ErrInvalidState: output.CodeInvalidState, adapter.ErrInternal: output.CodeInternal}
 		code := codes[adapterErr.Code]
 		if code == "" {
 			code = output.CodeInternal

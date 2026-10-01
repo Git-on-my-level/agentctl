@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Git-on-my-level/agentctl/internal/adapter"
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/delegation"
@@ -447,7 +448,7 @@ func (a *app) findDelegation(ctx context.Context, c common, mutation contracts.M
 func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding, native any, reusedID string) *output.Error {
 	result := map[string]any{"plan": true, "requested": binding.Requested, "resolved": binding.Resolved,
 		"provenance":     map[string]any{"configuration_sha256": binding.ConfigurationSHA256, "defaulted": binding.Defaulted},
-		"lifecycle":      map[string]any{"owner": "foreground_process", "restart_durable": false, "background_flag_supported": false, "collection": "--wait --content requires completed work and stored answer", "cross_process_cancel": "only when explicitly advertised by adapter", "durable_authority": "Multica dispatch"},
+		"lifecycle":      map[string]any{"owner": "foreground_process", "restart_durable": false, "background_flag_supported": false, "collection": "--wait --content requires completed work and stored answer", "cross_process_cancel": "only when explicitly advertised by adapter", "steering": "agentctl steer <id>; the route is the steer capability negotiated for this exact invocation", "follow_up": "agentctl continue <id> after completion; available when the resume capability is supported", "durable_authority": "Multica dispatch"},
 		"request_sha256": binding.RequestSHA256, "side_effect_class": output.ReadOnly, "reused": reusedID != ""}
 	if native != nil {
 		result["native"] = native
@@ -534,10 +535,16 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		result := map[string]any{"id": execution.ID, "origin_host_id": execution.OriginHostID, "state": execution.State, "liveness": execution.Liveness,
 			"authority": execution.Authority, "reused": reused, "requested": binding.Requested, "resolved": binding.Resolved,
 			"provenance": map[string]any{"configuration_sha256": binding.ConfigurationSHA256, "defaulted": binding.Defaulted}, "request_sha256": binding.RequestSHA256}
+		if len(execution.Supersedes) != 0 {
+			result["continues"] = execution.Supersedes[0]
+		}
 		if outcome != nil {
 			result["outcome"] = outcome
 		}
 		actions := []output.NextAction{{Label: "Retrieve final answer", Argv: []string{"agentctl", "result", execution.ID.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite}}
+		if item, ok := executionCapability(execution, adapter.CapabilityResume); ok && execution.State == model.StateCompleted && item.Status == model.CapabilitySupported {
+			actions = append(actions, output.NextAction{Label: "Send a follow-up turn to the same native session", Argv: []string{"agentctl", "continue", execution.ID.String(), "--request-key", "<key>", "--prompt-file", "<path>"}, Mutates: true, SideEffectClass: output.ExternalSideEffect, Preconditions: []string{"choose a new request key for this turn"}})
+		}
 		if !execution.State.Terminal() {
 			actions = append([]output.NextAction{{Label: "Wait for execution", Argv: []string{"agentctl", "await", execution.ID.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite}}, actions...)
 		}

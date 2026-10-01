@@ -17,6 +17,9 @@ func buildClaudeCode(executable, model, speed, effort string) (Recipe, error) {
 	if isFastModelVariant(model) {
 		return Recipe{}, fail("speed_model_mismatch", "fast model variants are not supported for claude-code launch recipes")
 	}
-	argv := []string{exe, "--print", "--verbose", "--output-format", "stream-json", "--model", model}
-	return Recipe{Argv: argv, PromptDelivery: PromptDeliveryArgv}, nil
+	// Streaming input keeps native stdin open under agentctl, so a delegated
+	// Claude Code session can take a steering message without being
+	// interrupted. --replay-user-messages is the acknowledgement channel.
+	argv := []string{exe, "--print", "--verbose", "--output-format", "stream-json", "--input-format", "stream-json", "--replay-user-messages", "--model", model}
+	return Recipe{Argv: argv, PromptDelivery: PromptDeliveryStream}, nil
 }

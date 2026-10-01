@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -115,6 +116,11 @@ type processRecord struct {
 	resultPath       string
 	page             *parsedPage
 	wholeStdout      bool
+	// launch is retained without prompt bytes to rebuild a resume invocation.
+	launch       LaunchRequest
+	sessionKnown bool
+	live         *liveSession
+	inputAcks    int
 }
 
 func (p *processRecord) ingest(line []byte, stderr bool) {
@@ -134,8 +140,15 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 	if overLimit {
 		p.addParseWarningLocked(diagnosticStreamLimitExceeded)
 	}
+	live := p.live
 	p.mu.Unlock()
 	obs := p.parser.Parse(line, stderr)
+	if live != nil && !stderr && live.acknowledge(line) {
+		// The native CLI took a user message into the session: sequence 1 is
+		// the launch prompt, later ones are steering messages. Only this
+		// metadata is reported; message text never enters the journal.
+		obs = parsedObservation{Kind: "progress", SourceState: "input_acknowledged", State: StateRunning, Liveness: LivenessAlive, SessionID: obs.SessionID, Data: map[string]any{"phase": "input_acknowledged", "input_sequence": p.nextAcknowledgement()}}
+	}
 	if stderr {
 		p.mu.Lock()
 		diagnostic := safeFailureDiagnostic(string(line))
@@ -159,6 +172,13 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 		return
 	}
 	p.ingestObservation(obs)
+}
+
+func (p *processRecord) nextAcknowledgement() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.inputAcks++
+	return p.inputAcks
 }
 
 func retainObservationAfterLimit(obs parsedObservation) bool {
@@ -200,9 +220,20 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 	if obs.SessionID != "" {
 		p.ref.OpaqueID = obs.SessionID
 		p.binding = p.ref.Binding()
+		p.sessionKnown = true
 	}
 	if obs.BackendVersion != "" {
 		p.ref.Endpoint = obs.BackendVersion
+	}
+	if obs.Terminal && p.live != nil && !p.live.finishTurn() {
+		// A message is still queued in the live input stream, so this record
+		// ends one turn rather than the session. The answer that follows the
+		// queued message supersedes this one.
+		obs.Terminal = false
+		obs.Kind = "progress"
+		obs.SourceState = "turn_completed"
+		obs.State = StateRunning
+		obs.Data = map[string]any{"phase": "turn_completed"}
 	}
 	if obs.SourceState == "devin.print" && !obs.Terminal {
 		p.sawDevinPrint = true
@@ -490,6 +521,14 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 	}
 	capabilities := make([]Capability, 0, len(a.config.Manifest.Capabilities))
 	for _, declaration := range a.config.Manifest.Capabilities {
+		if declaration.Name == CapabilitySteer {
+			capabilities = append(capabilities, NegotiateSteer(a.config.Manifest, req.Argv, req.PromptDelivery, req.PromptArgs))
+			continue
+		}
+		if declaration.Name == CapabilityResume {
+			capabilities = append(capabilities, NegotiateResume(a.config.Manifest, req.Argv, req.PromptDelivery, req.PromptArgs))
+			continue
+		}
 		capabilities = append(capabilities, NegotiateInvocation(a.config.Manifest, req.Argv, declaration.Name))
 	}
 	invocationFingerprint := ""
@@ -638,7 +677,25 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 			"AGENTCTL_AUTHORITY":    context.Authority,
 		})
 	}
-	if req.Stdin != nil {
+	var live *liveSession
+	if req.PromptDelivery == PromptDeliveryStream {
+		route := steerRoutes[a.Name()]
+		var protocol liveProtocol
+		if route.live != nil {
+			protocol, _ = route.live(argv)
+		}
+		if protocol == nil {
+			return LaunchResult{}, capabilityError(CapabilitySteer, "stream prompt delivery requires the adapter's live input argv")
+		}
+		if len(req.Stdin) == 0 {
+			return LaunchResult{}, invalidRequest("stream prompt delivery requires a prompt")
+		}
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return LaunchResult{}, dependencyError("cannot open native stdin", err)
+		}
+		live = &liveSession{protocol: protocol, stdin: stdin}
+	} else if req.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(req.Stdin)
 	}
 	if req.Context != nil {
@@ -674,14 +731,48 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	}
 	started = true
 	ref := SourceRef{Adapter: a.Name(), Kind: a.config.LaunchKind, OpaqueID: strconv.Itoa(cmd.Process.Pid), PID: cmd.Process.Pid}
-	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: time.Now().UTC(), updatedAt: time.Now().UTC(), done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, wholeStdout: a.config.WholeStdout}
+	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: time.Now().UTC(), updatedAt: time.Now().UTC(), done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, wholeStdout: a.config.WholeStdout, live: live}
+	record.launch = req
+	record.launch.Stdin = nil
+	record.launch.Argv = argv
+	record.launch.replaces = nil
+	if previous := req.replaces; previous != nil {
+		// The resumed process continues the same observation stream, so the
+		// owner's event cursor stays valid.
+		previous.mu.Lock()
+		record.events = append([]Event(nil), previous.events...)
+		record.inputAcks = previous.inputAcks
+		previous.mu.Unlock()
+	}
 	a.mu.Lock()
 	a.byPID[cmd.Process.Pid] = record
 	a.byKey[record.binding.Fingerprint] = record
+	if previous := req.replaces; previous != nil {
+		// Every reference that resolved to the interrupted process, by
+		// fingerprint or by PID, now resolves to its continuation.
+		for key, existing := range a.byKey {
+			if existing == previous {
+				a.byKey[key] = record
+			}
+		}
+		for pid, existing := range a.byPID {
+			if existing == previous {
+				a.byPID[pid] = record
+			}
+		}
+	}
 	a.mu.Unlock()
 	record.pipes.Add(2)
 	go a.readPipe(record, stdout, false)
 	go a.readPipe(record, stderr, true)
+	if live != nil {
+		// Readers are already draining stdout, so a large prompt cannot wedge
+		// against a child that is writing while it reads.
+		if err := live.send(req.Stdin); err != nil {
+			a.cancelRecord(record, "kill", 0)
+			return LaunchResult{}, err
+		}
+	}
 	go func() {
 		// StdoutPipe/StderrPipe require all reads to complete before Wait. Calling
 		// Wait concurrently may close a pipe while the final structured document
@@ -692,6 +783,9 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 			record.mu.Lock()
 			record.cancelled = true
 			record.mu.Unlock()
+		}
+		if live != nil {
+			live.close()
 		}
 		record.finish(err)
 	}()
@@ -1040,6 +1134,88 @@ func (a *NativeAdapter) Resume(ctx context.Context, req ResumeRequest) (LaunchRe
 		return LaunchResult{}, invalidRequest("native resume route returned empty argv")
 	}
 	return a.Launch(ctx, LaunchRequest{Argv: args, Context: req.Context, ExecutionContext: req.ExecutionContext, Timeout: req.Timeout, DiscoveryWindow: req.DiscoveryWindow})
+}
+
+// Steer delivers one message to a session this adapter launched in this
+// process. It never discovers a session from ambient native history.
+func (a *NativeAdapter) Steer(ctx context.Context, req SteerRequest) (SteerResult, error) {
+	if req.Ref.Empty() {
+		return SteerResult{}, invalidRequest("steer requires a source reference")
+	}
+	if len(req.Message) == 0 || len(req.Message) > MaxSteerMessageBytes {
+		return SteerResult{}, invalidRequest("steer message must be between 1 byte and 1 MiB")
+	}
+	record := a.recordFor(req.Ref)
+	if record == nil {
+		return SteerResult{}, capabilityError(CapabilitySteer, "native session is not owned by this process")
+	}
+	record.mu.Lock()
+	live, terminal, sessionKnown, launch, sessionID := record.live, record.result != nil, record.sessionKnown, record.launch, record.ref.OpaqueID
+	record.mu.Unlock()
+	select {
+	case <-record.done:
+		terminal = true
+	default:
+	}
+	if terminal {
+		return SteerResult{}, &AdapterError{Code: ErrInvalidState, Message: "native session already reported its final result"}
+	}
+	if live != nil {
+		if err := live.send(req.Message); err != nil {
+			return SteerResult{}, err
+		}
+		return SteerResult{Delivery: SteerLiveInput, Session: a.session(record)}, nil
+	}
+	route := steerRoutes[a.Name()]
+	if route.resume == nil || !route.interruptible {
+		return SteerResult{}, capabilityError(CapabilitySteer, firstNonEmpty(route.unavailable, "adapter has no verified steering route"))
+	}
+	if !req.AllowInterrupt {
+		return SteerResult{}, capabilityError(CapabilitySteer, "this invocation can only be steered by interrupting and resuming the native session")
+	}
+	base, err := steerBaseArgv(launch.Argv, launch.PromptDelivery, launch.PromptArgs)
+	if err != nil {
+		return SteerResult{}, capabilityError(CapabilitySteer, err.Error())
+	}
+	if !sessionKnown {
+		// Interrupting before the native session id is known would strand
+		// the work: there would be nothing exact to resume.
+		return SteerResult{}, &AdapterError{Code: ErrInvalidState, Message: "native session id has not been reported yet", Retryable: true}
+	}
+	argv, err := route.resume(base, sessionID, launch.PromptDelivery)
+	if err != nil {
+		return SteerResult{}, capabilityError(CapabilitySteer, err.Error())
+	}
+	next := launch
+	next.StartOnly = true
+	next.PromptArgs = 0
+	next.Stdin = nil
+	if launch.PromptDelivery == PromptDeliveryArgv {
+		if !utf8.Valid(req.Message) || bytes.IndexByte(req.Message, 0) >= 0 {
+			return SteerResult{}, invalidRequest("argv steer message must be valid UTF-8 without NUL bytes")
+		}
+		next.PromptArgs = 1
+		if req.Message[0] == '-' {
+			argv = append(argv, "--")
+			next.PromptArgs = 2
+		}
+		argv = append(argv, string(req.Message))
+	} else {
+		next.Stdin = req.Message
+	}
+	next.Argv = argv
+	a.cancelRecord(record, "term", 5*time.Second)
+	<-record.done
+	next.replaces = record
+	launched, err := a.Launch(ctx, next)
+	if err != nil {
+		record.mu.Lock()
+		record.cancelled = false
+		record.result = &Result{Success: false, State: StateFailed, Error: "steering interrupted the native session but its resume launch failed", ExitCode: record.exitCode, SessionRef: record.ref, Data: map[string]any{"diagnostic_code": "steer_resume_failed"}}
+		record.mu.Unlock()
+		return SteerResult{}, &AdapterError{Code: ErrExecutionFailed, Message: "steering interrupted the native session but its resume launch failed", Cause: err, Details: map[string]any{"diagnostic_code": "steer_resume_failed"}}
+	}
+	return SteerResult{Delivery: SteerInterruptResume, Session: launched.Session}, nil
 }
 
 func (a *NativeAdapter) Cancel(ctx context.Context, req CancelRequest) error {

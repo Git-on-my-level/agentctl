@@ -75,7 +75,7 @@ agentctl doctor
 agentctl help <topic>
 ```
 
-Useful topics include `delegate`, `run`, `dispatch`, `recent`, `fanout`, `result`, `await`, `subscribe`, `capabilities`,
+Useful topics include `delegate`, `run`, `dispatch`, `recent`, `fanout`, `result`, `await`, `continue`, `steer`, `subscribe`, `capabilities`,
 `bootstrap update`, `skills`, `promote`, `knowledge`, and `context`. Follow returned
 read-only `next_actions` for deeper discovery. Do not preload every topic or
 memorize version-specific flags in place of help.
@@ -225,6 +225,42 @@ agentctl recent --state nonterminal --liveness alive --label review
 agentctl recent --liveness unreachable
 agentctl recent --unreconciled
 ```
+
+To send review feedback or the next step to an agent that has finished, use a
+follow-up turn instead of a new delegation. Read `agentctl help continue`:
+
+```bash
+agentctl continue <exec-id> --request-key <new-key> --prompt-file "$PWD/feedback.md" --plan
+agentctl continue <exec-id> --request-key <new-key> --prompt-file "$PWD/feedback.md" --wait --content
+```
+
+The native CLI resumes its own session, so the agent keeps the conversation;
+do not restate the whole task. Each turn is a new execution: retain its ID and
+continue from the latest completed turn. It reuses the original delegate's
+recipe, permissions, and working directory. Only a completed delegated
+execution can be continued; a refusal names the reason. Do not hand-write a
+native resume argv through expert `run` when `continue` is available, and never
+look up a native session id yourself. Use one new request key per turn; a retry
+with the same key and prompt recovers that turn.
+
+To redirect a running native execution, read `agentctl help steer` and plan
+first. The route is fixed when the execution launches and is never inferred
+from the adapter name:
+
+```bash
+agentctl steer <exec-id> --prompt-file "$PWD/steer.md" --plan
+agentctl steer <exec-id> --prompt-file "$PWD/steer.md"
+```
+
+`live_input` delivers the message at the agent's next turn boundary without
+interrupting it. `interrupt_resume` stops the native process and resumes the
+same session, so it requires `--allow-interrupt`; progress inside the
+interrupted turn can be lost, so restate anything the agent must keep. When the
+plan reports no route, steering is unavailable: report that, and do not cancel
+and relaunch as a substitute unless the user wants the work restarted. Success
+means the message was delivered, not that the agent acted on it. A finished
+execution cannot be steered; use `continue`. Steering needs a prompt that agentctl
+delivered (`--prompt-file` or `--prompt-stdin`), not one embedded in native argv.
 
 Native work remains owned by the invoking agentctl process. A direct adapter
 does not gain cross-process cancellation; add `--timeout` when a hard stop is

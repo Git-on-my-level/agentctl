@@ -117,6 +117,9 @@ observation integrity to `unknown`.
 - A different native session, Multica run, owner reassignment, or retry attempt
   creates another execution. `supersedes` records directed continuation, while
   promotion records authority transfer; those are distinct relationships.
+- A follow-up turn sent with `continue` is another execution on the same
+  native session: it `supersedes` the turn it continues, and that turn's
+  `superseded_by` is assigned when the follow-up completes.
 - Supersession links are acyclic. `superseded_by` is assigned once. A merge may
   supersede several attempts, but one attempt has at most one continuation.
 - Observation freshness and liveness are independent of state.
