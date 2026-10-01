@@ -27,7 +27,9 @@
 - subscription definitions;
 - callback outbox, acknowledgements, and dead letters;
 - execution result-collection acknowledgements;
-- opaque native resume references;
+- opaque native resume references, including the native session id recorded
+  when an execution finishes so a follow-up turn can name the exact session;
+- transient steering requests, described below;
 - last verified shared-context bundle.
 - bounded daily release-check timestamps and public release metadata.
 
@@ -36,6 +38,13 @@ is not database-replicated between machines. Automatic journal retention is not
 implemented in the preview. Cross-host callbacks exchange bounded metadata
 documents and converge on full semantic dedupe keys; portable URIs keep the
 origin host explicit.
+
+A steering request is the one host-local record that holds instruction text.
+It is an owner-only file under `steer/<execution-id>/` beside the journal,
+written by `agentctl steer` and deleted by the owning process as soon as it is
+applied, or by the caller when it withdraws. The owning process removes the
+directory when it returns. Only the message digest and size are journaled. See
+[Steering](steering.md).
 
 ### Never synchronized by `agentctl`
 

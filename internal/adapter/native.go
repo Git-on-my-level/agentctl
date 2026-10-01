@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -115,6 +116,18 @@ type processRecord struct {
 	resultPath       string
 	page             *parsedPage
 	wholeStdout      bool
+	// launch is retained without prompt bytes to rebuild a resume invocation.
+	launch       LaunchRequest
+	sessionKnown bool
+	live         *liveSession
+	inputAcks    int
+	// lastTurn is the most recent native terminal record that was demoted
+	// because a live-input message is still pending. finish uses it when the
+	// process exits without a later terminal, so a late steer cannot orphan a
+	// completed answer that is already in the stdout pipe. It is dropped once
+	// the native CLI takes the pending message: a new turn has begun, and an
+	// earlier answer no longer stands in for the session's result.
+	lastTurn *Result
 }
 
 func (p *processRecord) ingest(line []byte, stderr bool) {
@@ -134,8 +147,15 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 	if overLimit {
 		p.addParseWarningLocked(diagnosticStreamLimitExceeded)
 	}
+	live := p.live
 	p.mu.Unlock()
 	obs := p.parser.Parse(line, stderr)
+	if live != nil && !stderr && live.acknowledge(line) {
+		// The native CLI took a user message into the session: sequence 1 is
+		// the launch prompt, later ones are steering messages. Only this
+		// metadata is reported; message text never enters the journal.
+		obs = parsedObservation{Kind: "progress", SourceState: "input_acknowledged", State: StateRunning, Liveness: LivenessAlive, SessionID: obs.SessionID, Data: map[string]any{"phase": "input_acknowledged", "input_sequence": p.nextAcknowledgement()}}
+	}
 	if stderr {
 		p.mu.Lock()
 		diagnostic := safeFailureDiagnostic(string(line))
@@ -161,8 +181,15 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 	p.ingestObservation(obs)
 }
 
+func (p *processRecord) nextAcknowledgement() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.inputAcks++
+	return p.inputAcks
+}
+
 func retainObservationAfterLimit(obs parsedObservation) bool {
-	return obs.Terminal || obs.Content != "" || obs.Error != "" || obs.State == StateAttention || obs.State == StateWaiting || obs.Kind == "attention"
+	return obs.Terminal || obs.Content != "" || obs.Error != "" || obs.State == StateAttention || obs.State == StateWaiting || obs.Kind == "attention" || obs.SourceState == "input_acknowledged"
 }
 
 func (p *processRecord) addParseWarningLocked(code string) {
@@ -200,15 +227,10 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 	if obs.SessionID != "" {
 		p.ref.OpaqueID = obs.SessionID
 		p.binding = p.ref.Binding()
+		p.sessionKnown = true
 	}
 	if obs.BackendVersion != "" {
 		p.ref.Endpoint = obs.BackendVersion
-	}
-	if obs.SourceState == "devin.print" && !obs.Terminal {
-		p.sawDevinPrint = true
-		if obs.Content != "" {
-			p.devinPrintAnswer = obs.Content
-		}
 	}
 	if obs.Content != "" {
 		p.finalContent = obs.Content
@@ -218,6 +240,23 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 	}
 	if obs.Error != "" {
 		p.lastError = obs.Error
+	}
+	if obs.Terminal && p.live != nil && !p.live.finishTurn() {
+		// A message is still queued in the live input stream, so this record
+		// ends one turn rather than the session. Keep the answer: the child
+		// may already be exiting, in which case no later turn will arrive.
+		p.lastTurn = p.resultFromObservation(obs)
+		obs.Terminal = false
+		obs.Kind = "progress"
+		obs.SourceState = "turn_completed"
+		obs.State = StateRunning
+		obs.Data = map[string]any{"phase": "turn_completed"}
+	}
+	if obs.SourceState == "devin.print" && !obs.Terminal {
+		p.sawDevinPrint = true
+		if obs.Content != "" {
+			p.devinPrintAnswer = obs.Content
+		}
 	}
 	if obs.State != "" && p.metadataState != "" && obs.State != p.metadataState {
 		// The same metadata signature after a real state transition is new
@@ -270,28 +309,39 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 		e.DedupeKey = Fingerprint(p.ref.Kind, p.ref.OpaqueID, obs.SourceState, string(marshalStable(payload)))
 		p.events = append(p.events, e)
 	}
+	if obs.SourceState == "input_acknowledged" {
+		// A new turn began; an earlier turn's answer no longer stands in for
+		// the session's result.
+		p.lastTurn = nil
+	}
 	if obs.Terminal {
-		content := firstNonEmpty(obs.Content, p.finalContent)
-		contentType := firstNonEmpty(obs.ContentType, p.contentType)
-		contentSource := firstNonEmpty(obs.ContentSource, p.contentSource)
-		data := cloneMap(obs.Data)
-		if data["diagnostic_code"] == "empty_terminal_result" && content != "" {
-			data["result_content_source"] = "assistant_message_fallback"
-			contentSource = "assistant"
-		} else if content != "" {
-			data["result_content_source"] = firstNonEmpty(contentSource, "terminal_result")
-		}
-		if data == nil {
-			data = map[string]any{}
-		}
-		if obs.SourceState != "" {
-			data["terminal_source_state"] = obs.SourceState
-		}
-		result := &Result{Success: obs.Success, State: obs.State, Summary: firstNonEmpty(obs.Summary, boundedString(content, 2048)), Content: content, ContentType: contentType, ContentTruncated: obs.ContentTruncated || p.contentTruncated, Error: obs.Error, SessionRef: p.ref, Data: data}
-		applyParseWarning(result, p.parseWarnings)
-		p.result = result
+		p.result = p.resultFromObservation(obs)
 	}
 	p.updatedAt = time.Now().UTC()
+}
+
+// resultFromObservation builds the session result from a native terminal
+// record. The caller holds p.mu.
+func (p *processRecord) resultFromObservation(obs parsedObservation) *Result {
+	content := firstNonEmpty(obs.Content, p.finalContent)
+	contentType := firstNonEmpty(obs.ContentType, p.contentType)
+	contentSource := firstNonEmpty(obs.ContentSource, p.contentSource)
+	data := cloneMap(obs.Data)
+	if data == nil {
+		data = map[string]any{}
+	}
+	if data["diagnostic_code"] == "empty_terminal_result" && content != "" {
+		data["result_content_source"] = "assistant_message_fallback"
+		contentSource = "assistant"
+	} else if content != "" {
+		data["result_content_source"] = firstNonEmpty(contentSource, "terminal_result")
+	}
+	if obs.SourceState != "" {
+		data["terminal_source_state"] = obs.SourceState
+	}
+	result := &Result{Success: obs.Success, State: obs.State, Summary: firstNonEmpty(obs.Summary, boundedString(content, 2048)), Content: content, ContentType: contentType, ContentTruncated: obs.ContentTruncated || p.contentTruncated, Error: obs.Error, SessionRef: p.ref, Data: data}
+	applyParseWarning(result, p.parseWarnings)
+	return result
 }
 
 func metadataObservationKey(obs parsedObservation) (string, bool) {
@@ -351,6 +401,11 @@ func (p *processRecord) finish(err error) {
 			p.result = &Result{Success: false, State: StateCancelled, Error: "native process cancelled", ExitCode: p.exitCode, SessionRef: p.ref}
 		} else if p.exitCode != nil && *p.exitCode != 0 {
 			p.result = &Result{Success: false, State: StateFailed, Error: firstNonEmpty(p.lastError, p.stderrDiagnostic, "native process exited unsuccessfully"), ExitCode: p.exitCode, SessionRef: p.ref}
+		} else if p.lastTurn != nil {
+			result := *p.lastTurn
+			result.ExitCode = p.exitCode
+			result.SessionRef = p.ref
+			p.result = &result
 		} else {
 			// A zero exit code does not establish domain success. Native adapters
 			// require an explicit terminal result in their structured stream.
@@ -490,6 +545,14 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 	}
 	capabilities := make([]Capability, 0, len(a.config.Manifest.Capabilities))
 	for _, declaration := range a.config.Manifest.Capabilities {
+		if declaration.Name == CapabilitySteer {
+			capabilities = append(capabilities, NegotiateSteer(a.config.Manifest, req.Argv, req.PromptDelivery, req.PromptArgs))
+			continue
+		}
+		if declaration.Name == CapabilityResume {
+			capabilities = append(capabilities, NegotiateResume(a.config.Manifest, req.Argv, req.PromptDelivery, req.PromptArgs))
+			continue
+		}
 		capabilities = append(capabilities, NegotiateInvocation(a.config.Manifest, req.Argv, declaration.Name))
 	}
 	invocationFingerprint := ""
@@ -638,7 +701,25 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 			"AGENTCTL_AUTHORITY":    context.Authority,
 		})
 	}
-	if req.Stdin != nil {
+	var live *liveSession
+	if req.PromptDelivery == PromptDeliveryStream {
+		route := steerRoutes[a.Name()]
+		var protocol liveProtocol
+		if route.live != nil {
+			protocol, _ = route.live(argv)
+		}
+		if protocol == nil {
+			return LaunchResult{}, capabilityError(CapabilitySteer, "stream prompt delivery requires the adapter's live input argv")
+		}
+		if len(req.Stdin) == 0 {
+			return LaunchResult{}, invalidRequest("stream prompt delivery requires a prompt")
+		}
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return LaunchResult{}, dependencyError("cannot open native stdin", err)
+		}
+		live = &liveSession{protocol: protocol, stdin: stdin}
+	} else if req.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(req.Stdin)
 	}
 	if req.Context != nil {
@@ -674,14 +755,48 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	}
 	started = true
 	ref := SourceRef{Adapter: a.Name(), Kind: a.config.LaunchKind, OpaqueID: strconv.Itoa(cmd.Process.Pid), PID: cmd.Process.Pid}
-	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: time.Now().UTC(), updatedAt: time.Now().UTC(), done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, wholeStdout: a.config.WholeStdout}
+	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: time.Now().UTC(), updatedAt: time.Now().UTC(), done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, wholeStdout: a.config.WholeStdout, live: live}
+	record.launch = req
+	record.launch.Stdin = nil
+	record.launch.Argv = argv
+	record.launch.replaces = nil
+	if previous := req.replaces; previous != nil {
+		// The resumed process continues the same observation stream, so the
+		// owner's event cursor stays valid.
+		previous.mu.Lock()
+		record.events = append([]Event(nil), previous.events...)
+		record.inputAcks = previous.inputAcks
+		previous.mu.Unlock()
+	}
 	a.mu.Lock()
 	a.byPID[cmd.Process.Pid] = record
 	a.byKey[record.binding.Fingerprint] = record
+	if previous := req.replaces; previous != nil {
+		// Every reference that resolved to the interrupted process, by
+		// fingerprint or by PID, now resolves to its continuation.
+		for key, existing := range a.byKey {
+			if existing == previous {
+				a.byKey[key] = record
+			}
+		}
+		for pid, existing := range a.byPID {
+			if existing == previous {
+				a.byPID[pid] = record
+			}
+		}
+	}
 	a.mu.Unlock()
 	record.pipes.Add(2)
 	go a.readPipe(record, stdout, false)
 	go a.readPipe(record, stderr, true)
+	if live != nil {
+		// Readers are already draining stdout, so a large prompt cannot wedge
+		// against a child that is writing while it reads.
+		if _, err := live.send(req.Stdin); err != nil {
+			a.cancelRecord(record, "kill", 0)
+			return LaunchResult{}, err
+		}
+	}
 	go func() {
 		// StdoutPipe/StderrPipe require all reads to complete before Wait. Calling
 		// Wait concurrently may close a pipe while the final structured document
@@ -692,6 +807,9 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 			record.mu.Lock()
 			record.cancelled = true
 			record.mu.Unlock()
+		}
+		if live != nil {
+			live.close()
 		}
 		record.finish(err)
 	}()
@@ -1032,14 +1150,117 @@ func (a *NativeAdapter) Resume(ctx context.Context, req ResumeRequest) (LaunchRe
 	if req.Ref.Empty() {
 		return LaunchResult{}, invalidRequest("resume requires a source reference")
 	}
-	if a.config.ResumeArgs == nil {
-		return LaunchResult{}, capabilityError(CapabilityResume, "native resume route is not verified")
+	if a.config.ResumeArgs != nil {
+		args := a.config.ResumeArgs(req.Ref, req.Argv)
+		if len(args) == 0 {
+			return LaunchResult{}, invalidRequest("native resume route returned empty argv")
+		}
+		return a.Launch(ctx, LaunchRequest{Argv: args, Cwd: req.Cwd, Context: req.Context, ExecutionContext: req.ExecutionContext, Timeout: req.Timeout, DiscoveryWindow: req.DiscoveryWindow})
 	}
-	args := a.config.ResumeArgs(req.Ref, req.Argv)
-	if len(args) == 0 {
-		return LaunchResult{}, invalidRequest("native resume route returned empty argv")
+	// The same verified route that the resume capability is negotiated from.
+	if len(req.Prompt) == 0 {
+		return LaunchResult{}, invalidRequest("resume requires the next prompt")
 	}
-	return a.Launch(ctx, LaunchRequest{Argv: args, Context: req.Context, ExecutionContext: req.ExecutionContext, Timeout: req.Timeout, DiscoveryWindow: req.DiscoveryWindow})
+	base, err := steerBaseArgv(req.Argv, req.PromptDelivery, req.PromptArgs)
+	if err != nil {
+		return LaunchResult{}, capabilityError(CapabilityResume, err.Error())
+	}
+	argv, err := ContinuationArgv(a.Name(), base, req.PromptDelivery, req.Ref.OpaqueID)
+	if err != nil {
+		return LaunchResult{}, err
+	}
+	next := LaunchRequest{Cwd: req.Cwd, Context: req.Context, ExecutionContext: req.ExecutionContext, Timeout: req.Timeout, DiscoveryWindow: req.DiscoveryWindow, PromptDelivery: req.PromptDelivery}
+	if next.Argv, next.PromptArgs, next.Stdin, err = attachPrompt(argv, req.PromptDelivery, req.Prompt); err != nil {
+		return LaunchResult{}, err
+	}
+	return a.Launch(ctx, next)
+}
+
+// attachPrompt delivers prompt to a prompt-free argv the way delivery names:
+// as trailing argv, or as native stdin.
+func attachPrompt(argv []string, delivery string, prompt []byte) ([]string, int, []byte, error) {
+	if delivery != PromptDeliveryArgv {
+		return argv, 0, prompt, nil
+	}
+	if !utf8.Valid(prompt) || bytes.IndexByte(prompt, 0) >= 0 {
+		return nil, 0, nil, invalidRequest("an argv prompt must be valid UTF-8 without NUL bytes")
+	}
+	args := 1
+	if prompt[0] == '-' {
+		argv = append(argv, "--")
+		args = 2
+	}
+	return append(argv, string(prompt)), args, nil, nil
+}
+
+// Steer delivers one message to a session this adapter launched in this
+// process. It never discovers a session from ambient native history.
+func (a *NativeAdapter) Steer(ctx context.Context, req SteerRequest) (SteerResult, error) {
+	if req.Ref.Empty() {
+		return SteerResult{}, invalidRequest("steer requires a source reference")
+	}
+	if len(req.Message) == 0 || len(req.Message) > MaxSteerMessageBytes {
+		return SteerResult{}, invalidRequest("steer message must be between 1 byte and 1 MiB")
+	}
+	record := a.recordFor(req.Ref)
+	if record == nil {
+		return SteerResult{}, capabilityError(CapabilitySteer, "native session is not owned by this process")
+	}
+	record.mu.Lock()
+	live, terminal, sessionKnown, launch, sessionID := record.live, record.result != nil, record.sessionKnown, record.launch, record.ref.OpaqueID
+	record.mu.Unlock()
+	select {
+	case <-record.done:
+		terminal = true
+	default:
+	}
+	if terminal {
+		return SteerResult{}, &AdapterError{Code: ErrInvalidState, Message: "native session already reported its final result"}
+	}
+	if live != nil {
+		sequence, err := live.send(req.Message)
+		if err != nil {
+			return SteerResult{}, err
+		}
+		return SteerResult{Delivery: SteerLiveInput, Session: a.session(record), InputSequence: sequence}, nil
+	}
+	route := steerRoutes[a.Name()]
+	if route.resume == nil || !route.interruptible {
+		return SteerResult{}, capabilityError(CapabilitySteer, firstNonEmpty(route.unavailable, "adapter has no verified steering route"))
+	}
+	if !req.AllowInterrupt {
+		return SteerResult{}, capabilityError(CapabilitySteer, "this invocation can only be steered by interrupting and resuming the native session")
+	}
+	base, err := steerBaseArgv(launch.Argv, launch.PromptDelivery, launch.PromptArgs)
+	if err != nil {
+		return SteerResult{}, capabilityError(CapabilitySteer, err.Error())
+	}
+	if !sessionKnown {
+		// Interrupting before the native session id is known would strand
+		// the work: there would be nothing exact to resume.
+		return SteerResult{}, &AdapterError{Code: ErrInvalidState, Message: "native session id has not been reported yet", Retryable: true}
+	}
+	argv, err := route.resume(base, sessionID, launch.PromptDelivery)
+	if err != nil {
+		return SteerResult{}, capabilityError(CapabilitySteer, err.Error())
+	}
+	next := launch
+	next.StartOnly = true
+	if next.Argv, next.PromptArgs, next.Stdin, err = attachPrompt(argv, launch.PromptDelivery, req.Message); err != nil {
+		return SteerResult{}, err
+	}
+	a.cancelRecord(record, "term", 5*time.Second)
+	<-record.done
+	next.replaces = record
+	launched, err := a.Launch(ctx, next)
+	if err != nil {
+		record.mu.Lock()
+		record.cancelled = false
+		record.result = &Result{Success: false, State: StateFailed, Error: "steering interrupted the native session but its resume launch failed", ExitCode: record.exitCode, SessionRef: record.ref, Data: map[string]any{"diagnostic_code": "steer_resume_failed"}}
+		record.mu.Unlock()
+		return SteerResult{}, &AdapterError{Code: ErrExecutionFailed, Message: "steering interrupted the native session but its resume launch failed", Cause: err, Details: map[string]any{"diagnostic_code": "steer_resume_failed"}}
+	}
+	return SteerResult{Delivery: SteerInterruptResume, Session: launched.Session}, nil
 }
 
 func (a *NativeAdapter) Cancel(ctx context.Context, req CancelRequest) error {

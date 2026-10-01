@@ -106,6 +106,9 @@ func (f *fakeAdapter) Result(context.Context, adapter.ResultRequest) (adapter.Re
 func (f *fakeAdapter) Resume(context.Context, adapter.ResumeRequest) (adapter.LaunchResult, error) {
 	return adapter.LaunchResult{}, &adapter.AdapterError{Code: adapter.ErrCapabilityUnavailable}
 }
+func (f *fakeAdapter) Steer(context.Context, adapter.SteerRequest) (adapter.SteerResult, error) {
+	return adapter.SteerResult{}, &adapter.AdapterError{Code: adapter.ErrCapabilityUnavailable}
+}
 func (f *fakeAdapter) Cancel(context.Context, adapter.CancelRequest) error { return f.cancelErr }
 
 var fixtureNow = time.Date(2026, 8, 10, 18, 0, 0, 0, time.UTC)

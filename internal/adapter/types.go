@@ -33,6 +33,7 @@ const (
 	CapabilityResultContent      CapabilityName = "result_content"
 	CapabilityResume             CapabilityName = "resume"
 	CapabilityCancel             CapabilityName = "cancel"
+	CapabilitySteer              CapabilityName = "steer"
 	CapabilityArtifacts          CapabilityName = "artifacts"
 	CapabilityHistory            CapabilityName = "history"
 	CapabilityContextInjection   CapabilityName = "context_injection"
@@ -150,11 +151,16 @@ type VersionRange struct {
 type ProbeRequest struct {
 	Executable string
 	Argv       []string
-	Profile    string
-	Endpoint   string
-	Workspace  string
-	Timeout    time.Duration
-	Fresh      bool
+	// PromptDelivery and PromptArgs describe how agentctl attached the prompt
+	// to Argv. Steering is negotiated from them: an adapter can only re-deliver
+	// a message through a channel agentctl itself controls.
+	PromptDelivery string
+	PromptArgs     int
+	Profile        string
+	Endpoint       string
+	Workspace      string
+	Timeout        time.Duration
+	Fresh          bool
 }
 
 type ProbeResult struct {
@@ -250,6 +256,13 @@ type LaunchRequest struct {
 	Stdin []byte
 	Cwd   string
 	Env   []string
+	// PromptDelivery is "argv", "stdin", "stream", or empty when the caller
+	// embedded the prompt in Argv itself. PromptArgs counts the trailing Argv
+	// elements agentctl appended for argv delivery. With "stream", Stdin holds
+	// the prompt and the adapter encodes it as the first message of its live
+	// input protocol on a held-open pipe.
+	PromptDelivery string
+	PromptArgs     int
 	// ExecutionContext is copied from the durable native execution record.
 	// It is exported only to local native children, never Multica.
 	ExecutionContext *ExecutionContext
@@ -262,6 +275,9 @@ type LaunchRequest struct {
 	// daemonless caller owns the child only while it remains alive, so normal
 	// launches wait and reap the child before returning.
 	StartOnly bool
+	// replaces is the process record a steering relaunch supersedes. The new
+	// record takes over its observation stream and every lookup key.
+	replaces *processRecord
 	// hardContextDeadline is reserved for finite adapter probes whose caller
 	// deadline must not inherit native work's graceful cancellation window.
 	hardContextDeadline bool
@@ -315,13 +331,53 @@ type ResultRequest struct {
 	Poll PollOptions
 }
 
+// ResumeRequest continues the native session named by Ref with a new prompt.
+// Argv is the invocation that created the session; PromptDelivery and
+// PromptArgs describe how its prompt was attached, as in LaunchRequest. Prompt
+// is delivered the same way.
 type ResumeRequest struct {
 	Ref              SourceRef
 	Argv             []string
+	Cwd              string
+	Prompt           []byte
+	PromptDelivery   string
+	PromptArgs       int
 	Context          *ContextInput
 	ExecutionContext *ExecutionContext
 	Timeout          time.Duration
 	DiscoveryWindow  time.Duration
+}
+
+// SteerDelivery names how a steering message reaches the native session.
+type SteerDelivery string
+
+const (
+	// SteerLiveInput writes the message to the running process's live input
+	// protocol. The native agent takes it at its next turn boundary.
+	SteerLiveInput SteerDelivery = "live_input"
+	// SteerInterruptResume stops the running process and resumes the same
+	// native session with the message. The in-flight turn is discarded.
+	SteerInterruptResume SteerDelivery = "interrupt_resume"
+)
+
+// MaxSteerMessageBytes bounds one steering message.
+const MaxSteerMessageBytes = 1 << 20
+
+type SteerRequest struct {
+	Ref     SourceRef
+	Message []byte
+	// AllowInterrupt permits SteerInterruptResume. Without it only a live
+	// route may deliver the message.
+	AllowInterrupt bool
+}
+
+type SteerResult struct {
+	Delivery SteerDelivery `json:"delivery"`
+	Session  Session       `json:"session"`
+	// InputSequence is set for SteerLiveInput. The message has only been
+	// queued for the native input stream; the native session has taken it
+	// once an input_acknowledged event carries the same input_sequence.
+	InputSequence int `json:"input_sequence,omitempty"`
 }
 
 type CancelRequest struct {
@@ -424,6 +480,7 @@ const (
 	ErrExecutionFailed        ErrorCode = "execution_failed"
 	ErrExecutionCancelled     ErrorCode = "execution_cancelled"
 	ErrExecutionUnknown       ErrorCode = "execution_unknown"
+	ErrInvalidState           ErrorCode = "invalid_state"
 	ErrUsage                  ErrorCode = "usage"
 	ErrInternal               ErrorCode = "internal"
 )
@@ -481,6 +538,7 @@ type Adapter interface {
 	Events(context.Context, EventsRequest) ([]Event, error)
 	Result(context.Context, ResultRequest) (Result, error)
 	Resume(context.Context, ResumeRequest) (LaunchResult, error)
+	Steer(context.Context, SteerRequest) (SteerResult, error)
 	Cancel(context.Context, CancelRequest) error
 }
 

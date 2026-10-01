@@ -54,6 +54,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 		"callback-envelope":   "schemas/callback-envelope.schema.json",
 		"config-bundle":       "schemas/config-bundle.schema.json",
 		"context-result":      "schemas/context-result.schema.json",
+		"continue-result":     "schemas/continue-result.schema.json",
 		"data-cleanup-plan":   "schemas/data-cleanup-plan.schema.json",
 		"data-inventory":      "schemas/data-inventory.schema.json",
 		"delegate-request":    "schemas/delegate-request.schema.json",
@@ -68,6 +69,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 		"outcome":             "schemas/outcome.schema.json",
 		"skill-pack":          "schemas/skill-pack.schema.json",
 		"skill-pack-report":   "schemas/skill-pack-report.schema.json",
+		"steer-result":        "schemas/steer-result.schema.json",
 		"subscription":        "schemas/subscription.schema.json",
 		"task-contract-input": "schemas/task-contract-input.schema.json",
 		"workspace-owners":    "schemas/workspace-owners.schema.json",
@@ -95,6 +97,8 @@ func TestNewSchemaDocumentsDeclareDraftAndRequiredShape(t *testing.T) {
 	expected := map[string][]string{
 		"callback-envelope.schema.json": {"schema_version", "delivery_id", "subscription_id", "event_id", "event_dedupe_key", "attempt", "sent_at", "expires_at", "nonce", "event"},
 		"context-result.schema.json":    {"bundle_revision", "matches"},
+		"continue-result.schema.json":   {"continues", "resolved", "request_sha256", "reused"},
+		"steer-result.schema.json":      {"id", "adapter", "state"},
 		"event-page.schema.json":        {"events", "scanned", "filtered", "page_limit"},
 		"fanout-manifest.schema.json":   {"schema_version", "children"},
 		"inbox-result.schema.json":      {"executions", "count", "total", "has_more", "host_local", "as_of", "stale_after_seconds"},
@@ -129,5 +133,57 @@ func TestNewSchemaDocumentsDeclareDraftAndRequiredShape(t *testing.T) {
 				t.Errorf("%s missing required field %q", filename, field)
 			}
 		}
+	}
+}
+
+// assertResultMatchesSchemaShape keeps a command's result builder and its
+// normative schema from drifting: every emitted member, at the top level and
+// in the named nested objects, must be declared, and every required member
+// must be present.
+func assertResultMatchesSchemaShape(t *testing.T, out, filename string, nested ...string) {
+	t.Helper()
+	var envelope struct {
+		OK     bool           `json:"ok"`
+		Result map[string]any `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil || !envelope.OK {
+		t.Fatalf("not a success envelope (%v): %s", err, out)
+	}
+	data, err := os.ReadFile(filepath.Join(schemaRepositoryRoot(t), "schemas", filename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type object struct {
+		Required   []string                   `json:"required"`
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	check := func(where string, schema object, value map[string]any) {
+		for key := range value {
+			if _, ok := schema.Properties[key]; !ok {
+				t.Errorf("%s: %s emits %q, which the schema does not declare", filename, where, key)
+			}
+		}
+		for _, key := range schema.Required {
+			if _, ok := value[key]; !ok {
+				t.Errorf("%s: %s is missing required %q", filename, where, key)
+			}
+		}
+	}
+	var root object
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatal(err)
+	}
+	check("result", root, envelope.Result)
+	for _, name := range nested {
+		value, ok := envelope.Result[name].(map[string]any)
+		if !ok {
+			t.Errorf("%s: result has no %q object", filename, name)
+			continue
+		}
+		var child object
+		if err := json.Unmarshal(root.Properties[name], &child); err != nil {
+			t.Fatal(err)
+		}
+		check(name, child, value)
 	}
 }

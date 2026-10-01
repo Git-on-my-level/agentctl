@@ -136,6 +136,10 @@ guarantees:
 when the parent already owns process lifetime. Work that must outlive this
 process is Multica `dispatch`, not a detached agentctl worker. Backgrounding
 `agentctl await` only detaches an observer and does not change ownership.
+Steering is the one cross-process control over a native child: another
+invocation queues a request in an owner-only spool and the owning process
+applies it, so steering shares the child's process-scoped lifetime. See
+[Steering](steering.md).
 Creating
 or enabling a new supervisor service is an explicit host-state mutation owned
 by a host manager when one exists. `agentctl bootstrap update` may reconcile an

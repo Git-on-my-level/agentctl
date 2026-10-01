@@ -242,8 +242,11 @@ func (j *Journal) CreateExecution(ctx context.Context, execution model.Execution
 				if err := decodeExecution(tx, raw, &result); err != nil {
 					return corrupt(err)
 				}
-				reused = true
-				return nil
+				if !refusedAdmission(result) {
+					reused = true
+					return nil
+				}
+				result = model.Execution{}
 			}
 		}
 		host, err := ids.ParseHostID(string(tx.Bucket(bMetadata).Get(keyHost)))
@@ -860,6 +863,34 @@ func lookupMutation(tx *bbolt.Tx, key contracts.MutationKey) (*mutationRecord, e
 		return nil, fmt.Errorf("%w: idempotency key reused with different input digest", ErrConflict)
 	}
 	return &record, nil
+}
+
+const admissionRefusedSource = "admission_refused"
+
+func refusedAdmission(execution model.Execution) bool {
+	return execution.State == model.StateCancelled && execution.SourceState != nil && *execution.SourceState == admissionRefusedSource
+}
+
+// ClearMutation drops an idempotency reservation. Callers use it when the
+// reserved execution never launched, so a later retry of the same key may start
+// the work instead of recovering a cancelled placeholder.
+func (j *Journal) ClearMutation(ctx context.Context, mutation contracts.MutationKey) error {
+	if j.readOnly {
+		return ErrReadOnly
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !mutation.Enabled() {
+		return nil
+	}
+	return j.db.Update(func(tx *bbolt.Tx) error {
+		record, err := lookupMutation(tx, mutation)
+		if err != nil || record == nil {
+			return err
+		}
+		return tx.Bucket(bIdempotency).Delete([]byte(mutation.Scope + "\x00" + mutation.Key))
+	})
 }
 func putMutation(tx *bbolt.Tx, key contracts.MutationKey, objectType, objectID string) error {
 	record := mutationRecord{Scope: key.Scope, Key: key.Key, InputDigest: key.InputDigest, ObjectType: objectType, ObjectID: objectID}

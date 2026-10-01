@@ -168,14 +168,17 @@ func TestOMPRejectsUnsupportedThinkingEffort(t *testing.T) {
 	}
 }
 
-func TestClaudeCodeStructuredOutputOnly(t *testing.T) {
+func TestClaudeCodeUsesSteerableStreamingInput(t *testing.T) {
 	got, err := Build(Input{Harness: "claude-code", Model: "claude-sonnet-4"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--model", "claude-sonnet-4"}
+	want := []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--input-format", "stream-json", "--replay-user-messages", "--model", "claude-sonnet-4"}
 	if strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("argv=%v want=%v", got.Argv, want)
+	}
+	if got.PromptDelivery != PromptDeliveryStream {
+		t.Fatalf("prompt delivery=%q want stream", got.PromptDelivery)
 	}
 }
 

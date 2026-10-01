@@ -629,6 +629,9 @@ func (m *multicaAdapter) Result(ctx context.Context, req ResultRequest) (Result,
 func (m *multicaAdapter) Resume(ctx context.Context, req ResumeRequest) (LaunchResult, error) {
 	return LaunchResult{}, capabilityError(CapabilityResume, "Multica issue/run resume route is not verified for the current CLI")
 }
+func (m *multicaAdapter) Steer(ctx context.Context, req SteerRequest) (SteerResult, error) {
+	return SteerResult{}, capabilityError(CapabilitySteer, steerRoutes["multica"].unavailable)
+}
 func (m *multicaAdapter) Cancel(ctx context.Context, req CancelRequest) error {
 	if m.config.Profile == "" || m.config.Workspace == "" {
 		return invalidRequest("Multica cancel requires exact profile and workspace-id")
@@ -659,7 +662,7 @@ func multicaScopedArgv(config MulticaConfig, operation string, ref SourceRef, ex
 func genericManifest() Manifest {
 	return baseManifest("generic-process", "0.1.0", "process", "generic-process-json", []CapabilityDeclaration{
 		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilitySupported), sameProcessDecl(CapabilitySnapshot, CapabilitySupported),
-		sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilityDegraded), capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported),
+		sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilityDegraded), sameProcessDecl(CapabilityCancel, CapabilitySupported),
 		resultContentDecl(CapabilityDegraded, "generic_result"),
 		capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
@@ -670,7 +673,7 @@ func codexManifest() Manifest {
 	resultContent.Constraints["required_output_mode"] = "json"
 	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--json", "kind": "presence"}
 	return baseManifest("codex", "0.1.0", "codex_thread", "codex-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 }
 
@@ -679,7 +682,7 @@ func cursorManifest() Manifest {
 	resultContent.Constraints["required_output_mode"] = "stream-json"
 	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--output-format", "kind": "value", "value": "stream-json"}
 	return baseManifest("cursor", "0.1.0", "cursor_session", "cursor-stream-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 }
 
@@ -688,7 +691,7 @@ func claudeManifest() Manifest {
 	resultContent.Constraints["required_output_mode"] = "stream-json"
 	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--output-format", "kind": "value", "value": "stream-json"}
 	return baseManifest("claude-code", "0.1.0", "claude_session", "claude-stream-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 }
 
@@ -697,7 +700,7 @@ func devinManifest() Manifest {
 	resultContent.Constraints["required_output_mode"] = "print"
 	resultContent.Constraints["required_argv"] = map[string]any{"flag": "-p", "kind": "presence"}
 	return baseManifest("devin", "0.1.0", "devin_session", "devin-print", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 }
 
@@ -706,7 +709,7 @@ func zcodeManifest() Manifest {
 	resultContent.Constraints["required_output_mode"] = "json"
 	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--json", "kind": "presence"}
 	return baseManifest("zcode", "0.1.0", "zcode_session", "zcode-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 }
 
@@ -715,7 +718,7 @@ func ompManifest() Manifest {
 	resultContent.Constraints["required_output_mode"] = "json"
 	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--mode", "kind": "value", "value": "json"}
 	m := baseManifest("omp", "0.2.0", "omp_session", "omp-acp-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 	m.KnownFailures = []KnownFailure{{Classifier: "stats_probe", ErrorCode: "local_operational_write"}}
 	return m
@@ -727,7 +730,7 @@ func multicaManifest() Manifest {
 	cancel := capDecl(CapabilityCancel, CapabilitySupported)
 	cancel.Constraints = map[string]any{"scope": "authority_forward", "cross_restart": true, "acceptance_semantics": "cancel_request_not_terminal"}
 	m := baseManifest("multica", "0.1.0", "multica_run", "multica-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilityUnavailable), capDecl(CapabilityAttach, CapabilityUnavailable), snapshot, capDecl(CapabilityEvents, CapabilityUnavailable), capDecl(CapabilityResult, CapabilityUnavailable), capDecl(CapabilityResultContent, CapabilityUnavailable), capDecl(CapabilityResume, CapabilityUnavailable), cancel, capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilityUnavailable), capDecl(CapabilityAttach, CapabilityUnavailable), snapshot, capDecl(CapabilityEvents, CapabilityUnavailable), capDecl(CapabilityResult, CapabilityUnavailable), capDecl(CapabilityResultContent, CapabilityUnavailable), cancel, capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 	m.ContextInjection = ContextInjection{Mechanisms: []ContextMechanism{ContextEnvironmentPath, ContextAuthorityArtifact}, Guaranteed: false, Reason: "delivery must be explicitly verified by the Multica worker"}
 	return m
@@ -753,6 +756,9 @@ func baseManifest(name, version, kind, format string, capabilities []CapabilityD
 	case "generic-process":
 		executable = "configured"
 	}
+	// Resume and steering are declared from the verified route table so every
+	// adapter reports them, including those with no route.
+	capabilities = append(capabilities, resumeDeclaration(name), steerDeclaration(name))
 	probeActions := []ProbeAction{}
 	if name != "generic-process" {
 		probeActions = append(probeActions, ProbeAction{ID: "version", Argv: []string{"{executable}", "--version"}, SideEffectClass: "read_only", WritesCache: false, TimeoutSeconds: 5})

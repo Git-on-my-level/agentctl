@@ -162,6 +162,10 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.attachNative(ctx, renderer, commonArgs, rest[1:])
 	case "cancel":
 		err = a.cancelNative(ctx, renderer, commonArgs, rest[1:])
+	case "steer":
+		err = a.steerCommand(ctx, renderer, commonArgs, rest[1:])
+	case "continue":
+		err = a.continueCommand(ctx, renderer, commonArgs, rest[1:])
 	case "subscribe":
 		err = a.subscribeCommand(ctx, renderer, commonArgs, rest[1:])
 	case "config":
@@ -218,7 +222,7 @@ func invocationAllowsAutomaticMaintenance(args []string) bool {
 		}
 	}
 	switch args[0] {
-	case "run", "fanout", "promote", "dispatch", "delegate":
+	case "run", "fanout", "promote", "dispatch", "delegate", "continue":
 		return true
 	default:
 		return false

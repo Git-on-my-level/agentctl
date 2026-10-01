@@ -20,6 +20,7 @@ events      stream or poll normalized events from a cursor
 result      retrieve the backend's terminal state/result metadata
 result_content retrieve bounded final answer content when the adapter proves it
 resume      optional; resume the same native session
+steer       optional; deliver a new instruction to a running session
 cancel      optional; request native cancellation
 artifacts   optional; enumerate references without copying content
 ```
@@ -43,9 +44,16 @@ policy. It never infers support from adapter name alone.
 Registered version-1 capability names are:
 
 ```text
-launch attach snapshot events result resume cancel artifacts history
+launch attach snapshot events result resume steer cancel artifacts history
 context_injection promotion durable_idempotency durable_events remote_callback
 ```
+
+`resume` and `steer` are negotiated from the exact argv and prompt delivery,
+like `result_content`. `resume` means a later invocation can continue the
+native session once its turn has completed; see
+[Follow-up turns](follow-up-turns.md). `supported` means a live input stream; `degraded` means the
+session is interrupted and resumed. See [Steering](steering.md) for the routes
+each adapter has and the evidence behind them.
 
 Each capability reports:
 
@@ -110,7 +118,10 @@ argv after `--` is passed unchanged in either case.
 When the caller explicitly selects `run --prompt-file` or `--prompt-stdin`,
 prompt transport is a separate reviewed operation. `--prompt-delivery argv`
 appends one exact UTF-8 positional argument; `--prompt-delivery stdin` attaches
-the exact bounded bytes as child stdin. Adapters do not infer the mechanism
+the exact bounded bytes as child stdin; `--prompt-delivery stream` sends the
+prompt as the first message of the adapter's live input protocol and keeps
+stdin open for steering, and fails before launch unless the argv selects that
+protocol. Adapters do not infer the mechanism
 from a backend name, and prompt bytes are not persisted in the execution
 envelope. Without a prompt source, child stdin remains disconnected and argv is
 unchanged.
@@ -192,7 +203,8 @@ meaning.
   metadata-only.
 - Label stored content provenance (`assistant_terminal_result` or
   `assistant_message_fallback`) so callers can assert an assistant source.
-- Retain Cursor session ID for attach/resume.
+- Retain Cursor session ID for attach/resume. Resume is supported after a
+  completed turn only; an interrupted turn loses its prompt.
 
 ### Claude Code
 
