@@ -50,6 +50,8 @@ type steerRequestFile struct {
 	AllowInterrupt bool      `json:"allow_interrupt"`
 	MessageSHA256  string    `json:"message_sha256"`
 	Message        string    `json:"message"`
+	// MessageBytes stands in for the message once the owner has dropped it.
+	MessageBytes int `json:"-"`
 }
 
 func steerSpoolDir(journalPath string, id ids.ExecutionID) string {
@@ -73,10 +75,10 @@ type steerInbox struct {
 	// Concurrent retries of one idempotent request queue separate files; the
 	// owner applies the first and drops the rest.
 	settled map[string]bool
-	// inFlight is closed when a live-input write started off the observation
-	// loop has settled. A full native stdin pipe must not freeze heartbeats,
-	// event draining, or deadline handling.
-	inFlight <-chan struct{}
+	// awaiting holds live-input requests that were written to the native
+	// input stream and not yet acknowledged, by input sequence. Only their
+	// metadata is kept; the message text is dropped once it is written.
+	awaiting map[int]steerRequestFile
 }
 
 // openSteerInbox creates the spool directory for an execution whose
@@ -98,41 +100,70 @@ func (a *app) openSteerInbox(c common, execution model.Execution) *steerInbox {
 	// MkdirAll honors umask but not an existing wider mode.
 	_ = os.Chmod(filepath.Dir(dir), 0o700)
 	_ = os.Chmod(dir, 0o700)
-	return &steerInbox{dir: dir, settled: map[string]bool{}}
+	return &steerInbox{dir: dir, settled: map[string]bool{}, awaiting: map[int]steerRequestFile{}}
 }
 
-func (inbox *steerInbox) close() {
-	if inbox != nil {
-		_ = os.RemoveAll(inbox.dir)
-	}
-}
-
-func liveInputSteer(execution model.Execution) bool {
-	item, ok := executionCapability(execution, adapter.CapabilitySteer)
-	if !ok {
-		return false
-	}
-	delivery, _ := item.Constraints["delivery"].(string)
-	return delivery == string(adapter.SteerLiveInput)
-}
-
-// service delivers queued requests in arrival order. Interrupt-and-resume
-// stays on the observation loop so it cannot race that loop's session reads.
-// Live-input writes run off the loop: they can block on a full stdin pipe
-// while the native CLI is still in its current turn.
-func (a *app) serviceSteerInbox(ctx context.Context, c common, runtime adapter.Adapter, ref adapter.SourceRef, execution model.Execution, inbox *steerInbox) {
+// settleSteerInbox rejects the live-input requests the native session never
+// acknowledged. The owner calls it once it has drained the session's last
+// events and before it commits the terminal outcome, because a terminal
+// execution accepts no further progress events. A message that was written to
+// the native input and never taken was not delivered.
+func (a *app) settleSteerInbox(c common, id ids.ExecutionID, inbox *steerInbox) {
 	if inbox == nil {
 		return
 	}
-	if inbox.inFlight != nil {
-		select {
-		case <-inbox.inFlight:
-			inbox.inFlight = nil
-		default:
-			return
-		}
+	sequences := make([]int, 0, len(inbox.awaiting))
+	for sequence := range inbox.awaiting {
+		sequences = append(sequences, sequence)
 	}
-	if a.now().Before(inbox.nextPoll) {
+	sort.Ints(sequences)
+	for _, sequence := range sequences {
+		a.recordSteer(c, id, inbox.awaiting[sequence], "rejected", string(adapter.SteerLiveInput), "steer_unacknowledged", "the native session ended before it took the message", sequence)
+	}
+	inbox.awaiting = map[int]steerRequestFile{}
+}
+
+func (a *app) closeSteerInbox(c common, id ids.ExecutionID, inbox *steerInbox) {
+	if inbox == nil {
+		return
+	}
+	a.settleSteerInbox(c, id, inbox)
+	_ = os.RemoveAll(inbox.dir)
+}
+
+// acknowledgeSteer records delivery for each live-input request whose message
+// the native session has now taken.
+func (a *app) acknowledgeSteer(c common, id ids.ExecutionID, inbox *steerInbox, events []adapter.Event) {
+	if inbox == nil || len(inbox.awaiting) == 0 {
+		return
+	}
+	for _, event := range events {
+		if event.SourceState != "input_acknowledged" {
+			continue
+		}
+		sequence := 0
+		switch value := event.Payload["input_sequence"].(type) {
+		case int:
+			sequence = value
+		case int64:
+			sequence = int(value)
+		case float64:
+			sequence = int(value)
+		}
+		request, ok := inbox.awaiting[sequence]
+		if !ok {
+			continue
+		}
+		delete(inbox.awaiting, sequence)
+		a.recordSteer(c, id, request, "delivered", string(adapter.SteerLiveInput), "", "", sequence)
+	}
+}
+
+// service delivers queued requests in arrival order. It is called from the
+// owner's observation loop, so a delivery never races that loop's own reads of
+// the native session.
+func (a *app) serviceSteerInbox(ctx context.Context, c common, runtime adapter.Adapter, ref adapter.SourceRef, execution model.Execution, inbox *steerInbox) {
+	if inbox == nil || a.now().Before(inbox.nextPoll) {
 		return
 	}
 	inbox.nextPoll = a.now().Add(steerPollEvery)
@@ -164,54 +195,42 @@ func (a *app) serviceSteerInbox(ctx context.Context, c common, runtime adapter.A
 		}
 		if a.now().After(request.ExpiresAt) {
 			inbox.settled[request.RequestID] = true
-			a.recordSteer(c, execution, request, "rejected", "", "steer_expired", "request expired before it could be delivered")
+			a.recordSteer(c, execution.ID, request, "rejected", "", "steer_expired", "request expired before it could be delivered", 0)
 			_ = os.Remove(claimed)
 			continue
 		}
-		if liveInputSteer(execution) {
-			inbox.settled[request.RequestID] = true
-			done := make(chan struct{})
-			inbox.inFlight = done
-			go func(request steerRequestFile, claimed, pending string) {
-				defer close(done)
-				a.finishSteerDelivery(ctx, c, runtime, ref, execution, nil, request, claimed, pending)
-			}(request, claimed, pending)
+		result, steerErr := runtime.Steer(ctx, adapter.SteerRequest{Ref: ref, Message: []byte(request.Message), AllowInterrupt: request.AllowInterrupt})
+		var adapterErr *adapter.AdapterError
+		if steerErr != nil && errors.As(steerErr, &adapterErr) && adapterErr.Retryable && adapterErr.Code == adapter.ErrInvalidState {
+			// Not deliverable yet: the native session id is still unknown, or
+			// its live input has a backlog.
+			// Hand the request back so it is retried or withdrawn.
+			_ = os.Rename(claimed, pending)
 			return
 		}
-		a.finishSteerDelivery(ctx, c, runtime, ref, execution, inbox, request, claimed, pending)
-		if !inbox.settled[request.RequestID] {
-			return
-		}
-	}
-}
-
-func (a *app) finishSteerDelivery(ctx context.Context, c common, runtime adapter.Adapter, ref adapter.SourceRef, execution model.Execution, inbox *steerInbox, request steerRequestFile, claimed, pending string) {
-	result, steerErr := runtime.Steer(ctx, adapter.SteerRequest{Ref: ref, Message: []byte(request.Message), AllowInterrupt: request.AllowInterrupt})
-	var adapterErr *adapter.AdapterError
-	if steerErr != nil && errors.As(steerErr, &adapterErr) && adapterErr.Retryable && adapterErr.Code == adapter.ErrInvalidState {
-		// Not deliverable yet (the native session id is still unknown).
-		// Hand the request back so it is retried or withdrawn.
-		_ = os.Rename(claimed, pending)
-		return
-	}
-	if inbox != nil {
 		inbox.settled[request.RequestID] = true
-	}
-	if steerErr != nil {
-		code, reason := "steer_failed", steerErr.Error()
-		if adapterErr != nil {
-			reason = adapterErr.Message
-			if diagnostic, ok := adapterErr.Details["diagnostic_code"].(string); ok {
-				code = diagnostic
-			} else {
-				code = "steer_" + string(adapterErr.Code)
+		if steerErr != nil {
+			code, reason := "steer_failed", steerErr.Error()
+			if adapterErr != nil {
+				reason = adapterErr.Message
+				if diagnostic, ok := adapterErr.Details["diagnostic_code"].(string); ok {
+					code = diagnostic
+				} else {
+					code = "steer_" + string(adapterErr.Code)
+				}
 			}
+			a.recordSteer(c, execution.ID, request, "rejected", "", code, reason, 0)
+		} else if result.Delivery == adapter.SteerLiveInput && result.InputSequence > 0 {
+			// Written to the native input stream. It is delivered only once
+			// the native session acknowledges it.
+			request.MessageBytes, request.Message = len(request.Message), ""
+			inbox.awaiting[result.InputSequence] = request
+			a.recordSteer(c, execution.ID, request, "queued", string(result.Delivery), "", "", result.InputSequence)
+		} else {
+			a.recordSteer(c, execution.ID, request, "delivered", string(result.Delivery), "", "", 0)
 		}
-		a.recordSteer(c, execution, request, "rejected", "", code, reason)
-	} else {
-		a.recordSteer(c, execution, request, "delivered", string(result.Delivery), "", "")
+		_ = os.Remove(claimed)
 	}
-	_ = os.Remove(claimed)
 }
 
 func readSteerRequest(path string, id ids.ExecutionID) (steerRequestFile, error) {
@@ -238,17 +257,25 @@ func readSteerRequest(path string, id ids.ExecutionID) (steerRequestFile, error)
 	return request, nil
 }
 
-// recordSteer journals the outcome of one request. The payload is metadata
+// recordSteer journals one step of a request: queued (written to a live input
+// stream, not yet taken), delivered, or rejected. The payload is metadata
 // only: the message is identified by digest and size.
-func (a *app) recordSteer(c common, execution model.Execution, request steerRequestFile, status, delivery, diagnostic, reason string) {
-	journal, current, problem := a.openExecutionWriteOwned(c, execution.ID)
+func (a *app) recordSteer(c common, id ids.ExecutionID, request steerRequestFile, status, delivery, diagnostic, reason string, inputSequence int) {
+	journal, current, problem := a.openExecutionWriteOwned(c, id)
 	if problem != nil {
 		return
 	}
 	defer journal.Close()
-	steer := map[string]any{"request_id": request.RequestID, "status": status, "message_sha256": request.MessageSHA256, "message_bytes": len(request.Message)}
+	size := request.MessageBytes
+	if request.Message != "" {
+		size = len(request.Message)
+	}
+	steer := map[string]any{"request_id": request.RequestID, "status": status, "message_sha256": request.MessageSHA256, "message_bytes": size}
 	if delivery != "" {
 		steer["delivery"] = delivery
+	}
+	if inputSequence > 0 {
+		steer["input_sequence"] = inputSequence
 	}
 	if diagnostic != "" {
 		steer["diagnostic_code"] = diagnostic
@@ -360,6 +387,7 @@ func (a *app) steerCommand(ctx context.Context, renderer output.Renderer, c comm
 	if err != nil {
 		return output.Wrap(output.CodeInternal, "allocate steer request", false, err)
 	}
+	replaying := false
 	if opts.idempotencyKey != "" && !opts.plan {
 		// A retry of the same key and message returns the recorded outcome,
 		// even after the execution finished, instead of delivering twice.
@@ -367,9 +395,15 @@ func (a *app) steerCommand(ctx context.Context, renderer output.Renderer, c comm
 		if problem != nil {
 			return problem
 		}
-		if outcome != nil {
+		if outcome != nil && (!steerQueued(outcome) || opts.plan) {
 			return writeSteerOutcome(renderer, execution, outcome, nil, true)
 		}
+		replaying = outcome != nil
+	}
+	if replaying {
+		// The message is already in the native input stream. Wait for it to be
+		// taken instead of writing it again.
+		return a.awaitSteerOutcome(ctx, renderer, c, execution, 0, requestID, "", a.now().Add(opts.timeout), nil, true)
 	}
 	if execution.State.Terminal() {
 		return withID(output.NewError(output.CodeInvalidState, "terminal execution cannot be steered", false))
@@ -474,30 +508,60 @@ func (a *app) steerCommand(ctx context.Context, renderer output.Renderer, c comm
 	if queueErr != nil {
 		return inboxGone()
 	}
-	deadline := now.Add(opts.timeout)
+	return a.awaitSteerOutcome(ctx, renderer, c, execution, baseline, requestID, pending, now.Add(opts.timeout), route, false)
+}
+
+// awaitSteerOutcome waits for the owner to settle one request. pending is the
+// caller's queued request file, or empty when the owner already holds the
+// request.
+func (a *app) awaitSteerOutcome(ctx context.Context, renderer output.Renderer, c common, execution model.Execution, baseline uint64, requestID, pending string, deadline time.Time, route map[string]any, replayed bool) *output.Error {
+	id := execution.ID
+	withID := func(problem *output.Error) *output.Error {
+		return problem.WithDetail("execution_id", id.String()).WithDetail("state", execution.State).WithDetail("request_id", requestID)
+	}
+	var terminalSince time.Time
 	for {
 		select {
 		case <-ctx.Done():
 		case <-time.After(steerPollEvery):
 		}
-		if outcome, _ := a.findSteerOutcome(ctx, c, id, baseline, requestID); outcome != nil {
-			latest, _, _ := a.readSteerState(context.WithoutCancel(ctx), c, id)
-			if !latest.ID.IsZero() {
-				execution = latest
-			}
-			return writeSteerOutcome(renderer, execution, outcome, route, false)
-		}
-		latest, _, problem := a.readSteerState(context.WithoutCancel(ctx), c, id)
-		if problem == nil {
+		outcome, _ := a.findSteerOutcome(ctx, c, id, baseline, requestID)
+		if latest, _, problem := a.readSteerState(context.WithoutCancel(ctx), c, id); problem == nil {
 			execution = latest
 		}
-		expired := ctx.Err() != nil || a.now().After(deadline) || execution.State.Terminal()
-		if !expired {
+		if outcome != nil && !steerQueued(outcome) {
+			return writeSteerOutcome(renderer, execution, outcome, route, replayed)
+		}
+		expired := ctx.Err() != nil || a.now().After(deadline)
+		if steerQueued(outcome) {
+			// Written to the native input stream; the native session takes it
+			// at its next turn boundary, which can be later than this caller
+			// is willing to wait.
+			if execution.State.Terminal() {
+				// The owner settles what it still holds as it returns.
+				if terminalSince.IsZero() {
+					terminalSince = a.now()
+					if execution.TerminalAt != nil {
+						terminalSince = *execution.TerminalAt
+					}
+				}
+				if a.now().After(terminalSince.Add(steerClaimedGrace)) || ctx.Err() != nil {
+					return withID(output.NewError(output.CodeInvalidState, "the execution ended and the native session never acknowledged the steering message; it was not delivered", false).
+						WithDetail("diagnostic_code", "steer_unacknowledged"))
+				}
+				continue
+			}
+			if expired {
+				return writeSteerOutcome(renderer, execution, outcome, route, replayed)
+			}
+			continue
+		}
+		if !expired && !execution.State.Terminal() {
 			continue
 		}
 		// Withdrawal and the owner's claim are both renames of the same
 		// file, so exactly one of them succeeds.
-		if os.Remove(pending) == nil {
+		if pending != "" && os.Remove(pending) == nil {
 			if execution.State.Terminal() {
 				return withID(output.NewError(output.CodeInvalidState, "execution reached a terminal state before the message was delivered; nothing was delivered", false))
 			}
@@ -505,7 +569,6 @@ func (a *app) steerCommand(ctx context.Context, renderer output.Renderer, c comm
 		}
 		if a.now().After(deadline.Add(steerClaimedGrace)) || ctx.Err() != nil {
 			return withID(output.NewError(output.CodeExecutionUnknown, "the owner took the steering request but recorded no outcome; delivery is unknown and it was not retried", false).
-				WithDetail("request_id", requestID).
 				WithActions(output.NextAction{Label: "Inspect execution events", Argv: []string{"agentctl", "events", id.String()}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}}))
 		}
 	}
@@ -550,8 +613,9 @@ func lastEventSequence(ctx context.Context, journal *store.Journal, id ids.Execu
 	}
 }
 
-// findSteerOutcome returns the journaled outcome of one request, or nil when
-// none is recorded. A journal that cannot be read is reported as a problem so
+// findSteerOutcome returns the newest journaled record of one request (a
+// queued record is followed by its delivery or rejection), or nil when none is
+// recorded. A journal that cannot be read is reported as a problem so
 // a caller never mistakes "could not look" for "not delivered".
 func (a *app) findSteerOutcome(ctx context.Context, c common, id ids.ExecutionID, after uint64, requestID string) (map[string]any, *output.Error) {
 	journal, problem := a.openRead(c)
@@ -559,31 +623,33 @@ func (a *app) findSteerOutcome(ctx context.Context, c common, id ids.ExecutionID
 		return nil, problem
 	}
 	defer journal.Close()
+	var newest map[string]any
 	for {
 		events, err := journal.ListEvents(context.WithoutCancel(ctx), id, contracts.EventQuery{AfterSequence: after, Limit: 1000, Kinds: []model.EventKind{model.EventProgress}})
 		if err != nil {
 			return nil, mapStoreError("read steering outcome", err)
-		}
-		if len(events) == 0 {
-			return nil, nil
 		}
 		for _, event := range events {
 			after = event.Sequence
 			steer, ok := event.Payload["steer"].(map[string]any)
 			if ok && steer["request_id"] == requestID {
 				steer["event_id"] = event.ID.String()
-				return steer, nil
+				newest = steer
 			}
 		}
 		if len(events) < 1000 {
-			return nil, nil
+			return newest, nil
 		}
 	}
 }
 
+func steerQueued(outcome map[string]any) bool {
+	return outcome != nil && outcome["status"] == "queued"
+}
+
 func writeSteerOutcome(renderer output.Renderer, execution model.Execution, outcome map[string]any, route map[string]any, replayed bool) *output.Error {
 	status, _ := outcome["status"].(string)
-	if status != "delivered" {
+	if status != "delivered" && status != "queued" {
 		code := output.CodeInvalidState
 		diagnostic, _ := outcome["diagnostic_code"].(string)
 		switch diagnostic {
@@ -600,12 +666,22 @@ func writeSteerOutcome(renderer output.Renderer, execution model.Execution, outc
 		return output.NewError(code, "the steering message was not delivered", false).WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State).
 			WithDetail("diagnostic_code", diagnostic).WithDetail("reason", reason).WithDetail("request_id", outcome["request_id"])
 	}
-	result := map[string]any{"id": execution.ID, "state": execution.State, "adapter": execution.Adapter, "steer": outcome, "replayed": replayed,
-		"guarantee": "the message reached the native session's input; it is not proof the agent acted on it"}
+	// delivered is evidence from the native session itself: it acknowledged
+	// the message, or it was relaunched with the message as its prompt. queued
+	// is only agentctl's own write to the native input stream.
+	guarantee := "the native session was resumed with the message as its prompt; it is not proof the agent acted on it"
+	if outcome["delivery"] == string(adapter.SteerLiveInput) {
+		guarantee = "the native session acknowledged taking the message; it is not proof the agent acted on it"
+	}
+	actions := []output.NextAction{{Label: "Wait for execution", Argv: []string{"agentctl", "await", execution.ID.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}}}
+	if status == "queued" {
+		guarantee = "the message is written to the native session's input and has not been taken yet; the session takes it at its next turn boundary"
+		actions = append([]output.NextAction{{Label: "Watch for the steer_delivered or steer_rejected event of this request", Argv: []string{"agentctl", "events", execution.ID.String()}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}}}, actions...)
+	}
+	result := map[string]any{"id": execution.ID, "state": execution.State, "adapter": execution.Adapter, "steer": outcome, "replayed": replayed, "guarantee": guarantee}
 	if route != nil {
 		result["route"] = route
 	}
-	actions := []output.NextAction{{Label: "Wait for execution", Argv: []string{"agentctl", "await", execution.ID.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}}}
 	if err := renderer.Success(output.Success{Result: result, NextActions: actions, Lines: []output.Line{{Lead: execution.ID.String(), Fields: []output.Field{{Name: "steer", Value: status}, {Name: "delivery", Value: outcome["delivery"]}, {Name: "state", Value: execution.State}}}}}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}

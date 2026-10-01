@@ -297,7 +297,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	// before the execution is journaled as running, so a caller that sees a
 	// running execution can already queue a request.
 	inbox := a.openSteerInbox(c, execution)
-	defer inbox.close()
+	defer func() { a.closeSteerInbox(c, execution.ID, inbox) }()
 	writeJournal, current, openProblem := a.openExecutionWriteOwned(c, execution.ID)
 	if openProblem != nil {
 		return openProblem
@@ -332,7 +332,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		nativeEvents, eventErr := runtime.Events(launchCtx, adapter.EventsRequest{Ref: launch.Session.Ref, Cursor: cursor})
 		if eventErr == nil && len(nativeEvents) != 0 {
 			var terminal bool
-			execution, terminal, openProblem = a.recordNativeEvents(c, execution, nativeEvents, &cursor)
+			execution, terminal, openProblem = a.recordNativeEvents(c, execution, nativeEvents, &cursor, inbox)
 			if openProblem != nil {
 				return openProblem
 			}
@@ -363,7 +363,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			// CommitTerminalOutcome below, so native terminal records are skipped.
 			if pending, pendingErr := runtime.Events(context.Background(), adapter.EventsRequest{Ref: launch.Session.Ref, Cursor: cursor}); pendingErr == nil && len(pending) != 0 {
 				var terminal bool
-				execution, terminal, openProblem = a.recordNativeEvents(c, execution, pending, &cursor)
+				execution, terminal, openProblem = a.recordNativeEvents(c, execution, pending, &cursor, inbox)
 				if openProblem != nil {
 					return openProblem
 				}
@@ -371,6 +371,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 					return writeExecution(renderer, execution, "run")
 				}
 			}
+			a.settleSteerInbox(c, execution.ID, inbox)
 			writeJournal, current, openProblem = a.openExecutionWriteOwned(c, execution.ID)
 			if openProblem != nil {
 				return openProblem
@@ -402,7 +403,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			// before committing the normalized terminal outcome.
 			if pending, pendingErr := runtime.Events(context.Background(), adapter.EventsRequest{Ref: launch.Session.Ref, Cursor: cursor}); pendingErr == nil && len(pending) != 0 {
 				var terminal bool
-				execution, terminal, openProblem = a.recordNativeEvents(c, execution, pending, &cursor)
+				execution, terminal, openProblem = a.recordNativeEvents(c, execution, pending, &cursor, inbox)
 				if openProblem != nil {
 					return openProblem
 				}
@@ -417,6 +418,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 				}
 				last = adapter.Result{Success: false, State: adapter.StateCancelled, Error: message, SessionRef: launch.Session.Ref}
 			}
+			a.settleSteerInbox(c, execution.ID, inbox)
 			writeJournal, current, openProblem := a.openExecutionWriteOwned(c, execution.ID)
 			if openProblem != nil {
 				return openProblem
@@ -435,7 +437,8 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	}
 }
 
-func (a *app) recordNativeEvents(c common, execution model.Execution, nativeEvents []adapter.Event, cursor *string) (model.Execution, bool, *output.Error) {
+func (a *app) recordNativeEvents(c common, execution model.Execution, nativeEvents []adapter.Event, cursor *string, inbox *steerInbox) (model.Execution, bool, *output.Error) {
+	defer a.acknowledgeSteer(c, execution.ID, inbox, nativeEvents)
 	journal, current, problem := a.openExecutionWriteOwned(c, execution.ID)
 	if problem != nil {
 		return execution, false, problem

@@ -48,18 +48,25 @@ from the same completed turn with a new request key.
 
 Two invocations that both pass these checks still launch only one turn. Each
 journals its execution first and then looks again; the turn created first
-launches and the other is terminalized as cancelled without starting a native
-process.
+launches and the other is terminalized as cancelled, with source state
+`admission_refused`, without starting a native process. A refused turn
+releases its request key, because nothing was sent: the same key can be used
+again, either to retry once the session is free or to continue from the turn
+that was admitted instead.
 
 `--request-key` is required. A retry with the same key and the same prompt
 recovers the turn it already started, including its answer, instead of sending
 the instruction twice. The same key with a different prompt is a conflict.
 
+The result shape is the [continue-result schema](../schemas/continue-result.schema.json).
+
 ## Which harnesses can be continued
 
 The `resume` capability is negotiated from the exact invocation when the
 execution launches, like `steer`, and is reported in the delegate plan's
-preflight and in `status`.
+preflight and in `status`. The adapter's `Resume` operation and `continue`
+build their argv from the same verified route, so an adapter that reports
+`resume` can perform it.
 
 | Harness | Follow-up turn | Evidence (2026-10-01) |
 | --- | --- | --- |

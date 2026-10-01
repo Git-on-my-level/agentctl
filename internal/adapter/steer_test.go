@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -419,5 +420,153 @@ func TestResumeArgvAcceptsAnArgvThatAlreadyResumes(t *testing.T) {
 	steer := NegotiateSteer(codexManifest(), []string{"codex", "exec", "resume", "--json", "thread-1", "-"}, PromptDeliveryStdin, 0)
 	if steer.Status != CapabilityDegraded {
 		t.Fatalf("steer on a resumed codex argv = %s (%s)", steer.Status, steer.Reason)
+	}
+}
+
+// gatedInput stands in for a native stdin pipe that is full: a write blocks
+// until the test releases it.
+type gatedInput struct {
+	release chan struct{}
+	fail    bool
+	mu      sync.Mutex
+	writes  int
+}
+
+func (g *gatedInput) Write(p []byte) (int, error) {
+	<-g.release
+	if g.fail {
+		return 0, errors.New("broken pipe")
+	}
+	g.mu.Lock()
+	g.writes++
+	g.mu.Unlock()
+	return len(p), nil
+}
+
+func (g *gatedInput) Close() error { return nil }
+
+func (g *gatedInput) written() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.writes
+}
+
+func TestLiveInputSendNeverBlocksOnAFullNativePipe(t *testing.T) {
+	input := &gatedInput{release: make(chan struct{})}
+	live := &liveSession{protocol: claudeStreamJSON{}, stdin: input}
+	done := make(chan []int, 1)
+	go func() {
+		var sequences []int
+		for i := 0; i < liveInputBacklog; i++ {
+			sequence, err := live.send([]byte("message"))
+			if err != nil {
+				t.Errorf("send %d: %v", i, err)
+			}
+			sequences = append(sequences, sequence)
+		}
+		done <- sequences
+	}()
+	select {
+	case sequences := <-done:
+		if sequences[0] != 1 || sequences[len(sequences)-1] != liveInputBacklog {
+			t.Fatalf("sequences = %v", sequences)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("send blocked on a native input that is not being read")
+	}
+	// The writer holds one message in its blocked write; fill the backlog
+	// behind it. The next message is refused as retryable, not queued without
+	// bound.
+	var err error
+	accepted := liveInputBacklog
+	for i := 0; i <= liveInputBacklog; i++ {
+		if _, err = live.send([]byte("more")); err != nil {
+			break
+		}
+		accepted++
+	}
+	var adapterErr *AdapterError
+	if !errors.As(err, &adapterErr) || adapterErr.Code != ErrInvalidState || !adapterErr.Retryable {
+		t.Fatalf("a full backlog must be retryable: %v", err)
+	}
+	if live.finishTurn() {
+		t.Fatal("a native result must not end the session while messages are still queued")
+	}
+	close(input.release)
+	deadline := time.Now().Add(5 * time.Second)
+	for input.written() < accepted && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if input.written() != accepted {
+		t.Fatalf("%d of %d accepted messages were written", input.written(), accepted)
+	}
+}
+
+func TestLiveInputWriteFailureReleasesQueuedMessages(t *testing.T) {
+	input := &gatedInput{release: make(chan struct{}), fail: true}
+	live := &liveSession{protocol: claudeStreamJSON{}, stdin: input}
+	for i := 0; i < 3; i++ {
+		if _, err := live.send([]byte("message")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(input.release)
+	deadline := time.Now().Add(5 * time.Second)
+	var err error
+	for time.Now().Before(deadline) {
+		if _, err = live.send([]byte("after")); err != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	var adapterErr *AdapterError
+	if !errors.As(err, &adapterErr) || adapterErr.Code != ErrExecutionFailed {
+		t.Fatalf("send after a failed write = %v", err)
+	}
+	// Nothing queued can be taken any more, so the next native terminal
+	// record ends the session instead of waiting for another turn.
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		live.mu.Lock()
+		pending := live.pending
+		live.mu.Unlock()
+		if pending == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !live.finishTurn() {
+		t.Fatal("messages that could not be written must not hold the session open")
+	}
+}
+
+func TestResumeOperationUsesTheNegotiatedRoute(t *testing.T) {
+	path := fixtureExecutable(t, fakeResumableAgent)
+	a := NewCodex()
+	ref := SourceRef{Adapter: "codex", Kind: "native_session", OpaqueID: "thread-1"}
+	launched, err := a.Resume(boundedContext(t), ResumeRequest{Ref: ref, Argv: []string{path, "exec", "--json", "--sandbox", "read-only", "-"}, Prompt: []byte("next\n"), PromptDelivery: PromptDeliveryStdin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launched.Result == nil || !launched.Result.Success || !strings.Contains(launched.Result.Content, "resumed with next via") ||
+		!strings.Contains(launched.Result.Content, "exec resume --json -c sandbox_mode='read-only' thread-1 -") {
+		t.Fatalf("resume result = %#v", launched.Result)
+	}
+	// An argv prompt is replaced by the next one rather than repeated.
+	argvPath := fixtureExecutable(t, `printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"$*\",\"session_id\":\"chat-1\"}"`)
+	cursor := NewCursor()
+	launched, err = cursor.Resume(boundedContext(t), ResumeRequest{Ref: SourceRef{Adapter: "cursor", Kind: "native_session", OpaqueID: "chat-1"},
+		Argv: []string{argvPath, "--print", "--output-format", "stream-json", "first prompt"}, Prompt: []byte("second prompt"), PromptDelivery: PromptDeliveryArgv, PromptArgs: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launched.Result == nil || !strings.Contains(launched.Result.Content, "--resume chat-1") || !strings.HasSuffix(launched.Result.Content, "second prompt") || strings.Contains(launched.Result.Content, "first prompt") {
+		t.Fatalf("cursor resume result = %#v", launched.Result)
+	}
+	// Adapters without a verified route still refuse, with the reason.
+	_, err = NewDevin().Resume(context.Background(), ResumeRequest{Ref: SourceRef{Adapter: "devin", Kind: "native_session", OpaqueID: "s"}, Argv: []string{"devin", "-p"}, Prompt: []byte("next"), PromptDelivery: PromptDeliveryStdin})
+	var adapterErr *AdapterError
+	if !errors.As(err, &adapterErr) || adapterErr.Code != ErrCapabilityUnavailable {
+		t.Fatalf("devin resume = %v", err)
 	}
 }

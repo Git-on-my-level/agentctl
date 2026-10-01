@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-agentctl-docs": "../docs/steering.md",
+  "$id": "urn:agentctl:schema:steer-result:v1",
+  "title": "Steer success result payload v1",
+  "description": "The result member of the normal success envelope for agentctl steer. A rejected or undelivered request uses the error envelope with a diagnostic_code instead.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "adapter",
+    "state"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "adapter": {
+      "type": "string"
+    },
+    "state": {
+      "$ref": "execution.schema.json#/properties/state"
+    },
+    "plan": {
+      "const": true
+    },
+    "side_effect_class": {
+      "const": "read_only"
+    },
+    "requires_allow_interrupt": {
+      "type": "boolean"
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "delivery",
+        "status",
+        "constraints"
+      ],
+      "properties": {
+        "delivery": {
+          "enum": [
+            "live_input",
+            "interrupt_resume"
+          ]
+        },
+        "status": {
+          "enum": [
+            "supported",
+            "degraded"
+          ]
+        },
+        "constraints": {
+          "type": "object"
+        }
+      }
+    },
+    "replayed": {
+      "type": "boolean",
+      "description": "True when this invocation reported a request that was already recorded instead of queuing a new one."
+    },
+    "guarantee": {
+      "type": "string"
+    },
+    "steer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "status",
+        "delivery",
+        "message_sha256",
+        "message_bytes",
+        "event_id"
+      ],
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "status": {
+          "enum": [
+            "delivered",
+            "queued"
+          ],
+          "description": "delivered: the native session acknowledged the message (live_input) or was resumed with it as its prompt (interrupt_resume). queued: the message is written to the native input stream and the session had not taken it when this invocation stopped waiting; a later steer_delivered or steer_rejected event settles it."
+        },
+        "delivery": {
+          "enum": [
+            "live_input",
+            "interrupt_resume"
+          ]
+        },
+        "input_sequence": {
+          "type": "integer",
+          "minimum": 2,
+          "description": "Position of the message in the native live input stream; the matching input_acknowledged event carries the same value."
+        },
+        "message_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "message_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "event_id": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "required": [
+        "plan",
+        "side_effect_class",
+        "route",
+        "requires_allow_interrupt",
+        "message"
+      ]
+    },
+    {
+      "required": [
+        "steer",
+        "replayed",
+        "guarantee"
+      ]
+    }
+  ]
+}

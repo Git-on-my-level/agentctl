@@ -33,8 +33,9 @@ owner-only spool directory beside the journal:
   nothing was delivered, or finds it already claimed.
 - The owner applies requests in arrival order from its observation loop, so a
   delivery never races its own reads of the native session.
-- The owner journals one `progress` event per request with `source_state`
-  `steer_delivered` or `steer_rejected`. The caller waits for that event.
+- The owner journals `progress` events per request with `source_state`
+  `steer_delivered` or `steer_rejected`, preceded on a live route by
+  `steer_queued`. The caller waits for the delivery or rejection.
 
 The request file is the only place the message exists at rest. It is
 owner-only, lives for the time between the two processes' polls, and is
@@ -49,7 +50,7 @@ from an adapter name.
 
 | Delivery | Capability status | What happens |
 | --- | --- | --- |
-| `live_input` | `supported` | The native CLI was launched in a streaming-input mode and agentctl holds its stdin open. The message is written to that stream. The agent takes it at its next turn boundary: between tool calls when it is using tools, otherwise after its current reply. |
+| `live_input` | `supported` | The native CLI was launched in a streaming-input mode and agentctl holds its stdin open. The message is written to that stream. The agent takes it at its next turn boundary: between tool calls when it is using tools, otherwise after its current reply. It is `delivered` once the native CLI acknowledges it. |
 | `interrupt_resume` | `degraded` | The native CLI is one-shot. agentctl stops the process and relaunches the same native session with the message. The in-flight turn is discarded. |
 
 `degraded` follows the usual rule: it is used only when the caller permits the
@@ -60,6 +61,24 @@ terminal record ends the execution only when no message is still queued;
 otherwise it is journaled as `turn_completed` and the answer to the queued
 message becomes the final result. Each message the native CLI takes is
 journaled as `input_acknowledged`.
+
+A write to the native input is not delivery. A native CLI reads its input only
+at a turn boundary, and it can exit or fail before it gets there. The owner
+therefore records a live request in two steps:
+
+1. `steer_queued` when the message is handed to the native input stream, with
+   its `input_sequence` in that stream (the launch prompt is 1).
+2. `steer_delivered` when the native CLI acknowledges that sequence, or
+   `steer_rejected` with `steer_unacknowledged` when the execution ends first.
+
+If the native CLI exits after finishing a turn without taking the queued
+message, that turn's answer is still the execution's result.
+
+The write itself never blocks the owner. A full native stdin pipe would
+otherwise stall event recording, lease renewal, timeouts, and cancellation for
+as long as the turn lasts, so a writer hands messages to the pipe in order.
+At most 16 unwritten messages are held; a request beyond that stays in the
+spool and is retried or withdrawn.
 
 `interrupt_resume` keeps the session but not necessarily the interrupted turn.
 In a test where the agent read a file and was then steered, Claude Code still
@@ -98,8 +117,17 @@ can only re-deliver a message through a channel it attached itself. Use
 
 ## Guarantees and failure semantics
 
-- Success means the message reached the native session's input. It is not
-  proof that the agent acted on it.
+- `delivered` is evidence from the native session, not from agentctl's own
+  write: the session acknowledged the message (`live_input`) or was relaunched
+  with it as its prompt (`interrupt_resume`). It is not proof that the agent
+  acted on it.
+- `queued` is a success result with a weaker meaning: the message is in the
+  native input stream and the session had not taken it when `--timeout`
+  elapsed. It cannot be withdrawn. Its `steer_delivered` or `steer_rejected`
+  event arrives later; a retry with the same `--idempotency-key` waits for it
+  without writing the message again.
+- A queued message the session never takes is rejected as
+  `steer_unacknowledged` when the execution ends.
 - Terminal, Multica-authority, and route-less executions are rejected before
   anything is queued.
 - A request the owner does not take before `--timeout` (default 60 seconds) is
@@ -116,7 +144,7 @@ can only re-deliver a message through a channel it attached itself. Use
 - Steering does not survive the owner. It has the same process-scoped
   lifetime as the native child.
 
-`steer` result:
+`steer` result ([steer-result schema](../schemas/steer-result.schema.json)):
 
 ```json
 {
@@ -127,6 +155,7 @@ can only re-deliver a message through a channel it attached itself. Use
   "steer": {
     "status": "delivered",
     "delivery": "live_input",
+    "input_sequence": 2,
     "request_id": "sha256:...",
     "event_id": "event-...",
     "message_bytes": 108,
@@ -137,8 +166,8 @@ can only re-deliver a message through a channel it attached itself. Use
 
 Rejections use the normal error envelope with a `diagnostic_code`:
 `steer_interrupt_not_permitted`, `steer_inbox_missing`, `steer_expired`,
-`steer_invalid_state`, `steer_capability_unavailable`, or
-`steer_resume_failed`.
+`steer_invalid_state`, `steer_capability_unavailable`, `steer_unacknowledged`,
+or `steer_resume_failed`.
 
 ## Not covered
 

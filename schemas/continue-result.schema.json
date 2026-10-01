@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-agentctl-docs": "../docs/follow-up-turns.md",
+  "$id": "urn:agentctl:schema:continue-result:v1",
+  "title": "Continue success result payload v1",
+  "description": "The result member of the normal success envelope for agentctl continue; --content emits raw answer text instead.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "continues",
+    "resolved",
+    "request_sha256",
+    "reused"
+  ],
+  "properties": {
+    "continues": {
+      "type": "string",
+      "description": "The execution whose native session this turn continues."
+    },
+    "resolved": {
+      "$ref": "delegate-result.schema.json#/properties/resolved"
+    },
+    "requested": {
+      "$ref": "delegate-result.schema.json#/properties/requested"
+    },
+    "provenance": {
+      "$ref": "delegate-result.schema.json#/properties/provenance"
+    },
+    "request_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "reused": {
+      "type": "boolean"
+    },
+    "id": {
+      "type": "string"
+    },
+    "origin_host_id": {
+      "type": "string"
+    },
+    "state": {
+      "$ref": "execution.schema.json#/properties/state"
+    },
+    "liveness": {
+      "$ref": "execution.schema.json#/properties/liveness"
+    },
+    "authority": {
+      "const": "native"
+    },
+    "plan": {
+      "const": true
+    },
+    "side_effect_class": {
+      "const": "read_only"
+    },
+    "lifecycle": {
+      "type": "object"
+    },
+    "native": {
+      "type": "object",
+      "description": "Plan only. The native session id in argv is replaced by <native-session>."
+    },
+    "outcome": {
+      "$ref": "outcome.schema.json"
+    }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "plan",
+        "side_effect_class",
+        "lifecycle"
+      ]
+    },
+    {
+      "required": [
+        "id",
+        "origin_host_id",
+        "state",
+        "liveness",
+        "authority",
+        "requested",
+        "provenance"
+      ]
+    }
+  ]
+}

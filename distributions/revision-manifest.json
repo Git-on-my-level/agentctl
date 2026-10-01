@@ -15,14 +15,14 @@
     {
       "id": "portable-skill",
       "path": "skills/agentctl-portable/SKILL.md",
-      "sha256": "08d38589bc23d52f4a11a7444311506051a54f5f2bcdeb4f08dfdab1203ed4ff",
+      "sha256": "d59f3bb80f413fe69a347901ae0f82be8e66f84ddb9d97535e06ddfdbbc3826e",
       "install_name": "SKILL.md",
       "kind": "skill"
     },
     {
       "id": "multica-runtime-bundle",
       "path": "distributions/multica/agentctl-portable.bundle.json",
-      "sha256": "e77dbc416b524615faf42870b5c2c819014d657c69cb2754a04848890ac45aa7",
+      "sha256": "2c9096de650122d1c78d0accdd2a95c48d18cec05d0a7ca8af181a4a19e4c8a4",
       "install_name": "agentctl-portable.bundle.json",
       "kind": "runtime_bundle",
       "harnesses": [

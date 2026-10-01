@@ -241,7 +241,8 @@ recipe, permissions, and working directory. Only a completed delegated
 execution can be continued; a refusal names the reason. Do not hand-write a
 native resume argv through expert `run` when `continue` is available, and never
 look up a native session id yourself. Use one new request key per turn; a retry
-with the same key and prompt recovers that turn.
+with the same key and prompt recovers that turn, or launches it if the first
+attempt was refused because another turn was running.
 
 To redirect a running native execution, read `agentctl help steer` and plan
 first. The route is fixed when the execution launches and is never inferred
@@ -257,8 +258,11 @@ interrupting it. `interrupt_resume` stops the native process and resumes the
 same session, so it requires `--allow-interrupt`; progress inside the
 interrupted turn can be lost, so restate anything the agent must keep. When the
 plan reports no route, steering is unavailable: report that, and do not cancel
-and relaunch as a substitute unless the user wants the work restarted. Success
-means the message was delivered, not that the agent acted on it. A finished
+and relaunch as a substitute unless the user wants the work restarted. Read
+`steer.status`: `delivered` means the native session took the message, not that
+the agent acted on it; `queued` means it is written to the session's input and
+not taken yet, so retry with the same `--idempotency-key` to wait for it rather
+than sending it again. A finished
 execution cannot be steered; use `continue`. Steering needs a prompt that agentctl
 delivered (`--prompt-file` or `--prompt-stdin`), not one embedded in native argv.
 

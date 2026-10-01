@@ -73,6 +73,7 @@ func TestContinueRunsFollowUpTurnsOnTheSameNativeSession(t *testing.T) {
 	if code != 0 || !strings.Contains(plan, `"--resume","<native-session>"`) || strings.Contains(plan, "chat-1") || strings.Contains(plan, "review feedback") {
 		t.Fatalf("plan exit=%d output=%s", code, plan)
 	}
+	assertResultMatchesSchemaShape(t, plan, "continue-result.schema.json")
 	if f.launches(t) != 1 {
 		t.Fatalf("a plan must not launch: %d", f.launches(t))
 	}
@@ -81,6 +82,7 @@ func TestContinueRunsFollowUpTurnsOnTheSameNativeSession(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "resumed answer") || !strings.Contains(out, `"continues":"`+first+`"`) || !strings.Contains(out, `"reused":false`) {
 		t.Fatalf("continue exit=%d output=%s", code, out)
 	}
+	assertResultMatchesSchemaShape(t, out, "continue-result.schema.json")
 	second := resultID(t, out)
 	if second == first {
 		t.Fatal("a follow-up turn must be a new execution")
@@ -189,6 +191,69 @@ func TestContinueRefusedKeyCanRetryFromLatestTurn(t *testing.T) {
 	code, out = f.command(t, "feedback", "continue", winnerID, "--request-key", refusedKey, "--prompt-stdin", "--wait")
 	if code != 0 || !strings.Contains(out, "resumed answer") || resultID(t, out) == winnerID {
 		t.Fatalf("retry refused key exit=%d output=%s", code, out)
+	}
+}
+
+// continueFlakyAgent fails its first resumed turn and answers the next one.
+const continueFlakyAgent = `printf '%s\n' '{"type":"system","subtype":"init","session_id":"chat-1"}'
+case " $* " in
+*" --resume chat-1 "*)
+  sleep 1
+  if rm "$CONTINUE_FIXTURE_FAIL_ONCE" 2>/dev/null; then
+    printf '%s\n' '{"type":"result","subtype":"error","is_error":true,"result":"boom"}'
+    exit 0
+  fi
+  kind=resumed;;
+*) kind=first;;
+esac
+printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"$kind answer\"}"`
+
+// A follow-up that loses the admission race never launched, so its request
+// key is still owed its turn: retrying it must not recover the refusal.
+func TestContinueRefusedAdmissionDoesNotUseUpTheRequestKey(t *testing.T) {
+	f := newDelegateFixture(t, continueFlakyAgent)
+	failOnce := filepath.Join(f.root, "fail-once")
+	t.Setenv("CONTINUE_FIXTURE_FAIL_ONCE", failOnce)
+	code, out := f.invoke("first task", "--wait")
+	if code != 0 {
+		t.Fatalf("delegate exit=%d output=%s", code, out)
+	}
+	first := resultID(t, out)
+	if err := os.WriteFile(failOnce, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	keys := []string{"racer-a", "racer-b"}
+	outputs := make([]string, 2)
+	var wg sync.WaitGroup
+	for i := range outputs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, outputs[i] = f.command(t, "feedback", "continue", first, "--request-key", keys[i], "--prompt-stdin", "--wait")
+		}(i)
+	}
+	wg.Wait()
+	refused := -1
+	for i := range outputs {
+		if strings.Contains(outputs[i], "continue_in_progress") {
+			refused = i
+		} else if !strings.Contains(outputs[i], "execution_failed") {
+			t.Fatalf("unexpected outcome: %s", outputs[i])
+		}
+	}
+	if refused < 0 || f.launches(t) != 2 {
+		t.Fatalf("launches=%d outputs=%v", f.launches(t), outputs)
+	}
+	// The admitted turn failed, so the session is free again and the refused
+	// key gets the turn it asked for.
+	code, out = f.command(t, "feedback", "continue", first, "--request-key", keys[refused], "--prompt-stdin", "--wait")
+	if code != 0 || !strings.Contains(out, "resumed answer") || f.launches(t) != 3 {
+		t.Fatalf("retry of the refused key exit=%d launches=%d output=%s", code, f.launches(t), out)
+	}
+	// And that turn is what the key recovers from now on.
+	code, again := f.command(t, "feedback", "continue", first, "--request-key", keys[refused], "--prompt-stdin", "--wait")
+	if code != 0 || !strings.Contains(again, `"reused":true`) || resultID(t, again) != resultID(t, out) || f.launches(t) != 3 {
+		t.Fatalf("replay exit=%d launches=%d output=%s", code, f.launches(t), again)
 	}
 }
 

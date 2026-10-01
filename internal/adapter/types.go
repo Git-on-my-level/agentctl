@@ -331,9 +331,17 @@ type ResultRequest struct {
 	Poll PollOptions
 }
 
+// ResumeRequest continues the native session named by Ref with a new prompt.
+// Argv is the invocation that created the session; PromptDelivery and
+// PromptArgs describe how its prompt was attached, as in LaunchRequest. Prompt
+// is delivered the same way.
 type ResumeRequest struct {
 	Ref              SourceRef
 	Argv             []string
+	Cwd              string
+	Prompt           []byte
+	PromptDelivery   string
+	PromptArgs       int
 	Context          *ContextInput
 	ExecutionContext *ExecutionContext
 	Timeout          time.Duration
@@ -366,6 +374,10 @@ type SteerRequest struct {
 type SteerResult struct {
 	Delivery SteerDelivery `json:"delivery"`
 	Session  Session       `json:"session"`
+	// InputSequence is set for SteerLiveInput. The message has only been
+	// queued for the native input stream; the native session has taken it
+	// once an input_acknowledged event carries the same input_sequence.
+	InputSequence int `json:"input_sequence,omitempty"`
 }
 
 type CancelRequest struct {

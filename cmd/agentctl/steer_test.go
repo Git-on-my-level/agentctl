@@ -160,10 +160,12 @@ func TestSteerLiveInputFromAnotherInvocation(t *testing.T) {
 	if code != 0 || !strings.Contains(plan, `"delivery":"live_input"`) || !strings.Contains(plan, `"requires_allow_interrupt":false`) || strings.Contains(plan, steerSecret) {
 		t.Fatalf("plan exit=%d output=%s", code, plan)
 	}
+	assertResultMatchesSchemaShape(t, plan, "steer-result.schema.json", "route", "message")
 	code, out := fixture.command(steerSecret, "steer", fixture.id, "--prompt-stdin", "--idempotency-key", "redirect-1")
 	if code != 0 || !strings.Contains(out, `"status":"delivered"`) || !strings.Contains(out, `"delivery":"live_input"`) || strings.Contains(out, steerSecret) {
 		t.Fatalf("steer exit=%d output=%s", code, out)
 	}
+	assertResultMatchesSchemaShape(t, out, "steer-result.schema.json", "route", "steer")
 	if code := fixture.waitOwner(); code != 0 {
 		t.Fatalf("owner exit=%d", code)
 	}
@@ -171,7 +173,7 @@ func TestSteerLiveInputFromAnotherInvocation(t *testing.T) {
 		t.Fatalf("the answer to the steering message must be the final result: exit=%d %s", code, result)
 	}
 	_, events := fixture.command("", "events", fixture.id)
-	for _, want := range []string{`"source_state":"steer_delivered"`, `"source_state":"turn_completed"`, `"message_sha256":"sha256:`, `"message_bytes":23`} {
+	for _, want := range []string{`"source_state":"steer_queued"`, `"source_state":"steer_delivered"`, `"input_sequence":2`, `"source_state":"turn_completed"`, `"message_sha256":"sha256:`, `"message_bytes":23`} {
 		if !strings.Contains(events, want) {
 			t.Fatalf("events missing %s: %s", want, events)
 		}
@@ -226,6 +228,7 @@ func TestSteerInterruptResumeRequiresExplicitPermission(t *testing.T) {
 	if code != 0 || !strings.Contains(out, `"delivery":"interrupt_resume"`) || !strings.Contains(out, `"status":"delivered"`) {
 		t.Fatalf("steer exit=%d output=%s", code, out)
 	}
+	assertResultMatchesSchemaShape(t, out, "steer-result.schema.json", "route", "steer")
 	if code := fixture.waitOwner(); code != 0 {
 		t.Fatalf("owner exit=%d", code)
 	}
@@ -355,5 +358,75 @@ func TestSteerConcurrentRetriesOfOneRequestDeliverOnce(t *testing.T) {
 	_, events := fixture.command("", "events", fixture.id)
 	if delivered := strings.Count(events, `"source_state":"steer_delivered"`); delivered != 1 {
 		t.Fatalf("the message was delivered %d times: %s", delivered, events)
+	}
+}
+
+// steerDeafAgent reads a steering message from its input but ends without
+// ever acknowledging it.
+const steerDeafAgent = `#!/bin/sh
+case "$1" in --version) echo "fake 1.0"; exit 0;; esac
+IFS= read -r first
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"live-1"}'
+printf '%s\n' '{"type":"user","isReplay":true,"session_id":"live-1"}'
+IFS= read -r second
+printf '%s\n' '{"type":"result","result":"turn-1","is_error":false,"session_id":"live-1"}'
+`
+
+func TestSteerLiveInputIsNotDeliveredUntilTheNativeSessionAcknowledgesIt(t *testing.T) {
+	fixture := startSteerFixture(t, steerDeafAgent, "claude-code", "stream", "--print", "--output-format", "stream-json", "--input-format", "stream-json", "--replay-user-messages")
+	code, out := fixture.command(steerSecret, "steer", fixture.id, "--prompt-stdin", "--idempotency-key", "unheard")
+	if code == 0 || strings.Contains(out, `"status":"delivered"`) || !strings.Contains(out, `"diagnostic_code":"steer_unacknowledged"`) || strings.Contains(out, steerSecret) {
+		t.Fatalf("a message the native session never took must not be reported delivered: exit=%d output=%s", code, out)
+	}
+	// The turn the session did finish is still its answer.
+	if code := fixture.waitOwner(); code != 0 {
+		t.Fatalf("owner exit=%d", code)
+	}
+	if code, result := fixture.command("", "result", fixture.id); code != 0 || !strings.Contains(result, "turn-1") {
+		t.Fatalf("exit=%d result=%s", code, result)
+	}
+	_, events := fixture.command("", "events", fixture.id)
+	if !strings.Contains(events, `"source_state":"steer_queued"`) || !strings.Contains(events, `"source_state":"steer_rejected"`) || strings.Contains(events, `"source_state":"steer_delivered"`) {
+		t.Fatalf("events = %s", events)
+	}
+	fixture.assertMessageNeverPersisted()
+	code, replay := fixture.command(steerSecret, "steer", fixture.id, "--prompt-stdin", "--idempotency-key", "unheard")
+	if code == 0 || !strings.Contains(replay, `"diagnostic_code":"steer_unacknowledged"`) {
+		t.Fatalf("replay exit=%d output=%s", code, replay)
+	}
+}
+
+// steerSlowAgent takes a steering message only after a long turn.
+const steerSlowAgent = `#!/bin/sh
+case "$1" in --version) echo "fake 1.0"; exit 0;; esac
+IFS= read -r first
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"live-1"}'
+printf '%s\n' '{"type":"user","isReplay":true,"session_id":"live-1"}'
+IFS= read -r second
+sleep 2
+printf '%s\n' '{"type":"result","result":"turn-1","is_error":false,"session_id":"live-1"}'
+printf '%s\n' '{"type":"user","isReplay":true,"session_id":"live-1"}'
+printf '%s\n' '{"type":"result","result":"turn-2","is_error":false,"session_id":"live-1"}'
+while IFS= read -r extra; do :; done
+`
+
+func TestSteerReportsQueuedWhenTheTurnOutlastsTheCaller(t *testing.T) {
+	fixture := startSteerFixture(t, steerSlowAgent, "claude-code", "stream", "--print", "--output-format", "stream-json", "--input-format", "stream-json", "--replay-user-messages")
+	code, out := fixture.command(steerSecret, "steer", fixture.id, "--prompt-stdin", "--idempotency-key", "patient", "--timeout", "600ms")
+	if code != 0 || !strings.Contains(out, `"status":"queued"`) || strings.Contains(out, `"status":"delivered"`) || !strings.Contains(out, "has not been taken yet") {
+		t.Fatalf("steer exit=%d output=%s", code, out)
+	}
+	assertResultMatchesSchemaShape(t, out, "steer-result.schema.json", "route", "steer")
+	// The same request waits for the acknowledgement; it is not written twice.
+	code, replay := fixture.command(steerSecret, "steer", fixture.id, "--prompt-stdin", "--idempotency-key", "patient")
+	if code != 0 || !strings.Contains(replay, `"status":"delivered"`) || !strings.Contains(replay, `"replayed":true`) {
+		t.Fatalf("replay exit=%d output=%s", code, replay)
+	}
+	if code := fixture.waitOwner(); code != 0 {
+		t.Fatalf("owner exit=%d", code)
+	}
+	_, events := fixture.command("", "events", fixture.id)
+	if strings.Count(events, `"source_state":"steer_queued"`) != 1 || strings.Count(events, `"source_state":"steer_delivered"`) != 1 || strings.Count(events, `"source_state":"input_acknowledged"`) != 2 {
+		t.Fatalf("events = %s", events)
 	}
 }

@@ -435,44 +435,82 @@ func codexResumeArgv(base []string, sessionID, delivery string) ([]string, error
 	return out, nil
 }
 
+// liveInputBacklog bounds the messages waiting to be written to native stdin.
+const liveInputBacklog = 16
+
 // liveSession is the held-open native stdin of a streaming-input launch.
-// pending counts user messages written but not yet acknowledged by the native
-// CLI. A native terminal record is the end of the session only when nothing is
-// pending; otherwise it is the end of one turn and another turn follows.
+// pending counts user messages accepted for the stream but not yet
+// acknowledged by the native CLI. A native terminal record is the end of the
+// session only when nothing is pending; otherwise it is the end of one turn
+// and another turn follows.
 type liveSession struct {
 	protocol liveProtocol
 	mu       sync.Mutex
-	writeMu  sync.Mutex
 	stdin    io.WriteCloser
+	queue    [][]byte
+	writing  bool
+	sent     int
 	pending  int
 	closed   bool
+	broken   bool
 }
 
-// send writes one user message. The write happens outside mu so the stdout
-// reader, which takes mu to acknowledge, can never deadlock against a full
-// native stdin pipe.
-func (l *liveSession) send(message []byte) error {
+// send queues one user message and returns its input sequence: 1 is the
+// launch prompt, later ones are steering messages. A native CLI reads its
+// input only at a turn boundary, so a write can block on a full pipe for as
+// long as a turn lasts. A writer goroutine therefore performs the write and
+// send never blocks its caller, which is the owner's observation loop.
+func (l *liveSession) send(message []byte) (int, error) {
 	encoded, err := l.protocol.EncodeUserMessage(message)
 	if err != nil {
-		return invalidRequest(err.Error())
+		return 0, invalidRequest(err.Error())
 	}
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.closed {
-		l.mu.Unlock()
-		return &AdapterError{Code: ErrInvalidState, Message: "native session already reported its final result"}
+		return 0, &AdapterError{Code: ErrInvalidState, Message: "native session already reported its final result"}
 	}
+	if l.broken {
+		return 0, &AdapterError{Code: ErrExecutionFailed, Message: "native live input stream rejected an earlier message"}
+	}
+	if len(l.queue) >= liveInputBacklog {
+		return 0, &AdapterError{Code: ErrInvalidState, Message: "native live input stream has a backlog of unwritten messages", Retryable: true}
+	}
+	l.sent++
 	l.pending++
-	l.mu.Unlock()
-	l.writeMu.Lock()
-	_, err = l.stdin.Write(encoded)
-	l.writeMu.Unlock()
-	if err != nil {
-		l.mu.Lock()
-		l.pending--
-		l.mu.Unlock()
-		return &AdapterError{Code: ErrExecutionFailed, Message: "native live input stream rejected the message", Cause: err}
+	l.queue = append(l.queue, encoded)
+	if !l.writing {
+		l.writing = true
+		go l.drain()
 	}
-	return nil
+	return l.sent, nil
+}
+
+// drain writes queued messages in order. A failed write means the native CLI
+// closed its input: nothing still queued can be taken, so those messages stop
+// counting as pending and the next native terminal record ends the session.
+func (l *liveSession) drain() {
+	for {
+		l.mu.Lock()
+		if len(l.queue) == 0 || l.closed {
+			l.queue, l.writing = nil, false
+			l.mu.Unlock()
+			return
+		}
+		next := l.queue[0]
+		l.queue = l.queue[1:]
+		l.mu.Unlock()
+		if _, err := l.stdin.Write(next); err != nil {
+			l.mu.Lock()
+			l.pending -= 1 + len(l.queue)
+			if l.pending < 0 {
+				l.pending = 0
+			}
+			l.queue, l.writing, l.broken = nil, false, true
+			l.mu.Unlock()
+			return
+		}
+	}
 }
 
 func (l *liveSession) acknowledge(line []byte) bool {

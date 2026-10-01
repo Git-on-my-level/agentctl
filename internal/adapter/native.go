@@ -124,7 +124,9 @@ type processRecord struct {
 	// lastTurn is the most recent native terminal record that was demoted
 	// because a live-input message is still pending. finish uses it when the
 	// process exits without a later terminal, so a late steer cannot orphan a
-	// completed answer that is already in the stdout pipe.
+	// completed answer that is already in the stdout pipe. It is dropped once
+	// the native CLI takes the pending message: a new turn has begun, and an
+	// earlier answer no longer stands in for the session's result.
 	lastTurn *Result
 }
 
@@ -187,7 +189,7 @@ func (p *processRecord) nextAcknowledgement() int {
 }
 
 func retainObservationAfterLimit(obs parsedObservation) bool {
-	return obs.Terminal || obs.Content != "" || obs.Error != "" || obs.State == StateAttention || obs.State == StateWaiting || obs.Kind == "attention"
+	return obs.Terminal || obs.Content != "" || obs.Error != "" || obs.State == StateAttention || obs.State == StateWaiting || obs.Kind == "attention" || obs.SourceState == "input_acknowledged"
 }
 
 func (p *processRecord) addParseWarningLocked(code string) {
@@ -307,12 +309,19 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 		e.DedupeKey = Fingerprint(p.ref.Kind, p.ref.OpaqueID, obs.SourceState, string(marshalStable(payload)))
 		p.events = append(p.events, e)
 	}
+	if obs.SourceState == "input_acknowledged" {
+		// A new turn began; an earlier turn's answer no longer stands in for
+		// the session's result.
+		p.lastTurn = nil
+	}
 	if obs.Terminal {
 		p.result = p.resultFromObservation(obs)
 	}
 	p.updatedAt = time.Now().UTC()
 }
 
+// resultFromObservation builds the session result from a native terminal
+// record. The caller holds p.mu.
 func (p *processRecord) resultFromObservation(obs parsedObservation) *Result {
 	content := firstNonEmpty(obs.Content, p.finalContent)
 	contentType := firstNonEmpty(obs.ContentType, p.contentType)
@@ -783,7 +792,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	if live != nil {
 		// Readers are already draining stdout, so a large prompt cannot wedge
 		// against a child that is writing while it reads.
-		if err := live.send(req.Stdin); err != nil {
+		if _, err := live.send(req.Stdin); err != nil {
 			a.cancelRecord(record, "kill", 0)
 			return LaunchResult{}, err
 		}
@@ -1141,14 +1150,47 @@ func (a *NativeAdapter) Resume(ctx context.Context, req ResumeRequest) (LaunchRe
 	if req.Ref.Empty() {
 		return LaunchResult{}, invalidRequest("resume requires a source reference")
 	}
-	if a.config.ResumeArgs == nil {
-		return LaunchResult{}, capabilityError(CapabilityResume, "native resume route is not verified")
+	if a.config.ResumeArgs != nil {
+		args := a.config.ResumeArgs(req.Ref, req.Argv)
+		if len(args) == 0 {
+			return LaunchResult{}, invalidRequest("native resume route returned empty argv")
+		}
+		return a.Launch(ctx, LaunchRequest{Argv: args, Cwd: req.Cwd, Context: req.Context, ExecutionContext: req.ExecutionContext, Timeout: req.Timeout, DiscoveryWindow: req.DiscoveryWindow})
 	}
-	args := a.config.ResumeArgs(req.Ref, req.Argv)
-	if len(args) == 0 {
-		return LaunchResult{}, invalidRequest("native resume route returned empty argv")
+	// The same verified route that the resume capability is negotiated from.
+	if len(req.Prompt) == 0 {
+		return LaunchResult{}, invalidRequest("resume requires the next prompt")
 	}
-	return a.Launch(ctx, LaunchRequest{Argv: args, Context: req.Context, ExecutionContext: req.ExecutionContext, Timeout: req.Timeout, DiscoveryWindow: req.DiscoveryWindow})
+	base, err := steerBaseArgv(req.Argv, req.PromptDelivery, req.PromptArgs)
+	if err != nil {
+		return LaunchResult{}, capabilityError(CapabilityResume, err.Error())
+	}
+	argv, err := ContinuationArgv(a.Name(), base, req.PromptDelivery, req.Ref.OpaqueID)
+	if err != nil {
+		return LaunchResult{}, err
+	}
+	next := LaunchRequest{Cwd: req.Cwd, Context: req.Context, ExecutionContext: req.ExecutionContext, Timeout: req.Timeout, DiscoveryWindow: req.DiscoveryWindow, PromptDelivery: req.PromptDelivery}
+	if next.Argv, next.PromptArgs, next.Stdin, err = attachPrompt(argv, req.PromptDelivery, req.Prompt); err != nil {
+		return LaunchResult{}, err
+	}
+	return a.Launch(ctx, next)
+}
+
+// attachPrompt delivers prompt to a prompt-free argv the way delivery names:
+// as trailing argv, or as native stdin.
+func attachPrompt(argv []string, delivery string, prompt []byte) ([]string, int, []byte, error) {
+	if delivery != PromptDeliveryArgv {
+		return argv, 0, prompt, nil
+	}
+	if !utf8.Valid(prompt) || bytes.IndexByte(prompt, 0) >= 0 {
+		return nil, 0, nil, invalidRequest("an argv prompt must be valid UTF-8 without NUL bytes")
+	}
+	args := 1
+	if prompt[0] == '-' {
+		argv = append(argv, "--")
+		args = 2
+	}
+	return append(argv, string(prompt)), args, nil, nil
 }
 
 // Steer delivers one message to a session this adapter launched in this
@@ -1176,10 +1218,11 @@ func (a *NativeAdapter) Steer(ctx context.Context, req SteerRequest) (SteerResul
 		return SteerResult{}, &AdapterError{Code: ErrInvalidState, Message: "native session already reported its final result"}
 	}
 	if live != nil {
-		if err := live.send(req.Message); err != nil {
+		sequence, err := live.send(req.Message)
+		if err != nil {
 			return SteerResult{}, err
 		}
-		return SteerResult{Delivery: SteerLiveInput, Session: a.session(record)}, nil
+		return SteerResult{Delivery: SteerLiveInput, Session: a.session(record), InputSequence: sequence}, nil
 	}
 	route := steerRoutes[a.Name()]
 	if route.resume == nil || !route.interruptible {
@@ -1203,22 +1246,9 @@ func (a *NativeAdapter) Steer(ctx context.Context, req SteerRequest) (SteerResul
 	}
 	next := launch
 	next.StartOnly = true
-	next.PromptArgs = 0
-	next.Stdin = nil
-	if launch.PromptDelivery == PromptDeliveryArgv {
-		if !utf8.Valid(req.Message) || bytes.IndexByte(req.Message, 0) >= 0 {
-			return SteerResult{}, invalidRequest("argv steer message must be valid UTF-8 without NUL bytes")
-		}
-		next.PromptArgs = 1
-		if req.Message[0] == '-' {
-			argv = append(argv, "--")
-			next.PromptArgs = 2
-		}
-		argv = append(argv, string(req.Message))
-	} else {
-		next.Stdin = req.Message
+	if next.Argv, next.PromptArgs, next.Stdin, err = attachPrompt(argv, launch.PromptDelivery, req.Message); err != nil {
+		return SteerResult{}, err
 	}
-	next.Argv = argv
 	a.cancelRecord(record, "term", 5*time.Second)
 	<-record.done
 	next.replaces = record
