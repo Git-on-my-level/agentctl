@@ -113,6 +113,43 @@ func TestGetExecutionByMutationRecoversExactPreparedExecution(t *testing.T) {
 	}
 }
 
+func TestRefusedAdmissionReleasesIdempotencyKey(t *testing.T) {
+	ctx := context.Background()
+	journal, _, now := openTestJournal(t)
+	mutation := contracts.MutationKey{Scope: "execution:continue", Key: "turn-2", InputDigest: hash('a')}
+	created, _, err := journal.CreateExecution(ctx, sampleExecution(now), mutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := now.Add(time.Second)
+	created.State = model.StateCancelled
+	created.Liveness = model.LivenessExited
+	created.TerminalAt = &terminal
+	created.UpdatedAt = terminal
+	created.Observation.ObservedAt = terminal
+	source := admissionRefusedSource
+	created.SourceState = &source
+	if _, err := journal.UpdateExecution(ctx, created, created.Revision); err != nil {
+		t.Fatal(err)
+	}
+	replaced, reused, err := journal.CreateExecution(ctx, sampleExecution(now.Add(2*time.Second)), mutation)
+	if err != nil || reused || replaced.ID == created.ID {
+		t.Fatalf("replace refused reservation: next=%#v reused=%v err=%v created=%s", replaced, reused, err, created.ID)
+	}
+	recovered, found, err := journal.GetExecutionByMutation(ctx, mutation)
+	if err != nil || !found || recovered.ID != replaced.ID {
+		t.Fatalf("replaced reservation recovered=%#v found=%v err=%v", recovered, found, err)
+	}
+	if err := journal.ClearMutation(ctx, mutation); err != nil {
+		t.Fatal(err)
+	}
+	other := contracts.MutationKey{Scope: mutation.Scope, Key: mutation.Key, InputDigest: hash('b')}
+	next, reused, err := journal.CreateExecution(ctx, sampleExecution(now.Add(3*time.Second)), other)
+	if err != nil || reused || next.ID == replaced.ID {
+		t.Fatalf("cleared key with new digest: next=%#v reused=%v err=%v", next, reused, err)
+	}
+}
+
 func TestEventAppendIsAtomicContiguousAndDeduplicated(t *testing.T) {
 	ctx := context.Background()
 	journal, _, now := openTestJournal(t)

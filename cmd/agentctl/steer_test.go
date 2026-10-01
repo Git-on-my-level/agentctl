@@ -61,6 +61,11 @@ type steerFixture struct {
 
 func startSteerFixture(t *testing.T, script, adapterName, delivery string, nativeArgs ...string) *steerFixture {
 	t.Helper()
+	return startSteerFixtureTimeout(t, "30s", script, adapterName, delivery, nativeArgs...)
+}
+
+func startSteerFixtureTimeout(t *testing.T, timeout, script, adapterName, delivery string, nativeArgs ...string) *steerFixture {
+	t.Helper()
 	root := t.TempDir()
 	path := filepath.Join(root, "fake-agent")
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
@@ -71,7 +76,7 @@ func startSteerFixture(t *testing.T, script, adapterName, delivery string, nativ
 	owner := testApp(&stdout, &stderr)
 	owner.stdin = strings.NewReader("launch task\n")
 	owner.stdinIsTerminal = func() bool { return false }
-	args := append([]string{"--output", "json", "--journal", fixture.journal, "run", "--label", "steer-fixture", "--timeout", "30s", "--adapter", adapterName, "--prompt-stdin", "--prompt-delivery", delivery, "--", path}, nativeArgs...)
+	args := append([]string{"--output", "json", "--journal", fixture.journal, "run", "--label", "steer-fixture", "--timeout", timeout, "--adapter", adapterName, "--prompt-stdin", "--prompt-delivery", delivery, "--", path}, nativeArgs...)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		fixture.code = owner.run(ctx, args)
@@ -182,6 +187,30 @@ func TestSteerLiveInputFromAnotherInvocation(t *testing.T) {
 	if code == 0 || !strings.Contains(late, `"code":"invalid_state"`) {
 		t.Fatalf("steer after terminal exit=%d output=%s", code, late)
 	}
+}
+
+const hungLiveAgent = `#!/bin/sh
+case "$1" in --version) echo "fake 1.0"; exit 0;; esac
+IFS= read -r first
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"live-1"}'
+printf '%s\n' '{"type":"user","isReplay":true,"session_id":"live-1"}'
+sleep 60
+`
+
+func TestSteerLiveInputDoesNotFreezeOwnerDeadline(t *testing.T) {
+	fixture := startSteerFixtureTimeout(t, "2s", hungLiveAgent, "claude-code", "stream", "--print", "--output-format", "stream-json", "--input-format", "stream-json", "--replay-user-messages")
+	started := time.Now()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		fixture.command(strings.Repeat("x", 256*1024), "steer", fixture.id, "--prompt-stdin", "--timeout", "8s")
+	}()
+	code := fixture.waitOwner()
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Fatalf("owner loop blocked on steer write for %s (exit %d)", elapsed, code)
+	}
+	wg.Wait()
 }
 
 func TestSteerInterruptResumeRequiresExplicitPermission(t *testing.T) {

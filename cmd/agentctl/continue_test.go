@@ -152,6 +152,46 @@ func TestContinueAdmitsOnlyOneConcurrentTurn(t *testing.T) {
 	}
 }
 
+func TestContinueRefusedKeyCanRetryFromLatestTurn(t *testing.T) {
+	t.Setenv("CONTINUE_FIXTURE_DELAY", "1")
+	f := newDelegateFixture(t, continueAgent)
+	code, out := f.invoke("first task", "--wait")
+	if code != 0 {
+		t.Fatalf("delegate exit=%d output=%s", code, out)
+	}
+	first := resultID(t, out)
+	keys := []string{"racer-a", "racer-b"}
+	outputs := make([]string, 2)
+	codes := make([]int, 2)
+	var wg sync.WaitGroup
+	for i := range outputs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			codes[i], outputs[i] = f.command(t, "feedback", "continue", first, "--request-key", keys[i], "--prompt-stdin", "--wait")
+		}(i)
+	}
+	wg.Wait()
+	winnerID, refusedKey := "", ""
+	for i := range outputs {
+		switch {
+		case codes[i] == 0 && strings.Contains(outputs[i], "resumed answer"):
+			winnerID = resultID(t, outputs[i])
+		case strings.Contains(outputs[i], "continue_in_progress"):
+			refusedKey = keys[i]
+		default:
+			t.Fatalf("unexpected outcome exit=%d output=%s", codes[i], outputs[i])
+		}
+	}
+	if winnerID == "" || refusedKey == "" {
+		t.Fatalf("winner=%q refusedKey=%q outputs=%q", winnerID, refusedKey, outputs)
+	}
+	code, out = f.command(t, "feedback", "continue", winnerID, "--request-key", refusedKey, "--prompt-stdin", "--wait")
+	if code != 0 || !strings.Contains(out, "resumed answer") || resultID(t, out) == winnerID {
+		t.Fatalf("retry refused key exit=%d output=%s", code, out)
+	}
+}
+
 func TestContinueRejectsSourcesItCannotContinue(t *testing.T) {
 	failed := newDelegateFixture(t, `printf '%s\n' '{"type":"system","subtype":"init","session_id":"chat-1"}' '{"type":"result","subtype":"error","is_error":true,"result":"boom"}'`)
 	_, out := failed.invoke("task", "--wait")

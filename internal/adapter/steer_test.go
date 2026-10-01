@@ -177,6 +177,48 @@ func TestLiveInputSteerExtendsTheSessionByOneTurn(t *testing.T) {
 	}
 }
 
+type discardCloser struct{}
+
+func (discardCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (discardCloser) Close() error                { return nil }
+
+func TestLiveInputLateSteerKeepsCompletedTurn(t *testing.T) {
+	record := &processRecord{live: &liveSession{stdin: discardCloser{}, pending: 1}, done: make(chan struct{}), maxOutput: defaultOutputLimit, ref: SourceRef{Adapter: "claude-code", OpaqueID: "live-1"}}
+	record.ingestObservation(parsedObservation{Kind: "terminal", Terminal: true, Success: true, State: StateCompleted, Content: "only-turn", SourceState: "result"})
+	if record.result != nil {
+		t.Fatalf("a pending live message must demote the terminal record: %#v", record.result)
+	}
+	record.finish(nil)
+	if record.result == nil || !record.result.Success || record.result.State != StateCompleted || record.result.Content != "only-turn" {
+		t.Fatalf("late steer orphaned the completed turn: %#v", record.result)
+	}
+}
+
+func TestLiveInputSteerRacingExitKeepsResult(t *testing.T) {
+	path := fixtureExecutable(t, `
+IFS= read -r first
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"live-1"}'
+printf '%s\n' '{"type":"user","isReplay":true,"session_id":"live-1"}'
+printf '%s\n' '{"type":"result","result":"only-turn","is_error":false,"session_id":"live-1"}'
+`)
+	a := NewClaudeCode()
+	argv := []string{path, "--print", "--output-format", "stream-json", "--input-format", "stream-json", "--replay-user-messages"}
+	launched, err := a.Launch(context.Background(), LaunchRequest{Argv: argv, Stdin: []byte("task"), PromptDelivery: PromptDeliveryStream, StartOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := launched.Session.Ref
+	waitForEvent(t, a, ref, "input_acknowledged")
+	_, _ = a.Steer(context.Background(), SteerRequest{Ref: ref, Message: []byte("too late")})
+	result, err := a.Wait(boundedContext(t), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Success || result.State != StateCompleted || result.Content != "only-turn" {
+		t.Fatalf("racy steer discarded the completed answer: %#v", result)
+	}
+}
+
 func TestStreamDeliveryRequiresLiveArgv(t *testing.T) {
 	path := fixtureExecutable(t, "exit 0")
 	_, err := NewClaudeCode().Launch(context.Background(), LaunchRequest{Argv: []string{path, "--print"}, Stdin: []byte("task"), PromptDelivery: PromptDeliveryStream})

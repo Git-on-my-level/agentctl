@@ -121,6 +121,11 @@ type processRecord struct {
 	sessionKnown bool
 	live         *liveSession
 	inputAcks    int
+	// lastTurn is the most recent native terminal record that was demoted
+	// because a live-input message is still pending. finish uses it when the
+	// process exits without a later terminal, so a late steer cannot orphan a
+	// completed answer that is already in the stdout pipe.
+	lastTurn *Result
 }
 
 func (p *processRecord) ingest(line []byte, stderr bool) {
@@ -225,10 +230,20 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 	if obs.BackendVersion != "" {
 		p.ref.Endpoint = obs.BackendVersion
 	}
+	if obs.Content != "" {
+		p.finalContent = obs.Content
+		p.contentType = firstNonEmpty(obs.ContentType, "text/plain")
+		p.contentSource = firstNonEmpty(obs.ContentSource, "terminal_result")
+		p.contentTruncated = obs.ContentTruncated
+	}
+	if obs.Error != "" {
+		p.lastError = obs.Error
+	}
 	if obs.Terminal && p.live != nil && !p.live.finishTurn() {
 		// A message is still queued in the live input stream, so this record
-		// ends one turn rather than the session. The answer that follows the
-		// queued message supersedes this one.
+		// ends one turn rather than the session. Keep the answer: the child
+		// may already be exiting, in which case no later turn will arrive.
+		p.lastTurn = p.resultFromObservation(obs)
 		obs.Terminal = false
 		obs.Kind = "progress"
 		obs.SourceState = "turn_completed"
@@ -240,15 +255,6 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 		if obs.Content != "" {
 			p.devinPrintAnswer = obs.Content
 		}
-	}
-	if obs.Content != "" {
-		p.finalContent = obs.Content
-		p.contentType = firstNonEmpty(obs.ContentType, "text/plain")
-		p.contentSource = firstNonEmpty(obs.ContentSource, "terminal_result")
-		p.contentTruncated = obs.ContentTruncated
-	}
-	if obs.Error != "" {
-		p.lastError = obs.Error
 	}
 	if obs.State != "" && p.metadataState != "" && obs.State != p.metadataState {
 		// The same metadata signature after a real state transition is new
@@ -302,27 +308,31 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 		p.events = append(p.events, e)
 	}
 	if obs.Terminal {
-		content := firstNonEmpty(obs.Content, p.finalContent)
-		contentType := firstNonEmpty(obs.ContentType, p.contentType)
-		contentSource := firstNonEmpty(obs.ContentSource, p.contentSource)
-		data := cloneMap(obs.Data)
-		if data["diagnostic_code"] == "empty_terminal_result" && content != "" {
-			data["result_content_source"] = "assistant_message_fallback"
-			contentSource = "assistant"
-		} else if content != "" {
-			data["result_content_source"] = firstNonEmpty(contentSource, "terminal_result")
-		}
-		if data == nil {
-			data = map[string]any{}
-		}
-		if obs.SourceState != "" {
-			data["terminal_source_state"] = obs.SourceState
-		}
-		result := &Result{Success: obs.Success, State: obs.State, Summary: firstNonEmpty(obs.Summary, boundedString(content, 2048)), Content: content, ContentType: contentType, ContentTruncated: obs.ContentTruncated || p.contentTruncated, Error: obs.Error, SessionRef: p.ref, Data: data}
-		applyParseWarning(result, p.parseWarnings)
-		p.result = result
+		p.result = p.resultFromObservation(obs)
 	}
 	p.updatedAt = time.Now().UTC()
+}
+
+func (p *processRecord) resultFromObservation(obs parsedObservation) *Result {
+	content := firstNonEmpty(obs.Content, p.finalContent)
+	contentType := firstNonEmpty(obs.ContentType, p.contentType)
+	contentSource := firstNonEmpty(obs.ContentSource, p.contentSource)
+	data := cloneMap(obs.Data)
+	if data == nil {
+		data = map[string]any{}
+	}
+	if data["diagnostic_code"] == "empty_terminal_result" && content != "" {
+		data["result_content_source"] = "assistant_message_fallback"
+		contentSource = "assistant"
+	} else if content != "" {
+		data["result_content_source"] = firstNonEmpty(contentSource, "terminal_result")
+	}
+	if obs.SourceState != "" {
+		data["terminal_source_state"] = obs.SourceState
+	}
+	result := &Result{Success: obs.Success, State: obs.State, Summary: firstNonEmpty(obs.Summary, boundedString(content, 2048)), Content: content, ContentType: contentType, ContentTruncated: obs.ContentTruncated || p.contentTruncated, Error: obs.Error, SessionRef: p.ref, Data: data}
+	applyParseWarning(result, p.parseWarnings)
+	return result
 }
 
 func metadataObservationKey(obs parsedObservation) (string, bool) {
@@ -382,6 +392,11 @@ func (p *processRecord) finish(err error) {
 			p.result = &Result{Success: false, State: StateCancelled, Error: "native process cancelled", ExitCode: p.exitCode, SessionRef: p.ref}
 		} else if p.exitCode != nil && *p.exitCode != 0 {
 			p.result = &Result{Success: false, State: StateFailed, Error: firstNonEmpty(p.lastError, p.stderrDiagnostic, "native process exited unsuccessfully"), ExitCode: p.exitCode, SessionRef: p.ref}
+		} else if p.lastTurn != nil {
+			result := *p.lastTurn
+			result.ExitCode = p.exitCode
+			result.SessionRef = p.ref
+			p.result = &result
 		} else {
 			// A zero exit code does not establish domain success. Native adapters
 			// require an explicit terminal result in their structured stream.

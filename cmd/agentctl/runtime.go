@@ -251,7 +251,10 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			if openProblem != nil {
 				return openProblem
 			}
-			_, finalizeErr := finalizeResult(context.Background(), writeJournal, current, adapter.Result{Success: false, State: adapter.StateCancelled, Error: refusal.Message}, a.now().UTC(), opts.noStoreResult)
+			_, finalizeErr := finalizeResult(context.Background(), writeJournal, current, adapter.Result{Success: false, State: adapter.StateCancelled, Error: refusal.Message, Data: map[string]any{"diagnostic_code": admissionRefusedSource, "terminal_source_state": admissionRefusedSource}}, a.now().UTC(), opts.noStoreResult)
+			if finalizeErr == nil && mutation.Enabled() {
+				finalizeErr = writeJournal.ClearMutation(context.Background(), mutation)
+			}
 			writeJournal.Close()
 			if finalizeErr != nil {
 				return mapStoreError("record refused admission", finalizeErr)
@@ -314,7 +317,6 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		a.serviceSteerInbox(launchCtx, c, runtime, launch.Session.Ref, execution, inbox)
 		if !a.now().Before(nextRunnerHeartbeat) {
 			writeJournal, current, openProblem = a.openExecutionWriteOwned(c, execution.ID)
 			if openProblem != nil {
@@ -383,6 +385,11 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			}
 			return writeExecution(renderer, execution, "run")
 		}
+		// Apply steering only after this tick's observation. A late message
+		// must not run on the loop before a completed result is recorded, and
+		// a live-input write is serviced off this goroutine so a full pipe
+		// cannot freeze heartbeats or cancellation.
+		a.serviceSteerInbox(launchCtx, c, runtime, launch.Session.Ref, execution, inbox)
 		select {
 		case <-launchCtx.Done():
 			last, _ := runtime.Result(context.Background(), adapter.ResultRequest{Ref: launch.Session.Ref})

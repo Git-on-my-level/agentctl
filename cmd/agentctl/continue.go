@@ -25,6 +25,15 @@ import (
 
 const continueUsage = "usage: agentctl continue <execution-id> --request-key key (--prompt-file path|--prompt-stdin) [--plan] [--wait [--content] [--require-result-source source] [--min-result-bytes n]] [--timeout duration] [--label name ...]"
 
+// admissionRefusedSource marks an execution journaled only to close a
+// check-then-launch race. Nothing native was started, so its request key
+// must remain reusable.
+const admissionRefusedSource = "admission_refused"
+
+func refusedAdmission(execution model.Execution) bool {
+	return execution.State == model.StateCancelled && execution.SourceState != nil && *execution.SourceState == admissionRefusedSource
+}
+
 func parseContinue(args []string) (string, string, delegateOptions, *output.Error) {
 	opts := delegateOptions{authority: "native"}
 	ref, key := "", ""
@@ -155,7 +164,7 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 	if problem != nil {
 		return problem
 	}
-	if found {
+	if found && !refusedAdmission(previous) {
 		if previous.Delegation == nil {
 			return delegateError(output.CodeInternal, "delegate_binding_missing", "continued execution is missing its resolution binding").WithDetail("execution_id", previous.ID.String())
 		}

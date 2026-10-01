@@ -73,6 +73,10 @@ type steerInbox struct {
 	// Concurrent retries of one idempotent request queue separate files; the
 	// owner applies the first and drops the rest.
 	settled map[string]bool
+	// inFlight is closed when a live-input write started off the observation
+	// loop has settled. A full native stdin pipe must not freeze heartbeats,
+	// event draining, or deadline handling.
+	inFlight <-chan struct{}
 }
 
 // openSteerInbox creates the spool directory for an execution whose
@@ -103,11 +107,32 @@ func (inbox *steerInbox) close() {
 	}
 }
 
-// service delivers queued requests in arrival order. It is called from the
-// owner's observation loop, so a delivery never races that loop's own reads of
-// the native session.
+func liveInputSteer(execution model.Execution) bool {
+	item, ok := executionCapability(execution, adapter.CapabilitySteer)
+	if !ok {
+		return false
+	}
+	delivery, _ := item.Constraints["delivery"].(string)
+	return delivery == string(adapter.SteerLiveInput)
+}
+
+// service delivers queued requests in arrival order. Interrupt-and-resume
+// stays on the observation loop so it cannot race that loop's session reads.
+// Live-input writes run off the loop: they can block on a full stdin pipe
+// while the native CLI is still in its current turn.
 func (a *app) serviceSteerInbox(ctx context.Context, c common, runtime adapter.Adapter, ref adapter.SourceRef, execution model.Execution, inbox *steerInbox) {
-	if inbox == nil || a.now().Before(inbox.nextPoll) {
+	if inbox == nil {
+		return
+	}
+	if inbox.inFlight != nil {
+		select {
+		case <-inbox.inFlight:
+			inbox.inFlight = nil
+		default:
+			return
+		}
+	}
+	if a.now().Before(inbox.nextPoll) {
 		return
 	}
 	inbox.nextPoll = a.now().Add(steerPollEvery)
@@ -143,31 +168,50 @@ func (a *app) serviceSteerInbox(ctx context.Context, c common, runtime adapter.A
 			_ = os.Remove(claimed)
 			continue
 		}
-		result, steerErr := runtime.Steer(ctx, adapter.SteerRequest{Ref: ref, Message: []byte(request.Message), AllowInterrupt: request.AllowInterrupt})
-		var adapterErr *adapter.AdapterError
-		if steerErr != nil && errors.As(steerErr, &adapterErr) && adapterErr.Retryable && adapterErr.Code == adapter.ErrInvalidState {
-			// Not deliverable yet (the native session id is still unknown).
-			// Hand the request back so it is retried or withdrawn.
-			_ = os.Rename(claimed, pending)
+		if liveInputSteer(execution) {
+			inbox.settled[request.RequestID] = true
+			done := make(chan struct{})
+			inbox.inFlight = done
+			go func(request steerRequestFile, claimed, pending string) {
+				defer close(done)
+				a.finishSteerDelivery(ctx, c, runtime, ref, execution, nil, request, claimed, pending)
+			}(request, claimed, pending)
 			return
 		}
-		inbox.settled[request.RequestID] = true
-		if steerErr != nil {
-			code, reason := "steer_failed", steerErr.Error()
-			if adapterErr != nil {
-				reason = adapterErr.Message
-				if diagnostic, ok := adapterErr.Details["diagnostic_code"].(string); ok {
-					code = diagnostic
-				} else {
-					code = "steer_" + string(adapterErr.Code)
-				}
-			}
-			a.recordSteer(c, execution, request, "rejected", "", code, reason)
-		} else {
-			a.recordSteer(c, execution, request, "delivered", string(result.Delivery), "", "")
+		a.finishSteerDelivery(ctx, c, runtime, ref, execution, inbox, request, claimed, pending)
+		if !inbox.settled[request.RequestID] {
+			return
 		}
-		_ = os.Remove(claimed)
 	}
+}
+
+func (a *app) finishSteerDelivery(ctx context.Context, c common, runtime adapter.Adapter, ref adapter.SourceRef, execution model.Execution, inbox *steerInbox, request steerRequestFile, claimed, pending string) {
+	result, steerErr := runtime.Steer(ctx, adapter.SteerRequest{Ref: ref, Message: []byte(request.Message), AllowInterrupt: request.AllowInterrupt})
+	var adapterErr *adapter.AdapterError
+	if steerErr != nil && errors.As(steerErr, &adapterErr) && adapterErr.Retryable && adapterErr.Code == adapter.ErrInvalidState {
+		// Not deliverable yet (the native session id is still unknown).
+		// Hand the request back so it is retried or withdrawn.
+		_ = os.Rename(claimed, pending)
+		return
+	}
+	if inbox != nil {
+		inbox.settled[request.RequestID] = true
+	}
+	if steerErr != nil {
+		code, reason := "steer_failed", steerErr.Error()
+		if adapterErr != nil {
+			reason = adapterErr.Message
+			if diagnostic, ok := adapterErr.Details["diagnostic_code"].(string); ok {
+				code = diagnostic
+			} else {
+				code = "steer_" + string(adapterErr.Code)
+			}
+		}
+		a.recordSteer(c, execution, request, "rejected", "", code, reason)
+	} else {
+		a.recordSteer(c, execution, request, "delivered", string(result.Delivery), "", "")
+	}
+	_ = os.Remove(claimed)
 }
 
 func readSteerRequest(path string, id ids.ExecutionID) (steerRequestFile, error) {
