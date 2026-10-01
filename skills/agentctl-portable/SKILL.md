@@ -260,7 +260,7 @@ interrupted turn can be lost, so restate anything the agent must keep. When the
 plan reports no route, steering is unavailable: report that, and do not cancel
 and relaunch as a substitute unless the user wants the work restarted. Read
 `steer.status`: `delivered` means the native session took the message, not that
-the agent acted on it; `queued` means it is written to the session's input and
+the agent acted on it; `queued` means it is waiting in the session's input and
 not taken yet, so retry with the same `--idempotency-key` to wait for it rather
 than sending it again. A finished
 execution cannot be steered; use `continue`. Steering needs a prompt that agentctl

@@ -413,7 +413,7 @@ while IFS= read -r extra; do :; done
 func TestSteerReportsQueuedWhenTheTurnOutlastsTheCaller(t *testing.T) {
 	fixture := startSteerFixture(t, steerSlowAgent, "claude-code", "stream", "--print", "--output-format", "stream-json", "--input-format", "stream-json", "--replay-user-messages")
 	code, out := fixture.command(steerSecret, "steer", fixture.id, "--prompt-stdin", "--idempotency-key", "patient", "--timeout", "600ms")
-	if code != 0 || !strings.Contains(out, `"status":"queued"`) || strings.Contains(out, `"status":"delivered"`) || !strings.Contains(out, "has not been taken yet") {
+	if code != 0 || !strings.Contains(out, `"status":"queued"`) || strings.Contains(out, `"status":"delivered"`) || !strings.Contains(out, "has not taken it yet") {
 		t.Fatalf("steer exit=%d output=%s", code, out)
 	}
 	assertResultMatchesSchemaShape(t, out, "steer-result.schema.json", "route", "steer")

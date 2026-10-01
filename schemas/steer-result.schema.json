@@ -103,7 +103,7 @@
             "delivered",
             "queued"
           ],
-          "description": "delivered: the native session acknowledged the message (live_input) or was resumed with it as its prompt (interrupt_resume). queued: the message is written to the native input stream and the session had not taken it when this invocation stopped waiting; a later steer_delivered or steer_rejected event settles it."
+          "description": "delivered: the native session acknowledged the message (live_input) or was resumed with it as its prompt (interrupt_resume). queued: the owner accepted the message for the native input stream and the session had not taken it when this invocation stopped waiting; a later steer_delivered or steer_rejected event settles it."
         },
         "delivery": {
           "enum": [

@@ -75,7 +75,7 @@ type steerInbox struct {
 	// Concurrent retries of one idempotent request queue separate files; the
 	// owner applies the first and drops the rest.
 	settled map[string]bool
-	// awaiting holds live-input requests that were written to the native
+	// awaiting holds live-input requests that were handed to the native
 	// input stream and not yet acknowledged, by input sequence. Only their
 	// metadata is kept; the message text is dropped once it is written.
 	awaiting map[int]steerRequestFile
@@ -221,8 +221,8 @@ func (a *app) serviceSteerInbox(ctx context.Context, c common, runtime adapter.A
 			}
 			a.recordSteer(c, execution.ID, request, "rejected", "", code, reason, 0)
 		} else if result.Delivery == adapter.SteerLiveInput && result.InputSequence > 0 {
-			// Written to the native input stream. It is delivered only once
-			// the native session acknowledges it.
+			// Accepted for the native input stream. It is delivered only
+			// once the native session acknowledges it.
 			request.MessageBytes, request.Message = len(request.Message), ""
 			inbox.awaiting[result.InputSequence] = request
 			a.recordSteer(c, execution.ID, request, "queued", string(result.Delivery), "", "", result.InputSequence)
@@ -546,8 +546,13 @@ func (a *app) awaitSteerOutcome(ctx context.Context, renderer output.Renderer, c
 					}
 				}
 				if a.now().After(terminalSince.Add(steerClaimedGrace)) || ctx.Err() != nil {
-					return withID(output.NewError(output.CodeInvalidState, "the execution ended and the native session never acknowledged the steering message; it was not delivered", false).
-						WithDetail("diagnostic_code", "steer_unacknowledged"))
+					// The owner records a rejection for every message the
+					// session did not take. With no record at all (the
+					// execution was terminalized under the owner), delivery is
+					// not known either way.
+					return withID(output.NewError(output.CodeExecutionUnknown, "the execution ended before the owner recorded whether the native session took the steering message; delivery is unknown", false).
+						WithDetail("diagnostic_code", "steer_outcome_unrecorded").
+						WithActions(output.NextAction{Label: "Inspect execution events", Argv: []string{"agentctl", "events", id.String()}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}}))
 				}
 				continue
 			}
@@ -675,7 +680,7 @@ func writeSteerOutcome(renderer output.Renderer, execution model.Execution, outc
 	}
 	actions := []output.NextAction{{Label: "Wait for execution", Argv: []string{"agentctl", "await", execution.ID.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}}}
 	if status == "queued" {
-		guarantee = "the message is written to the native session's input and has not been taken yet; the session takes it at its next turn boundary"
+		guarantee = "the owner accepted the message for the native session's input stream and the session has not taken it yet; it takes input at its next turn boundary"
 		actions = append([]output.NextAction{{Label: "Watch for the steer_delivered or steer_rejected event of this request", Argv: []string{"agentctl", "events", execution.ID.String()}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}}}, actions...)
 	}
 	result := map[string]any{"id": execution.ID, "state": execution.State, "adapter": execution.Adapter, "steer": outcome, "replayed": replayed, "guarantee": guarantee}

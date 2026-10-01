@@ -128,7 +128,7 @@ func helpTopics() map[string]commandHelp {
 				"interrupt_resume waits for the native session id; a failed resume fails the execution",
 				"interrupt_resume can lose what the agent learned inside the interrupted turn (Codex keeps only the conversation up to the launch prompt); restate anything it must keep in the message",
 				"status delivered means the native session itself took the message: it acknowledged it (live_input) or was resumed with it (interrupt_resume); it is not proof the agent acted on it",
-				"status queued (live_input only) means the message is written to the native input and the session had not taken it before --timeout; it is not withdrawn, and a later steer_delivered or steer_rejected event settles it",
+				"status queued (live_input only) means the owner accepted the message for the native input stream and the session had not taken it before --timeout; it is not withdrawn, and a later steer_delivered or steer_rejected event settles it",
 				"a queued message the session never takes is rejected as steer_unacknowledged when the execution ends",
 				"result shape: schemas/steer-result.schema.json",
 				"the journal records the message digest and size, never its text",

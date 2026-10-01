@@ -121,13 +121,18 @@ can only re-deliver a message through a channel it attached itself. Use
   write: the session acknowledged the message (`live_input`) or was relaunched
   with it as its prompt (`interrupt_resume`). It is not proof that the agent
   acted on it.
-- `queued` is a success result with a weaker meaning: the message is in the
-  native input stream and the session had not taken it when `--timeout`
-  elapsed. It cannot be withdrawn. Its `steer_delivered` or `steer_rejected`
+- `queued` is a success result with a weaker meaning: the owner accepted the
+  message for the native input stream and the session had not taken it when
+  `--timeout` elapsed. It is not proof the bytes have reached the native CLI,
+  and it cannot be withdrawn. If the write fails, the request is rejected as
+  `steer_unacknowledged` when the execution ends. Its `steer_delivered` or `steer_rejected`
   event arrives later; a retry with the same `--idempotency-key` waits for it
   without writing the message again.
 - A queued message the session never takes is rejected as
   `steer_unacknowledged` when the execution ends.
+- If the execution is terminalized from outside the owner before it can record
+  either outcome, the caller reports `execution_unknown` with
+  `steer_outcome_unrecorded` rather than guessing.
 - Terminal, Multica-authority, and route-less executions are rejected before
   anything is queued.
 - A request the owner does not take before `--timeout` (default 60 seconds) is
@@ -167,7 +172,7 @@ can only re-deliver a message through a channel it attached itself. Use
 Rejections use the normal error envelope with a `diagnostic_code`:
 `steer_interrupt_not_permitted`, `steer_inbox_missing`, `steer_expired`,
 `steer_invalid_state`, `steer_capability_unavailable`, `steer_unacknowledged`,
-or `steer_resume_failed`.
+`steer_outcome_unrecorded`, or `steer_resume_failed`.
 
 ## Not covered
 
