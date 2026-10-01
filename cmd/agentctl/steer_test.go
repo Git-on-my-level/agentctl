@@ -81,7 +81,11 @@ func startSteerFixture(t *testing.T, script, adapterName, delivery string, nativ
 	// leaves no fixture process behind.
 	t.Cleanup(func() {
 		cancel()
-		<-fixture.done
+		select {
+		case <-fixture.done:
+		case <-time.After(20 * time.Second):
+			t.Error("owning run did not return after cancellation")
+		}
 	})
 	deadline := time.Now().Add(10 * time.Second)
 	for fixture.id == "" && time.Now().Before(deadline) {

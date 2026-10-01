@@ -95,6 +95,15 @@ func TestClaudeResumeArgvKeepsPromptLast(t *testing.T) {
 	}
 }
 
+// boundedContext turns a native fixture that never finishes into a prompt,
+// named test failure instead of a package-wide timeout.
+func boundedContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
 func waitForEvent(t *testing.T, a Adapter, ref SourceRef, sourceState string) []Event {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
@@ -145,7 +154,7 @@ func TestLiveInputSteerExtendsTheSessionByOneTurn(t *testing.T) {
 	if steered.Delivery != SteerLiveInput {
 		t.Fatalf("delivery = %s", steered.Delivery)
 	}
-	result, err := a.Wait(context.Background(), ref)
+	result, err := a.Wait(boundedContext(t), ref)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +241,7 @@ func TestInterruptResumeSteerContinuesTheSameSession(t *testing.T) {
 		t.Fatalf("second steer: %v", err)
 	}
 	// The owner keeps using the reference it was given at launch.
-	result, err := a.Wait(context.Background(), ref)
+	result, err := a.Wait(boundedContext(t), ref)
 	if err != nil {
 		t.Fatal(err)
 	}
