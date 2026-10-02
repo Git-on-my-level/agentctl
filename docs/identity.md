@@ -29,7 +29,9 @@ is the default; `--output text` provides compact agent-facing evidence.
   unknown or self-reported; it never creates a journal.
 - In a managed context, ambient `CODEX_THREAD_ID` is ignored: a child may have
   inherited its parent's conversation ID. Without managed context, a bounded
-  `CODEX_THREAD_ID` is a self-reported native hint. Other harnesses can use the
+  `CODEX_THREAD_ID` is a self-reported native hint only when no competing
+  `CLAUDECODE` or `CURSOR_AGENT_COMPLETED_PATH` marker is present. Competing
+  markers leave provider/session unknown in either nesting direction. Other harnesses can use the
   explicit interface; unsupported inference remains unknown.
 
 The command performs bounded, owner-checked read-only journal access and PATH

@@ -155,7 +155,7 @@ func (a *app) identityCommand(ctx context.Context, renderer output.Renderer, c c
 			}
 			// Never use CODEX_THREAD_ID here: nested managed children inherit the
 			// parent's environment until the native harness supplies its own ID.
-		} else if value := getenv("CODEX_THREAD_ID"); validNativeSessionID(value) {
+		} else if value := getenv("CODEX_THREAD_ID"); validNativeSessionID(value) && !competingNativeIdentityEnvironment(getenv) {
 			report.Provider = identityValue("codex", "native_environment", "self_reported")
 			report.NativeSession = sessionIdentity("codex", value, "native_environment", "self_reported")
 		}
@@ -258,4 +258,11 @@ func identityDisplay(value identityEvidence) string {
 		return "unknown"
 	}
 	return *value.ID
+}
+
+// Competing native markers may themselves be inherited. In either nesting
+// direction, a CODEX_THREAD_ID alone cannot identify the current caller. Do
+// not inspect or render marker values (one can contain a local path).
+func competingNativeIdentityEnvironment(getenv func(string) string) bool {
+	return getenv("CLAUDECODE") != "" || getenv("CURSOR_AGENT_COMPLETED_PATH") != ""
 }

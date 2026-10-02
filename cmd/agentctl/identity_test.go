@@ -264,3 +264,17 @@ func TestIdentityCorrelationGoldenVector(t *testing.T) {
 		t.Fatalf("correlation contract drift: %#v", got)
 	}
 }
+
+func TestIdentityCompetingNativeEnvironmentIsUnknown(t *testing.T) {
+	for _, marker := range []string{"CLAUDECODE", "CURSOR_AGENT_COMPLETED_PATH"} {
+		env := map[string]string{"CODEX_THREAD_ID": "inherited-parent-conversation", marker: "private-marker-fixture"}
+		code, report, raw := identityInvoke(t, env)
+		if code != 0 || report.Provider.ID != nil || report.NativeSession.ID != nil || strings.Contains(raw, "private-marker-fixture") {
+			t.Fatalf("ambiguous native environment adopted parent: %s", raw)
+		}
+		code, report, raw = identityInvoke(t, env, "--provider", "custom-agent", "--native-session-id", "explicit-session")
+		if code != 0 || identityDisplay(report.Provider) != "custom-agent" || report.NativeSession.ID == nil || report.NativeSession.Confidence != "self_reported" {
+			t.Fatalf("explicit identity was lost: %s", raw)
+		}
+	}
+}
