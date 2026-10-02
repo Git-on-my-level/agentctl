@@ -251,6 +251,133 @@ func TestInboxUnreachableWaitingDoesNotInventWorkFailure(t *testing.T) {
 	}
 }
 
+func TestInboxReNotifyPersistsUntilAcknowledgement(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	acks := store.AcknowledgementIndex{Epoch: now.Add(-14 * 24 * time.Hour), ByID: map[ids.ExecutionID]store.ExecutionAcknowledgement{}}
+	makeTerminal := func(terminalAge time.Duration) model.Execution {
+		terminalAt := now.Add(-terminalAge)
+		observedAt := terminalAt.Add(-2 * time.Hour)
+		return model.Execution{
+			State: model.StateCompleted, Liveness: model.LivenessExited,
+			CreatedAt: observedAt.Add(-time.Hour), UpdatedAt: terminalAt, TerminalAt: &terminalAt,
+			Observation: model.Observation{ObservedAt: observedAt},
+		}
+	}
+
+	// An unacknowledged terminal keeps resurfacing as it ages; the tier climbs
+	// with age and the reason carries the age the nag is derived from.
+	weekOld := makeTerminal(7 * 24 * time.Hour)
+	item, actionable := projectInbox(weekOld, now, time.Hour, acks, output.JSON)
+	if !actionable || !item.Unreconciled {
+		t.Fatalf("week-old unacknowledged terminal dropped from the inbox: %#v actionable=%v", item, actionable)
+	}
+	if item.RenotifyAgeTier != "persistent" || item.RenotifyAgeSeconds == nil || *item.RenotifyAgeSeconds != 7*24*time.Hour.Seconds() {
+		t.Fatalf("week-old renotify projection=%#v", item)
+	}
+	if got := inboxReasonCodes(item.Reasons); !equalStrings(got, []string{"result_unreconciled"}) {
+		t.Fatalf("week-old reasons=%v", got)
+	}
+	if item.Reasons[0].AgeSeconds == nil || *item.Reasons[0].AgeSeconds != *item.RenotifyAgeSeconds {
+		t.Fatalf("result_unreconciled reason lost its age: %#v", item.Reasons[0])
+	}
+
+	twoDayOld := makeTerminal(2 * 24 * time.Hour)
+	if item, _ := projectInbox(twoDayOld, now, time.Hour, acks, output.JSON); item.RenotifyAgeTier != "aging" {
+		t.Fatalf("two-day-old tier=%s", item.RenotifyAgeTier)
+	}
+	if item, _ := projectInbox(makeTerminal(time.Hour), now, time.Hour, acks, output.JSON); item.RenotifyAgeTier != "fresh" {
+		t.Fatalf("one-hour-old tier=%s", item.RenotifyAgeTier)
+	}
+
+	// The recorded acknowledgement is the only exit: it removes the item, and
+	// that removal is deliberate and final.
+	acks.ByID[weekOld.ID] = store.ExecutionAcknowledgement{ExecutionID: weekOld.ID, AcknowledgedAt: now, Source: store.AcknowledgementResult}
+	if _, actionable := projectInbox(weekOld, now, time.Hour, acks, output.JSON); actionable {
+		t.Fatal("acknowledged terminal kept re-notifying")
+	}
+}
+
+func TestInboxAgedUnacknowledgedTerminalSurvivesLimitInCommandOutput(t *testing.T) {
+	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	// Stamp the acknowledgement epoch two weeks in the past on first open, so
+	// the seeded terminals below are post-epoch like a journal that has been in
+	// use for a while.
+	past := time.Now().UTC().Add(-14 * 24 * time.Hour)
+	journal, err := store.Open(journalPath, store.Options{Clock: func() time.Time { return past }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	native := `{"type":"result","status":"completed","result":"RENOTIFY_PRIVATE_RESULT"}`
+	for i := 0; i < 25; i++ {
+		stdout.Reset()
+		if code := a.run(context.Background(), []string{"--journal", journalPath, "run", "--adapter", "generic-process", "--", "/bin/echo", native}); code != 0 {
+			t.Fatalf("run exit=%d output=%s", code, stdout.String())
+		}
+	}
+	var runDocument struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &runDocument); err != nil {
+		t.Fatal(err)
+	}
+
+	// Backdate the last execution's terminal to a week ago. Its result was
+	// never collected, so it must keep resurfacing: it leads the page ahead of
+	// 25 fresh unacknowledged terminals and never falls off the default limit.
+	journal, err = store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	aged, err := journal.GetExecution(context.Background(), runDocument.Result.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalAt := time.Now().UTC().Add(-7 * 24 * time.Hour)
+	aged.TerminalAt = &terminalAt
+	if _, err := journal.UpdateExecution(context.Background(), aged, aged.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "inbox"}); code != 0 {
+		t.Fatalf("inbox exit=%d output=%s", code, stdout.String())
+	}
+	if strings.Contains(stdout.String(), "RENOTIFY_PRIVATE_RESULT") {
+		t.Fatalf("inbox leaked result content: %s", stdout.String())
+	}
+	var document struct {
+		Result struct {
+			Executions []inboxExecution `json:"executions"`
+			Count      int              `json:"count"`
+			Total      int              `json:"total"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.Result.Count != 20 || document.Result.Total != 25 {
+		t.Fatalf("count=%d total=%d inbox=%s", document.Result.Count, document.Result.Total, stdout.String())
+	}
+	first := document.Result.Executions[0]
+	if first.ID != aged.ID || !first.Unreconciled || first.RenotifyAgeTier != "persistent" || first.RenotifyAgeSeconds == nil {
+		t.Fatalf("aged unacknowledged terminal did not lead the page: first=%#v", first)
+	}
+	for _, item := range document.Result.Executions[1:] {
+		if !item.Unreconciled || item.RenotifyAgeTier != "fresh" {
+			t.Fatalf("follower projection=%#v", item)
+		}
+	}
+}
+
 func TestParseInboxBoundsStalenessAndLimit(t *testing.T) {
 	opts, problem := parseInbox([]string{"--stale-after", "2h", "--limit", "7", "--adapter", "codex", "--label", "review"})
 	if problem != nil {

@@ -171,7 +171,11 @@ labels are insufficient authority identifiers.
 Task subscriptions expire after acknowledged terminal delivery by default.
 Direct executions use the same acknowledgement idea: `result` and a terminal
 `await` stamp collection so `recent --unreconciled` can name work whose result
-was never dereferenced. Broad subscriptions require an explicit scope and retention estimate in plan
+was never dereferenced. The stamp is a deliberate, final act: it permanently
+removes the execution from `recent --unreconciled` and from `inbox`
+re-notification, which keeps unacknowledged terminals persistently visible
+(oldest first, with a journal-derived `renotify_age_tier`) instead of letting
+them go stale. Broad subscriptions require an explicit scope and retention estimate in plan
 output. Creating, rotating, acknowledging, pausing, and cancelling a
 subscription are idempotent mutations.
 
