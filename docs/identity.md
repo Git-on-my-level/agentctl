@@ -24,11 +24,19 @@ is the default; `--output text` provides compact agent-facing evidence.
   cannot be combined with provider/session flags.
 - Otherwise existing `AGENTCTL_EXECUTION_ID`, `AGENTCTL_ADAPTER`, or
   `AGENTCTL_AUTHORITY` signals a managed context. A valid execution ID is looked
-  up in the existing journal. Observed journal evidence wins over environment
-  hints. Missing/inaccessible journal evidence leaves identity explicitly
+  up in the existing journal. The record supplies execution evidence, but an
+  implicit managed context with conflicting native provider markers or a
+  different Codex conversation ID leaves the whole caller association unknown.
+  Native children launched outside agentctl can inherit a parent's managed
+  context. Explicit `--execution` remains an exact journal query regardless
+  of ambient markers. This conservative rule means an actual managed Claude
+  child launched under Codex can return unknown until explicitly queried with
+  `--execution`; inherited evidence cannot prove which nesting direction occurred.
+  Missing/inaccessible journal evidence leaves identity explicitly
   unknown or self-reported; it never creates a journal.
-- In a managed context, ambient `CODEX_THREAD_ID` is ignored: a child may have
-  inherited its parent's conversation ID. Without managed context, a bounded
+- In a managed context, `CODEX_THREAD_ID` is never adopted as the session ID:
+  it is only checked for conflicting evidence. A child may have inherited its
+  parent's conversation ID. Without managed context, a bounded
   `CODEX_THREAD_ID` is a self-reported native hint only when no competing
   `CLAUDECODE` or `CURSOR_AGENT_COMPLETED_PATH` marker is present. Competing
   markers leave provider/session unknown in either nesting direction. Other harnesses can use the

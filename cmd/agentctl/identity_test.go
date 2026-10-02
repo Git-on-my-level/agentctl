@@ -158,7 +158,7 @@ func TestIdentityJournalCorrelatesAcrossExecutionsWithoutWriting(t *testing.T) {
 	if code != 0 || a.NativeSession.ID == nil || a.Provider.Confidence != "observed" || a.Environment.HostID == nil || a.Capabilities["resume"].Status != "unsupported" {
 		t.Fatalf("bad recorded identity: %s", raw)
 	}
-	code, b, raw := identityInvoke(t, map[string]string{"AGENTCTL_EXECUTION_ID": second.ID.String(), "AGENTCTL_ADAPTER": "cursor", "CODEX_THREAD_ID": "wrong-parent"}, "--journal", path)
+	code, b, raw := identityInvoke(t, map[string]string{"AGENTCTL_EXECUTION_ID": second.ID.String(), "AGENTCTL_ADAPTER": "cursor"}, "--journal", path)
 	if code != 0 || b.NativeSession.ID == nil || *a.NativeSession.ID != *b.NativeSession.ID || *a.Execution.ID == *b.Execution.ID || identityDisplay(b.Provider) != "codex" {
 		t.Fatalf("journal precedence/correlation failed: %s", raw)
 	}
@@ -213,8 +213,10 @@ func TestIdentitySessionIsObservableBeforeNativeCompletion(t *testing.T) {
 	path := filepath.Join(root, "state", "journal.db")
 	script := filepath.Join(root, "codex")
 	release := filepath.Join(root, "release")
+	emitSession := filepath.Join(root, "emit-session")
 	source := `#!/bin/sh
 if [ "$1" = "--version" ]; then echo 'codex-cli 0.1.0'; exit 0; fi
+while [ ! -e '` + emitSession + `' ]; do sleep 0.02; done
 printf '%s\n' '{"type":"thread.started","thread_id":"early-native-fixture"}'
 while [ ! -e '` + release + `' ]; do sleep 0.02; done
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}' '{"type":"turn.completed"}'
@@ -237,6 +239,35 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"d
 		done <- a.run(ctx, []string{"--journal", path, "run", "--adapter", "codex", "--execution-id", rawID.String(), "--", script, "exec", "--json"})
 	}()
 	deadline := time.Now().Add(5 * time.Second)
+	executionID, err := ids.ParseExecutionID(rawID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Delay the native ID until after Launch returns and its PID-only session
+	// is committed. This exercises ongoing observation, not just applySession.
+	for {
+		journal, openErr := store.Open(path, store.Options{ReadOnly: true, LockTimeout: 10 * time.Millisecond})
+		running := false
+		if openErr == nil {
+			current, getErr := journal.GetExecution(ctx, executionID)
+			journal.Close()
+			running = getErr == nil && current.State == model.StateRunning
+		}
+		if running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("native launch did not become observable")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	code, initial, raw := identityInvoke(t, nil, "--journal", path, "--execution", rawID.String())
+	if code != 0 || initial.NativeSession.ID != nil {
+		t.Fatalf("PID placeholder was treated as a conversation: %s", raw)
+	}
+	if err := os.WriteFile(emitSession, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
 	for {
 		code, report, _ := identityInvoke(t, nil, "--journal", path, "--execution", rawID.String())
 		if code == 0 && report.NativeSession.ID != nil {
@@ -255,6 +286,9 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"d
 	}
 	if code := <-done; code != 0 {
 		t.Fatalf("run failed: %s %s", stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "early-native-fixture") {
+		t.Fatal("normal run output leaked native ID")
 	}
 }
 
@@ -276,5 +310,43 @@ func TestIdentityCompetingNativeEnvironmentIsUnknown(t *testing.T) {
 		if code != 0 || identityDisplay(report.Provider) != "custom-agent" || report.NativeSession.ID == nil || report.NativeSession.Confidence != "self_reported" {
 			t.Fatalf("explicit identity was lost: %s", raw)
 		}
+	}
+}
+
+func TestIdentityImplicitManagedConflictFailsClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	journal, err := store.Open(path, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	codex := identityFixture(t, journal, "codex", "managed-native-fixture")
+	claude := identityFixture(t, journal, "claude-code", "claude-native-fixture")
+	journal.Close()
+	for _, test := range []struct {
+		execution     model.Execution
+		marker, value string
+	}{
+		{codex, "CLAUDECODE", "1"}, {codex, "CURSOR_AGENT_COMPLETED_PATH", "private-path-fixture"},
+		{codex, "CODEX_THREAD_ID", "another-native-fixture"}, {claude, "CODEX_THREAD_ID", "codex-child-fixture"},
+	} {
+		env := map[string]string{"AGENTCTL_EXECUTION_ID": test.execution.ID.String(), "AGENTCTL_ADAPTER": test.execution.Adapter, test.marker: test.value}
+		code, report, raw := identityInvoke(t, env, "--journal", path)
+		if code != 0 || report.Provider.ID != nil || report.NativeSession.ID != nil || report.Execution.ID != nil || report.Environment.HostID != nil {
+			t.Fatalf("implicit parent association survived conflicting marker %s: %s", test.marker, raw)
+		}
+		for _, capability := range report.Capabilities {
+			if capability.Status != "unknown" {
+				t.Fatal("ambiguous identity kept capabilities")
+			}
+		}
+		code, report, raw = identityInvoke(t, env, "--journal", path, "--execution", test.execution.ID.String())
+		if code != 0 || report.NativeSession.ID == nil || identityDisplay(report.Execution) != test.execution.ID.String() || report.Execution.Confidence != "observed" {
+			t.Fatalf("explicit journal query changed with ambient evidence: %s", raw)
+		}
+	}
+	env := map[string]string{"AGENTCTL_EXECUTION_ID": codex.ID.String(), "AGENTCTL_ADAPTER": "codex", "CODEX_THREAD_ID": "managed-native-fixture"}
+	code, report, raw := identityInvoke(t, env, "--journal", path)
+	if code != 0 || report.NativeSession.ID == nil || report.Execution.Confidence != "observed" {
+		t.Fatalf("matching evidence was rejected: %s", raw)
 	}
 }

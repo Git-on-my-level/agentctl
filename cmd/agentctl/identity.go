@@ -118,10 +118,7 @@ func (a *app) identityCommand(ctx context.Context, renderer output.Renderer, c c
 	if getenv == nil {
 		getenv = func(string) string { return "" }
 	}
-	report := identityReport{SchemaVersion: identitySchemaVersion, Provider: unknownIdentity(), Execution: unknownIdentity(), NativeSession: sessionIdentity("", "", "", ""), Environment: identityEnvironment{OS: runtime.GOOS, Arch: runtime.GOARCH, HostProvenance: "unknown"}, Capabilities: map[string]identityCapability{}, Harnesses: identityHarnesses(getenv)}
-	for _, name := range []string{"resume", "history", "logs"} {
-		report.Capabilities[name] = identityCapabilityValue("unknown", "unknown", "unknown", "agentctl_native_adapter", "not_observed")
-	}
+	report := identityReport{SchemaVersion: identitySchemaVersion, Provider: unknownIdentity(), Execution: unknownIdentity(), NativeSession: sessionIdentity("", "", "", ""), Environment: identityEnvironment{OS: runtime.GOOS, Arch: runtime.GOARCH, HostProvenance: "unknown"}, Capabilities: unknownIdentityCapabilities(), Harnesses: identityHarnesses(getenv)}
 	// Explicit provider/session hints stand alone. They must not accidentally
 	// borrow an ambient managed execution or its host/session identity.
 	if provider != "" {
@@ -153,8 +150,18 @@ func (a *app) identityCommand(ctx context.Context, renderer output.Renderer, c c
 			} else if explicitExecution {
 				return output.NewError(output.CodeUsage, "identity requires a typed execution ID", false)
 			}
-			// Never use CODEX_THREAD_ID here: nested managed children inherit the
-			// parent's environment until the native harness supplies its own ID.
+			// A valid journal record proves what was observed for that execution,
+			// not that an implicit environment ID belongs to this caller. Native
+			// children launched outside agentctl can inherit a parent's managed
+			// context. Conflicting evidence must not be upgraded to observed.
+			if !explicitExecution && managedIdentityEnvironmentConflicts(report, getenv) {
+				report.Provider = unknownIdentity()
+				report.Execution = unknownIdentity()
+				report.NativeSession = sessionIdentity("", "", "", "")
+				report.Environment.HostID = nil
+				report.Environment.HostProvenance = "unknown"
+				report.Capabilities = unknownIdentityCapabilities()
+			}
 		} else if value := getenv("CODEX_THREAD_ID"); validNativeSessionID(value) && !competingNativeIdentityEnvironment(getenv) {
 			report.Provider = identityValue("codex", "native_environment", "self_reported")
 			report.NativeSession = sessionIdentity("codex", value, "native_environment", "self_reported")
@@ -265,4 +272,28 @@ func identityDisplay(value identityEvidence) string {
 // not inspect or render marker values (one can contain a local path).
 func competingNativeIdentityEnvironment(getenv func(string) string) bool {
 	return getenv("CLAUDECODE") != "" || getenv("CURSOR_AGENT_COMPLETED_PATH") != ""
+}
+
+func unknownIdentityCapabilities() map[string]identityCapability {
+	result := map[string]identityCapability{}
+	for _, name := range []string{"resume", "history", "logs"} {
+		result[name] = identityCapabilityValue("unknown", "unknown", "unknown", "agentctl_native_adapter", "not_observed")
+	}
+	return result
+}
+
+func managedIdentityEnvironmentConflicts(report identityReport, getenv func(string) string) bool {
+	provider := identityDisplay(report.Provider)
+	for _, marker := range []struct{ key, provider string }{{"CLAUDECODE", "claude"}, {"CURSOR_AGENT_COMPLETED_PATH", "cursor"}, {"CODEX_THREAD_ID", "codex"}} {
+		if getenv(marker.key) != "" && provider != marker.provider {
+			return true
+		}
+	}
+	// Same-provider nesting can expose a different conversation too. The
+	// environment may be stale or fresh; neither case licenses choosing one.
+	if native := getenv("CODEX_THREAD_ID"); native != "" && report.NativeSession.ID != nil {
+		hint := sessionIdentity("codex", native, "native_environment", "self_reported")
+		return hint.ID == nil || *hint.ID != *report.NativeSession.ID
+	}
+	return false
 }
