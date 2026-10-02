@@ -64,6 +64,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 		"event-page":          "schemas/event-page.schema.json",
 		"execution":           "schemas/execution.schema.json",
 		"fanout-manifest":     "schemas/fanout-manifest.schema.json",
+		"identity-report":     "schemas/identity-report.schema.json",
 		"inbox-result":        "schemas/inbox-result.schema.json",
 		"knowledge-source":    "schemas/knowledge-source.schema.json",
 		"outcome":             "schemas/outcome.schema.json",
@@ -95,6 +96,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 func TestNewSchemaDocumentsDeclareDraftAndRequiredShape(t *testing.T) {
 	root := schemaRepositoryRoot(t)
 	expected := map[string][]string{
+		"identity-report.schema.json":   {"schema_version", "provider", "native_session", "execution", "environment", "capabilities", "harnesses"},
 		"callback-envelope.schema.json": {"schema_version", "delivery_id", "subscription_id", "event_id", "event_dedupe_key", "attempt", "sent_at", "expires_at", "nonce", "event"},
 		"context-result.schema.json":    {"bundle_revision", "matches"},
 		"continue-result.schema.json":   {"continues", "resolved", "request_sha256", "reused"},

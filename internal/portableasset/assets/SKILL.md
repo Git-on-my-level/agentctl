@@ -10,6 +10,13 @@ callbacks, explicit Multica promotion, and selected shared context. Native CLIs
 still own prompts, sessions, models, tools, and correctness. Multica still owns
 durable issues, runs, assignment, and review.
 
+For optional coordination integrations, `agentctl identity --json` reports
+versioned provider/native-conversation evidence without probes or writes.
+Unknown IDs remain null. Native session IDs are provider-scoped hashes, not
+resume handles or authenticated agent principals; consumers add their enrolled
+host namespace and preserve explicit coordination identity. Installed harnesses
+are inventory only. Generic agents do not need agentctl to register elsewhere.
+
 Resolve the binary from `AGENTCTL_BIN`, `PATH`, or
 `$HOME/.local/bin/agentctl`. If it is unavailable, stop with
 `dependency_unavailable`; do not inspect native session stores as a fallback.

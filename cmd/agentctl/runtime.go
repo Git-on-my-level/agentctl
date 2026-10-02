@@ -342,6 +342,14 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			nextRunnerHeartbeat = a.now().Add(nativeRunnerHeartbeatEvery)
 		}
 		result, resultErr := runtime.Result(launchCtx, adapter.ResultRequest{Ref: launch.Session.Ref})
+		// Result exposes the current native reference even before completion.
+		// Persist only a changed valid ID, before waiting for process cleanup.
+		if resultErr == nil {
+			execution, openProblem = a.observeNativeSession(c, execution, result.SessionRef)
+			if openProblem != nil {
+				return openProblem
+			}
+		}
 		if resultErr == nil && terminalAdapterState(result.State) {
 			// The structured stream may announce terminal state just before the
 			// process exits. Reap the child before returning so a foreground run
@@ -1265,24 +1273,51 @@ const nativeSessionBinding = "native_session"
 
 // recordNativeSession retains the native session id as an opaque resume
 // reference. It is operator-private and redacted from normal output.
-func recordNativeSession(execution *model.Execution, ref adapter.SourceRef) {
-	session := strings.TrimSpace(ref.OpaqueID)
-	if session == "" || len(session) > 256 || (ref.PID != 0 && session == strconv.Itoa(ref.PID)) {
-		return
+func recordNativeSession(execution *model.Execution, ref adapter.SourceRef) bool {
+	session := ref.OpaqueID
+	if !validNativeSessionID(session) || (ref.PID != 0 && session == strconv.Itoa(ref.PID)) {
+		return false
 	}
 	fingerprint := adapter.Fingerprint(execution.Adapter, nativeSessionBinding, session)
 	for i := range execution.SourceBindings {
 		if execution.SourceBindings[i].Kind == nativeSessionBinding {
+			if execution.SourceBindings[i].OpaqueID != nil && *execution.SourceBindings[i].OpaqueID == session {
+				return false
+			}
 			execution.SourceBindings[i].Fingerprint = fingerprint
 			execution.SourceBindings[i].OpaqueID = &session
-			return
+			return true
 		}
 	}
 	alias, err := ids.New(ids.TypeSource)
 	if err != nil {
-		return
+		return false
 	}
 	execution.SourceBindings = append(execution.SourceBindings, model.SourceBinding{Kind: nativeSessionBinding, AliasID: alias, Fingerprint: fingerprint, OpaqueID: &session})
+	return true
+}
+
+// observeNativeSession retains early native evidence in the existing private
+// binding. It neither changes the execution identity nor admits continuation.
+func (a *app) observeNativeSession(c common, execution model.Execution, ref adapter.SourceRef) (model.Execution, *output.Error) {
+	candidate := execution
+	candidate.SourceBindings = append([]model.SourceBinding(nil), execution.SourceBindings...)
+	if execution.State.Terminal() || !recordNativeSession(&candidate, ref) {
+		return execution, nil
+	}
+	journal, current, problem := a.openExecutionWriteOwned(c, execution.ID)
+	if problem != nil {
+		return execution, problem
+	}
+	defer journal.Close()
+	if current.State.Terminal() || !recordNativeSession(&current, ref) {
+		return current, nil
+	}
+	updated, err := journal.UpdateExecution(context.Background(), current, current.Revision)
+	if err != nil {
+		return execution, mapStoreError("record native session identity", err)
+	}
+	return updated, nil
 }
 
 func nativeSessionID(execution model.Execution) string {
@@ -1325,6 +1360,7 @@ func applySession(journal *store.Journal, execution model.Execution, session ada
 		opaque := binding.OpaqueID
 		execution.SourceBindings = []model.SourceBinding{{Kind: binding.Kind, AliasID: alias, Fingerprint: binding.Fingerprint, OpaqueID: &opaque}}
 	}
+	recordNativeSession(&execution, session.Ref)
 	return journal.UpdateExecution(context.Background(), execution, execution.Revision)
 }
 
