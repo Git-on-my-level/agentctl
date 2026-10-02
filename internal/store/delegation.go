@@ -31,6 +31,9 @@ func decodeExecution(tx *bbolt.Tx, raw []byte, execution *model.Execution) error
 	if err := json.Unmarshal(raw, execution); err != nil {
 		return err
 	}
+	if err := hydrateCallerBinding(tx, execution); err != nil {
+		return err
+	}
 	data := tx.Bucket(bIdempotency).Get([]byte(delegationBindingScope + "\x00" + execution.ID.String()))
 	if data == nil {
 		return nil

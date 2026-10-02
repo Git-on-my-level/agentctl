@@ -420,7 +420,7 @@ func (m *multicaAdapter) readMulticaJSON(ctx context.Context, operation string, 
 		return nil, capabilityError(CapabilitySnapshot, "Multica "+operation+" route is not verified for the current CLI")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Env = os.Environ()
+	cmd.Env = WithoutCallerDeclaration(os.Environ())
 	prepareProcess(cmd)
 	cmd.Cancel = func() error { return killProcess(cmd) }
 	cmd.WaitDelay = 5 * time.Second
@@ -644,7 +644,7 @@ func (m *multicaAdapter) Cancel(ctx context.Context, req CancelRequest) error {
 		return capabilityError(CapabilityCancel, "Multica issue cancel-task route is not verified for the current CLI")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Env = os.Environ()
+	cmd.Env = WithoutCallerDeclaration(os.Environ())
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

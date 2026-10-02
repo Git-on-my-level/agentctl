@@ -527,3 +527,85 @@ a newer document only as opaque/unverified data; it returns
 their minimum and maximum schema and semantics versions. `agentctl schema` and
 `agentctl capabilities` expose the negotiated intersection so callers do not
 infer compatibility from CLI versions.
+
+## Usage export
+
+`recent` is also the read-only, host-local usage export. Its result follows
+[recent-result](../schemas/recent-result.schema.json). It reads retained execution
+metadata and acknowledgement stamps, never stored answers or caller transcripts.
+Preflight failures that did not create an execution are explicitly
+`preflight_failures: "not_recorded"`; the export is not a command-invocation or
+provider-success-rate counter.
+
+```sh
+agentctl recent --since 2026-10-01T00:00:00Z --until 2026-10-02T00:00:00Z --summary
+agentctl recent --caller hermes --limit 100
+agentctl recent --caller hermes --limit 100 --cursor "$cursor"
+```
+
+`--since` includes the creation timestamp; `--until` excludes it. Both accept
+RFC3339 timestamps, normalize to UTC, and reject an empty/reversed interval.
+`--summary` returns no execution rows and aggregates the entire filtered set by
+adapter, authority, state and declared caller, plus the unacknowledged-terminal
+count. `count` is zero, `total` is the aggregate population, and `has_more` is
+false. Summary and cursor cannot be combined. JSON is the machine interface;
+text includes the same summary counters.
+
+Record pages retain the 1–200 limit (default 20). Follow `next_cursor` while
+`has_more` is true, repeating the original filters. `total` counts the full
+filtered creation window, not just the rows remaining after the cursor.
+`next_cursor` is a bounded, versioned, opaque keyset cursor bound to journal
+identity, filters, the first page's `as_of`, and the last returned creation
+(timestamp, typed ID) pair. Limit may change between pages. Malformed,
+unsupported-version, different-journal or changed-filter cursors return usage
+exit 2, `diagnostic_code: recent_invalid_cursor`; no journal is created.
+
+The cursor freezes a creation-time cutoff, **not a persisted state snapshot**.
+States, acknowledgements and retention are live on each page; totals can change.
+New records after the cutoff are excluded, and deleting the last returned row
+does not invalidate its ordering boundary. Backdated inserted records can enter
+the window. Restart the export when comparing a newly selected population.
+No export acknowledges, deletes, backfills, refreshes native state, or contacts
+Multica. Consumers combine independently identified host exports and must keep
+host/journal identities and these completeness limits.
+
+### Declared caller attribution
+
+An invoking harness may explicitly set `AGENTCTL_CALLER_HARNESS` to one of
+`hermes`, `claude-code`, `codex`, `cursor`, `omp`, `zcode`, `devin`, or `other`.
+New native/delegated/continued and Multica-dispatched executions retain optional
+`caller: {harness, provenance: "caller_declared"}`. The value is attribution,
+not authentication or provider attestation. Unset/empty declarations and older
+records remain unknown; the child adapter is never used to guess the caller.
+Invalid declarations fail before new admission without echoing the value.
+Read-only observation and result collection do not require a declaration.
+
+Retries recover the original caller metadata; it does not change idempotency
+semantics. The declaration is removed from inherited native/Multica process
+environments to prevent nested agents from accidentally inheriting their
+parent's identity. A child harness must explicitly declare its own caller.
+`recent --caller unknown` selects unattributed records. No session IDs, prompts,
+transcripts or credentials are added to the journal or exported.
+
+### Stale recovery guidance
+
+Stale/unreachable and integrity-conflicted inbox entries include structured
+`recovery` guidance and read-only inspection actions. The route is derived from
+recorded capability scopes and exact authority bindings, never an adapter name.
+`owner_process_only` says native process ownership is required; after the owner
+exits it does not promise cross-process cancellation, resume or result recovery.
+`bound_multica_authority` identifies typed bound issue/run aliases and points to
+explicit refresh discovery or an already configured supervisor's status.
+Otherwise the route is `unverified`.
+
+Status/events read cached evidence. Explicit `await` can refresh a bound Multica
+issue, but it journals observations and can acknowledge a terminal; inbox only
+provides read-only help for that action. An unreachable process is not proof of
+work failure or completion. The authority must reconcile conflicted evidence.
+Inspection actions preserve explicit config/profile/journal scope; user-selected
+journal paths can therefore appear in action argv, but execution working paths
+and content remain omitted.
+
+Caller attribution is preserved in execution-owned immutable metadata, so a newer reader can restore it after an older supervisor rewrites an execution envelope. Historical executions without attribution remain unknown.
+
+`recent` durations use the current page observation time; the cursor `as_of` is only a creation-time cutoff. State, lifecycle timestamps, duration, and acknowledgement evidence are read live on each page.

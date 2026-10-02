@@ -177,3 +177,42 @@ The request and result schemas, `help delegate`, and embedded portable skill shi
 together. `agentctl bootstrap update` reconciles the installed guidance through
 existing managed ownership rules. The design is tracked in
 [issue 51](https://github.com/Git-on-my-level/agentctl/issues/51).
+
+## Actionable validation and static compatibility
+
+Request errors include a stable violation, bounded sanitized `field_path`,
+sorted `allowed_keys` for the containing object, and an `example_request` with
+explicit placeholders. Unknown keys outside the bounded ASCII identifier syntax
+are replaced with `<unknown>`. Values and prompt text are never echoed. The
+example requires a new logical-task key and a reviewed configured model; it is
+not a default model selection.
+
+No-match/ambiguity errors include at most 32 sorted, deduplicated reviewed
+catalog candidates, the full `candidate_count`, `candidates_truncated`,
+`candidate_selectors`, and names of supplied constraint fields. Selectors
+reproduce nonempty catalog constraints; overlapping catalog entries can still
+be ambiguous. Nothing is selected or launched automatically. Preserve explicit
+user constraints and inspect the catalog rather than weakening a failed request.
+
+Prompt-root repair instructions follow the originating command. `delegate`,
+`continue`, `steer`, and `dispatch` accept piped `--prompt-stdin` and do not accept
+expert `run`'s `--prompt-delivery` flag. `run` repairs preserve native delivery.
+Fanout errors identify the shared or child manifest `prompt_file` to repair
+within the manifest directory. Root confinement and symlink checks remain intact.
+
+`config doctor` and `config bundle validate` separately expose `syntax_valid`
+and static `launch_recipes` compatibility. Existing `valid` retains its
+syntax/composition/provenance meaning. Doctor emits the selected profile report;
+bundle validation emits reports keyed by profile. A provenance failure retains
+the partial doctor report at `error.details.report` with its existing error exit.
+See [launch-recipe-report](../schemas/launch-recipe-report.schema.json).
+
+Recipe compatibility tests exact configured harness/model/settings and aliases
+without executing binaries, contacting providers or resolving Multica assignees.
+`runtime_verified` is always false. Request-specific settings can still be
+unsupported even when the configured default passes. Native runtime, account,
+model availability, authentication, and Multica readiness are separate checks.
+Devin passes exact configured model IDs instead of a frozen version list, while
+continuing to refuse fast/priority variants and unsafe argument forms. Claude
+Code's documented native `[1m]` suffix is preserved only for that adapter; other
+harnesses retain their reviewed bracket grammar. Neither change remaps models.

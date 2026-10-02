@@ -28,6 +28,15 @@
     "observation"
   ],
   "properties": {
+    "caller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness", "provenance"],
+      "properties": {
+        "harness": {"enum": ["hermes", "claude-code", "codex", "cursor", "omp", "zcode", "devin", "other"]},
+        "provenance": {"const": "caller_declared"}
+      }
+    },
     "last_operation_failure": {
       "type": "object",
       "additionalProperties": false,

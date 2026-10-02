@@ -216,7 +216,7 @@ func TestZCodeRecipeUsesConfiguredModelOnly(t *testing.T) {
 }
 
 func TestDevinRecipePassesModelAndPrint(t *testing.T) {
-	for _, model := range []string{"swe-2-high", "fusion-gpt-6-sol-high-sidekick-swe-2-high"} {
+	for _, model := range []string{"swe-2-high", "fusion-gpt-6-sol-high-sidekick-swe-2-high", "fusion-next-model", "claude-sonnet-4"} {
 		got, err := Build(Input{Harness: "devin", Model: model})
 		if err != nil {
 			t.Fatal(err)
@@ -233,13 +233,33 @@ func TestDevinRecipePassesModelAndPrint(t *testing.T) {
 	if explicit.Argv[0] != "/opt/bin/devin" {
 		t.Fatalf("explicit path = %q", explicit.Argv[0])
 	}
-	for _, model := range []string{"swe-2-high-fast", "swe-2-high-priority", "claude-sonnet-4"} {
+	for _, model := range []string{"swe-2-high-fast", "swe-2-high-priority", "future-fast", "future-priority", "--permission-mode=dangerous", "model with spaces", "model\x00tail", "\nmodel", "model\t"} {
 		if _, err := Build(Input{Harness: "devin", Model: model}); err == nil {
 			t.Fatalf("expected %s to be refused", model)
 		}
 	}
 	if _, err := Build(Input{Harness: "devin", Model: "swe-2-high", Speed: "fast"}); err == nil {
 		t.Fatal("expected fast speed to be refused")
+	}
+}
+
+func TestClaudeCodePreservesNativeContextSuffix(t *testing.T) {
+	for _, model := range []string{"opus[1m]", "sonnet[1m]", "claude-opus-future[1m]"} {
+		got, err := Build(Input{Harness: "claude", Model: model, UnattendedCodingPermissions: true})
+		if err != nil {
+			t.Fatalf("%s: %v", model, err)
+		}
+		if got.Argv[len(got.Argv)-1] != model || got.Permissions != PermissionsUnsupported || contains(got.Argv, "--dangerously-skip-permissions") {
+			t.Fatalf("model or permissions changed: %#v", got)
+		}
+		if _, err := Build(Input{Harness: "cursor", Model: model}); err == nil {
+			t.Fatalf("Claude native suffix accepted by Cursor: %s", model)
+		}
+	}
+	for _, model := range []string{"[1m]", "opus[2m]", "opus[1m][1m]", "opus[[1m]", "opus[1m]suffix", "opus[1m,fast=true]"} {
+		if _, err := Build(Input{Harness: "claude-code", Model: model}); err == nil {
+			t.Fatalf("malformed suffix accepted: %s", model)
+		}
 	}
 }
 

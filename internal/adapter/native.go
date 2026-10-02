@@ -526,7 +526,7 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 		defer cancel()
 		cmd := exec.CommandContext(probeCtx, probeArgs[0], probeArgs[1:]...)
-		cmd.Env = os.Environ()
+		cmd.Env = WithoutCallerDeclaration(os.Environ())
 		var out bytes.Buffer
 		cmd.Stdout = &limitedWriter{w: &out, n: 8192}
 		cmd.Stderr = &limitedWriter{w: &out, n: 8192}
@@ -691,7 +691,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	if req.Cwd != "" {
 		cmd.Dir = req.Cwd
 	}
-	cmd.Env = append(os.Environ(), req.Env...)
+	cmd.Env = append(WithoutCallerDeclaration(os.Environ()), req.Env...)
 	if context := req.ExecutionContext; context != nil && context.Authority == "native" {
 		cmd.Env = setEnvironment(cmd.Env, map[string]string{
 			"AGENTCTL_EXECUTION_ID": context.ExecutionID,

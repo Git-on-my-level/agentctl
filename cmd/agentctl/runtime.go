@@ -81,6 +81,10 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 }
 
 func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c common, args []string, opts runOptions) *output.Error {
+	caller, callerProblem := a.executionCaller()
+	if callerProblem != nil {
+		return callerProblem
+	}
 	if warning := offPolicyRunWarning(c, opts.adapter, opts.argv); warning != nil {
 		renderer = renderer.WithWarnings(*warning)
 	}
@@ -211,6 +215,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	}
 	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Labels: append([]string(nil), opts.labels...), CWD: launchCWD, Repository: repository, Workspace: workspace, Supersedes: append([]ids.ExecutionID{}, opts.supersedes...), TaskContract: taskContractValue(taskContract), DeadlineAt: deadlineAt, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
 	mutation := contracts.MutationKey{}
+	execution.Caller = caller
 	if opts.idempotencyKey != "" {
 		digest, dErr := mutationDigest(runtime.Name(), opts.cwd, opts.argv, opts.labels, opts.noStoreResult, prompt, taskContract)
 		if dErr != nil {
@@ -702,6 +707,12 @@ func validRunLabel(label string) bool {
 }
 
 func (a *app) loadPrompt(opts runOptions) (*promptPayload, *output.Error) {
+	return a.loadPromptForCommand("run", opts)
+}
+
+// Prompt source repairs must use the originating command's parser. Native
+// delivery is caller-selected only for expert run; other commands resolve it.
+func (a *app) loadPromptForCommand(command string, opts runOptions) (*promptPayload, *output.Error) {
 	if opts.promptFile == "" && !opts.promptStdin {
 		return nil, nil
 	}
@@ -733,12 +744,7 @@ func (a *app) loadPrompt(opts runOptions) (*promptPayload, *output.Error) {
 		path, _ = filepath.Abs(filepath.Clean(path))
 		rel, err := filepath.Rel(root, path)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-			return nil, output.NewError(output.CodeAuthorizationDenied, "prompt file must be within the run working root", false).
-				WithDetail("path", path).
-				WithDetail("root", root).
-				WithDetail("recommended_prompt_source", "stdin").
-				WithDetail("repair", map[string]any{"remove_flags": []string{"--prompt-file"}, "set_flags": map[string]string{"--prompt-stdin": "", "--prompt-delivery": opts.promptDelivery}, "stdin_file": path, "preserve_other_arguments": true, "explanation": "prompt source selects how agentctl reads bytes; delivery selects how the native CLI receives them"}).
-				WithActions(output.NextAction{Label: "Use piped prompt stdin for an external scratch file", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"select --prompt-stdin and an explicit --prompt-delivery supported by the native argv"}})
+			return nil, promptOutsideRootError(command, opts, path, root)
 		}
 		resolvedRoot, err := filepath.EvalSymlinks(root)
 		if err != nil {
@@ -768,6 +774,41 @@ func (a *app) loadPrompt(opts runOptions) (*promptPayload, *output.Error) {
 	sum := sha256.Sum256(content)
 	payload.Digest = "sha256:" + hex.EncodeToString(sum[:])
 	return payload, nil
+}
+
+func promptOutsideRootError(command string, opts runOptions, path, root string) *output.Error {
+	problem := output.NewError(output.CodeAuthorizationDenied, "prompt file must be within the "+command+" working root", false).
+		WithDetail("path", path).
+		WithDetail("root", root)
+	action := output.NextAction{Argv: []string{"agentctl", "help", command}, Mutates: false, SideEffectClass: output.ReadOnly}
+	if command == "fanout" {
+		// Fanout's prompt paths are manifest fields, not command-line flags.
+		problem.WithDetail("recommended_prompt_source", "file").WithDetail("repair", map[string]any{
+			"manual_action":            "place the prompt file within the manifest directory and update the manifest's shared or child prompt_file field to that path",
+			"preserve_other_arguments": true,
+			"explanation":              "fanout reads prompt files from its manifest and does not accept --prompt-stdin",
+		})
+		action.Label = "Review fanout manifest prompt paths"
+		action.Preconditions = []string{"keep every shared and child prompt_file within the manifest directory"}
+	} else {
+		setFlags := map[string]string{"--prompt-stdin": ""}
+		explanation := "prompt source selects how agentctl reads bytes; this command resolves native prompt delivery"
+		action.Label = "Use piped prompt stdin for an external scratch file"
+		action.Preconditions = []string{"replace --prompt-file with --prompt-stdin and pipe the file into agentctl"}
+		if command == "run" {
+			setFlags["--prompt-delivery"] = firstNonEmptyString(opts.promptDelivery, "argv")
+			explanation = "prompt source selects how agentctl reads bytes; delivery selects how the native CLI receives them"
+			action.Preconditions = append(action.Preconditions, "preserve --prompt-delivery and the native argv")
+		}
+		problem.WithDetail("recommended_prompt_source", "stdin").WithDetail("repair", map[string]any{
+			"remove_flags":             []string{"--prompt-file"},
+			"set_flags":                setFlags,
+			"stdin_file":               path,
+			"preserve_other_arguments": true,
+			"explanation":              explanation,
+		})
+	}
+	return problem.WithActions(action)
 }
 
 func loadTaskContract(path string) (*taskContractPayload, *output.Error) {

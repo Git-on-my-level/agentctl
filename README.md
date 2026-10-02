@@ -630,3 +630,10 @@ correlation report with explicit unknowns. It keeps calling-agent identity,
 per-turn executions, and installed harness inventory separate. See the
 [identity contract](docs/identity.md) for privacy, confidence, and capability
 boundaries; it does not register agents or enable native resume.
+
+Usage audits can use `agentctl recent --summary` with `--since`, `--until`, and
+`--caller`, or follow bounded `--cursor` pages without reading answers or
+acknowledging work. See [Usage export](docs/agent-ergonomics.md#usage-export)
+for caller attribution and live-state limits. Delegation validation now provides
+field-specific repair details and config diagnostics separately report static
+recipe compatibility.

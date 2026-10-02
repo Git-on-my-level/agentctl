@@ -51,8 +51,11 @@ rejected since v0.6.0. Use explicit Multica dispatch for durable task ownership.
 The delegate plan reports ownership and collection semantics before launch.
 
 For an external scratch prompt, replace `--prompt-file` with `--prompt-stdin`
-and redirect the file into agentctl. Keep the verified `--prompt-delivery`
-unchanged: source describes agentctl input, delivery describes native input.
+and redirect the file into agentctl. Only expert `run` accepts
+`--prompt-delivery`; preserve its verified delivery. `delegate`, `continue`,
+`steer`, and `dispatch` use their own delivery contract and need only
+`--prompt-stdin`. Fanout repairs change the shared or child manifest
+`prompt_file` within the manifest directory.
 An error includes a structured repair; it never copies prompt bytes into logs.
 
 For results, prefer `result <id> --content` for exact text, `--summary` for compact
@@ -161,6 +164,12 @@ prompt/selector/cwd/authority/timeout/labels conflicts. An uncertain launch is
 reported unknown and never automatically relaunched. A new key starts new work.
 Keys are local to the profile and journal; retain that context with the execution
 ID. Do not put secrets in request metadata. Prompt bytes remain separate.
+Validation errors include sanitized field paths, allowed keys and a placeholder
+request example; selection errors include bounded reviewed catalog candidates.
+Preserve explicit constraints: examples and candidates never authorize fallback.
+`config doctor` separates syntax/provenance from static `launch_recipes`
+compatibility; `runtime_verified: false` means runtime/account/Multica readiness
+has not been established.
 
 `--wait` requires completed work with a nonempty stored answer and acknowledges
 collection after delivery. `--content` returns exact answer text. Explicit
@@ -275,7 +284,16 @@ delivered (`--prompt-file` or `--prompt-stdin`), not one embedded in native argv
 
 Native work remains owned by the invoking agentctl process. A direct adapter
 does not gain cross-process cancellation; add `--timeout` when a hard stop is
-required unless capabilities advertise a durable cancel route. Use `recent` to recover
+required unless capabilities advertise a durable cancel route. For aggregate usage, use `recent --since <RFC3339> --until <RFC3339> --summary`.
+For full metadata export, follow `next_cursor` with `--cursor`, preserving filters.
+Cursors freeze creation cutoff, not live states or acknowledgements. Summary
+and export never read answers or acknowledge. Preflight failures are not counted.
+Harnesses can explicitly set `AGENTCTL_CALLER_HARNESS` (hermes, claude-code, codex,
+cursor, omp, zcode, devin, other) on invocation; old/unset callers remain unknown.
+The declaration is stripped from inherited child environments; nested callers
+must identify themselves. `recent --caller unknown` finds unattributed records.
+
+Use `recent` to recover
 execution IDs from the local journal. It is read-only, newest-first,
 prompt/result-record-free, and does not aggregate other hosts. Repeated label
 filters use AND semantics. `--unreconciled` lists terminal executions whose
@@ -332,6 +350,11 @@ stops on actionable attention unless `--ignore-attention` is explicit.
 For an execution with a recorded run deadline, use
 `await --through-execution-deadline`; generated background next actions select
 that bound and offer subscription discovery for nonblocking callers.
+
+Stale inbox entries include `recovery` and read-only inspection actions.
+An `owner_process_only` route cannot recover a lost native owner; bound Multica
+work keeps its issue/run authority. Cached status/events and unreachable liveness
+do not establish completion. Do not auto-acknowledge or infer failure.
 
 Use `agentctl help subscribe` before durable callback setup. Delivery is
 at-least-once, so deduplicate by the full event key. A receipt proves delivery,

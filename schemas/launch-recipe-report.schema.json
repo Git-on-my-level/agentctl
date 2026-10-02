@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentctl:schema:launch-recipe-report:v1",
+  "x-agentctl-docs": "../docs/structured-delegation.md",
+  "title": "agentctl static native launch recipe compatibility v1",
+  "description": "The launch_recipes member of config doctor (or error.details.report on provenance failure), and each profile report in config bundle validate. Syntax/provenance validity is separate; this report never verifies native or Multica runtime, authentication, account model availability, or provider identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["compatible", "status", "runtime_verified", "checks", "limits"],
+  "properties": {
+    "compatible": {"type": "boolean"},
+    "status": {"enum": ["not_configured", "compatible", "incompatible"]},
+    "runtime_verified": {"const": false},
+    "checks": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/check"}},
+    "limits": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "harness", "model", "compatible"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0},
+        "harness": {"type": "string"},
+        "model": {"type": "string"},
+        "speed": {"type": "string"},
+        "effort": {"type": "string"},
+        "compatible": {"type": "boolean"},
+        "permissions": {"enum": ["full", "constrained", "read_only", "unsupported"]},
+        "diagnostic_code": {"type": "string"},
+        "diagnostic": {"type": "string"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"compatible": {"const": true}}},
+          "then": {"required": ["permissions"]},
+          "else": {"required": ["diagnostic_code", "diagnostic"]}
+        }
+      ]
+    }
+  }
+}

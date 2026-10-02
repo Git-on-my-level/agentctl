@@ -5,18 +5,46 @@
   "title": "agentctl inbox result v1",
   "type": "object",
   "additionalProperties": true,
-  "required": ["executions", "count", "total", "has_more", "host_local", "as_of", "stale_after_seconds"],
+  "required": [
+    "executions",
+    "count",
+    "total",
+    "has_more",
+    "host_local",
+    "as_of",
+    "stale_after_seconds"
+  ],
   "properties": {
     "executions": {
       "type": "array",
-      "items": {"$ref": "#/$defs/inbox_execution"}
+      "items": {
+        "$ref": "#/$defs/inbox_execution"
+      }
     },
-    "count": {"type": "integer", "minimum": 0, "maximum": 200},
-    "total": {"type": "integer", "minimum": 0},
-    "has_more": {"type": "boolean"},
-    "host_local": {"const": true},
-    "as_of": {"type": "string", "format": "date-time"},
-    "stale_after_seconds": {"type": "number", "minimum": 60, "maximum": 2592000}
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 200
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "has_more": {
+      "type": "boolean"
+    },
+    "host_local": {
+      "const": true
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "stale_after_seconds": {
+      "type": "number",
+      "minimum": 60,
+      "maximum": 2592000
+    }
   },
   "$defs": {
     "execution_id": {
@@ -27,60 +55,247 @@
       "type": "object",
       "additionalProperties": true,
       "required": [
-        "id", "labels", "authority", "adapter", "mode", "state", "liveness",
-        "work_health", "tool_health", "created_at", "updated_at",
-        "observation_age_seconds", "unreconciled", "reasons"
+        "id",
+        "labels",
+        "authority",
+        "adapter",
+        "mode",
+        "state",
+        "liveness",
+        "work_health",
+        "tool_health",
+        "created_at",
+        "updated_at",
+        "observation_age_seconds",
+        "unreconciled",
+        "reasons"
       ],
       "properties": {
-        "id": {"$ref": "#/$defs/execution_id"},
+        "id": {
+          "$ref": "#/$defs/execution_id"
+        },
         "labels": {
           "type": "array",
           "maxItems": 16,
-          "items": {"type": "string", "maxLength": 128, "pattern": "^[a-z][a-z0-9_.-]{0,127}$"}
+          "items": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9_.-]{0,127}$"
+          }
         },
-        "authority": {"enum": ["native", "multica"]},
-        "adapter": {"type": "string", "minLength": 1},
-        "mode": {"enum": ["direct", "multica"]},
-        "state": {"enum": ["created", "starting", "running", "waiting", "attention", "completed", "failed", "cancelled", "orphaned"]},
-        "liveness": {"enum": ["unknown", "alive", "blocked", "exited", "unreachable"]},
-        "work_health": {"enum": ["active", "attention_required", "failed", "orphaned", "result_ready", "observation_stale", "integrity_conflicted"]},
-        "tool_health": {"enum": ["unknown", "alive", "blocked", "exited", "unreachable"]},
-        "created_at": {"type": "string", "format": "date-time"},
-        "updated_at": {"type": "string", "format": "date-time"},
-        "observation_age_seconds": {"type": "number", "minimum": 0},
-        "unreconciled": {"type": "boolean"},
+        "authority": {
+          "enum": [
+            "native",
+            "multica"
+          ]
+        },
+        "adapter": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "enum": [
+            "direct",
+            "multica"
+          ]
+        },
+        "state": {
+          "enum": [
+            "created",
+            "starting",
+            "running",
+            "waiting",
+            "attention",
+            "completed",
+            "failed",
+            "cancelled",
+            "orphaned"
+          ]
+        },
+        "liveness": {
+          "enum": [
+            "unknown",
+            "alive",
+            "blocked",
+            "exited",
+            "unreachable"
+          ]
+        },
+        "work_health": {
+          "enum": [
+            "active",
+            "attention_required",
+            "failed",
+            "orphaned",
+            "result_ready",
+            "observation_stale",
+            "integrity_conflicted"
+          ]
+        },
+        "tool_health": {
+          "enum": [
+            "unknown",
+            "alive",
+            "blocked",
+            "exited",
+            "unreachable"
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "observation_age_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "unreconciled": {
+          "type": "boolean"
+        },
         "reasons": {
           "type": "array",
           "minItems": 1,
-          "items": {"$ref": "#/$defs/reason"}
+          "items": {
+            "$ref": "#/$defs/reason"
+          }
         },
         "next_actions": {
           "type": "array",
-          "items": {"$ref": "#/$defs/next_action"}
+          "items": {
+            "$ref": "#/$defs/next_action"
+          }
+        },
+        "recovery": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "authority",
+            "observation",
+            "route",
+            "summary",
+            "limitations",
+            "authority_aliases"
+          ],
+          "properties": {
+            "authority": {
+              "enum": [
+                "native",
+                "multica"
+              ]
+            },
+            "observation": {
+              "const": "cached"
+            },
+            "route": {
+              "enum": [
+                "owner_process_only",
+                "bound_multica_authority",
+                "unverified"
+              ]
+            },
+            "summary": {
+              "type": "string",
+              "minLength": 1
+            },
+            "limitations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "authority_aliases": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^(issue|run)-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+              }
+            }
+          }
         }
       }
     },
     "next_action": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["label", "argv", "mutates", "side_effect_class", "preconditions"],
+      "required": [
+        "label",
+        "argv",
+        "mutates",
+        "side_effect_class",
+        "preconditions"
+      ],
       "properties": {
-        "label": {"type": "string", "minLength": 1},
-        "argv": {"type": "array", "minItems": 1, "items": {"type": "string"}},
-        "mutates": {"type": "boolean"},
-        "side_effect_class": {"enum": ["read_only", "local_operational_write", "remote_coordination_write", "external_side_effect"]},
-        "preconditions": {"type": "array", "items": {"type": "string"}}
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "mutates": {
+          "type": "boolean"
+        },
+        "side_effect_class": {
+          "enum": [
+            "read_only",
+            "local_operational_write",
+            "remote_coordination_write",
+            "external_side_effect"
+          ]
+        },
+        "preconditions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "reason": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["code", "domain", "summary"],
+      "required": [
+        "code",
+        "domain",
+        "summary"
+      ],
       "properties": {
-        "code": {"enum": ["attention_required", "execution_failed", "execution_orphaned", "result_unreconciled", "running_observation_stale", "tool_unreachable", "observation_integrity_conflicted"]},
-        "domain": {"enum": ["work", "collection", "observation", "tool", "integrity"]},
-        "summary": {"type": "string", "minLength": 1},
-        "age_seconds": {"type": "number", "minimum": 0}
+        "code": {
+          "enum": [
+            "attention_required",
+            "execution_failed",
+            "execution_orphaned",
+            "result_unreconciled",
+            "running_observation_stale",
+            "tool_unreachable",
+            "observation_integrity_conflicted"
+          ]
+        },
+        "domain": {
+          "enum": [
+            "work",
+            "collection",
+            "observation",
+            "tool",
+            "integrity"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "age_seconds": {
+          "type": "number",
+          "minimum": 0
+        }
       }
     }
   }

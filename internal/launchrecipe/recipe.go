@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 const (
@@ -67,7 +68,10 @@ func Build(in Input) (Recipe, error) {
 	if model == "" {
 		return Recipe{}, fail("missing_model", "model is required")
 	}
-	if err := validateModelBrackets(model); err != nil {
+	if strings.HasPrefix(model, "-") || strings.IndexFunc(in.Model, unicode.IsControl) >= 0 || strings.IndexFunc(model, unicode.IsSpace) >= 0 {
+		return Recipe{}, fail("invalid_model", "model must be one non-option argument without whitespace or control characters")
+	}
+	if err := validateHarnessModelBrackets(harness, model); err != nil {
 		return Recipe{}, err
 	}
 	speed, err := normalizeSpeed(in.Speed)
@@ -114,6 +118,16 @@ func Build(in Input) (Recipe, error) {
 	}
 	recipe.Permissions = permissionLabel(harness, access, in.UnattendedCodingPermissions)
 	return recipe, nil
+}
+
+func validateHarnessModelBrackets(harness, model string) error {
+	// Claude Code documents [1m] as a native context-window suffix, not a
+	// Cursor key=value parameter block. Preserve it verbatim for this harness.
+	// https://code.claude.com/docs/en/model-config#extended-context
+	if harness == "claude-code" && strings.HasSuffix(model, "[1m]") && strings.Count(model, "[") == 1 && strings.Count(model, "]") == 1 && len(model) > len("[1m]") {
+		return nil
+	}
+	return validateModelBrackets(model)
 }
 
 func normalizeAccess(raw string) (string, error) {

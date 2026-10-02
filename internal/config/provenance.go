@@ -39,6 +39,7 @@ type ExecutableProvenance struct {
 // server_url/app_url and never update an executable/cache.
 type ProvenanceReport struct {
 	Valid            bool                            `json:"valid"`
+	SyntaxValid      bool                            `json:"syntax_valid"`
 	Profile          string                          `json:"profile,omitempty"`
 	Checks           []ProvenanceCheck               `json:"checks"`
 	Errors           []string                        `json:"errors,omitempty"`
@@ -48,6 +49,7 @@ type ProvenanceReport struct {
 	Bundle           *BundleProvenance               `json:"bundle,omitempty"`
 	Composition      []string                        `json:"composition_order,omitempty"`
 	Source           *SourceStatus                   `json:"source,omitempty"`
+	LaunchRecipes    LaunchRecipeReport              `json:"launch_recipes"`
 }
 
 // ProvenanceOptions injects deterministic local functions for tests and
@@ -78,12 +80,13 @@ func CheckProfileProvenance(profile Profile, options ...ProvenanceOptions) Prove
 		opts.DigestExecutable = digestExecutable
 	}
 
-	report := ProvenanceReport{Valid: true, Adapters: make(map[string]ExecutableProvenance)}
+	report := ProvenanceReport{Valid: true, SyntaxValid: true, Adapters: make(map[string]ExecutableProvenance), LaunchRecipes: CheckLaunchRecipes(profile)}
 	if profile.AgentPreferences != nil {
 		preferences := cloneProfile(Profile{AgentPreferences: profile.AgentPreferences}).AgentPreferences
 		report.AgentPreferences = preferences
 	}
 	if err := validateProfileForReport(profile); err != nil {
+		report.SyntaxValid = false
 		report.addError(err)
 	}
 

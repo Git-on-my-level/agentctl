@@ -13,7 +13,7 @@ import (
 func Resolve(sel Selector, entries []Entry) (Resolution, error) {
 	requested := cloneSelector(sel)
 	if !selectorConstraintPresent(sel) {
-		return Resolution{}, usageError("selector requires family or model")
+		return Resolution{}, requestError("required_constraint", "selector requires family or model", "$.selector", "$.selector")
 	}
 	remaining := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
@@ -23,15 +23,15 @@ func Resolve(sel Selector, entries []Entry) (Resolution, error) {
 	}
 	collapsed := collapseEntries(remaining)
 	if len(collapsed) == 0 {
-		candidates := cloneEntries(entries)
-		sortEntries(candidates)
-		if len(candidates) > 32 {
-			candidates = candidates[:32]
-		}
-		return Resolution{}, &Error{Code: "delegate_no_matching_tuple", Kind: KindUsage, Diagnostic: "selector matched no configured tuple", Candidates: candidates}
+		issue := selectionError("delegate_no_matching_tuple", KindUsage, "selector matched no configured tuple; compare the supplied constraints with reviewed catalog candidates", entries)
+		issue.ConstraintFields = constraintFields(sel)
+		return Resolution{}, issue
 	}
 	chosen, err := chooseEntry(collapsed)
 	if err != nil {
+		if issue, ok := err.(*Error); ok {
+			issue.ConstraintFields = constraintFields(sel)
+		}
 		return Resolution{}, err
 	}
 	return Resolution{
@@ -216,4 +216,18 @@ func mergeAliases(a, b []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func constraintFields(sel Selector) []string {
+	var fields []string
+	for _, item := range []struct{ name, value string }{
+		{"harness", sel.Harness}, {"family", sel.Family}, {"version", sel.Version}, {"model", sel.Model},
+		{"settings.speed", selectorSpeed(sel)}, {"settings.effort", selectorEffort(sel)},
+	} {
+		if strings.TrimSpace(item.value) != "" {
+			fields = append(fields, item.name)
+		}
+	}
+	sort.Strings(fields)
+	return fields
 }
