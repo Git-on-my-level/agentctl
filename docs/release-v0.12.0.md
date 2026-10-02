@@ -48,3 +48,16 @@ review the packaged installer dry run before manual installation.
 Supported release targets: macOS and Linux, each for amd64 and arm64. ANX OSS,
 SaaS, and cloud deployment remain independent release steps; this Agent Control
 release does not imply those changes are deployed.
+
+## Publication and retries
+
+A release created through GitHub's UI can be staged as a prerelease while the
+existing tag workflow builds, scans, and uploads its artifacts. Keep it marked
+as a prerelease until the published assets and checksums are verified, then
+promote it to stable to begin the normal update rollout. The workflow preserves
+an existing release's notes and draft/prerelease/publication flags.
+
+Rerunning publication verifies matching existing asset bytes and uploads only
+missing assets. Conflicting existing bytes fail visibly and are never silently
+overwritten. Local checksums are rechecked after the workflow artifact download;
+creating a release still requires an already-existing tag.
