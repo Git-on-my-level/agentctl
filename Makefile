@@ -90,6 +90,7 @@ check-portable-assets:
 	GOFLAGS='$(GOFLAGS)' $(GO) test ./internal/portableasset -run TestEmbeddedDistributionMatchesCanonicalSources -count=1
 
 check-distribution:
+	$(PYTHON) tests/validators/test_release_publication.py
 	tests/validators/test_distributions.sh
 	tests/validators/test_install_scripts.sh
 	tests/validators/test_public_default.sh

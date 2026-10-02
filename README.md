@@ -622,3 +622,11 @@ Machine-readable contracts live under [`schemas/`](schemas/).
 
 Licensed under the [Apache License 2.0](LICENSE). Third-party notices, including
 the vendored BIP-39 English word list, are recorded in [NOTICE](NOTICE).
+
+### Optional identity composition
+
+Use `agentctl identity --json` for a read-only, versioned provider/native-session
+correlation report with explicit unknowns. It keeps calling-agent identity,
+per-turn executions, and installed harness inventory separate. See the
+[identity contract](docs/identity.md) for privacy, confidence, and capability
+boundaries; it does not register agents or enable native resume.

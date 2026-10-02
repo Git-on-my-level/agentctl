@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentctl:schema:identity-report:v1",
+  "x-agentctl-docs": "../docs/identity.md",
+  "title": "agentctl read-only identity evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "provider",
+    "native_session",
+    "execution",
+    "environment",
+    "capabilities",
+    "harnesses"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "agentctl.identity.v1"
+    },
+    "provider": {
+      "$ref": "#/$defs/evidence"
+    },
+    "native_session": {
+      "$ref": "#/$defs/session"
+    },
+    "execution": {
+      "$ref": "#/$defs/evidence"
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "os",
+        "arch",
+        "host_id",
+        "host_provenance"
+      ],
+      "properties": {
+        "os": {
+          "type": "string"
+        },
+        "arch": {
+          "type": "string"
+        },
+        "host_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host_provenance": {
+          "enum": [
+            "unknown",
+            "execution_journal"
+          ]
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resume",
+        "history",
+        "logs"
+      ],
+      "properties": {
+        "resume": {
+          "$ref": "#/$defs/capability"
+        },
+        "history": {
+          "$ref": "#/$defs/capability"
+        },
+        "logs": {
+          "$ref": "#/$defs/capability"
+        }
+      }
+    },
+    "harnesses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider_id",
+          "availability",
+          "provenance"
+        ],
+        "properties": {
+          "provider_id": {
+            "type": "string"
+          },
+          "availability": {
+            "enum": [
+              "available",
+              "unavailable"
+            ]
+          },
+          "provenance": {
+            "const": "path_lookup"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "provenance",
+        "confidence"
+      ],
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "unknown",
+            "explicit",
+            "managed_environment",
+            "native_environment",
+            "execution_journal",
+            "native_stream"
+          ]
+        },
+        "confidence": {
+          "enum": [
+            "unknown",
+            "self_reported",
+            "observed"
+          ]
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "provenance",
+        "confidence",
+        "id_kind"
+      ],
+      "properties": {
+        "id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "unknown",
+            "explicit",
+            "managed_environment",
+            "native_environment",
+            "execution_journal",
+            "native_stream"
+          ]
+        },
+        "confidence": {
+          "enum": [
+            "unknown",
+            "self_reported",
+            "observed"
+          ]
+        },
+        "id_kind": {
+          "const": "provider_session_sha256"
+        }
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "provenance",
+        "confidence",
+        "scope",
+        "reason"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "supported",
+            "unsupported",
+            "unknown"
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "unknown",
+            "execution_journal",
+            "adapter_contract"
+          ]
+        },
+        "confidence": {
+          "enum": [
+            "unknown",
+            "self_reported",
+            "observed"
+          ]
+        },
+        "scope": {
+          "enum": [
+            "agentctl_native_adapter",
+            "agentctl_continue"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
