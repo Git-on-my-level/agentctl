@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentctl:schema:recent-result:v1",
+  "x-agentctl-docs": "../docs/agent-ergonomics.md#usage-export",
+  "title": "agentctl recent usage projection v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "count",
+    "total",
+    "has_more",
+    "host_local",
+    "origin_host_id",
+    "as_of",
+    "state_consistency",
+    "coverage",
+    "preflight_failures",
+    "executions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 200
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "has_more": {
+      "type": "boolean"
+    },
+    "host_local": {
+      "const": true
+    },
+    "origin_host_id": {
+      "type": "string",
+      "pattern": "^host-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "state_consistency": {
+      "const": "live_per_page"
+    },
+    "coverage": {
+      "const": "retained_executions_only"
+    },
+    "preflight_failures": {
+      "const": "not_recorded"
+    },
+    "next_cursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "executions": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "labels",
+          "authority",
+          "adapter",
+          "mode",
+          "state",
+          "liveness",
+          "created_at",
+          "updated_at",
+          "duration_seconds",
+          "unreconciled"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "execution.schema.json#/properties/id"
+          },
+          "labels": {
+            "$ref": "execution.schema.json#/properties/labels"
+          },
+          "authority": {
+            "$ref": "execution.schema.json#/properties/authority"
+          },
+          "adapter": {
+            "$ref": "execution.schema.json#/properties/adapter"
+          },
+          "mode": {
+            "$ref": "execution.schema.json#/properties/mode"
+          },
+          "state": {
+            "$ref": "execution.schema.json#/properties/state"
+          },
+          "liveness": {
+            "$ref": "execution.schema.json#/properties/liveness"
+          },
+          "created_at": {
+            "$ref": "execution.schema.json#/properties/created_at"
+          },
+          "started_at": {
+            "$ref": "execution.schema.json#/properties/started_at"
+          },
+          "updated_at": {
+            "$ref": "execution.schema.json#/properties/updated_at"
+          },
+          "terminal_at": {
+            "$ref": "execution.schema.json#/properties/terminal_at"
+          },
+          "caller": {
+            "$ref": "execution.schema.json#/properties/caller"
+          },
+          "duration_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "unreconciled": {
+            "type": "boolean"
+          },
+          "acknowledged_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "by_adapter",
+        "by_authority",
+        "by_state",
+        "by_caller",
+        "unreconciled"
+      ],
+      "properties": {
+        "by_adapter": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "by_authority": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "by_state": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "by_caller": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "unreconciled": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

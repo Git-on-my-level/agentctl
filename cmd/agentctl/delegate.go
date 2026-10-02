@@ -112,10 +112,10 @@ func delegateError(code output.Code, diagnostic, message string) *output.Error {
 
 func readDelegateRequest(path string) (delegation.Request, *output.Error) {
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 64<<10 {
+	if err != nil || !info.Mode().IsRegular() || info.Size() > delegation.MaxRequestBytes {
 		return delegation.Request{}, delegateError(output.CodeUsage, "delegate_request_file", "request must be an existing regular non-symlink file of at most 64 KiB")
 	}
-	f, err := os.Open(path)
+	f, err := openRegularNoFollow(path)
 	if err != nil {
 		return delegation.Request{}, delegateError(output.CodeUsage, "delegate_request_file", "cannot read request file")
 	}
@@ -124,7 +124,7 @@ func readDelegateRequest(path string) (delegation.Request, *output.Error) {
 	if err != nil || !os.SameFile(info, opened) {
 		return delegation.Request{}, delegateError(output.CodeConflict, "delegate_request_changed", "request file changed while opening")
 	}
-	body, err := io.ReadAll(io.LimitReader(f, (64<<10)+1))
+	body, err := io.ReadAll(io.LimitReader(f, delegation.MaxRequestBytes+1))
 	if err != nil {
 		return delegation.Request{}, delegateError(output.CodeUsage, "delegate_request_file", "cannot read request file")
 	}
@@ -143,8 +143,31 @@ func mapDelegationError(err error) *output.Error {
 			code = output.CodeAmbiguousReference
 		}
 		problem := delegateError(code, issue.Code, issue.Error())
-		if len(issue.Candidates) != 0 {
-			problem.WithDetail("candidates", issue.Candidates)
+		if issue.FieldPath != "" {
+			problem.WithDetail("field_path", issue.FieldPath).
+				WithDetail("violation", issue.Violation).
+				WithDetail("allowed_keys", issue.AllowedKeys).
+				WithDetail("example_request", issue.ExampleRequest).
+				WithDetail("example_guidance", "replace placeholders with a new request key and an exact model from the reviewed configured catalog")
+		}
+		if issue.Code == "delegate_no_matching_tuple" || issue.Code == "delegate_ambiguous_selector" {
+			selectors := make([]delegation.Selector, 0, len(issue.Candidates))
+			for _, entry := range issue.Candidates {
+				selector := delegation.Selector{Harness: entry.Harness, Family: entry.Family, Version: entry.Version, Model: entry.Model}
+				if entry.Speed != "" || entry.Effort != "" {
+					selector.Settings = &delegation.Settings{Speed: entry.Speed, Effort: entry.Effort}
+				}
+				selectors = append(selectors, selector)
+			}
+			problem.WithDetail("candidates", issue.Candidates).
+				WithDetail("candidate_count", issue.CandidateCount).
+				WithDetail("candidates_truncated", issue.CandidateCount > len(issue.Candidates)).
+				WithDetail("candidate_selectors", selectors).
+				WithDetail("selection_guidance", "compare constraints with reviewed candidates; preserve explicit user constraints and change them only when authorized; no candidate was selected")
+			if len(issue.ConstraintFields) != 0 {
+				problem.WithDetail("constraint_fields", issue.ConstraintFields)
+			}
+			problem.WithActions(output.NextAction{Label: "Inspect configured routing and catalog", Argv: []string{"agentctl", "help", "route"}, SideEffectClass: output.ReadOnly})
 		}
 		return problem
 	}
@@ -243,7 +266,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 		return delegateError(output.CodeUsage, "delegate_invalid_cwd", "working directory must exist")
 	}
 	opts.cwd = cwd
-	prompt, problem := a.loadPrompt(runOptions{cwd: cwd, promptFile: opts.promptFile, promptStdin: opts.promptStdin, promptDelivery: "argv"})
+	prompt, problem := a.loadPromptForCommand("delegate", runOptions{cwd: cwd, promptFile: opts.promptFile, promptStdin: opts.promptStdin, promptDelivery: "argv"})
 	if problem != nil {
 		return problem
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,7 +37,7 @@ func (a *app) configCommand(ctx context.Context, renderer output.Renderer, c com
 				if errors.Is(err, config.ErrProfileMissing) {
 					return mapConfigError("resolve config doctor profile", err)
 				}
-				return output.Wrap(output.CodeDependencyUnavailable, "config provenance checks failed", true, err)
+				return output.Wrap(output.CodeDependencyUnavailable, "config provenance checks failed", true, err).WithDetail("report", report)
 			}
 			if c.configBundle == "" {
 				source, sourceErr := config.SourceStatusReadOnly(ctx, path)
@@ -49,7 +50,8 @@ func (a *app) configCommand(ctx context.Context, renderer output.Renderer, c com
 					report.Errors = append(report.Errors, "config source drift")
 				}
 			}
-			lines := []output.Line{{Lead: "config.doctor", Fields: []output.Field{{Name: "valid", Value: report.Valid}, {Name: "profile", Value: report.Profile}, {Name: "checks", Value: len(report.Checks)}}}}
+			lines := []output.Line{{Lead: "config.doctor", Fields: []output.Field{{Name: "valid", Value: report.Valid}, {Name: "syntax_valid", Value: report.SyntaxValid}, {Name: "profile", Value: report.Profile}, {Name: "checks", Value: len(report.Checks)}, {Name: "recipe_compatible", Value: report.LaunchRecipes.Compatible}, {Name: "recipe_status", Value: report.LaunchRecipes.Status}}}}
+			lines = append(lines, launchRecipeLines(map[string]config.LaunchRecipeReport{report.Profile: report.LaunchRecipes})...)
 			if err := renderer.Success(output.Success{Result: report, Lines: lines}); err != nil {
 				return output.Wrap(output.CodeInternal, "write output", false, err)
 			}
@@ -279,7 +281,8 @@ func (a *app) configBundleCommand(renderer output.Renderer, basePath string, c c
 	if err != nil {
 		return mapConfigError("read config bundle", err)
 	}
-	result := map[string]any{"valid": true, "provenance": provenance}
+	result := map[string]any{"valid": true, "syntax_valid": true, "provenance": provenance}
+	var recipes map[string]config.LaunchRecipeReport
 	if args[0] == "show" {
 		result["bundle"] = bundle
 	} else {
@@ -291,11 +294,34 @@ func (a *app) configBundleCommand(renderer output.Renderer, basePath string, c c
 		result["base_present"] = resolution.BasePresent
 		result["composition_order"] = resolution.Composition
 		result["notes"] = resolution.Notes
+		recipes = config.CheckConfigLaunchRecipes(resolution.Config)
+		result["launch_recipes"] = recipes
 	}
-	if err := renderer.Success(output.Success{Result: result, Lines: []output.Line{{Lead: "config.bundle", Fields: []output.Field{{Name: "valid", Value: true}, {Name: "path", Value: provenance.SourcePath}, {Name: "digest", Value: provenance.SHA256}, {Name: "profiles", Value: len(bundle.Profiles)}}}}}); err != nil {
+	lines := []output.Line{{Lead: "config.bundle", Fields: []output.Field{{Name: "valid", Value: true}, {Name: "path", Value: provenance.SourcePath}, {Name: "digest", Value: provenance.SHA256}, {Name: "profiles", Value: len(bundle.Profiles)}}}}
+	lines = append(lines, launchRecipeLines(recipes)...)
+	if err := renderer.Success(output.Success{Result: result, Lines: lines}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil
+}
+
+func launchRecipeLines(reports map[string]config.LaunchRecipeReport) []output.Line {
+	names := make([]string, 0, len(reports))
+	for name := range reports {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var lines []output.Line
+	for _, name := range names {
+		report := reports[name]
+		lines = append(lines, output.Line{Lead: "config.launch_recipes", Fields: []output.Field{{Name: "profile", Value: name}, {Name: "compatible", Value: report.Compatible}, {Name: "status", Value: report.Status}, {Name: "runtime_verified", Value: false}}})
+		for _, check := range report.Checks {
+			if !check.Compatible {
+				lines = append(lines, output.Line{Lead: "config.launch_recipe", Fields: []output.Field{{Name: "index", Value: check.Index}, {Name: "harness", Value: check.Harness}, {Name: "model", Value: check.Model}, {Name: "diagnostic_code", Value: check.DiagnosticCode}, {Name: "diagnostic", Value: check.Diagnostic}}})
+			}
+		}
+	}
+	return lines
 }
 
 func (a *app) configSetProfile(renderer output.Renderer, path string, args []string) *output.Error {

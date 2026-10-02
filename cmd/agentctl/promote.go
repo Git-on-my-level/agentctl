@@ -292,7 +292,7 @@ func runMulticaIssueMutation(ctx context.Context, operation string, argv []strin
 		return nil, errors.New("Multica argv is empty")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Env = os.Environ()
+	cmd.Env = adapter.WithoutCallerDeclaration(os.Environ())
 	cmd.Stdin = bytes.NewReader(stdin)
 	var stdout, stderr boundedBuffer
 	stdout.limit = 1 << 20

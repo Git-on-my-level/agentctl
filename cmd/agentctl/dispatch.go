@@ -71,7 +71,11 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 	if problem != nil {
 		return problem
 	}
-	prompt, problem := a.loadPrompt(runOptions{promptFile: opts.promptFile, promptStdin: opts.promptStdin, promptDelivery: "stdin"})
+	caller, problem := a.executionCaller()
+	if problem != nil {
+		return problem
+	}
+	prompt, problem := a.loadPromptForCommand("dispatch", runOptions{promptFile: opts.promptFile, promptStdin: opts.promptStdin, promptDelivery: "stdin"})
 	if problem != nil {
 		return problem
 	}
@@ -178,6 +182,7 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 			return output.Wrap(output.CodeInternal, "create prepared dispatch aliases", false, bindingErr)
 		}
 		candidate := model.Execution{
+			Caller:    caller,
 			Authority: model.AuthorityMultica, Adapter: "multica", Mode: model.ModeMultica,
 			Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown,
 			SourceState: dispatchStringPointer("dispatch_prepared"), SourceBindings: bindings,
@@ -617,7 +622,7 @@ func runMulticaJSON(ctx context.Context, argv []string, destination any) error {
 		return errors.New("Multica argv is empty")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Env = os.Environ()
+	cmd.Env = adapter.WithoutCallerDeclaration(os.Environ())
 	var stdout, stderr boundedBuffer
 	stdout.limit = 4 << 20
 	stderr.limit = 64 << 10

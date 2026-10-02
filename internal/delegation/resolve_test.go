@@ -1,7 +1,11 @@
 package delegation
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -176,5 +180,44 @@ func assertUsage(t *testing.T, err error) {
 	var typed *Error
 	if !errors.As(err, &typed) || typed.Kind != KindUsage {
 		t.Fatalf("error=%v, want usage", err)
+	}
+}
+
+func TestResolveNoMatchCandidatesAreReviewedBoundedAndDeterministic(t *testing.T) {
+	entries := make([]Entry, 40)
+	for i := range entries {
+		entries[i] = Entry{Harness: "codex", Family: "reviewed", Model: fmt.Sprintf("reviewed-%02d", 39-i), Aliases: []string{"review"}}
+	}
+	entries = append(entries, entries[0])
+	_, err := Resolve(Selector{Family: "private-family", Settings: &Settings{Effort: "private-effort"}}, entries)
+	var issue *Error
+	if !errors.As(err, &issue) {
+		t.Fatalf("err=%v", err)
+	}
+	if issue.Code != "delegate_no_matching_tuple" || issue.CandidateCount != 40 || len(issue.Candidates) != 32 || issue.Candidates[0].Model != "reviewed-00" || issue.Candidates[31].Model != "reviewed-31" {
+		t.Fatalf("issue=%#v", issue)
+	}
+	if !reflect.DeepEqual(issue.ConstraintFields, []string{"family", "settings.effort"}) {
+		t.Fatalf("constraints=%v", issue.ConstraintFields)
+	}
+	encoded, _ := json.Marshal(issue)
+	if strings.Contains(string(encoded), "private-") {
+		t.Fatalf("request values leaked: %s", encoded)
+	}
+	issue.Candidates[0].Aliases[0] = "changed"
+	if entries[39].Aliases[0] != "review" {
+		t.Fatal("candidate mutated catalog")
+	}
+	_, err = Resolve(Selector{Family: "reviewed"}, entries)
+	if !errors.As(err, &issue) || issue.CandidateCount != 40 || len(issue.Candidates) != 32 || issue.Kind != KindAmbiguous {
+		t.Fatalf("ambiguity=%#v", issue)
+	}
+}
+
+func TestResolveEmptyCatalogNoFallback(t *testing.T) {
+	_, err := Resolve(Selector{Family: "unknown"}, nil)
+	var issue *Error
+	if !errors.As(err, &issue) || issue.Code != "delegate_no_matching_tuple" || issue.CandidateCount != 0 || len(issue.Candidates) != 0 {
+		t.Fatalf("issue=%#v err=%v", issue, err)
 	}
 }

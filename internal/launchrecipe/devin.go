@@ -2,9 +2,11 @@ package launchrecipe
 
 import "strings"
 
-// Devin print mode takes --model and -p. Account ids are the two non-fast
-// slugs observed from `devin models list`. Fast and priority variants are
-// refused. Print mode fails in an untrusted directory unless workspace trust
+// Devin print mode takes --model and -p. The reviewed preferred table owns
+// exact model selection; native --model accepts a model argument without a
+// source-code version allowlist. Fast and priority variants are refused.
+// This does not attest account availability or native model identity.
+// Print mode fails in an untrusted directory unless workspace trust
 // is disabled, so the recipe passes that flag. The prompt is a positional
 // argument after --.
 func buildDevin(executable, model, speed, effort string) (Recipe, error) {
@@ -25,13 +27,9 @@ func buildDevin(executable, model, speed, effort string) (Recipe, error) {
 }
 
 func devinModel(model string) error {
-	switch model {
-	case "swe-2-high", "fusion-gpt-6-sol-high-sidekick-swe-2-high":
-		return nil
-	}
 	lower := strings.ToLower(strings.TrimSpace(model))
 	if strings.Contains(lower, "-fast") || strings.Contains(lower, "-priority") {
 		return fail("model_unavailable", "devin fast and priority model variants are not accepted")
 	}
-	return fail("model_unavailable", "devin launch only accepts swe-2-high and fusion-gpt-6-sol-high-sidekick-swe-2-high")
+	return nil
 }

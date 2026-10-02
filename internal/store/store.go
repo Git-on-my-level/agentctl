@@ -302,6 +302,9 @@ func (j *Journal) CreateExecution(ctx context.Context, execution model.Execution
 		if err := putDelegationBinding(tx, execution); err != nil {
 			return err
 		}
+		if err := putCallerBinding(tx, execution); err != nil {
+			return err
+		}
 		if mutation.Enabled() {
 			if err := putMutation(tx, mutation, "execution", execution.ID.String()); err != nil {
 				return err
@@ -838,6 +841,7 @@ type dedupeRecord struct {
 	ProjectionDigest string `json:"projection_digest"`
 }
 type mutationRecord struct {
+	Caller      *model.ExecutionCaller      `json:"caller,omitempty"`
 	NativePlan  *model.DelegationNativePlan `json:"native_plan,omitempty"`
 	Delegation  *model.DelegationBinding    `json:"delegation,omitempty"`
 	Scope       string                      `json:"scope"`

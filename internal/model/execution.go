@@ -242,7 +242,44 @@ type OperationFailure struct {
 	RecordedAt              time.Time `json:"recorded_at"`
 }
 
+type CallerHarness string
+
+const (
+	CallerHermes     CallerHarness = "hermes"
+	CallerClaudeCode CallerHarness = "claude-code"
+	CallerCodex      CallerHarness = "codex"
+	CallerCursor     CallerHarness = "cursor"
+	CallerOMP        CallerHarness = "omp"
+	CallerZCode      CallerHarness = "zcode"
+	CallerDevin      CallerHarness = "devin"
+	CallerOther      CallerHarness = "other"
+)
+
+type CallerProvenance string
+
+const CallerDeclared CallerProvenance = "caller_declared"
+
+// ExecutionCaller is an explicit launch-time declaration, not authenticated
+// identity or inference from the target adapter. An absent caller is unknown.
+type ExecutionCaller struct {
+	Harness    CallerHarness    `json:"harness"`
+	Provenance CallerProvenance `json:"provenance"`
+}
+
+func (c ExecutionCaller) Validate() error {
+	switch c.Harness {
+	case CallerHermes, CallerClaudeCode, CallerCodex, CallerCursor, CallerOMP, CallerZCode, CallerDevin, CallerOther:
+	default:
+		return errors.New("invalid caller harness")
+	}
+	if c.Provenance != CallerDeclared {
+		return errors.New("invalid caller provenance")
+	}
+	return nil
+}
+
 type Execution struct {
+	Caller               *ExecutionCaller   `json:"caller,omitempty"`
 	LastOperationFailure *OperationFailure  `json:"last_operation_failure,omitempty"`
 	SchemaVersion        int                `json:"schema_version"`
 	ID                   ids.ExecutionID    `json:"id"`
@@ -284,6 +321,11 @@ var (
 )
 
 func (e Execution) Validate() error {
+	if e.Caller != nil {
+		if err := e.Caller.Validate(); err != nil {
+			return fmt.Errorf("caller: %w", err)
+		}
+	}
 	if e.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schema_version must be %d", SchemaVersion)
 	}
@@ -403,6 +445,9 @@ func (e Execution) Validate() error {
 }
 
 func ValidateTransition(previous, next Execution) error {
+	if !reflect.DeepEqual(previous.Caller, next.Caller) {
+		return errors.New("execution caller is immutable")
+	}
 	if previous.ID != next.ID || previous.OriginHostID != next.OriginHostID {
 		return errors.New("execution identity is immutable")
 	}

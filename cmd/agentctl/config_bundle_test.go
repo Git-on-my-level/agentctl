@@ -88,6 +88,61 @@ func TestConfigBundleIsNeverImplicitlyDiscovered(t *testing.T) {
 	}
 }
 
+func TestConfigBundleValidateReportsStaticRecipeCompatibilityWithoutProbes(t *testing.T) {
+	root := t.TempDir()
+	marker := filepath.Join(root, "probe-ran")
+	executable := filepath.Join(root, "native")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bundle := filepath.Join(root, "bundle.json")
+	document := config.Bundle{SchemaVersion: config.SchemaVersion, DefaultProfile: "native", Profiles: map[string]config.BundleProfile{"native": {
+		Adapters:         map[string]config.BundleAdapter{"claude-code": {Executable: executable}},
+		Multica:          &config.Multica{Executable: filepath.Join(root, "absent-multica"), Profile: "p", WorkspaceID: "w", ServerURL: "https://server", AppURL: "https://app"},
+		AgentPreferences: &config.AgentPreferences{Mode: "advisory", Preferred: []config.AgentPreference{{Agent: "claude-code", Model: "opus[1m]", Speed: "regular"}, {Agent: "devin", Model: "fusion-next-model", Speed: "regular"}}},
+	}}}
+	body, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bundle, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Join(root, "absent-config.json")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--config", base, "--config-bundle", bundle, "config", "bundle", "validate"}); code != 0 {
+		t.Fatalf("validate exit=%d: %s", code, stdout.String())
+	}
+	var envelope struct {
+		Result struct {
+			Valid         bool                                 `json:"valid"`
+			SyntaxValid   bool                                 `json:"syntax_valid"`
+			LaunchRecipes map[string]config.LaunchRecipeReport `json:"launch_recipes"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	report := envelope.Result.LaunchRecipes["native"]
+	if !envelope.Result.Valid || !envelope.Result.SyntaxValid || report.Compatible || report.Checks[0].DiagnosticCode != "speed_unavailable" || !report.Checks[1].Compatible {
+		t.Fatalf("compatibility conflated with syntax: %s", stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "text", "--config", base, "--config-bundle", bundle, "config", "bundle", "validate"}); code != 0 || !strings.Contains(stdout.String(), "compatible=false") || !strings.Contains(stdout.String(), "speed_unavailable") {
+		t.Fatalf("text diagnostic missing: exit=%d %s", code, stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--config", base, "--config-bundle", bundle, "config", "doctor"}); code != 6 || !strings.Contains(stdout.String(), `"report"`) || !strings.Contains(stdout.String(), `"launch_recipes"`) || !strings.Contains(stdout.String(), `"speed_unavailable"`) {
+		t.Fatalf("failed provenance lost static report: exit=%d %s", code, stdout.String())
+	}
+	for _, path := range []string{marker, base} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("read-only config command created %s: %v", path, err)
+		}
+	}
+}
+
 func TestConfigSetProfilePreservesReviewedAgentPreferences(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	preferences := &config.AgentPreferences{Mode: "advisory", Preferred: []config.AgentPreference{{Agent: "cursor", Model: "composer-2.5", Speed: "regular"}}, Notes: []string{"Never fast."}}

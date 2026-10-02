@@ -224,7 +224,7 @@ func (a *app) loadFanoutPrompts(manifest fanoutManifest, root string) ([]*prompt
 		payload := cache[key]
 		if payload == nil || !confined {
 			var problem *output.Error
-			payload, problem = a.loadPrompt(runOptions{cwd: root, promptFile: path, promptDelivery: normalizedPromptDelivery(delivery)})
+			payload, problem = a.loadPromptForCommand("fanout", runOptions{cwd: root, promptFile: path, promptDelivery: normalizedPromptDelivery(delivery)})
 			if problem != nil {
 				return nil, problem
 			}
