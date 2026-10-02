@@ -562,11 +562,12 @@ type resultOptions struct {
 	requireSource  string
 	minResultBytes int
 	unreconciled   bool
+	before         string
 	labels         []string
 	limit          int
 }
 
-const resultUsage = "usage: agentctl result <execution-id> [--content|--summary] [--allow-empty] [--require-result-source source] [--min-result-bytes n] | agentctl result --unreconciled [--label name ...] [--limit n] [--summary] [--allow-empty]"
+const resultUsage = "usage: agentctl result <execution-id> [--content|--summary] [--allow-empty] [--require-result-source source] [--min-result-bytes n] | agentctl result --unreconciled [--label name ...] [--limit n] [--before execution-id] [--summary] [--allow-empty]"
 
 func parseResult(args []string) (resultOptions, string, *output.Error) {
 	opts := resultOptions{requireContent: true, limit: defaultUnreconciledResultLimit}
@@ -584,6 +585,15 @@ func parseResult(args []string) (resultOptions, string, *output.Error) {
 			opts.requireContent = false
 		case "--unreconciled":
 			opts.unreconciled = true
+		case "--before":
+			if i+1 >= len(args) {
+				return opts, "", output.NewError(output.CodeUsage, "--before requires a full execution ID", false)
+			}
+			i++
+			if _, err := ids.ParseExecutionID(args[i]); err != nil {
+				return opts, "", output.NewError(output.CodeUsage, "--before requires a full execution ID", false)
+			}
+			opts.before = args[i]
 		case "--require-result-source":
 			if i+1 >= len(args) {
 				return opts, "", output.NewError(output.CodeUsage, "--require-result-source requires a value", false)
@@ -652,8 +662,8 @@ func parseResult(args []string) (resultOptions, string, *output.Error) {
 		}
 		return opts, "", nil
 	}
-	if len(opts.labels) != 0 || limitGiven {
-		return opts, "", output.NewError(output.CodeUsage, "--label and --limit are only valid with --unreconciled", false)
+	if len(opts.labels) != 0 || limitGiven || opts.before != "" {
+		return opts, "", output.NewError(output.CodeUsage, "--label, --limit, and --before are only valid with --unreconciled", false)
 	}
 	if reference == "" {
 		return opts, "", output.NewError(output.CodeUsage, resultUsage, false)
@@ -808,9 +818,25 @@ func (a *app) resultUnreconciled(ctx context.Context, renderer output.Renderer, 
 		_ = journal.Close()
 		return mapStoreError("list execution acknowledgements", err)
 	}
+	// Resolve against all executions, including already acknowledged anchors.
+	// Store order is ascending (created_at, full ID); the cursor is exclusive.
+	end := len(executions)
+	if opts.before != "" {
+		end = -1
+		for i, execution := range executions {
+			if execution.ID.String() == opts.before {
+				end = i
+				break
+			}
+		}
+		if end < 0 {
+			_ = journal.Close()
+			return output.NewError(output.CodeNotFound, "collection cursor execution not found in this journal", false)
+		}
+	}
 	selected := make([]model.Execution, 0, opts.limit)
 	total := 0
-	for i := len(executions) - 1; i >= 0; i-- {
+	for i := end - 1; i >= 0; i-- {
 		execution := executions[i]
 		if !acks.Unreconciled(execution) {
 			continue
@@ -882,7 +908,7 @@ func (a *app) resultUnreconciled(ctx context.Context, renderer output.Renderer, 
 	if skipped != 0 {
 		warnings = append(warnings, output.Warning{
 			Code:    "unreconciled_items_skipped",
-			Message: "some uncollected executions could not be dereferenced and remain unreconciled",
+			Message: "some uncollected executions could not be dereferenced and remain unreconciled; retry without --before to revisit skipped results",
 			Details: map[string]any{"skipped": skipped},
 		})
 	}
@@ -911,15 +937,40 @@ func (a *app) resultUnreconciled(ctx context.Context, renderer output.Renderer, 
 	if total > len(items) {
 		actions = append(actions, output.NextAction{
 			Label:   "Collect the remaining uncollected results",
-			Argv:    []string{"agentctl", "result", "--unreconciled", "--limit", strconv.Itoa(opts.limit)},
+			Argv:    unreconciledContinuation(c, opts, selected[len(selected)-1].ID.String()),
 			Mutates: true, SideEffectClass: output.LocalOperationalWrite,
-			Preconditions: []string{"already collected executions drop out of the set"},
+			Preconditions: []string{"cursor execution remains in the same journal", "skipped results remain unacknowledged; retry without --before to revisit them"},
 		})
 	}
 	if err := renderer.Success(output.Success{Result: result, Lines: lines, Warnings: warnings, NextActions: actions}); err != nil {
 		return output.Wrap(output.CodeInternal, "write unreconciled results", false, err)
 	}
 	return nil
+}
+
+// Preserve the caller's scope and disclosure choices in executable next actions.
+func unreconciledContinuation(c common, opts resultOptions, before string) []string {
+	argv := []string{"agentctl", "--output", string(c.mode)}
+	for _, flag := range []struct{ name, value string }{
+		{"--profile", c.profile}, {"--context-file", c.contextFile},
+		{"--config", c.configPath}, {"--config-bundle", c.configBundle},
+		{"--journal", c.journalPath},
+	} {
+		if flag.value != "" {
+			argv = append(argv, flag.name, flag.value)
+		}
+	}
+	argv = append(argv, "result", "--unreconciled", "--limit", strconv.Itoa(opts.limit), "--before", before)
+	for _, label := range opts.labels {
+		argv = append(argv, "--label", label)
+	}
+	if opts.summary {
+		argv = append(argv, "--summary")
+	}
+	if !opts.requireContent {
+		argv = append(argv, "--allow-empty")
+	}
+	return argv
 }
 
 // acknowledgeExecutions stamps a bounded set under one write lease. Stamping is

@@ -51,7 +51,14 @@ type failingWriter struct{}
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("delivery failed") }
 
 func testApp(stdout, stderr *bytes.Buffer) *app {
-	return &app{stdout: stdout, stderr: stderr, getenv: func(string) string { return "" }, now: time.Now}
+	return &app{stdout: stdout, stderr: stderr, getenv: func(key string) string {
+		// Provenance discovery falls back to the real user home when HOME is
+		// empty. Keep fixtures independent of installed operator skills.
+		if key == "HOME" {
+			return os.Getenv("AGENTCTL_STATE_HOME")
+		}
+		return ""
+	}, now: time.Now}
 }
 
 func TestAutomaticMaintenanceRunsOnlyWithExternalWork(t *testing.T) {

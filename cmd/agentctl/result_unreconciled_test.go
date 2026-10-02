@@ -44,7 +44,7 @@ func seedTerminalBacklog(t *testing.T, a *app, journalPath string, stdout *bytes
 	ids := make([]string, 0, count)
 	for i := 0; i < count; i++ {
 		stdout.Reset()
-		native := fmt.Sprintf(`{"type":"result","status":"completed","result":"BACKLOG_%d"}`, i)
+		native := fmt.Sprintf(`{"type":"result","status":"completed","result":"BACKLOG_%d_%s"}`, i, strings.Repeat("x", model.OutcomePreviewLimit+1))
 		args := []string{"--output", "json", "--journal", journalPath, "run", "--adapter", "generic-process"}
 		if label != "" && i%2 == 0 {
 			args = append(args, "--label", label)
@@ -284,4 +284,191 @@ func mustExecutionID(t *testing.T, value string) ids.ExecutionID {
 		t.Fatal(err)
 	}
 	return id
+}
+
+func TestResultUnreconciledContinuationPreservesScopeAndAdvancesPastSkips(t *testing.T) {
+	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	seedTerminalBacklog(t, a, journalPath, &stdout, 6, "review")
+
+	// Make the newest matching result unreadable, so a repeat of page one
+	// would starve the two older matching results forever.
+	journal, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executions, err := journal.ListExecutions(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var skippedID string
+	for i := len(executions) - 1; i >= 0; i-- {
+		e := executions[i]
+		if !containsArg(e.Labels, "review") {
+			continue
+		}
+		skippedID = e.ID.String()
+		e.Observation.Integrity = model.IntegrityConflicted
+		e.UpdatedAt = e.UpdatedAt.Add(time.Second)
+		e.Observation.ObservedAt = e.UpdatedAt
+		if _, err := journal.UpdateExecution(context.Background(), e, e.Revision); err != nil {
+			t.Fatal(err)
+		}
+		break
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	args := []string{"--output", "json", "--journal", journalPath, "result", "--unreconciled", "--label", "review", "--limit", "1", "--summary", "--allow-empty"}
+	for page := 0; page < 3; page++ {
+		stdout.Reset()
+		if code := a.run(context.Background(), args); code != 0 {
+			t.Fatalf("page %d exit=%d: %s", page, code, stdout.String())
+		}
+		var doc struct {
+			unreconciledEnvelope
+			NextActions []struct {
+				Argv []string `json:"argv"`
+			} `json:"next_actions"`
+		}
+		if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+			t.Fatal(err)
+		}
+		if doc.Result.Count != 1 || doc.Result.Total != 3-page {
+			t.Fatalf("page %d: %s", page, stdout.String())
+		}
+		item := doc.Result.Executions[0]
+		if page == 0 {
+			if item.ExecutionID != skippedID || item.Status != "skipped" || item.Acknowledged {
+				t.Fatalf("skip: %#v", item)
+			}
+		} else if item.Status != "collected" || !item.Acknowledged || item.Outcome == nil || item.Outcome.Content == nil || !item.Outcome.Content.Truncated || item.Outcome.Content.Text != item.Outcome.Content.Preview {
+			t.Fatalf("summary collection: %#v", item)
+		}
+		if page == 2 {
+			if len(doc.NextActions) != 0 || doc.Result.HasMore {
+				t.Fatalf("unexpected continuation: %s", stdout.String())
+			}
+			break
+		}
+		if len(doc.NextActions) != 1 {
+			t.Fatalf("missing continuation: %s", stdout.String())
+		}
+		args = doc.NextActions[0].Argv[1:]
+		for _, flag := range []string{"--label", "review", "--summary", "--allow-empty", "--journal", journalPath, "--before", item.ExecutionID} {
+			if !containsArg(args, flag) {
+				t.Fatalf("lost %q in %v", flag, args)
+			}
+		}
+	}
+	// Skipped and unrelated work stay unacknowledged.
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "recent", "--unreconciled"}); code != 0 {
+		t.Fatal(stdout.String())
+	}
+	var remaining pagedEnvelope
+	if err := json.Unmarshal(stdout.Bytes(), &remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining.Result.Total != 4 {
+		t.Fatalf("unexpected acknowledgement: %s", stdout.String())
+	}
+}
+
+func TestResultUnreconciledCursorValidation(t *testing.T) {
+	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	seeded := seedTerminalBacklog(t, a, journalPath, &stdout, 1, "")
+	missing, err := ids.NewExecutionID(ids.CryptoGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		args []string
+		code int
+	}{
+		{[]string{"result", "--unreconciled", "--before"}, 2},
+		{[]string{"result", "--unreconciled", "--before", "exec-partial"}, 2},
+		{[]string{"result", seeded[0], "--before", seeded[0]}, 2},
+		{[]string{"result", "--unreconciled", "--before", missing.String()}, 3},
+	} {
+		stdout.Reset()
+		args := append([]string{"--output", "json", "--journal", journalPath}, tc.args...)
+		if code := a.run(context.Background(), args); code != tc.code {
+			t.Fatalf("%v exit=%d: %s", tc.args, code, stdout.String())
+		}
+	}
+}
+
+func TestResultUnreconciledCursorKeepsMulticaResultBoundary(t *testing.T) {
+	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	e := createMulticaCancelExecution(t, journalPath, false)
+	journal, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.State, e.Liveness = model.StateCompleted, model.LivenessExited
+	e.UpdatedAt = e.UpdatedAt.Add(time.Second)
+	e.TerminalAt = &e.UpdatedAt
+	e.Observation.ObservedAt = e.UpdatedAt
+	if _, err := journal.UpdateExecution(context.Background(), e, e.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	seeded := seedTerminalBacklog(t, a, journalPath, &stdout, 1, "")
+	for _, allowEmpty := range []bool{false, true} {
+		stdout.Reset()
+		args := []string{"--output", "json", "--journal", journalPath, "result", "--unreconciled", "--before", seeded[0]}
+		if allowEmpty {
+			args = append(args, "--allow-empty")
+		}
+		if code := a.run(context.Background(), args); code != 0 {
+			t.Fatalf("exit=%d: %s", code, stdout.String())
+		}
+		var doc unreconciledEnvelope
+		if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+			t.Fatal(err)
+		}
+		if doc.Result.Count != 1 || doc.Result.Executions[0].ExecutionID != e.ID.String() {
+			t.Fatalf("page: %s", stdout.String())
+		}
+		item := doc.Result.Executions[0]
+		if !allowEmpty {
+			if item.Status != "skipped" || item.Acknowledged {
+				t.Fatalf("invented result: %#v", item)
+			}
+		} else if !item.Acknowledged || item.Outcome == nil || item.Outcome.Availability != model.OutcomeUnavailableAtSource || item.Outcome.Content != nil {
+			t.Fatalf("lost Multica availability: %#v", item)
+		}
+	}
+}
+
+func TestResultUnreconciledContinuationRoundTripsSelections(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	cursor, err := ids.NewExecutionID(ids.CryptoGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := common{mode: "text", profile: "review", contextFile: "context.json", configPath: "config.json", configBundle: "bundle.json", journalPath: "state/journal.db"}
+	opts := resultOptions{unreconciled: true, summary: true, requireContent: false, labels: []string{"review", "backend"}, limit: 7}
+	argv := unreconciledContinuation(c, opts, cursor.String())
+	gotCommon, rest, err := a.parseCommon(argv[1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotCommon != c {
+		t.Fatalf("scope changed: %#v -> %#v", c, gotCommon)
+	}
+	got, ref, problem := parseResult(rest[1:])
+	if problem != nil || ref != "" || got.before != cursor.String() || !got.summary || got.requireContent || got.limit != 7 || strings.Join(got.labels, ",") != "review,backend" {
+		t.Fatalf("collection options changed: %#v ref=%q error=%v", got, ref, problem)
+	}
 }

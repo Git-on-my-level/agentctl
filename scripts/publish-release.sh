@@ -65,9 +65,10 @@ if gh release view "$TAG" >/dev/null 2>&1; then
   gh release upload "$TAG" "${upload_assets[@]}"
 else
   notes="$ROOT/docs/release-${TAG}.md"
-  notes_args=()
+  # Keep the array nonempty: Bash 3.2 treats empty arrays as unset under -u.
+  create_args=(--verify-tag --generate-notes --title "$TAG")
   if [[ -f "$notes" ]]; then
-    notes_args=(--notes-file "$notes")
+    create_args+=(--notes-file "$notes")
   fi
-  gh release create "$TAG" "${assets[@]}" --verify-tag --generate-notes --title "$TAG" "${notes_args[@]}"
+  gh release create "$TAG" "${assets[@]}" "${create_args[@]}"
 fi

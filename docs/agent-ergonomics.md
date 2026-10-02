@@ -440,7 +440,22 @@ escape for callers that intentionally need weaker or broader behavior:
   treatment of conflicted evidence are identical. An execution that cannot be
   dereferenced is reported with its `skip_reason` and left unreconciled rather
   than aborting the batch, and each delivered result is stamped first-write-wins,
-  so re-running collects only what remains. `--content`,
+  so re-running collects only what remains. For bounded traversal, the returned
+  `next_actions[].argv` preserves labels, limit, summary, allow-empty, output,
+  and explicit journal/config/profile/context selections. It adds
+  `--before <execution-id>`: an exclusive cursor in newest-first
+  `(created_at, full execution ID)` order, including ties. The anchor may
+  already be acknowledged. This advances past skipped items without marking
+  them collected; omit `--before` to retry skipped or newly arrived results.
+  An invalid cursor is a usage error (exit 2); an absent/deleted anchor is
+  `not_found` (exit 3), with no acknowledgements written. Never substitute a
+  different journal on cursor failure. Pages are live views, not snapshots.
+  The JSON `count` is the inspected page size, `total` is the matching
+  unreconciled set older than the cursor (or all matches without one), and
+  `has_more` means more matches exist beyond this page. Per-item skips still
+  return exit 0 with warnings; they do not imply successful collection.
+  Native and Multica entries use the same pagination; no remote refresh or
+  missing Multica answer is inferred. `--content`,
   `--require-result-source`, and `--min-result-bytes` each describe exactly one
   result and are rejected in this mode. Collection is
   `local_operational_write`: it writes acknowledgement stamps and nothing else.
