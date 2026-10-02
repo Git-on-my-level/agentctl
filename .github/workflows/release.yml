@@ -91,4 +91,11 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+        shell: bash
+        run: |
+          notes="docs/release-${GITHUB_REF_NAME}.md"
+          notes_args=()
+          if [[ -f "$notes" ]]; then
+            notes_args=(--notes-file "$notes")
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "$GITHUB_REF_NAME" "${notes_args[@]}"
