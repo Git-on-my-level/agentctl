@@ -395,8 +395,9 @@ deletion. Failed, already orphaned, and integrity-conflicted terminals stay
 uncollected unless `--include-failures` is explicit. Terminals that predate
 the journal's acknowledgement epoch are already treated as reconciled.
 
-Nonterminal Multica executions are listed with the journaled issue and run
-binding and a read-only next action. Reconcile does not call Multica.
+Nonterminal Multica executions whose last observation is older than
+`--stale-after` are listed with the journaled issue and run binding and a
+read-only next action; fresher ones are omitted as recently observed. Reconcile does not call Multica.
 Multica issue state is not changed; local collection stamps are written.
 
 ## Safe agent-first defaults
