@@ -370,7 +370,8 @@ are native, match the journal host, and are older than `--legacy-stale-after`
 (default 168h, minimum 72h). They are listed under `legacy_orphan` with evidence
 `heartbeat_absent` and outcome `owner_unproven_legacy`, never `owner_lost`. A
 legacy numeric PID that currently exists is left unchanged and reported
-`legacy_pid_present`. Apply also stamps
+`legacy_pid_present`; an unprovable absence is
+`legacy_pid_unproven`. Apply also stamps
 `bulk_reconciled` on old uncollected completed or cancelled results without
 reading them. That source is visible on `recent` and `status` and makes the
 result eligible for `data cleanup`. The `acknowledged` event stays in the

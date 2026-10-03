@@ -380,7 +380,8 @@ journal host id, and have a last observation older than `--legacy-stale-after`
 heartbeats every 10 seconds, so that gap is evidence rather than proof the
 process is gone. If the legacy numeric value is a PID that currently exists,
 the row is left unchanged and reported `legacy_pid_present`; start time is not
-compared. The outcome state is `orphaned` with `owner_unproven_legacy`, never
+compared. If its absence cannot be proved (for example a sandbox denies the
+lookup), the row is left unchanged and reported `legacy_pid_unproven`. The outcome state is `orphaned` with `owner_unproven_legacy`, never
 `owner_lost`. An unexpired runner lease stays unchanged.
 
 Completed and cancelled terminals whose result was never collected, and whose

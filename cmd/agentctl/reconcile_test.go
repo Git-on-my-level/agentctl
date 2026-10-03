@@ -445,6 +445,16 @@ func TestReconcileLegacyUnprovenRules(t *testing.T) {
 	between := now.Add(-48 * time.Hour)
 	base := reconcileOptions{staleAfter: defaultReconcileStaleAfter, collectOlder: defaultReconcileCollectAfter, legacyStaleAfter: defaultLegacyStaleAfter, labels: []string{}}
 
+	t.Run("unreadable legacy pid is never treated as absent", func(t *testing.T) {
+		opts := base
+		opts.includeLegacy = true
+		report := classifyReconcile([]model.Execution{legacyFixture(t, host, "cursor_session", "4242", old, false)}, store.AcknowledgementIndex{}, host, now, opts, func(processIdentity) processProof {
+			return processProof{Proof: "permission_denied"}
+		})
+		if report.LegacyOrphan.Count != 0 || len(report.Unproven) != 1 || report.Unproven[0].Reason != "legacy_pid_unproven" {
+			t.Fatalf("report=%+v", report)
+		}
+	})
 	t.Run("flag off leaves the row unproven", func(t *testing.T) {
 		calls := 0
 		report := classifyReconcile([]model.Execution{legacyFixture(t, host, "cursor_session", "4242", old, false)}, store.AcknowledgementIndex{}, host, now, base, func(processIdentity) processProof {

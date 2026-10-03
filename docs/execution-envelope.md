@@ -111,7 +111,8 @@ matching journal host id, and a last observation older than
 `heartbeat_absent`: the runner heartbeats every 10 seconds, so a multi-day gap
 is evidence the owner was not observed, not proof a process is gone. If the
 legacy numeric value is a PID that currently exists, the row is left unchanged
-and reported `legacy_pid_present`, without comparing start time. The outcome
+and reported `legacy_pid_present`, without comparing start time. A PID whose
+absence cannot be proved is left unchanged and reported `legacy_pid_unproven`. The outcome
 is `orphaned` with `owner_unproven_legacy`, never `owner_lost`.
 
 `attention` means work may continue but an external decision or intervention is

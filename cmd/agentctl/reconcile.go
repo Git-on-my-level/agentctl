@@ -30,6 +30,7 @@ const (
 	reconcileOwnerUnprovenLegacy = "owner_unproven_legacy"
 	reconcileHeartbeatAbsent     = "heartbeat_absent"
 	reconcileLegacyPIDPresent    = "legacy_pid_present"
+	reconcileLegacyPIDUnproven   = "legacy_pid_unproven"
 )
 
 type reconcileOptions struct {
@@ -373,9 +374,9 @@ func classifyReconcile(executions []model.Execution, acks store.AcknowledgementI
 		}
 		if legacyEligible(execution, host, now, opts) {
 			pids := legacyNumericPIDs(execution)
-			blocked, pid := legacyPIDPresent(prove, pids)
+			blocked, pid, reason := legacyPIDPresent(prove, pids)
 			if blocked {
-				report.Unproven = append(report.Unproven, reconcileUnproven{ID: execution.ID, Reason: reconcileLegacyPIDPresent})
+				report.Unproven = append(report.Unproven, reconcileUnproven{ID: execution.ID, Reason: reason})
 				continue
 			}
 			evidence := reconcileLegacyEvidence{Proof: reconcileHeartbeatAbsent}
@@ -556,7 +557,7 @@ func (a *app) applyReconcile(ctx context.Context, journal *store.Journal, host i
 		if !legacyEligible(current, host, now, opts) {
 			continue
 		}
-		blocked, pid := legacyPIDPresent(a.proveProcess, legacyNumericPIDs(current))
+		blocked, pid, _ := legacyPIDPresent(a.proveProcess, legacyNumericPIDs(current))
 		if blocked {
 			continue
 		}
@@ -708,19 +709,25 @@ func legacyLaunchKind(kind string) bool {
 	}
 }
 
-// legacyPIDPresent reports whether any legacy numeric value is a process that
-// exists now. Start time is ignored: a reused or uncompared PID still blocks.
-// The returned pid is the blocking pid, or the first checked pid when none block.
-func legacyPIDPresent(prove func(processIdentity) processProof, pids []int) (bool, int) {
+// legacyPIDPresent reports whether any legacy numeric value blocks the row:
+// a process that currently exists (legacy_pid_present, start time ignored), or
+// one whose absence cannot be proved, such as a sandbox denying the lookup
+// (legacy_pid_unproven). Unknown is never absent. The PID is returned for
+// evidence.
+func legacyPIDPresent(prove func(processIdentity) processProof, pids []int) (bool, int, string) {
 	for _, pid := range pids {
-		if prove(processIdentity{PID: pid}).Present {
-			return true, pid
+		proof := prove(processIdentity{PID: pid})
+		if proof.Present {
+			return true, pid, reconcileLegacyPIDPresent
+		}
+		if !proof.Gone {
+			return true, pid, reconcileLegacyPIDUnproven
 		}
 	}
 	if len(pids) == 0 {
-		return false, 0
+		return false, 0, ""
 	}
-	return false, pids[0]
+	return false, pids[0], ""
 }
 
 func reconcileArgv(opts reconcileOptions, planDigest string) []string {
