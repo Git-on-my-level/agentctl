@@ -123,6 +123,42 @@ type Observation struct {
 	FreshForSeconds *int              `json:"fresh_for_seconds"`
 }
 
+// MaxLaunchPID is the largest PID reconcile will treat as a recorded owner.
+// It matches the Linux PID_MAX_LIMIT default of 2^22-1.
+const MaxLaunchPID = 4194303
+
+// LaunchIdentity is written once by the launcher at process start. A numeric
+// session id in a source binding is not a substitute: session discovery
+// overwrites that binding and must leave this record alone.
+type LaunchIdentity struct {
+	PID             int       `json:"pid"`
+	StartedAt       time.Time `json:"started_at"`
+	StartTicks      int64     `json:"start_ticks,omitempty"`
+	PIDNamespaceIno uint64    `json:"pid_namespace_ino,omitempty"`
+}
+
+func (l LaunchIdentity) Validate() error {
+	if l.PID <= 0 || l.PID > MaxLaunchPID {
+		return errors.New("invalid pid")
+	}
+	if l.StartedAt.IsZero() {
+		return errors.New("started_at is required")
+	}
+	if l.StartTicks < 0 {
+		return errors.New("invalid start_ticks")
+	}
+	return nil
+}
+
+// RetainLaunch records the launcher identity only when the execution does not
+// already have one. Later session discovery cannot replace it.
+func (e *Execution) RetainLaunch(pid int, started time.Time, startTicks int64, pidNamespaceIno uint64) {
+	if e == nil || e.Launch != nil || pid <= 0 || pid > MaxLaunchPID || started.IsZero() {
+		return
+	}
+	e.Launch = &LaunchIdentity{PID: pid, StartedAt: started.UTC(), StartTicks: startTicks, PIDNamespaceIno: pidNamespaceIno}
+}
+
 type PromotionState string
 
 const (
@@ -306,10 +342,13 @@ type Execution struct {
 	Delegation           *DelegationBinding `json:"delegation,omitempty"`
 	CreatedAt            time.Time          `json:"created_at"`
 	StartedAt            *time.Time         `json:"started_at,omitempty"`
-	DeadlineAt           *time.Time         `json:"deadline_at,omitempty"`
-	UpdatedAt            time.Time          `json:"updated_at"`
-	TerminalAt           *time.Time         `json:"terminal_at"`
-	Observation          Observation        `json:"observation"`
+	// Launch is the process the launcher recorded at start. Session discovery
+	// must not overwrite it. Reconcile accepts a PID only from this record.
+	Launch      *LaunchIdentity `json:"launch,omitempty"`
+	DeadlineAt  *time.Time      `json:"deadline_at,omitempty"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+	TerminalAt  *time.Time      `json:"terminal_at"`
+	Observation Observation     `json:"observation"`
 }
 
 var (
@@ -355,6 +394,11 @@ func (e Execution) Validate() error {
 	}
 	if e.State.Terminal() != (e.TerminalAt != nil) {
 		return errors.New("terminal_at must be set exactly for terminal state")
+	}
+	if e.Launch != nil {
+		if err := e.Launch.Validate(); err != nil {
+			return fmt.Errorf("launch: %w", err)
+		}
 	}
 	if e.CreatedAt.IsZero() || e.UpdatedAt.IsZero() || e.Observation.ObservedAt.IsZero() {
 		return errors.New("required timestamp is zero")

@@ -117,10 +117,13 @@ type processRecord struct {
 	page             *parsedPage
 	wholeStdout      bool
 	// launch is retained without prompt bytes to rebuild a resume invocation.
-	launch       LaunchRequest
-	sessionKnown bool
-	live         *liveSession
-	inputAcks    int
+	launch LaunchRequest
+	// launchIdentity is captured once at Start and is never replaced when a
+	// session id arrives in stdout.
+	launchIdentity ProcessLaunch
+	sessionKnown   bool
+	live           *liveSession
+	inputAcks      int
 	// lastTurn is the most recent native terminal record that was demoted
 	// because a live-input message is still pending. finish uses it when the
 	// process exits without a later terminal, so a late steer cannot orphan a
@@ -225,6 +228,9 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if obs.SessionID != "" {
+		// The session id replaces the launch binding's opaque id. The PID
+		// recorded on launchIdentity stays the process the launcher started,
+		// even when this value is numeric.
 		p.ref.OpaqueID = obs.SessionID
 		p.binding = p.ref.Binding()
 		p.sessionKnown = true
@@ -754,8 +760,9 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		return LaunchResult{}, dependencyError("native process failed to start", err)
 	}
 	started = true
+	startedAt := time.Now().UTC()
 	ref := SourceRef{Adapter: a.Name(), Kind: a.config.LaunchKind, OpaqueID: strconv.Itoa(cmd.Process.Pid), PID: cmd.Process.Pid}
-	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: time.Now().UTC(), updatedAt: time.Now().UTC(), done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, wholeStdout: a.config.WholeStdout, live: live}
+	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: startedAt, updatedAt: startedAt, done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, wholeStdout: a.config.WholeStdout, live: live, launchIdentity: captureProcessLaunch(cmd.Process.Pid, startedAt)}
 	record.launch = req
 	record.launch.Stdin = nil
 	record.launch.Argv = argv
@@ -939,7 +946,12 @@ func (a *NativeAdapter) session(record *processRecord) Session {
 	if record.cancelled {
 		state, live = StateCancelled, LivenessExited
 	}
-	return Session{Ref: record.ref, Binding: record.binding, State: state, Liveness: live, ExitCode: cloneInt(record.exitCode), StartedAt: record.startedAt, UpdatedAt: record.updatedAt, Observation: Observation{Source: "native_stream", Integrity: "verified", ObservedAt: record.updatedAt, FreshFor: nativeObservationFreshness}}
+	session := Session{Ref: record.ref, Binding: record.binding, State: state, Liveness: live, ExitCode: cloneInt(record.exitCode), StartedAt: record.startedAt, UpdatedAt: record.updatedAt, Observation: Observation{Source: "native_stream", Integrity: "verified", ObservedAt: record.updatedAt, FreshFor: nativeObservationFreshness}}
+	if record.launchIdentity.PID > 0 {
+		launch := record.launchIdentity
+		session.Launch = &launch
+	}
+	return session
 }
 
 func (a *NativeAdapter) currentResult(record *processRecord) *Result {

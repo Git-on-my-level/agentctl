@@ -206,7 +206,10 @@ The host-local `inbox` is also a journal projection, not a new authority. It
 combines unreconciled terminals, attention state, and bounded observation age.
 It never polls a native CLI. Task/collection health and normalized tool
 liveness are separate fields so transport loss is not promoted into a false
-task failure.
+task failure. `reconcile` is the separate, plan-before-apply command that
+turns provably lost native owners into `orphaned` and stamps old uncollected
+terminals. It does not invent a successful outcome and it does not mutate
+Multica.
 
 A short selector such as `studio omp` is ranked against optional config
 keywords (`route.hosts`, `agent_preferences.preferred`, plus built-in adapter

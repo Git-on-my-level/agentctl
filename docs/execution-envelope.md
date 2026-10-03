@@ -98,6 +98,22 @@ observe is `liveness: unreachable`, not orphaning.
 An exit code of zero without a structured authoritative terminal record is
 `orphaned` with `result_extraction_failed`, not `failed`: process success does
 not prove agent success, while observer failure must not claim agent failure.
+`agentctl reconcile --apply` may also record `orphaned` with failure code
+`owner_lost` when the launcher-recorded PID is provably gone and the last
+observation is older than the requested stale bound. The PID is the `launch`
+record written at process start, not a numeric session id. That transition is
+an explicit operator action bound to the reviewed `plan_digest`. It claims
+neither success nor failure, and an unreachable liveness reading by itself is
+not enough. Rows with no launch record stay `ownership_unproven` unless
+`--include-legacy-unproven` is set. That path requires native authority, a
+matching journal host id, and a last observation older than
+`--legacy-stale-after` (default 168h, minimum 72h). Its evidence is
+`heartbeat_absent`: the runner heartbeats every 10 seconds, so a multi-day gap
+is evidence the owner was not observed, not proof a process is gone. If the
+legacy numeric value is a PID that currently exists, the row is left unchanged
+and reported `legacy_pid_present`, without comparing start time. A PID whose
+absence cannot be proved is left unchanged and reported `legacy_pid_unproven`. The outcome
+is `orphaned` with `owner_unproven_legacy`, never `owner_lost`.
 
 `attention` means work may continue but an external decision or intervention is
 currently required. `waiting` is non-actionable waiting on an external event.
@@ -135,7 +151,10 @@ fan-out. `agentctl status` and events remain metadata-only; the explicit
 normalized failure details. A successful `result`, and `await` when it returns
 a terminal state, write one acknowledgement stamp in a separate journal bucket.
 That stamp is how `recent --unreconciled` decides collection; it does not rewrite
-the execution envelope or bump `revision`. Terminals whose `terminal_at` is
+the execution envelope or bump `revision`. `recent` and `status` report
+`acknowledgement_source` as `result`, `await`, or `bulk_reconciled`. A bulk
+stamp also appends an `acknowledged` event and makes the execution eligible
+for `data cleanup`. Terminals whose `terminal_at` is
 strictly before the journal's acknowledgement epoch — set on the first write
 open of a build that tracks acknowledgements — are treated as already
 reconciled so existing journals do not require a user-facing migration.

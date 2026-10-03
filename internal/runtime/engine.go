@@ -495,6 +495,9 @@ func (e *Engine) applySession(ctx context.Context, execution model.Execution, se
 		return model.Execution{}, err
 	}
 	execution.SourceBindings = bindings
+	if session.Launch != nil {
+		execution.RetainLaunch(session.Launch.PID, session.Launch.StartedAt, session.Launch.StartTicks, session.Launch.PIDNamespaceIno)
+	}
 	state := mapState(session.State)
 	if !validNormalizedState(state) {
 		return model.Execution{}, &Error{Code: CodeUnsafeObservation, Operation: "normalize_session", Adapter: execution.Adapter, Message: "adapter session returned an unknown state"}
@@ -641,6 +644,9 @@ func (e *Engine) updateCASFromRevision(ctx context.Context, desired model.Execut
 		desired.Promotion = current.Promotion
 		desired.TaskContract = current.TaskContract
 		desired.LastOperationFailure = current.LastOperationFailure
+		if current.Launch != nil {
+			desired.Launch = current.Launch
+		}
 		if current.State.Terminal() && current.State != desired.State {
 			desired.State = current.State
 			desired.TerminalAt = current.TerminalAt

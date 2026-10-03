@@ -8,6 +8,7 @@ import (
 
 	"go.etcd.io/bbolt"
 
+	"github.com/Git-on-my-level/agentctl/internal/callback"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 )
@@ -15,6 +16,9 @@ import (
 const (
 	AcknowledgementResult = "result"
 	AcknowledgementAwait  = "await"
+	// AcknowledgementBulk is an explicit operator stamp from reconcile --apply.
+	// It records that collection was acknowledged without reading result content.
+	AcknowledgementBulk = "bulk_reconciled"
 )
 
 // ExecutionAcknowledgement records that a caller collected a terminal
@@ -104,7 +108,7 @@ func (j *Journal) AcknowledgeExecution(ctx context.Context, id ids.ExecutionID, 
 	if err := ctx.Err(); err != nil {
 		return ExecutionAcknowledgement{}, false, err
 	}
-	if source != AcknowledgementResult && source != AcknowledgementAwait {
+	if source != AcknowledgementResult && source != AcknowledgementAwait && source != AcknowledgementBulk {
 		return ExecutionAcknowledgement{}, false, fmt.Errorf("invalid acknowledgement source %q", source)
 	}
 	var result ExecutionAcknowledgement
@@ -143,9 +147,40 @@ func (j *Journal) AcknowledgeExecution(ctx context.Context, id ids.ExecutionID, 
 		if err := bucket.Put([]byte(id.String()), encoded); err != nil {
 			return err
 		}
+		if source == AcknowledgementBulk {
+			if err := appendBulkAcknowledgementEvent(tx, j, execution, result.AcknowledgedAt); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	return result, reused, err
+}
+
+func appendBulkAcknowledgementEvent(tx *bbolt.Tx, j *Journal, execution model.Execution, at time.Time) error {
+	projection := map[string]any{
+		"authority_scope":       string(execution.Authority),
+		"execution_fingerprint": execution.ID.String(),
+		"kind":                  string(model.EventAcknowledged),
+		"source":                AcknowledgementBulk,
+		"state":                 string(execution.State),
+	}
+	key, canonical, err := callback.SemanticDedupeKey(execution.Adapter, 1, projection)
+	if err != nil {
+		return err
+	}
+	state := execution.State
+	event := model.Event{
+		ExecutionID: execution.ID, OriginHostID: execution.OriginHostID, Ordering: model.OrderingObservation,
+		Kind: model.EventAcknowledged, State: &state, Authority: execution.Authority, Adapter: execution.Adapter,
+		ObservedAt: at, DedupeKey: key, DedupeVersion: 1,
+		Payload: map[string]any{"acknowledgement_source": AcknowledgementBulk},
+	}
+	if err := validateEventProjection(event, canonical); err != nil {
+		return err
+	}
+	_, _, err = j.appendEventTx(tx, event, canonical)
+	return err
 }
 
 func acknowledgementEpoch(tx *bbolt.Tx) (time.Time, error) {

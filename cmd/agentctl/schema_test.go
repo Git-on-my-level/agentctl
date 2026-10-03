@@ -66,6 +66,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 		"fanout-manifest":      "schemas/fanout-manifest.schema.json",
 		"identity-report":      "schemas/identity-report.schema.json",
 		"recent-result":        "schemas/recent-result.schema.json",
+		"reconcile-plan":       "schemas/reconcile-plan.schema.json",
 		"launch-recipe-report": "schemas/launch-recipe-report.schema.json",
 		"inbox-result":         "schemas/inbox-result.schema.json",
 		"knowledge-source":     "schemas/knowledge-source.schema.json",
@@ -106,6 +107,7 @@ func TestNewSchemaDocumentsDeclareDraftAndRequiredShape(t *testing.T) {
 		"event-page.schema.json":        {"events", "scanned", "filtered", "page_limit"},
 		"fanout-manifest.schema.json":   {"schema_version", "children"},
 		"inbox-result.schema.json":      {"executions", "count", "total", "has_more", "host_local", "as_of", "stale_after_seconds"},
+		"reconcile-plan.schema.json":    {"schema_version", "mode", "applied", "as_of", "plan_digest", "journal_host_match", "stale_after_seconds", "collect_older_than_seconds", "include_failures", "include_legacy_unproven", "legacy_stale_after_seconds", "adapter", "labels", "orphan", "legacy_orphan", "collect", "multica", "unchanged", "unproven"},
 		"outcome.schema.json":           {"schema_version", "execution_id", "revision", "state", "availability", "recorded_at", "source", "result_ref"},
 		"skill-pack.schema.json":        {"schema_version", "skills"},
 		"skill-pack-report.schema.json": {"schema_version", "healthy", "source", "manifest_sha256", "actions", "changed", "applied", "unsupported", "conflicts"},
@@ -136,6 +138,65 @@ func TestNewSchemaDocumentsDeclareDraftAndRequiredShape(t *testing.T) {
 			if !seen[field] {
 				t.Errorf("%s missing required field %q", filename, field)
 			}
+		}
+	}
+}
+
+func TestAcknowledgementFieldsAreDeclaredOnStatusAndRecentSchemas(t *testing.T) {
+	root := schemaRepositoryRoot(t)
+	execution := schemaProperties(t, filepath.Join(root, "schemas", "execution.schema.json"))
+	assertAcknowledgementProperties(t, "execution.schema.json", execution)
+	recent := schemaProperties(t, filepath.Join(root, "schemas", "recent-result.schema.json"))
+	raw, ok := recent["executions"]
+	if !ok {
+		t.Fatal("recent-result schema has no executions")
+	}
+	var executions struct {
+		Items struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &executions); err != nil {
+		t.Fatal(err)
+	}
+	assertAcknowledgementProperties(t, "recent-result.schema.json executions.items", executions.Items.Properties)
+}
+
+func schemaProperties(t *testing.T, path string) map[string]json.RawMessage {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	return document.Properties
+}
+
+func assertAcknowledgementProperties(t *testing.T, where string, properties map[string]json.RawMessage) {
+	t.Helper()
+	for _, name := range []string{"acknowledgement_source", "acknowledged_at"} {
+		if _, ok := properties[name]; !ok {
+			t.Errorf("%s does not declare %s", where, name)
+		}
+	}
+	var source struct {
+		Enum []string `json:"enum"`
+	}
+	if err := json.Unmarshal(properties["acknowledgement_source"], &source); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"result", "await", "bulk_reconciled"}
+	if len(source.Enum) != len(want) {
+		t.Fatalf("%s acknowledgement_source enum=%v", where, source.Enum)
+	}
+	for i := range want {
+		if source.Enum[i] != want[i] {
+			t.Fatalf("%s acknowledgement_source enum=%v", where, source.Enum)
 		}
 	}
 }

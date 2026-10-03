@@ -257,6 +257,21 @@ payload.
 - Observe PID, process group, exit status, stdout/stderr/result paths.
 - Never interpret successful exit as domain success without an explicit result
   contract.
+- The direct child is the process-group leader. Its exit status is the only
+  exit status agentctl records. A grandchild's exit code is not that status.
+- Stdout and stderr are pipes drained before the direct child is reaped, so a
+  structured terminal record a child writes on the inherited stdout is kept.
+- Plain text is not a result. Exit 0 with no structured terminal record is
+  `orphaned` and `result_extraction_failed`, with empty stored content. A
+  non-zero exit is `failed` and `native_execution_failed`; unstructured stdout
+  is not stored.
+- `hermes -z` follows that second pattern. Its oneshot mode prints a plain
+  final answer and exits 0 when the turn produced text, 1 when it completed
+  without text, 2 when the turn failed, and 130 when interrupted. It does not
+  emit the terminal JSON record this adapter requires. A report file the
+  process writes on disk is outside the result contract, so agentctl cannot
+  know that the work succeeded. Exit 0 therefore stays `orphaned`; a non-zero
+  exit stays `failed` with no stored content.
 
 ## Adapter manifests
 

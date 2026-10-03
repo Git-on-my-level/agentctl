@@ -356,6 +356,32 @@ An `owner_process_only` route cannot recover a lost native owner; bound Multica
 work keeps its issue/run authority. Cached status/events and unreachable liveness
 do not establish completion. Do not auto-acknowledge or infer failure.
 
+`agentctl reconcile` is the explicit journal repair. Read `help reconcile`,
+then `--plan` before `--apply --plan-digest`. `--plan` writes nothing and
+returns `plan_digest` over the candidate ids, actions, and proofs. Apply
+writes nothing if that digest no longer matches, then proves each row again
+before writing. It orphans a native execution only when the launcher-recorded
+PID is provably gone and the last observation is older than `--stale-after`.
+A numeric session id is not a PID. `journal_host_match` is the journal's stored
+host id, not a machine fingerprint. The state is `orphaned` with `owner_lost`:
+the outcome is unknown, not success or failure. Rows with no launch record stay
+`ownership_unproven` unless `--include-legacy-unproven` is set. Eligible rows
+are native, match the journal host, and are older than `--legacy-stale-after`
+(default 168h, minimum 72h). They are listed under `legacy_orphan` with evidence
+`heartbeat_absent` and outcome `owner_unproven_legacy`, never `owner_lost`. A
+legacy numeric PID that currently exists is left unchanged and reported
+`legacy_pid_present`; an unprovable absence is
+`legacy_pid_unproven`. Apply also stamps
+`bulk_reconciled` on old uncollected completed or cancelled results without
+reading them. That source is visible on `recent` and `status` and makes the
+result eligible for `data cleanup`. The `acknowledged` event stays in the
+journal and is delivered only when a subscription's kind filter lists
+`acknowledged`; `--kind all` does not include it. Failures, orphans, and integrity conflicts
+stay visible unless `--include-failures` is set. Multica issue state is not
+changed; local collection stamps are written. A generic process
+that exits 0, or writes a file, is not success: plain stdout is not a result
+contract, and a child's exit code is not the direct child's.
+
 Use `agentctl help subscribe` before durable callback setup. Delivery is
 at-least-once, so deduplicate by the full event key. A receipt proves delivery,
 not successful work. A managed supervisor is required only for cross-restart

@@ -37,7 +37,10 @@ type app struct {
 	stdinIsTerminal func() bool
 	getenv          func(string) string
 	now             func() time.Time
-	updateNotice    func(context.Context, string, common) *output.Warning
+	// processProof overrides host process-identity checks. Production leaves it
+	// nil and reads the kernel process table; tests inject a deterministic proof.
+	processProof func(processIdentity) processProof
+	updateNotice func(context.Context, string, common) *output.Warning
 	// supervisorHealthProbe overrides the owner-only supervisor status RPC that
 	// doctor folds into its readiness report. Production leaves it nil and
 	// dials the socket; tests inject a bounded fake health response.
@@ -144,6 +147,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.recent(ctx, renderer, commonArgs, rest[1:])
 	case "inbox":
 		err = a.inbox(ctx, renderer, commonArgs, rest[1:])
+	case "reconcile":
+		err = a.reconcile(ctx, renderer, commonArgs, rest[1:])
 	case "workspace":
 		err = a.workspaceCommand(ctx, renderer, commonArgs, rest[1:])
 	case "events":
@@ -547,7 +552,14 @@ func (a *app) status(ctx context.Context, renderer output.Renderer, c common, ar
 	if err != nil {
 		return mapStoreError("read execution", err)
 	}
-	return writeExecution(renderer, execution, "status")
+	var acknowledgement *store.ExecutionAcknowledgement
+	ack, ackErr := journal.GetAcknowledgement(ctx, id)
+	if ackErr == nil {
+		acknowledgement = &ack
+	} else if !errors.Is(ackErr, store.ErrNotFound) {
+		return mapStoreError("read execution acknowledgement", ackErr)
+	}
+	return writeExecutionReported(renderer, execution, "status", executionWriteOptions{acknowledgement: acknowledgement})
 }
 
 const (
@@ -1036,7 +1048,7 @@ func (a *app) events(ctx context.Context, renderer output.Renderer, c common, ar
 		case "--kind":
 			kind := model.EventKind(strings.ToLower(strings.TrimSpace(value)))
 			switch kind {
-			case model.EventStarted, model.EventProgress, model.EventAttention, model.EventArtifact, model.EventHealth, model.EventTerminal, model.EventPromoted, model.EventSuperseded:
+			case model.EventStarted, model.EventProgress, model.EventAttention, model.EventArtifact, model.EventHealth, model.EventTerminal, model.EventPromoted, model.EventSuperseded, model.EventAcknowledged:
 				query.Kinds = append(query.Kinds, kind)
 			default:
 				return output.NewError(output.CodeUsage, "unknown event kind", false).WithDetail("kind", value)
@@ -1317,7 +1329,16 @@ func parseExecutionRef(value string, c common) (ids.ExecutionID, *output.Error) 
 	}
 	return id, nil
 }
+
+type executionWriteOptions struct {
+	acknowledgement *store.ExecutionAcknowledgement
+}
+
 func writeExecution(renderer output.Renderer, e model.Execution, operation string, extraWarnings ...output.Warning) *output.Error {
+	return writeExecutionReported(renderer, e, operation, executionWriteOptions{}, extraWarnings...)
+}
+
+func writeExecutionReported(renderer output.Renderer, e model.Execution, operation string, opts executionWriteOptions, extraWarnings ...output.Warning) *output.Error {
 	fields := []output.Field{{Name: "state", Value: e.State}, {Name: "authority", Value: e.Authority}, {Name: "adapter", Value: e.Adapter}, {Name: "liveness", Value: e.Liveness}, {Name: "revision", Value: e.Revision}}
 	if len(e.Labels) != 0 {
 		fields = append(fields, output.Field{Name: "labels", Value: e.Labels})
@@ -1362,10 +1383,23 @@ func writeExecution(renderer output.Renderer, e model.Execution, operation strin
 	for i := range redacted.SourceBindings {
 		redacted.SourceBindings[i].OpaqueID = nil
 	}
-	if err := renderer.Success(output.Success{Result: redacted, Lines: []output.Line{{Lead: e.ID.String(), Fields: fields}}, Warnings: warnings, NextActions: actions}); err != nil {
+	reported := reportedExecution{Execution: redacted}
+	if opts.acknowledgement != nil && opts.acknowledgement.Source != "" {
+		reported.AcknowledgementSource = opts.acknowledgement.Source
+		acknowledgedAt := opts.acknowledgement.AcknowledgedAt.UTC()
+		reported.AcknowledgedAt = &acknowledgedAt
+		fields = append(fields, output.Field{Name: "acknowledgement_source", Value: opts.acknowledgement.Source})
+	}
+	if err := renderer.Success(output.Success{Result: reported, Lines: []output.Line{{Lead: e.ID.String(), Fields: fields}}, Warnings: warnings, NextActions: actions}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil
+}
+
+type reportedExecution struct {
+	model.Execution
+	AcknowledgementSource string     `json:"acknowledgement_source,omitempty"`
+	AcknowledgedAt        *time.Time `json:"acknowledged_at,omitempty"`
 }
 
 func writeExecutionOutcome(renderer output.Renderer, e model.Execution, outcome model.Outcome) *output.Error {

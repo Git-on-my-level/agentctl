@@ -21,14 +21,15 @@ const (
 type EventKind string
 
 const (
-	EventStarted    EventKind = "started"
-	EventProgress   EventKind = "progress"
-	EventAttention  EventKind = "attention"
-	EventArtifact   EventKind = "artifact"
-	EventHealth     EventKind = "health"
-	EventTerminal   EventKind = "terminal"
-	EventPromoted   EventKind = "promoted"
-	EventSuperseded EventKind = "superseded"
+	EventStarted      EventKind = "started"
+	EventProgress     EventKind = "progress"
+	EventAttention    EventKind = "attention"
+	EventArtifact     EventKind = "artifact"
+	EventHealth       EventKind = "health"
+	EventTerminal     EventKind = "terminal"
+	EventPromoted     EventKind = "promoted"
+	EventSuperseded   EventKind = "superseded"
+	EventAcknowledged EventKind = "acknowledged"
 )
 
 type SourcePosition struct {
@@ -107,7 +108,7 @@ func (e Event) Validate() error {
 
 func validEventKind(v EventKind) bool {
 	switch v {
-	case EventStarted, EventProgress, EventAttention, EventArtifact, EventHealth, EventTerminal, EventPromoted, EventSuperseded:
+	case EventStarted, EventProgress, EventAttention, EventArtifact, EventHealth, EventTerminal, EventPromoted, EventSuperseded, EventAcknowledged:
 		return true
 	}
 	return false

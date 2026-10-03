@@ -347,6 +347,59 @@ call, acknowledgement, fetch, or cache update. A successful `result` or
 terminal `await` is the existing collection boundary that clears a terminal
 item.
 
+## Reconciliation
+
+`agentctl reconcile` is the operator action for rows the inbox can only
+describe. It is not a background healer. `--plan` prints counts, execution
+IDs, and a `plan_digest` over the candidate ids, actions, and proofs, and
+writes nothing. `--apply` requires `--plan-digest` from that plan. It
+recomputes the candidate set and writes nothing if the digest differs, then
+proves each row again immediately before writing it. A row whose proof or
+revision changed is skipped.
+
+A native nonterminal execution is orphaned only when both are true: its last
+observation is at least `--stale-after` old (default 24h), and the PID
+recorded by the launcher itself is provably not that process. A numeric
+session id in a source binding is not a PID. Rows without the launcher record
+are `ownership_unproven`. `journal_host_match` compares `origin_host_id` with
+the host id stored in this journal. It is not a machine fingerprint, so a
+copied or restored journal still matches. On Linux, absence is `pid_absent`
+only when the recorded pid-namespace inode matches `/proc/self/ns/pid` and
+`/proc/1` or the proving process's parent is visible; otherwise it is
+`unproven`. Start identity compares raw `/proc/<pid>/stat` starttime ticks
+recorded at launch. Rows without those ticks are `unproven`, not `pid_reused`.
+A matching live process, an unexpired runner lease, a newer observation, or a
+start time that cannot be proved is left unchanged. The resulting state is
+`orphaned` with reason `owner_lost`: outcome unknown.
+
+Rows with no launch record stay `ownership_unproven` unless
+`--include-legacy-unproven` is explicit. Eligible rows are native, match the
+journal host id, and have a last observation older than `--legacy-stale-after`
+(default 168h, minimum 72h). They are listed under `legacy_orphan`, included in
+`plan_digest`, and recorded with evidence `heartbeat_absent`. The runner
+heartbeats every 10 seconds, so that gap is evidence rather than proof the
+process is gone. If the legacy numeric value is a PID that currently exists,
+the row is left unchanged and reported `legacy_pid_present`; start time is not
+compared. If its absence cannot be proved (for example a sandbox denies the
+lookup), the row is left unchanged and reported `legacy_pid_unproven`. The outcome state is `orphaned` with `owner_unproven_legacy`, never
+`owner_lost`. An unexpired runner lease stays unchanged.
+
+Completed and cancelled terminals whose result was never collected, and whose
+`terminal_at` is at least `--collect-older-than` old (default 168h), are
+stamped `bulk_reconciled`. The command does not read or print result content.
+`recent` and `status` show `acknowledgement_source` so that stamp is distinct
+from `result` or `await` collection, and the stamp emits an `acknowledged`
+event. That event stays in the journal. A subscription receives it only when
+its kind filter lists `acknowledged`; `--kind all` does not. A `bulk_reconciled` stamp makes the result eligible for `data cleanup`
+deletion. Failed, already orphaned, and integrity-conflicted terminals stay
+uncollected unless `--include-failures` is explicit. Terminals that predate
+the journal's acknowledgement epoch are already treated as reconciled.
+
+Nonterminal Multica executions whose last observation is older than
+`--stale-after` are listed with the journaled issue and run binding and a
+read-only next action; fresher ones are omitted as recently observed. Reconcile does not call Multica.
+Multica issue state is not changed; local collection stamps are written.
+
 ## Safe agent-first defaults
 
 Defaults encode the common, evidence-preserving path. Each has an explicit
@@ -477,7 +530,8 @@ escape for callers that intentionally need weaker or broader behavior:
   default, expires after acknowledged terminal delivery, and has a bounded
   twenty-four-hour TTL. Transient delivery failures retry with bounded backoff
   until that TTL; permanent delivery classes still dead-letter. `--kind all`
-  is an explicit broad subscription.
+  is an explicit broad subscription for every kind except `acknowledged`.
+  `acknowledged` is delivered only when `--kind` lists it.
 
 These defaults do not weaken authority boundaries: permission flags such as
 Cursor `--trust`, remote promotion, supervisor service creation, and cleanup
