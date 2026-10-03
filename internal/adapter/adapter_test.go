@@ -1103,6 +1103,56 @@ func TestMulticaSnapshotRejectsForeignRef(t *testing.T) {
 	}
 }
 
+func TestGenericProcessPlainStdoutChildExitDoesNotInferSuccess(t *testing.T) {
+	path := fixtureExecutable(t, `
+printf '%s\n' 'parent stdout'
+( printf '%s\n' 'child stdout'; exit 7 ) &
+wait || true
+exit 0
+`)
+	got, err := NewGenericProcess().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || got.Result.Success || got.Result.State != StateOrphaned {
+		t.Fatalf("plain stdout and a successful parent were treated as an outcome: %#v", got.Result)
+	}
+	if got.Result.ExitCode == nil || *got.Result.ExitCode != 0 || got.Result.Content != "" {
+		t.Fatalf("parent exit or child text was remapped: %#v", got.Result)
+	}
+	if got.Result.Data["diagnostic_code"] != "result_extraction_failed" {
+		t.Fatalf("diagnostic = %#v", got.Result.Data)
+	}
+}
+
+func TestGenericProcessNonZeroExitDoesNotStoreUnstructuredStdout(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s\n' 'the work finished in a file'; exit 2`)
+	got, err := NewGenericProcess().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || got.Result.Success || got.Result.State != StateFailed || got.Result.Content != "" {
+		t.Fatalf("unstructured non-zero exit = %#v", got.Result)
+	}
+	if got.Result.ExitCode == nil || *got.Result.ExitCode != 2 {
+		t.Fatalf("exit code = %#v", got.Result.ExitCode)
+	}
+}
+
+func TestGenericProcessChildStructuredResultOnInheritedStdoutIsKept(t *testing.T) {
+	path := fixtureExecutable(t, `
+( sleep 0.2; printf '%s\n' '{"type":"result","status":"completed","result":"CHILD_OK"}'; exit 0 ) &
+exit 0
+`)
+	got, err := NewGenericProcess().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || !got.Result.Success || got.Result.State != StateCompleted || got.Result.Content != "CHILD_OK" {
+		t.Fatalf("inherited structured child result = %#v", got.Result)
+	}
+}
+
 func TestMulticaSnapshotAcceptsExactJournaledFingerprint(t *testing.T) {
 	path := fixtureExecutable(t, `printf '%s\n' '{"id":"issue-fixture","workspace_id":"workspace-fixture","status":"in_progress","status_category":"in_progress"}'`)
 	config := MulticaConfig{Binary: path, Profile: "profile-fixture", Endpoint: "https://multica.example.test", Workspace: "workspace-fixture", Issue: "issue-fixture"}

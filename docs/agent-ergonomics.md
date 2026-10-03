@@ -347,6 +347,33 @@ call, acknowledgement, fetch, or cache update. A successful `result` or
 terminal `await` is the existing collection boundary that clears a terminal
 item.
 
+## Reconciliation
+
+`agentctl reconcile` is the operator action for rows the inbox can only
+describe. It is not a background healer. `--plan` prints counts and execution
+IDs and writes nothing. `--apply` requires the same filters and is idempotent.
+
+A native nonterminal execution on this host is orphaned only when both are
+true: its last observation is at least `--stale-after` old (default 24h), and
+the launch-kind binding's PID is provably not the recorded process. Proof is
+the journaled PID plus start time compared with the kernel process table.
+Absence, or a kernel start more than five seconds after the recorded start,
+means the owner is gone. A matching live process, an unexpired runner lease, a
+newer observation, or a start time that cannot be proved is left unchanged.
+The resulting state is `orphaned` with reason `owner_lost`: outcome unknown.
+
+Completed and cancelled terminals whose result was never collected, and whose
+`terminal_at` is at least `--collect-older-than` old (default 168h), are
+stamped `bulk_reconciled`. The command does not read or print result content.
+Failed, already orphaned, and integrity-conflicted terminals stay uncollected
+unless `--include-failures` is explicit. Terminals that predate the journal's
+acknowledgement epoch are already treated as reconciled.
+
+Nonterminal Multica executions are listed with the journaled issue and run
+binding and a read-only next action. Reconcile does not call Multica or change
+issue state. A collection stamp on an already terminal Multica row is local
+journal metadata only.
+
 ## Safe agent-first defaults
 
 Defaults encode the common, evidence-preserving path. Each has an explicit

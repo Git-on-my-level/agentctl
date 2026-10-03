@@ -399,6 +399,19 @@ result read, acknowledgement write, or cross-host merge. Conflicted normalized
 evidence remains actionable even after collection, because acknowledging a
 result does not reconcile contradictory authority observations.
 
+`reconcile` is the explicit repair for a journal that has kept those rows.
+`--plan` only prints the executions it would change. `--apply` uses the same
+filters, writes only this host's journal, and is safe to repeat. A nonterminal
+native execution becomes `orphaned` when its journaled launch PID is provably
+gone and its last observation is older than `--stale-after` (24h by default).
+That state means the owner was lost and the outcome was not recovered; it is
+not success or failure. Completed and cancelled terminals older than
+`--collect-older-than` (168h by default) receive a `bulk_reconciled` collection
+stamp without anyone reading the result. Failures, orphans, and
+integrity conflicts stay visible unless `--include-failures` is set. Multica
+remains the authority for its issues: nonterminal Multica rows are reported
+with their journaled binding and are not changed.
+
 If a command reports `diagnostic_code=journal_busy`, retry the same agentctl
 invocation with bounded backoff. Do not silently switch to a raw native CLI;
 that drops agentctl's supervision, journal, callbacks, and result recovery.

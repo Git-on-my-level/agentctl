@@ -98,6 +98,11 @@ observe is `liveness: unreachable`, not orphaning.
 An exit code of zero without a structured authoritative terminal record is
 `orphaned` with `result_extraction_failed`, not `failed`: process success does
 not prove agent success, while observer failure must not claim agent failure.
+`agentctl reconcile --apply` may also record `orphaned` with failure code
+`owner_lost` when this host's journaled launch PID is provably gone and the
+last observation is older than the requested stale bound. That transition is
+an explicit operator action. It claims neither success nor failure, and an
+unreachable liveness reading by itself is not enough.
 
 `attention` means work may continue but an external decision or intervention is
 currently required. `waiting` is non-actionable waiting on an external event.

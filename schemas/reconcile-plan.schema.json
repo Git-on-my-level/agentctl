@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentctl:schema:reconcile-plan:v1",
+  "x-agentctl-docs": "../docs/agent-ergonomics.md#reconciliation",
+  "title": "agentctl reconcile plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "mode",
+    "applied",
+    "as_of",
+    "host_local",
+    "stale_after_seconds",
+    "collect_older_than_seconds",
+    "include_failures",
+    "adapter",
+    "labels",
+    "orphan",
+    "collect",
+    "multica",
+    "unchanged",
+    "unproven"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "mode": {"enum": ["plan", "apply"]},
+    "applied": {"type": "boolean"},
+    "as_of": {"type": "string", "format": "date-time"},
+    "host_local": {"const": true},
+    "stale_after_seconds": {"type": "number", "exclusiveMinimum": 0},
+    "collect_older_than_seconds": {"type": "number", "exclusiveMinimum": 0},
+    "include_failures": {"type": "boolean"},
+    "adapter": {"type": "string"},
+    "labels": {"type": "array", "items": {"type": "string"}},
+    "orphan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "executions"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0},
+        "executions": {"type": "array", "items": {"$ref": "#/$defs/orphan_item"}}
+      }
+    },
+    "collect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "executions"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0},
+        "executions": {"type": "array", "items": {"$ref": "#/$defs/collect_item"}}
+      }
+    },
+    "multica": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "executions"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0},
+        "executions": {"type": "array", "items": {"$ref": "#/$defs/multica_item"}}
+      }
+    },
+    "unchanged": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alive", "recent"],
+      "properties": {
+        "alive": {"type": "integer", "minimum": 0},
+        "recent": {"type": "integer", "minimum": 0}
+      }
+    },
+    "unproven": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "reason"],
+        "properties": {
+          "id": {"$ref": "#/$defs/execution_id"},
+          "reason": {"type": "string"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "execution_id": {"type": "string", "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"},
+    "orphan_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "adapter", "state", "liveness", "reason", "evidence", "observation_age_seconds"],
+      "properties": {
+        "id": {"$ref": "#/$defs/execution_id"},
+        "adapter": {"type": "string"},
+        "state": {"type": "string"},
+        "liveness": {"type": "string"},
+        "reason": {"const": "owner_lost"},
+        "observation_age_seconds": {"type": "number", "minimum": 0},
+        "evidence": {"$ref": "#/$defs/process_evidence"}
+      }
+    },
+    "process_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pid", "process_present", "proof"],
+      "properties": {
+        "pid": {"type": "integer", "minimum": 1},
+        "recorded_started_at": {"type": "string", "format": "date-time"},
+        "process_started_at": {"type": "string", "format": "date-time"},
+        "process_present": {"type": "boolean"},
+        "proof": {"type": "string"}
+      }
+    },
+    "collect_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "adapter", "authority", "state", "terminal_at", "reason"],
+      "properties": {
+        "id": {"$ref": "#/$defs/execution_id"},
+        "adapter": {"type": "string"},
+        "authority": {"enum": ["native", "multica"]},
+        "state": {"type": "string"},
+        "terminal_at": {"type": "string", "format": "date-time"},
+        "reason": {"const": "bulk_reconciled"}
+      }
+    },
+    "multica_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "adapter", "state", "liveness", "bindings", "next_action"],
+      "properties": {
+        "id": {"$ref": "#/$defs/execution_id"},
+        "adapter": {"type": "string"},
+        "state": {"type": "string"},
+        "liveness": {"type": "string"},
+        "bindings": {"type": "array", "items": {"$ref": "#/$defs/binding"}},
+        "next_action": {"$ref": "#/$defs/next_action"}
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "alias_id"],
+      "properties": {
+        "kind": {"type": "string"},
+        "alias_id": {"type": "string"},
+        "opaque_id": {"type": "string"}
+      }
+    },
+    "next_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "argv", "mutates", "side_effect_class", "preconditions"],
+      "properties": {
+        "label": {"type": "string"},
+        "argv": {"type": "array", "items": {"type": "string"}},
+        "mutates": {"type": "boolean"},
+        "side_effect_class": {"type": "string"},
+        "preconditions": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

@@ -15,6 +15,9 @@ import (
 const (
 	AcknowledgementResult = "result"
 	AcknowledgementAwait  = "await"
+	// AcknowledgementBulk is an explicit operator stamp from reconcile --apply.
+	// It records that collection was acknowledged without reading result content.
+	AcknowledgementBulk = "bulk_reconciled"
 )
 
 // ExecutionAcknowledgement records that a caller collected a terminal
@@ -104,7 +107,7 @@ func (j *Journal) AcknowledgeExecution(ctx context.Context, id ids.ExecutionID, 
 	if err := ctx.Err(); err != nil {
 		return ExecutionAcknowledgement{}, false, err
 	}
-	if source != AcknowledgementResult && source != AcknowledgementAwait {
+	if source != AcknowledgementResult && source != AcknowledgementAwait && source != AcknowledgementBulk {
 		return ExecutionAcknowledgement{}, false, fmt.Errorf("invalid acknowledgement source %q", source)
 	}
 	var result ExecutionAcknowledgement

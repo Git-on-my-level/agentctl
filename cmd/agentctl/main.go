@@ -37,7 +37,10 @@ type app struct {
 	stdinIsTerminal func() bool
 	getenv          func(string) string
 	now             func() time.Time
-	updateNotice    func(context.Context, string, common) *output.Warning
+	// processProof overrides host process-identity checks. Production leaves it
+	// nil and reads the kernel process table; tests inject a deterministic proof.
+	processProof func(pid int, recorded time.Time) processProof
+	updateNotice func(context.Context, string, common) *output.Warning
 	// supervisorHealthProbe overrides the owner-only supervisor status RPC that
 	// doctor folds into its readiness report. Production leaves it nil and
 	// dials the socket; tests inject a bounded fake health response.
@@ -144,6 +147,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.recent(ctx, renderer, commonArgs, rest[1:])
 	case "inbox":
 		err = a.inbox(ctx, renderer, commonArgs, rest[1:])
+	case "reconcile":
+		err = a.reconcile(ctx, renderer, commonArgs, rest[1:])
 	case "workspace":
 		err = a.workspaceCommand(ctx, renderer, commonArgs, rest[1:])
 	case "events":

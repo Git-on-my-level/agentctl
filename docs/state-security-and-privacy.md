@@ -176,6 +176,12 @@ terminals that predate acknowledgement tracking on that journal can never gain a
 stamp retroactively and stay eligible, so an old journal does not become
 permanently uncleanable. `agentctl result --unreconciled` collects the retained
 backlog, after which those executions become eligible normally.
+`agentctl reconcile --apply` can stamp that same collection boundary in bulk
+for completed and cancelled terminals older than `--collect-older-than`, with
+source `bulk_reconciled`, without reading result content. Failures, orphans,
+and integrity conflicts are not stamped unless `--include-failures` is
+explicit. The stamp is an operator acknowledgement that the result will not be
+collected, not a claim that its content was reviewed, and not a deletion.
 
 Nonterminal graphs, partial parent/supersession graphs, active subscription
 filters/cursors/coordinators, and every retained outbox delivery or receipt are
