@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -21,12 +24,12 @@ const (
 	minimumReconcileAge          = time.Minute
 	maximumReconcileStaleAfter   = 30 * 24 * time.Hour
 	maximumReconcileCollectAfter = 365 * 24 * time.Hour
-	maximumLaunchPID             = 4194303
 	reconcileOwnerLost           = "owner_lost"
 )
 
 type reconcileOptions struct {
 	plan, apply, includeFailures   bool
+	planDigest                     string
 	staleAfter, collectOlder       time.Duration
 	staleAfterRaw, collectOlderRaw string
 	adapter                        string
@@ -34,11 +37,16 @@ type reconcileOptions struct {
 }
 
 type reconcileReport struct {
-	SchemaVersion           int                 `json:"schema_version"`
-	Mode                    string              `json:"mode"`
-	Applied                 bool                `json:"applied"`
-	AsOf                    time.Time           `json:"as_of"`
-	HostLocal               bool                `json:"host_local"`
+	SchemaVersion int       `json:"schema_version"`
+	Mode          string    `json:"mode"`
+	Applied       bool      `json:"applied"`
+	AsOf          time.Time `json:"as_of"`
+	PlanDigest    string    `json:"plan_digest"`
+	// JournalHostMatch reports that candidate selection compared each
+	// execution's origin_host_id with the host id stored in this journal.
+	// That id is not a machine fingerprint: a copied or restored journal
+	// still matches.
+	JournalHostMatch        bool                `json:"journal_host_match"`
 	StaleAfterSeconds       float64             `json:"stale_after_seconds"`
 	CollectOlderThanSeconds float64             `json:"collect_older_than_seconds"`
 	IncludeFailures         bool                `json:"include_failures"`
@@ -139,7 +147,11 @@ func (a *app) reconcile(ctx context.Context, renderer output.Renderer, c common,
 	}
 	now := a.now().UTC()
 	report := classifyReconcile(executions, acks, host, now, opts, a.proveProcess)
+	report.PlanDigest = reconcilePlanDigest(report, opts)
 	if opts.apply {
+		if report.PlanDigest != opts.planDigest {
+			return output.NewError(output.CodeConflict, "reconcile plan changed; review the current plan and pass its plan_digest", false).WithDetail("plan_digest", report.PlanDigest).WithDetail("expected_plan_digest", opts.planDigest)
+		}
 		report.Applied = true
 		report.Mode = "apply"
 		if problem := a.applyReconcile(ctx, journal, host, now, opts, &report); problem != nil {
@@ -148,6 +160,7 @@ func (a *app) reconcile(ctx context.Context, renderer output.Renderer, c common,
 	}
 	lines := []output.Line{{Lead: "reconcile", Fields: []output.Field{
 		{Name: "mode", Value: report.Mode},
+		{Name: "plan_digest", Value: report.PlanDigest},
 		{Name: "orphan", Value: report.Orphan.Count},
 		{Name: "collect", Value: report.Collect.Count},
 		{Name: "multica", Value: report.Multica.Count},
@@ -164,16 +177,17 @@ func (a *app) reconcile(ctx context.Context, renderer output.Renderer, c common,
 	}
 	warnings := []output.Warning{
 		{Code: "outcome_unknown", Message: "orphaned means the recorded owner is gone and the outcome was not recovered; it is not success or failure"},
-		{Code: "multica_not_mutated", Message: "nonterminal Multica executions are reported with their journaled issue binding and are not changed"},
+		{Code: "multica_not_mutated", Message: "Multica issue state is not changed; local collection stamps are written"},
+		{Code: "journal_host_match", Message: "journal_host_match compares origin_host_id with the host id stored in this journal; it is not a machine fingerprint, so a copied or restored journal still matches"},
 	}
 	actions := []output.NextAction{}
 	if opts.plan {
 		actions = append(actions, output.NextAction{
 			Label:           "Apply this reconciliation after reviewing the ids",
-			Argv:            reconcileArgv(opts, "apply"),
+			Argv:            reconcileArgv(opts, report.PlanDigest),
 			Mutates:         true,
 			SideEffectClass: output.LocalOperationalWrite,
-			Preconditions:   []string{"the same filters select the same executions", "apply is idempotent and does not read result content", "Multica issue state is not changed"},
+			Preconditions:   []string{"apply requires this plan_digest and writes nothing if the recomputed candidate ids, actions, and proofs differ", "each row is proved again immediately before it is written", "apply does not read result content", "Multica issue state is not changed; local collection stamps are written"},
 		})
 	}
 	if err := renderer.Success(output.Success{Result: report, Lines: lines, Warnings: warnings, NextActions: actions}); err != nil {
@@ -194,6 +208,15 @@ func parseReconcile(args []string) (reconcileOptions, *output.Error) {
 			opts.plan = true
 		case "--apply":
 			opts.apply = true
+		case "--plan-digest":
+			if i+1 >= len(args) {
+				return opts, output.NewError(output.CodeUsage, "--plan-digest requires the digest returned by --plan", false)
+			}
+			i++
+			opts.planDigest = strings.TrimSpace(args[i])
+			if opts.planDigest == "" {
+				return opts, output.NewError(output.CodeUsage, "--plan-digest requires the digest returned by --plan", false)
+			}
 		case "--include-failures":
 			opts.includeFailures = true
 		case "--stale-after", "--collect-older-than", "--adapter", "--label":
@@ -233,6 +256,12 @@ func parseReconcile(args []string) (reconcileOptions, *output.Error) {
 	if opts.plan == opts.apply {
 		return opts, output.NewError(output.CodeUsage, "reconcile requires exactly one of --plan or --apply", false)
 	}
+	if opts.plan && opts.planDigest != "" {
+		return opts, output.NewError(output.CodeUsage, "--plan-digest is only valid with --apply", false)
+	}
+	if opts.apply && opts.planDigest == "" {
+		return opts, output.NewError(output.CodeUsage, "reconcile --apply requires --plan-digest from the reviewed plan", false)
+	}
 	return opts, nil
 }
 
@@ -247,7 +276,7 @@ func parseReconcileDuration(value string) (time.Duration, error) {
 	return time.ParseDuration(value)
 }
 
-func classifyReconcile(executions []model.Execution, acks store.AcknowledgementIndex, host ids.HostID, now time.Time, opts reconcileOptions, prove func(int, time.Time) processProof) reconcileReport {
+func classifyReconcile(executions []model.Execution, acks store.AcknowledgementIndex, host ids.HostID, now time.Time, opts reconcileOptions, prove func(processIdentity) processProof) reconcileReport {
 	report := newReconcileReport(now, opts)
 	for _, execution := range executions {
 		if !reconcileFilterMatches(execution, opts) {
@@ -278,20 +307,12 @@ func classifyReconcile(executions []model.Execution, acks store.AcknowledgementI
 			report.Unchanged.Recent++
 			continue
 		}
-		pid, ok := launchPID(execution)
+		identity, ok := recordedLaunch(execution)
 		if !ok {
 			report.Unproven = append(report.Unproven, reconcileUnproven{ID: execution.ID, Reason: "ownership_unproven"})
 			continue
 		}
-		var recorded time.Time
-		if execution.StartedAt != nil {
-			recorded = *execution.StartedAt
-		}
-		proof := prove(pid, recorded)
-		proof.PID = pid
-		if !recorded.IsZero() {
-			proof.RecordedStartedAt = recorded.UTC()
-		}
+		proof := prove(identity)
 		switch {
 		case proof.Alive:
 			report.Unchanged.Alive++
@@ -318,7 +339,7 @@ func newReconcileReport(now time.Time, opts reconcileOptions) reconcileReport {
 		labels = []string{}
 	}
 	return reconcileReport{
-		SchemaVersion: 1, Mode: mode, AsOf: now, HostLocal: true,
+		SchemaVersion: 1, Mode: mode, AsOf: now, JournalHostMatch: true,
 		StaleAfterSeconds: opts.staleAfter.Seconds(), CollectOlderThanSeconds: opts.collectOlder.Seconds(),
 		IncludeFailures: opts.includeFailures, Adapter: opts.adapter, Labels: labels,
 		Orphan:   reconcileOrphanSet{Executions: []reconcileOrphanItem{}},
@@ -388,30 +409,6 @@ func runnerLeaseActive(execution model.Execution, now time.Time) bool {
 	return !now.After(expires)
 }
 
-func launchPID(execution model.Execution) (int, bool) {
-	for _, binding := range execution.SourceBindings {
-		if !launchProcessKind(binding.Kind) || binding.OpaqueID == nil {
-			continue
-		}
-		raw := strings.TrimSpace(*binding.OpaqueID)
-		pid, err := strconv.Atoi(raw)
-		if err != nil || pid <= 0 || pid > maximumLaunchPID || strconv.Itoa(pid) != raw {
-			continue
-		}
-		return pid, true
-	}
-	return 0, false
-}
-
-func launchProcessKind(kind string) bool {
-	switch kind {
-	case "process", "codex_thread", "cursor_session", "claude_session", "omp_session", "zcode_session", "devin_session":
-		return true
-	default:
-		return false
-	}
-}
-
 func multicaReport(execution model.Execution) reconcileMulticaItem {
 	bindings := []reconcileBinding{}
 	var issueID string
@@ -457,21 +454,16 @@ func (a *app) applyReconcile(ctx context.Context, journal *store.Journal, host i
 		if age < opts.staleAfter || runnerLeaseActive(current, now) {
 			continue
 		}
-		pid, ok := launchPID(current)
+		identity, ok := recordedLaunch(current)
 		if !ok {
 			continue
 		}
-		var recorded time.Time
-		if current.StartedAt != nil {
-			recorded = *current.StartedAt
-		}
-		proof := a.proveProcess(pid, recorded)
+		proof := a.proveProcess(identity)
 		if !proof.Gone {
 			continue
 		}
-		proof.PID = pid
-		if !recorded.IsZero() {
-			proof.RecordedStartedAt = recorded.UTC()
+		if a.forceStaleRevision != nil && a.forceStaleRevision(current.ID) && current.Revision > 0 {
+			current.Revision--
 		}
 		if _, err := commitOwnerLost(ctx, journal, current, proof, age, now); err != nil {
 			if errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrTerminalConflict) {
@@ -545,7 +537,7 @@ func commitOwnerLost(ctx context.Context, journal *store.Journal, execution mode
 	return updated, err
 }
 
-func reconcileArgv(opts reconcileOptions, mode string) []string {
+func reconcileArgv(opts reconcileOptions, planDigest string) []string {
 	argv := []string{"agentctl", "reconcile", "--stale-after", opts.staleAfterRaw, "--collect-older-than", opts.collectOlderRaw}
 	if opts.adapter != "" {
 		argv = append(argv, "--adapter", opts.adapter)
@@ -556,5 +548,51 @@ func reconcileArgv(opts reconcileOptions, mode string) []string {
 	if opts.includeFailures {
 		argv = append(argv, "--include-failures")
 	}
-	return append(argv, "--"+mode)
+	return append(argv, "--apply", "--plan-digest", planDigest)
+}
+
+type reconcileDigestCandidate struct {
+	ID                string `json:"id"`
+	Action            string `json:"action"`
+	Proof             string `json:"proof,omitempty"`
+	PID               int    `json:"pid,omitempty"`
+	RecordedStartedAt string `json:"recorded_started_at,omitempty"`
+}
+
+func reconcilePlanDigest(report reconcileReport, opts reconcileOptions) string {
+	candidates := make([]reconcileDigestCandidate, 0, len(report.Orphan.Executions)+len(report.Collect.Executions))
+	for _, item := range report.Orphan.Executions {
+		candidate := reconcileDigestCandidate{ID: item.ID.String(), Action: "orphan", Proof: item.Evidence.Proof, PID: item.Evidence.PID}
+		if !item.Evidence.RecordedStartedAt.IsZero() {
+			candidate.RecordedStartedAt = item.Evidence.RecordedStartedAt.UTC().Format(time.RFC3339Nano)
+		}
+		candidates = append(candidates, candidate)
+	}
+	for _, item := range report.Collect.Executions {
+		candidates = append(candidates, reconcileDigestCandidate{ID: item.ID.String(), Action: "collect"})
+	}
+	slices.SortFunc(candidates, func(a, b reconcileDigestCandidate) int {
+		if cmp := strings.Compare(a.ID, b.ID); cmp != 0 {
+			return cmp
+		}
+		return strings.Compare(a.Action, b.Action)
+	})
+	labels := append([]string(nil), opts.labels...)
+	if labels == nil {
+		labels = []string{}
+	}
+	raw, err := json.Marshal(struct {
+		SchemaVersion           int                        `json:"schema_version"`
+		StaleAfterSeconds       int64                      `json:"stale_after_seconds"`
+		CollectOlderThanSeconds int64                      `json:"collect_older_than_seconds"`
+		IncludeFailures         bool                       `json:"include_failures"`
+		Adapter                 string                     `json:"adapter"`
+		Labels                  []string                   `json:"labels"`
+		Candidates              []reconcileDigestCandidate `json:"candidates"`
+	}{1, int64(opts.staleAfter / time.Second), int64(opts.collectOlder / time.Second), opts.includeFailures, opts.adapter, labels, candidates})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }

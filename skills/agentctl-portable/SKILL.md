@@ -356,15 +356,20 @@ An `owner_process_only` route cannot recover a lost native owner; bound Multica
 work keeps its issue/run authority. Cached status/events and unreachable liveness
 do not establish completion. Do not auto-acknowledge or infer failure.
 
-`agentctl reconcile` is the explicit host-local repair. Read `help reconcile`,
-then `--plan` before `--apply`. `--plan` writes nothing. Apply orphans a native
-execution only when this host's journaled launch PID is provably gone and the
-last observation is older than `--stale-after`. The state is `orphaned` with
-`owner_lost`: the outcome is unknown, not success or failure. Apply also stamps
+`agentctl reconcile` is the explicit journal repair. Read `help reconcile`,
+then `--plan` before `--apply --plan-digest`. `--plan` writes nothing and
+returns `plan_digest` over the candidate ids, actions, and proofs. Apply
+writes nothing if that digest no longer matches, then proves each row again
+before writing. It orphans a native execution only when the launcher-recorded
+PID is provably gone and the last observation is older than `--stale-after`.
+A numeric session id is not a PID. `journal_host_match` is the journal's stored
+host id, not a machine fingerprint. The state is `orphaned` with `owner_lost`:
+the outcome is unknown, not success or failure. Apply also stamps
 `bulk_reconciled` on old uncollected completed or cancelled results without
-reading them. Failures, orphans, and integrity conflicts stay visible unless
-`--include-failures` is set. Nonterminal Multica executions are reported with
-their journaled issue or run binding and are not changed. A generic process
+reading them. That source is visible on `recent` and `status` and makes the
+result eligible for `data cleanup`. Failures, orphans, and integrity conflicts
+stay visible unless `--include-failures` is set. Multica issue state is not
+changed; local collection stamps are written. A generic process
 that exits 0, or writes a file, is not success: plain stdout is not a result
 contract, and a child's exit code is not the direct child's.
 

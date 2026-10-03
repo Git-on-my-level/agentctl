@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,12 @@ func TestReconcilePlanWritesNothingAndSkipsLiveWork(t *testing.T) {
 	if planned.Unchanged.Alive != 1 || planned.Unchanged.Recent != 2 {
 		t.Fatalf("unchanged=%+v", planned.Unchanged)
 	}
+	if !planned.JournalHostMatch || !strings.HasPrefix(planned.PlanDigest, "sha256:") || strings.Contains(stdout.String(), `"host_local"`) {
+		t.Fatalf("plan digest=%s host field in %s", planned.PlanDigest, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "--plan-digest") || !strings.Contains(stdout.String(), planned.PlanDigest) || !strings.Contains(stdout.String(), "Multica issue state is not changed; local collection stamps are written") {
+		t.Fatalf("plan next action: %s", stdout.String())
+	}
 	reasons := map[string]string{}
 	for _, item := range planned.Unproven {
 		reasons[item.ID.String()] = item.Reason
@@ -84,7 +91,7 @@ func TestReconcilePlanWritesNothingAndSkipsLiveWork(t *testing.T) {
 func TestReconcileApplyIsIdempotentAndDoesNotReadResults(t *testing.T) {
 	world := seedReconcileWorld(t)
 	stdout, app := reconcileApp(t, world)
-	applied := world.run(t, app, stdout, "--apply")
+	applied := world.apply(t, app, stdout)
 	if !applied.Applied || strings.Contains(stdout.String(), reconcileSecret) {
 		t.Fatalf("apply leaked or did not apply: %s", stdout.String())
 	}
@@ -128,10 +135,23 @@ func TestReconcileApplyIsIdempotentAndDoesNotReadResults(t *testing.T) {
 	if err != nil || waiting.State != model.StateWaiting || waiting.Revision != world.multica.Revision {
 		t.Fatalf("multica changed: %+v err=%v", waiting, err)
 	}
+	orphanedRevision := orphaned.Revision
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	again := world.run(t, app, stdout, "--apply")
+	stdout.Reset()
+	if code := app.run(context.Background(), []string{"--output", "json", "--journal", world.path, "reconcile", "--apply", "--plan-digest", applied.PlanDigest}); code == 0 {
+		t.Fatalf("reviewed digest still applied after the journal changed: %s", stdout.String())
+	}
+	journal = openReconcileJournal(t, world.path)
+	deferred, err := journal.GetExecution(context.Background(), world.gone.ID)
+	if err != nil || deferred.Revision != orphanedRevision {
+		t.Fatalf("stale digest wrote: rev %d->%d err=%v", orphanedRevision, deferred.Revision, err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again := world.apply(t, app, stdout)
 	if again.Orphan.Count != 0 || again.Collect.Count != 0 || strings.Contains(stdout.String(), reconcileSecret) {
 		t.Fatalf("replay was not empty: %s", stdout.String())
 	}
@@ -140,7 +160,7 @@ func TestReconcileApplyIsIdempotentAndDoesNotReadResults(t *testing.T) {
 func TestReconcileReportsMulticaBindingWithoutMutatingIt(t *testing.T) {
 	world := seedReconcileWorld(t)
 	stdout, app := reconcileApp(t, world)
-	planned := world.run(t, app, stdout, "--apply")
+	planned := world.apply(t, app, stdout)
 	item := planned.Multica.Executions[0]
 	if item.ID != world.multica.ID || item.NextAction.Mutates || len(item.Bindings) != 2 {
 		t.Fatalf("multica report=%+v", item)
@@ -167,7 +187,7 @@ func TestClassifyReconcileSkipsForeignHostWithoutProving(t *testing.T) {
 	observed := time.Now().Add(-48 * time.Hour)
 	execution := model.Execution{OriginHostID: ids.HostID("other-host"), Authority: model.AuthorityNative, State: model.StateRunning, Observation: model.Observation{ObservedAt: observed}}
 	calls := 0
-	report := classifyReconcile([]model.Execution{execution}, store.AcknowledgementIndex{}, ids.HostID("this-host"), time.Now(), reconcileOptions{staleAfter: 24 * time.Hour, labels: []string{}}, func(int, time.Time) processProof {
+	report := classifyReconcile([]model.Execution{execution}, store.AcknowledgementIndex{}, ids.HostID("this-host"), time.Now(), reconcileOptions{staleAfter: 24 * time.Hour, labels: []string{}}, func(processIdentity) processProof {
 		calls++
 		return processProof{Proof: "pid_absent", Gone: true}
 	})
@@ -182,6 +202,12 @@ func TestParseReconcileRequiresOneModeAndBoundedDurations(t *testing.T) {
 	}
 	if _, problem := parseReconcile([]string{"--plan", "--apply"}); problem == nil {
 		t.Fatal("both modes accepted")
+	}
+	if _, problem := parseReconcile([]string{"--apply"}); problem == nil {
+		t.Fatal("apply without plan digest accepted")
+	}
+	if _, problem := parseReconcile([]string{"--plan", "--plan-digest", "sha256:" + strings.Repeat("ab", 32)}); problem == nil {
+		t.Fatal("plan digest accepted on plan")
 	}
 	for _, value := range []string{"59s", "721h", "31d", "forever"} {
 		if _, problem := parseReconcile([]string{"--plan", "--stale-after", value}); problem == nil {
@@ -198,6 +224,140 @@ func TestParseReconcileRequiresOneModeAndBoundedDurations(t *testing.T) {
 	}
 }
 
+func TestReconcileDigestMismatchWritesNothing(t *testing.T) {
+	world := seedReconcileWorld(t)
+	stdout, app := reconcileApp(t, world)
+	planned := world.run(t, app, stdout)
+	stdout.Reset()
+	if code := app.run(context.Background(), []string{"--output", "json", "--journal", world.path, "reconcile", "--apply", "--plan-digest", planned.PlanDigest + "00"}); code == 0 {
+		t.Fatalf("mismatched digest applied: %s", stdout.String())
+	}
+	assertUntouched(t, world.path, world.gone, world.alive, world.plain, world.multica)
+}
+
+func TestReconcileAliveAtApplyLeavesRowUnchanged(t *testing.T) {
+	world := seedReconcileWorld(t)
+	stdout, app := reconcileApp(t, world)
+	calls := map[int]int{}
+	app.processProof = func(id processIdentity) processProof {
+		calls[id.PID]++
+		if id.PID == 4242 && calls[id.PID] >= 3 {
+			return processProof{Proof: "pid_alive", Alive: true, Present: true}
+		}
+		switch id.PID {
+		case 4242, 4646:
+			return processProof{Proof: "pid_absent", Gone: true}
+		case 4343:
+			return processProof{Proof: "pid_alive", Alive: true, Present: true}
+		case 4848:
+			return processProof{Proof: "start_unproven", Present: true}
+		default:
+			t.Errorf("unexpected process proof for pid %d", id.PID)
+			return processProof{Proof: "start_unproven"}
+		}
+	}
+	applied := world.apply(t, app, stdout)
+	if sameIDs(idsOfOrphans(applied), world.gone.ID) || !sameIDs(idsOfOrphans(applied), world.codex.ID) {
+		t.Fatalf("orphans=%v", idsOfOrphans(applied))
+	}
+	journal := openReconcileJournal(t, world.path)
+	defer journal.Close()
+	kept, err := journal.GetExecution(context.Background(), world.gone.ID)
+	if err != nil || kept.State != model.StateRunning || kept.Revision != world.gone.Revision {
+		t.Fatalf("pid that returned was changed: %+v err=%v", kept, err)
+	}
+}
+
+func TestReconcileRevisionConflictDuringApplyIsSkipped(t *testing.T) {
+	world := seedReconcileWorld(t)
+	stdout, app := reconcileApp(t, world)
+	app.forceStaleRevision = func(id ids.ExecutionID) bool { return id == world.gone.ID }
+	applied := world.apply(t, app, stdout)
+	if sameIDs(idsOfOrphans(applied), world.gone.ID) || !sameIDs(idsOfOrphans(applied), world.codex.ID) {
+		t.Fatalf("conflicted row was not skipped: %v", idsOfOrphans(applied))
+	}
+	journal := openReconcileJournal(t, world.path)
+	defer journal.Close()
+	kept, err := journal.GetExecution(context.Background(), world.gone.ID)
+	if err != nil || kept.State != model.StateRunning || kept.Revision != world.gone.Revision {
+		t.Fatalf("conflicted row changed: %+v err=%v", kept, err)
+	}
+	orphaned, err := journal.GetExecution(context.Background(), world.codex.ID)
+	if err != nil || orphaned.State != model.StateOrphaned {
+		t.Fatalf("sibling was not orphaned: %+v err=%v", orphaned, err)
+	}
+}
+
+func TestNumericSessionBindingIsUnproven(t *testing.T) {
+	observed := time.Now().Add(-48 * time.Hour)
+	session := "8675309"
+	execution := model.Execution{
+		OriginHostID: "this-host", Authority: model.AuthorityNative, State: model.StateRunning,
+		SourceBindings: []model.SourceBinding{{Kind: "cursor_session", OpaqueID: &session}},
+		Observation:    model.Observation{ObservedAt: observed},
+	}
+	calls := 0
+	report := classifyReconcile([]model.Execution{execution}, store.AcknowledgementIndex{}, "this-host", time.Now(), reconcileOptions{staleAfter: 24 * time.Hour, labels: []string{}}, func(processIdentity) processProof {
+		calls++
+		return processProof{Proof: "pid_absent", Gone: true}
+	})
+	if calls != 0 || report.Orphan.Count != 0 || len(report.Unproven) != 1 || report.Unproven[0].Reason != "ownership_unproven" {
+		t.Fatalf("numeric session id was treated as a pid: calls=%d %+v", calls, report)
+	}
+	started := observed
+	execution.Launch = &model.LaunchIdentity{PID: 4242, StartedAt: started}
+	proved := 0
+	report = classifyReconcile([]model.Execution{execution}, store.AcknowledgementIndex{}, "this-host", time.Now(), reconcileOptions{staleAfter: 24 * time.Hour, labels: []string{}}, func(id processIdentity) processProof {
+		proved = id.PID
+		return processProof{Proof: "pid_absent", Gone: true}
+	})
+	if proved != 4242 || report.Orphan.Count != 1 {
+		t.Fatalf("launcher pid was not used: proved=%d %+v", proved, report)
+	}
+}
+
+func TestBulkAcknowledgementSourceIsVisible(t *testing.T) {
+	world := seedReconcileWorld(t)
+	stdout, app := reconcileApp(t, world)
+	if applied := world.apply(t, app, stdout); applied.Collect.Count == 0 {
+		t.Fatalf("nothing collected: %+v", applied.Collect)
+	}
+	journal := openReconcileJournal(t, world.path)
+	if _, _, err := journal.AcknowledgeExecution(context.Background(), world.recentTerminal.ID, store.AcknowledgementResult); err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.ListEvents(context.Background(), world.plain.ID, contracts.EventQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundEvent := false
+	for _, event := range events {
+		if event.Kind == model.EventAcknowledged && event.Payload["acknowledgement_source"] == store.AcknowledgementBulk {
+			foundEvent = true
+		}
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !foundEvent {
+		t.Fatalf("bulk stamp did not emit an event: %+v", events)
+	}
+	stdout.Reset()
+	if code := app.run(context.Background(), []string{"--output", "json", "--journal", world.path, "recent"}); code != 0 {
+		t.Fatalf("recent exit=%d %s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"acknowledgement_source":"bulk_reconciled"`) || !strings.Contains(stdout.String(), `"acknowledgement_source":"result"`) {
+		t.Fatalf("recent hid acknowledgement source: %s", stdout.String())
+	}
+	stdout.Reset()
+	if code := app.run(context.Background(), []string{"--output", "json", "--journal", world.path, "status", world.plain.ID.String()}); code != 0 {
+		t.Fatalf("status exit=%d %s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"acknowledgement_source":"bulk_reconciled"`) {
+		t.Fatalf("status hid bulk acknowledgement: %s", stdout.String())
+	}
+}
+
 type reconcileTestApp struct {
 	*app
 	processCalls map[int]int
@@ -209,9 +369,9 @@ func reconcileApp(t *testing.T, world reconcileWorld) (*bytes.Buffer, *reconcile
 	base := testApp(&stdout, &stderr)
 	base.now = func() time.Time { return world.now }
 	wrapped := &reconcileTestApp{app: base, processCalls: map[int]int{}}
-	base.processProof = func(pid int, _ time.Time) processProof {
-		wrapped.processCalls[pid]++
-		switch pid {
+	base.processProof = func(id processIdentity) processProof {
+		wrapped.processCalls[id.PID]++
+		switch id.PID {
 		case 4242, 4646:
 			return processProof{Proof: "pid_absent", Gone: true}
 		case 4343:
@@ -219,7 +379,7 @@ func reconcileApp(t *testing.T, world reconcileWorld) (*bytes.Buffer, *reconcile
 		case 4848:
 			return processProof{Proof: "start_unproven", Present: true}
 		default:
-			t.Errorf("unexpected process proof for pid %d", pid)
+			t.Errorf("unexpected process proof for pid %d", id.PID)
 			return processProof{Proof: "start_unproven"}
 		}
 	}
@@ -244,6 +404,13 @@ func (w reconcileWorld) run(t *testing.T, app *reconcileTestApp, stdout *bytes.B
 		t.Fatalf("decode %v: %s", err, stdout.String())
 	}
 	return document.Result
+}
+
+func (w reconcileWorld) apply(t *testing.T, app *reconcileTestApp, stdout *bytes.Buffer, extra ...string) reconcileReport {
+	t.Helper()
+	planned := w.run(t, app, stdout, append([]string{"--plan"}, extra...)...)
+	args := append(append([]string{}, extra...), "--apply", "--plan-digest", planned.PlanDigest)
+	return w.run(t, app, stdout, args...)
 }
 
 func seedReconcileWorld(t *testing.T) reconcileWorld {
@@ -304,6 +471,9 @@ func mustCreateRunning(t *testing.T, journal *store.Journal, adapterName, kind, 
 		SourceBindings: []model.SourceBinding{testSourceBinding(t, kind, ids.TypeSource, opaque)},
 		Capabilities:   model.CapabilitySnapshot{NegotiatedAt: observed, AdapterVersion: "test", Items: []model.CapabilityItem{}},
 		Observation:    model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityDegraded, ObservedAt: observed},
+	}
+	if pid, err := strconv.Atoi(opaque); err == nil && strconv.Itoa(pid) == opaque && pid > 0 && pid <= model.MaxLaunchPID {
+		execution.Launch = &model.LaunchIdentity{PID: pid, StartedAt: started}
 	}
 	created, _, err := journal.CreateExecution(context.Background(), execution, contracts.MutationKey{})
 	if err != nil {

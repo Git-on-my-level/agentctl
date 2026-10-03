@@ -178,10 +178,15 @@ permanently uncleanable. `agentctl result --unreconciled` collects the retained
 backlog, after which those executions become eligible normally.
 `agentctl reconcile --apply` can stamp that same collection boundary in bulk
 for completed and cancelled terminals older than `--collect-older-than`, with
-source `bulk_reconciled`, without reading result content. Failures, orphans,
-and integrity conflicts are not stamped unless `--include-failures` is
-explicit. The stamp is an operator acknowledgement that the result will not be
-collected, not a claim that its content was reviewed, and not a deletion.
+source `bulk_reconciled`, without reading result content. Apply requires the
+`plan_digest` from `--plan` and writes nothing when that digest no longer
+matches. Failures, orphans, and integrity conflicts are not stamped unless
+`--include-failures` is explicit. The stamp is an operator acknowledgement
+that the result will not be collected, not a claim that its content was
+reviewed. It is visible on `recent` and `status` as `acknowledgement_source`
+and is recorded as an `acknowledged` event. Because cleanup treats any
+acknowledgement as collection, a `bulk_reconciled` stamp makes those results
+eligible for `data cleanup` deletion once they are older than the cutoff.
 
 Nonterminal graphs, partial parent/supersession graphs, active subscription
 filters/cursors/coordinators, and every retained outbox delivery or receipt are

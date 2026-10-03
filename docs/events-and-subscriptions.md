@@ -118,6 +118,7 @@ are separately defined in [Identifiers](identifiers.md).
 | `terminal` | Completed, failed, cancelled, or orphaned |
 | `promoted` | Direct execution linked to a new durable execution |
 | `superseded` | A replacement execution became the continuation target |
+| `acknowledged` | A bulk reconcile collection stamp; payload `acknowledgement_source` is `bulk_reconciled` |
 
 Before journaling `terminal`, an adapter re-fetches the strongest authoritative
 state its negotiated capability allows. A later contradictory terminal claim

@@ -400,17 +400,20 @@ evidence remains actionable even after collection, because acknowledging a
 result does not reconcile contradictory authority observations.
 
 `reconcile` is the explicit repair for a journal that has kept those rows.
-`--plan` only prints the executions it would change. `--apply` uses the same
-filters, writes only this host's journal, and is safe to repeat. A nonterminal
-native execution becomes `orphaned` when its journaled launch PID is provably
-gone and its last observation is older than `--stale-after` (24h by default).
-That state means the owner was lost and the outcome was not recovered; it is
-not success or failure. Completed and cancelled terminals older than
-`--collect-older-than` (168h by default) receive a `bulk_reconciled` collection
-stamp without anyone reading the result. Failures, orphans, and
-integrity conflicts stay visible unless `--include-failures` is set. Multica
-remains the authority for its issues: nonterminal Multica rows are reported
-with their journaled binding and are not changed.
+`--plan` prints the executions it would change and a `plan_digest`. `--apply`
+requires that digest, recomputes the candidate set, and writes nothing if it
+differs. A nonterminal native execution becomes `orphaned` when the PID
+recorded by the launcher is provably gone and its last observation is older
+than `--stale-after` (24h by default). A numeric session id is not that PID.
+`journal_host_match` compares the journal's stored host id, not a machine
+fingerprint. That orphaned state means the owner was lost and the outcome was
+not recovered; it is not success or failure. Completed and cancelled terminals
+older than `--collect-older-than` (168h by default) receive a `bulk_reconciled`
+collection stamp without anyone reading the result. `recent` and `status` show
+that source, and the stamp makes the result eligible for `data cleanup`.
+Failures, orphans, and integrity conflicts stay visible unless
+`--include-failures` is set. Multica issue state is not changed; local
+collection stamps are written.
 
 If a command reports `diagnostic_code=journal_busy`, retry the same agentctl
 invocation with bounded backoff. Do not silently switch to a raw native CLI;

@@ -46,7 +46,8 @@
         "health",
         "terminal",
         "promoted",
-        "superseded"
+        "superseded",
+        "acknowledged"
       ]
     },
     "state": {

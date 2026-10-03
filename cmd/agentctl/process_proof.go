@@ -2,9 +2,19 @@ package main
 
 import (
 	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/model"
 )
 
 const processStartTolerance = 5 * time.Second
+
+// processIdentity is the launcher-recorded owner reconcile is allowed to prove.
+type processIdentity struct {
+	PID             int
+	StartedAt       time.Time
+	StartTicks      int64
+	PIDNamespaceIno uint64
+}
 
 // processProof is identity evidence for one recorded launch PID. Gone is proof
 // the recorded process cannot be the live PID. Alive is proof it still is.
@@ -23,60 +33,28 @@ type processObservation struct {
 	present    bool
 	started    time.Time
 	startKnown bool
+	startTicks int64
+	nsInode    uint64
 	err        error
 }
 
-func (a *app) proveProcess(pid int, recorded time.Time) processProof {
+func (a *app) proveProcess(id processIdentity) processProof {
 	if a != nil && a.processProof != nil {
-		proof := a.processProof(pid, recorded)
-		proof.PID = pid
-		if !recorded.IsZero() {
-			proof.RecordedStartedAt = recorded.UTC()
-		}
-		return proof
+		proof := a.processProof(id)
+		return stampProcessProof(proof, id)
 	}
-	return inspectProcess(pid, recorded)
+	return inspectProcess(id)
 }
 
-func inspectProcess(pid int, recorded time.Time) processProof {
-	proof := processProof{PID: pid}
-	if !recorded.IsZero() {
-		proof.RecordedStartedAt = recorded.UTC()
+func inspectProcess(id processIdentity) processProof {
+	return stampProcessProof(inspectProcessPlatform(id), id)
+}
+
+func stampProcessProof(proof processProof, id processIdentity) processProof {
+	proof.PID = id.PID
+	if !id.StartedAt.IsZero() {
+		proof.RecordedStartedAt = id.StartedAt.UTC()
 	}
-	if pid <= 0 {
-		proof.Proof = "no_pid"
-		return proof
-	}
-	obs := processStart(pid)
-	if obs.err != nil {
-		proof.Proof = "start_unproven"
-		return proof
-	}
-	if !obs.present {
-		proof.Proof = "pid_absent"
-		proof.Gone = true
-		return proof
-	}
-	proof.Present = true
-	if !obs.startKnown || recorded.IsZero() {
-		proof.Proof = "start_unproven"
-		return proof
-	}
-	started := obs.started.UTC()
-	proof.ProcessStartedAt = &started
-	if absDuration(started.Sub(recorded)) <= processStartTolerance {
-		proof.Proof = "pid_alive"
-		proof.Alive = true
-		return proof
-	}
-	// A later start time means this PID was reused after the recorded process
-	// exited. An earlier start time can also be clock skew, so it is not proof.
-	if started.After(recorded.Add(processStartTolerance)) {
-		proof.Proof = "pid_reused"
-		proof.Gone = true
-		return proof
-	}
-	proof.Proof = "start_unproven"
 	return proof
 }
 
@@ -85,4 +63,15 @@ func absDuration(value time.Duration) time.Duration {
 		return -value
 	}
 	return value
+}
+
+func recordedLaunch(execution model.Execution) (processIdentity, bool) {
+	if execution.Launch == nil {
+		return processIdentity{}, false
+	}
+	launch := execution.Launch
+	if launch.PID <= 0 || launch.PID > model.MaxLaunchPID || launch.StartedAt.IsZero() {
+		return processIdentity{}, false
+	}
+	return processIdentity{PID: launch.PID, StartedAt: launch.StartedAt, StartTicks: launch.StartTicks, PIDNamespaceIno: launch.PIDNamespaceIno}, true
 }

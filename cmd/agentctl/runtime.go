@@ -1402,6 +1402,9 @@ func applySession(journal *store.Journal, execution model.Execution, session ada
 		execution.SourceBindings = []model.SourceBinding{{Kind: binding.Kind, AliasID: alias, Fingerprint: binding.Fingerprint, OpaqueID: &opaque}}
 	}
 	recordNativeSession(&execution, session.Ref)
+	if session.Launch != nil {
+		execution.RetainLaunch(session.Launch.PID, session.Launch.StartedAt, session.Launch.StartTicks, session.Launch.PIDNamespaceIno)
+	}
 	return journal.UpdateExecution(context.Background(), execution, execution.Revision)
 }
 

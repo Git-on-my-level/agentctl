@@ -10,7 +10,8 @@
     "mode",
     "applied",
     "as_of",
-    "host_local",
+    "plan_digest",
+    "journal_host_match",
     "stale_after_seconds",
     "collect_older_than_seconds",
     "include_failures",
@@ -27,7 +28,11 @@
     "mode": {"enum": ["plan", "apply"]},
     "applied": {"type": "boolean"},
     "as_of": {"type": "string", "format": "date-time"},
-    "host_local": {"const": true},
+    "plan_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "journal_host_match": {
+      "const": true,
+      "description": "Candidate selection compared origin_host_id with the host id stored in this journal. That id is not a machine fingerprint; a copied or restored journal still matches."
+    },
     "stale_after_seconds": {"type": "number", "exclusiveMinimum": 0},
     "collect_older_than_seconds": {"type": "number", "exclusiveMinimum": 0},
     "include_failures": {"type": "boolean"},

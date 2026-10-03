@@ -34,21 +34,22 @@ type recentOptions struct {
 }
 
 type recentExecution struct {
-	Caller          *model.ExecutionCaller `json:"caller,omitempty"`
-	ID              ids.ExecutionID        `json:"id"`
-	Labels          []string               `json:"labels"`
-	Authority       model.Authority        `json:"authority"`
-	Adapter         string                 `json:"adapter"`
-	Mode            model.Mode             `json:"mode"`
-	State           model.State            `json:"state"`
-	Liveness        model.Liveness         `json:"liveness"`
-	CreatedAt       time.Time              `json:"created_at"`
-	StartedAt       *time.Time             `json:"started_at,omitempty"`
-	UpdatedAt       time.Time              `json:"updated_at"`
-	TerminalAt      *time.Time             `json:"terminal_at,omitempty"`
-	DurationSeconds float64                `json:"duration_seconds"`
-	Unreconciled    bool                   `json:"unreconciled"`
-	AcknowledgedAt  *time.Time             `json:"acknowledged_at,omitempty"`
+	Caller                *model.ExecutionCaller `json:"caller,omitempty"`
+	ID                    ids.ExecutionID        `json:"id"`
+	Labels                []string               `json:"labels"`
+	Authority             model.Authority        `json:"authority"`
+	Adapter               string                 `json:"adapter"`
+	Mode                  model.Mode             `json:"mode"`
+	State                 model.State            `json:"state"`
+	Liveness              model.Liveness         `json:"liveness"`
+	CreatedAt             time.Time              `json:"created_at"`
+	StartedAt             *time.Time             `json:"started_at,omitempty"`
+	UpdatedAt             time.Time              `json:"updated_at"`
+	TerminalAt            *time.Time             `json:"terminal_at,omitempty"`
+	DurationSeconds       float64                `json:"duration_seconds"`
+	Unreconciled          bool                   `json:"unreconciled"`
+	AcknowledgedAt        *time.Time             `json:"acknowledged_at,omitempty"`
+	AcknowledgementSource string                 `json:"acknowledgement_source,omitempty"`
 }
 
 func (a *app) recent(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
@@ -125,6 +126,9 @@ func (a *app) recent(ctx context.Context, renderer output.Renderer, c common, ar
 		fields := []output.Field{{Name: "state", Value: item.State}, {Name: "adapter", Value: item.Adapter}, {Name: "liveness", Value: item.Liveness}, {Name: "duration", Value: time.Duration(item.DurationSeconds * float64(time.Second)).Round(time.Second)}}
 		if item.Unreconciled {
 			fields = append(fields, output.Field{Name: "unreconciled", Value: true})
+		}
+		if item.AcknowledgementSource != "" {
+			fields = append(fields, output.Field{Name: "acknowledgement_source", Value: item.AcknowledgementSource})
 		}
 		if len(item.Labels) != 0 {
 			fields = append(fields, output.Field{Name: "labels", Value: item.Labels})
@@ -391,6 +395,7 @@ func projectRecent(execution model.Execution, now time.Time, acks store.Acknowle
 	if ack, ok := acks.ByID[execution.ID]; ok {
 		acknowledgedAt := ack.AcknowledgedAt
 		item.AcknowledgedAt = &acknowledgedAt
+		item.AcknowledgementSource = ack.Source
 	}
 	return item
 }

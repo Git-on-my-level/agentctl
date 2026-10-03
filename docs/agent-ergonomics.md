@@ -350,29 +350,41 @@ item.
 ## Reconciliation
 
 `agentctl reconcile` is the operator action for rows the inbox can only
-describe. It is not a background healer. `--plan` prints counts and execution
-IDs and writes nothing. `--apply` requires the same filters and is idempotent.
+describe. It is not a background healer. `--plan` prints counts, execution
+IDs, and a `plan_digest` over the candidate ids, actions, and proofs, and
+writes nothing. `--apply` requires `--plan-digest` from that plan. It
+recomputes the candidate set and writes nothing if the digest differs, then
+proves each row again immediately before writing it. A row whose proof or
+revision changed is skipped.
 
-A native nonterminal execution on this host is orphaned only when both are
-true: its last observation is at least `--stale-after` old (default 24h), and
-the launch-kind binding's PID is provably not the recorded process. Proof is
-the journaled PID plus start time compared with the kernel process table.
-Absence, or a kernel start more than five seconds after the recorded start,
-means the owner is gone. A matching live process, an unexpired runner lease, a
-newer observation, or a start time that cannot be proved is left unchanged.
-The resulting state is `orphaned` with reason `owner_lost`: outcome unknown.
+A native nonterminal execution is orphaned only when both are true: its last
+observation is at least `--stale-after` old (default 24h), and the PID
+recorded by the launcher itself is provably not that process. A numeric
+session id in a source binding is not a PID. Rows without the launcher record
+are `ownership_unproven`. `journal_host_match` compares `origin_host_id` with
+the host id stored in this journal. It is not a machine fingerprint, so a
+copied or restored journal still matches. On Linux, absence is `pid_absent`
+only when the recorded pid-namespace inode matches `/proc/self/ns/pid` and
+`/proc/1` or the proving process's parent is visible; otherwise it is
+`unproven`. Start identity compares raw `/proc/<pid>/stat` starttime ticks
+recorded at launch. Rows without those ticks are `unproven`, not `pid_reused`.
+A matching live process, an unexpired runner lease, a newer observation, or a
+start time that cannot be proved is left unchanged. The resulting state is
+`orphaned` with reason `owner_lost`: outcome unknown.
 
 Completed and cancelled terminals whose result was never collected, and whose
 `terminal_at` is at least `--collect-older-than` old (default 168h), are
 stamped `bulk_reconciled`. The command does not read or print result content.
-Failed, already orphaned, and integrity-conflicted terminals stay uncollected
-unless `--include-failures` is explicit. Terminals that predate the journal's
-acknowledgement epoch are already treated as reconciled.
+`recent` and `status` show `acknowledgement_source` so that stamp is distinct
+from `result` or `await` collection, and the stamp emits an `acknowledged`
+event. A `bulk_reconciled` stamp makes the result eligible for `data cleanup`
+deletion. Failed, already orphaned, and integrity-conflicted terminals stay
+uncollected unless `--include-failures` is explicit. Terminals that predate
+the journal's acknowledgement epoch are already treated as reconciled.
 
 Nonterminal Multica executions are listed with the journaled issue and run
-binding and a read-only next action. Reconcile does not call Multica or change
-issue state. A collection stamp on an already terminal Multica row is local
-journal metadata only.
+binding and a read-only next action. Reconcile does not call Multica.
+Multica issue state is not changed; local collection stamps are written.
 
 ## Safe agent-first defaults
 

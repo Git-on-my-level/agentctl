@@ -427,6 +427,19 @@ type Session struct {
 	StartedAt      time.Time     `json:"started_at"`
 	UpdatedAt      time.Time     `json:"updated_at"`
 	Observation    Observation   `json:"observation"`
+	// Launch is the process identity captured at Start. It is never replaced
+	// when a later observation reports a session id.
+	Launch *ProcessLaunch `json:"launch,omitempty"`
+}
+
+// ProcessLaunch is the PID and start identity recorded by the launcher itself.
+// Linux start_ticks are the raw /proc stat starttime. pid_namespace_ino is the
+// inode of /proc/self/ns/pid at launch.
+type ProcessLaunch struct {
+	PID             int       `json:"pid"`
+	StartedAt       time.Time `json:"started_at"`
+	StartTicks      int64     `json:"start_ticks,omitempty"`
+	PIDNamespaceIno uint64    `json:"pid_namespace_ino,omitempty"`
 }
 
 type LaunchResult struct {

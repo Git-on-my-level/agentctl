@@ -327,6 +327,18 @@
     },
     "created_at": {"type": "string", "format": "date-time"},
     "started_at": {"type": ["string", "null"], "format": "date-time"},
+    "launch": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Process identity recorded by the launcher at start. Session discovery must not overwrite it. Reconcile accepts a PID only from this object.",
+      "required": ["pid", "started_at"],
+      "properties": {
+        "pid": {"type": "integer", "minimum": 1, "maximum": 4194303},
+        "started_at": {"type": "string", "format": "date-time"},
+        "start_ticks": {"type": "integer", "minimum": 0},
+        "pid_namespace_ino": {"type": "integer", "minimum": 0}
+      }
+    },
     "deadline_at": {"type": ["string", "null"], "format": "date-time"},
     "updated_at": {"type": "string", "format": "date-time"},
     "terminal_at": {"type": ["string", "null"], "format": "date-time"},

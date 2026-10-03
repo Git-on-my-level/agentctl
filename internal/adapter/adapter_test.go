@@ -1165,3 +1165,23 @@ func TestMulticaSnapshotAcceptsExactJournaledFingerprint(t *testing.T) {
 		t.Fatalf("journaled ref snapshot=%#v", snapshot.Session)
 	}
 }
+
+func TestNumericSessionIDDoesNotReplaceLaunchPID(t *testing.T) {
+	started := time.Now().UTC()
+	record := &processRecord{
+		ref:            SourceRef{Adapter: "cursor", Kind: "cursor_session", OpaqueID: "4242", PID: 4242},
+		startedAt:      started,
+		updatedAt:      started,
+		done:           make(chan struct{}),
+		launchIdentity: ProcessLaunch{PID: 4242, StartedAt: started, StartTicks: 99, PIDNamespaceIno: 7},
+	}
+	record.binding = record.ref.Binding()
+	record.ingestObservation(parsedObservation{SessionID: "8675309"})
+	session := (&NativeAdapter{}).session(record)
+	if session.Ref.OpaqueID != "8675309" || session.Ref.PID != 4242 {
+		t.Fatalf("session ref=%#v", session.Ref)
+	}
+	if session.Launch == nil || session.Launch.PID != 4242 || session.Launch.StartTicks != 99 || session.Launch.PIDNamespaceIno != 7 {
+		t.Fatalf("launch identity was overwritten: %#v", session.Launch)
+	}
+}

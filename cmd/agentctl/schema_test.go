@@ -107,7 +107,7 @@ func TestNewSchemaDocumentsDeclareDraftAndRequiredShape(t *testing.T) {
 		"event-page.schema.json":        {"events", "scanned", "filtered", "page_limit"},
 		"fanout-manifest.schema.json":   {"schema_version", "children"},
 		"inbox-result.schema.json":      {"executions", "count", "total", "has_more", "host_local", "as_of", "stale_after_seconds"},
-		"reconcile-plan.schema.json":    {"schema_version", "mode", "applied", "as_of", "host_local", "stale_after_seconds", "collect_older_than_seconds", "include_failures", "adapter", "labels", "orphan", "collect", "multica", "unchanged", "unproven"},
+		"reconcile-plan.schema.json":    {"schema_version", "mode", "applied", "as_of", "plan_digest", "journal_host_match", "stale_after_seconds", "collect_older_than_seconds", "include_failures", "adapter", "labels", "orphan", "collect", "multica", "unchanged", "unproven"},
 		"outcome.schema.json":           {"schema_version", "execution_id", "revision", "state", "availability", "recorded_at", "source", "result_ref"},
 		"skill-pack.schema.json":        {"schema_version", "skills"},
 		"skill-pack-report.schema.json": {"schema_version", "healthy", "source", "manifest_sha256", "actions", "changed", "applied", "unsupported", "conflicts"},
