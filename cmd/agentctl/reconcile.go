@@ -21,19 +21,25 @@ import (
 const (
 	defaultReconcileStaleAfter   = 24 * time.Hour
 	defaultReconcileCollectAfter = 7 * 24 * time.Hour
+	defaultLegacyStaleAfter      = 7 * 24 * time.Hour
 	minimumReconcileAge          = time.Minute
+	minimumLegacyStaleAfter      = 72 * time.Hour
 	maximumReconcileStaleAfter   = 30 * 24 * time.Hour
 	maximumReconcileCollectAfter = 365 * 24 * time.Hour
 	reconcileOwnerLost           = "owner_lost"
+	reconcileOwnerUnprovenLegacy = "owner_unproven_legacy"
+	reconcileHeartbeatAbsent     = "heartbeat_absent"
+	reconcileLegacyPIDPresent    = "legacy_pid_present"
 )
 
 type reconcileOptions struct {
-	plan, apply, includeFailures   bool
-	planDigest                     string
-	staleAfter, collectOlder       time.Duration
-	staleAfterRaw, collectOlderRaw string
-	adapter                        string
-	labels                         []string
+	plan, apply, includeFailures, includeLegacy bool
+	planDigest                                  string
+	staleAfter, collectOlder, legacyStaleAfter  time.Duration
+	staleAfterRaw, collectOlderRaw              string
+	legacyStaleAfterRaw                         string
+	adapter                                     string
+	labels                                      []string
 }
 
 type reconcileReport struct {
@@ -50,9 +56,12 @@ type reconcileReport struct {
 	StaleAfterSeconds       float64             `json:"stale_after_seconds"`
 	CollectOlderThanSeconds float64             `json:"collect_older_than_seconds"`
 	IncludeFailures         bool                `json:"include_failures"`
+	IncludeLegacyUnproven   bool                `json:"include_legacy_unproven"`
+	LegacyStaleAfterSeconds float64             `json:"legacy_stale_after_seconds"`
 	Adapter                 string              `json:"adapter"`
 	Labels                  []string            `json:"labels"`
 	Orphan                  reconcileOrphanSet  `json:"orphan"`
+	LegacyOrphan            reconcileLegacySet  `json:"legacy_orphan"`
 	Collect                 reconcileCollectSet `json:"collect"`
 	Multica                 reconcileMulticaSet `json:"multica"`
 	Unchanged               reconcileUnchanged  `json:"unchanged"`
@@ -72,6 +81,29 @@ type reconcileOrphanItem struct {
 	Reason                string          `json:"reason"`
 	Evidence              processProof    `json:"evidence"`
 	ObservationAgeSeconds float64         `json:"observation_age_seconds"`
+}
+
+type reconcileLegacySet struct {
+	Count      int                   `json:"count"`
+	Executions []reconcileLegacyItem `json:"executions"`
+}
+
+type reconcileLegacyItem struct {
+	ID                    ids.ExecutionID         `json:"id"`
+	Adapter               string                  `json:"adapter"`
+	State                 model.State             `json:"state"`
+	Liveness              model.Liveness          `json:"liveness"`
+	Reason                string                  `json:"reason"`
+	Evidence              reconcileLegacyEvidence `json:"evidence"`
+	ObservationAgeSeconds float64                 `json:"observation_age_seconds"`
+}
+
+// reconcileLegacyEvidence records a multi-day runner-heartbeat gap. The runner
+// heartbeats every 10s, so the gap is evidence the owner was not observed. It
+// is not proof that a process is gone.
+type reconcileLegacyEvidence struct {
+	Proof string `json:"proof"`
+	PID   int    `json:"pid,omitempty"`
 }
 
 type reconcileCollectSet struct {
@@ -162,12 +194,16 @@ func (a *app) reconcile(ctx context.Context, renderer output.Renderer, c common,
 		{Name: "mode", Value: report.Mode},
 		{Name: "plan_digest", Value: report.PlanDigest},
 		{Name: "orphan", Value: report.Orphan.Count},
+		{Name: "legacy_orphan", Value: report.LegacyOrphan.Count},
 		{Name: "collect", Value: report.Collect.Count},
 		{Name: "multica", Value: report.Multica.Count},
 		{Name: "unproven", Value: len(report.Unproven)},
 	}}}
 	for _, item := range report.Orphan.Executions {
 		lines = append(lines, output.Line{Lead: item.ID.String(), Fields: []output.Field{{Name: "action", Value: "orphan"}, {Name: "state", Value: item.State}, {Name: "proof", Value: item.Evidence.Proof}, {Name: "pid", Value: item.Evidence.PID}}})
+	}
+	for _, item := range report.LegacyOrphan.Executions {
+		lines = append(lines, output.Line{Lead: item.ID.String(), Fields: []output.Field{{Name: "action", Value: "legacy_orphan"}, {Name: "state", Value: item.State}, {Name: "proof", Value: item.Evidence.Proof}, {Name: "pid", Value: item.Evidence.PID}, {Name: "reason", Value: item.Reason}}})
 	}
 	for _, item := range report.Collect.Executions {
 		lines = append(lines, output.Line{Lead: item.ID.String(), Fields: []output.Field{{Name: "action", Value: "collect"}, {Name: "state", Value: item.State}, {Name: "reason", Value: item.Reason}}})
@@ -179,6 +215,7 @@ func (a *app) reconcile(ctx context.Context, renderer output.Renderer, c common,
 		{Code: "outcome_unknown", Message: "orphaned means the recorded owner is gone and the outcome was not recovered; it is not success or failure"},
 		{Code: "multica_not_mutated", Message: "Multica issue state is not changed; local collection stamps are written"},
 		{Code: "journal_host_match", Message: "journal_host_match compares origin_host_id with the host id stored in this journal; it is not a machine fingerprint, so a copied or restored journal still matches"},
+		{Code: "legacy_unproven", Message: "rows with no launch record stay unchanged unless --include-legacy-unproven; that path records heartbeat_absent and owner_unproven_legacy, and leaves a legacy numeric PID unchanged when that process currently exists"},
 	}
 	actions := []output.NextAction{}
 	if opts.plan {
@@ -198,8 +235,8 @@ func (a *app) reconcile(ctx context.Context, renderer output.Renderer, c common,
 
 func parseReconcile(args []string) (reconcileOptions, *output.Error) {
 	opts := reconcileOptions{
-		staleAfter: defaultReconcileStaleAfter, collectOlder: defaultReconcileCollectAfter,
-		staleAfterRaw: "24h", collectOlderRaw: "168h", labels: []string{},
+		staleAfter: defaultReconcileStaleAfter, collectOlder: defaultReconcileCollectAfter, legacyStaleAfter: defaultLegacyStaleAfter,
+		staleAfterRaw: "24h", collectOlderRaw: "168h", legacyStaleAfterRaw: "168h", labels: []string{},
 	}
 	for i := 0; i < len(args); i++ {
 		flag := args[i]
@@ -219,7 +256,9 @@ func parseReconcile(args []string) (reconcileOptions, *output.Error) {
 			}
 		case "--include-failures":
 			opts.includeFailures = true
-		case "--stale-after", "--collect-older-than", "--adapter", "--label":
+		case "--include-legacy-unproven":
+			opts.includeLegacy = true
+		case "--stale-after", "--collect-older-than", "--legacy-stale-after", "--adapter", "--label":
 			if i+1 >= len(args) {
 				return opts, output.NewError(output.CodeUsage, flag+" requires a value", false)
 			}
@@ -238,6 +277,12 @@ func parseReconcile(args []string) (reconcileOptions, *output.Error) {
 					return opts, output.NewError(output.CodeUsage, "--collect-older-than must be a duration from 1m through 8760h", false).WithDetail("collect_older_than", value)
 				}
 				opts.collectOlder, opts.collectOlderRaw = parsed, value
+			case "--legacy-stale-after":
+				parsed, err := parseReconcileDuration(value)
+				if err != nil || parsed < minimumLegacyStaleAfter || parsed > maximumReconcileCollectAfter {
+					return opts, output.NewError(output.CodeUsage, "--legacy-stale-after must be a duration from 72h through 8760h", false).WithDetail("legacy_stale_after", value)
+				}
+				opts.legacyStaleAfter, opts.legacyStaleAfterRaw = parsed, value
 			case "--adapter":
 				if value == "" {
 					return opts, output.NewError(output.CodeUsage, "--adapter cannot be empty", false)
@@ -302,28 +347,52 @@ func classifyReconcile(executions []model.Execution, acks store.AcknowledgementI
 			report.Unproven = append(report.Unproven, reconcileUnproven{ID: execution.ID, Reason: "foreign_host"})
 			continue
 		}
-		age := observationAge(execution, now)
-		if age < opts.staleAfter || runnerLeaseActive(execution, now) {
+		if runnerLeaseActive(execution, now) {
 			report.Unchanged.Recent++
 			continue
 		}
-		identity, ok := recordedLaunch(execution)
-		if !ok {
-			report.Unproven = append(report.Unproven, reconcileUnproven{ID: execution.ID, Reason: "ownership_unproven"})
+		age := observationAge(execution, now)
+		if identity, ok := recordedLaunch(execution); ok {
+			if age < opts.staleAfter {
+				report.Unchanged.Recent++
+				continue
+			}
+			proof := prove(identity)
+			switch {
+			case proof.Alive:
+				report.Unchanged.Alive++
+			case proof.Gone:
+				report.Orphan.Executions = append(report.Orphan.Executions, reconcileOrphanItem{
+					ID: execution.ID, Adapter: execution.Adapter, State: execution.State, Liveness: execution.Liveness,
+					Reason: reconcileOwnerLost, Evidence: proof, ObservationAgeSeconds: age.Seconds(),
+				})
+			default:
+				report.Unproven = append(report.Unproven, reconcileUnproven{ID: execution.ID, Reason: proof.Proof})
+			}
 			continue
 		}
-		proof := prove(identity)
-		switch {
-		case proof.Alive:
-			report.Unchanged.Alive++
-		case proof.Gone:
-			report.Orphan.Executions = append(report.Orphan.Executions, reconcileOrphanItem{
+		if legacyEligible(execution, host, now, opts) {
+			pids := legacyNumericPIDs(execution)
+			blocked, pid := legacyPIDPresent(prove, pids)
+			if blocked {
+				report.Unproven = append(report.Unproven, reconcileUnproven{ID: execution.ID, Reason: reconcileLegacyPIDPresent})
+				continue
+			}
+			evidence := reconcileLegacyEvidence{Proof: reconcileHeartbeatAbsent}
+			if pid > 0 {
+				evidence.PID = pid
+			}
+			report.LegacyOrphan.Executions = append(report.LegacyOrphan.Executions, reconcileLegacyItem{
 				ID: execution.ID, Adapter: execution.Adapter, State: execution.State, Liveness: execution.Liveness,
-				Reason: reconcileOwnerLost, Evidence: proof, ObservationAgeSeconds: age.Seconds(),
+				Reason: reconcileOwnerUnprovenLegacy, Evidence: evidence, ObservationAgeSeconds: age.Seconds(),
 			})
-		default:
-			report.Unproven = append(report.Unproven, reconcileUnproven{ID: execution.ID, Reason: proof.Proof})
+			continue
 		}
+		if age < opts.staleAfter {
+			report.Unchanged.Recent++
+			continue
+		}
+		report.Unproven = append(report.Unproven, reconcileUnproven{ID: execution.ID, Reason: "ownership_unproven"})
 	}
 	sortReconcile(&report)
 	return report
@@ -341,20 +410,24 @@ func newReconcileReport(now time.Time, opts reconcileOptions) reconcileReport {
 	return reconcileReport{
 		SchemaVersion: 1, Mode: mode, AsOf: now, JournalHostMatch: true,
 		StaleAfterSeconds: opts.staleAfter.Seconds(), CollectOlderThanSeconds: opts.collectOlder.Seconds(),
-		IncludeFailures: opts.includeFailures, Adapter: opts.adapter, Labels: labels,
-		Orphan:   reconcileOrphanSet{Executions: []reconcileOrphanItem{}},
-		Collect:  reconcileCollectSet{Executions: []reconcileCollectItem{}},
-		Multica:  reconcileMulticaSet{Executions: []reconcileMulticaItem{}},
-		Unproven: []reconcileUnproven{},
+		IncludeFailures: opts.includeFailures, IncludeLegacyUnproven: opts.includeLegacy,
+		LegacyStaleAfterSeconds: legacyStaleAfter(opts).Seconds(), Adapter: opts.adapter, Labels: labels,
+		Orphan:       reconcileOrphanSet{Executions: []reconcileOrphanItem{}},
+		LegacyOrphan: reconcileLegacySet{Executions: []reconcileLegacyItem{}},
+		Collect:      reconcileCollectSet{Executions: []reconcileCollectItem{}},
+		Multica:      reconcileMulticaSet{Executions: []reconcileMulticaItem{}},
+		Unproven:     []reconcileUnproven{},
 	}
 }
 
 func sortReconcile(report *reconcileReport) {
 	slices.SortFunc(report.Orphan.Executions, func(a, b reconcileOrphanItem) int { return strings.Compare(a.ID.String(), b.ID.String()) })
+	slices.SortFunc(report.LegacyOrphan.Executions, func(a, b reconcileLegacyItem) int { return strings.Compare(a.ID.String(), b.ID.String()) })
 	slices.SortFunc(report.Collect.Executions, func(a, b reconcileCollectItem) int { return strings.Compare(a.ID.String(), b.ID.String()) })
 	slices.SortFunc(report.Multica.Executions, func(a, b reconcileMulticaItem) int { return strings.Compare(a.ID.String(), b.ID.String()) })
 	slices.SortFunc(report.Unproven, func(a, b reconcileUnproven) int { return strings.Compare(a.ID.String(), b.ID.String()) })
 	report.Orphan.Count = len(report.Orphan.Executions)
+	report.LegacyOrphan.Count = len(report.LegacyOrphan.Executions)
 	report.Collect.Count = len(report.Collect.Executions)
 	report.Multica.Count = len(report.Multica.Executions)
 }
@@ -462,9 +535,6 @@ func (a *app) applyReconcile(ctx context.Context, journal *store.Journal, host i
 		if !proof.Gone {
 			continue
 		}
-		if a.forceStaleRevision != nil && a.forceStaleRevision(current.ID) && current.Revision > 0 {
-			current.Revision--
-		}
 		if _, err := commitOwnerLost(ctx, journal, current, proof, age, now); err != nil {
 			if errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrTerminalConflict) {
 				continue
@@ -477,6 +547,33 @@ func (a *app) applyReconcile(ctx context.Context, journal *store.Journal, host i
 	}
 	report.Orphan.Executions = orphans
 	report.Orphan.Count = len(orphans)
+	legacy := make([]reconcileLegacyItem, 0, len(report.LegacyOrphan.Executions))
+	for _, item := range report.LegacyOrphan.Executions {
+		current, err := journal.GetExecution(ctx, item.ID)
+		if err != nil {
+			return mapStoreError("reread execution before legacy orphan", err)
+		}
+		if !legacyEligible(current, host, now, opts) {
+			continue
+		}
+		blocked, pid := legacyPIDPresent(a.proveProcess, legacyNumericPIDs(current))
+		if blocked {
+			continue
+		}
+		if _, err := commitOwnerUnprovenLegacy(ctx, journal, current, pid, observationAge(current, now), now); err != nil {
+			if errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrTerminalConflict) {
+				continue
+			}
+			return mapStoreError("record owner unproven legacy", err)
+		}
+		item.Evidence.Proof = reconcileHeartbeatAbsent
+		if pid > 0 {
+			item.Evidence.PID = pid
+		}
+		legacy = append(legacy, item)
+	}
+	report.LegacyOrphan.Executions = legacy
+	report.LegacyOrphan.Count = len(legacy)
 	acks, err := journal.AcknowledgementIndex(ctx)
 	if err != nil {
 		return mapStoreError("reread acknowledgements before collection", err)
@@ -537,8 +634,100 @@ func commitOwnerLost(ctx context.Context, journal *store.Journal, execution mode
 	return updated, err
 }
 
+func commitOwnerUnprovenLegacy(ctx context.Context, journal *store.Journal, execution model.Execution, pid int, age time.Duration, now time.Time) (model.Execution, error) {
+	sourceState := reconcileOwnerUnprovenLegacy
+	execution.State = model.StateOrphaned
+	execution.Liveness = model.LivenessUnreachable
+	execution.SourceState = &sourceState
+	execution.TerminalAt = &now
+	execution.UpdatedAt = now
+	execution.Observation = model.Observation{Source: model.ObservationReconciled, Integrity: model.IntegrityDegraded, ObservedAt: now}
+	outcome := model.Outcome{
+		SchemaVersion: model.SchemaVersion, ExecutionID: execution.ID, Revision: 1, State: model.StateOrphaned,
+		Availability: model.OutcomeStored, RecordedAt: now, Source: execution.Adapter,
+		ResultRef: fmt.Sprintf("agentctl://%s/%s", execution.OriginHostID, execution.ID),
+		Failure:   &model.OutcomeFailure{Code: reconcileOwnerUnprovenLegacy, Kind: "observation", Source: execution.Adapter, Message: "runner heartbeat is absent and no launch owner was recorded; outcome unknown"},
+	}
+	payload := map[string]any{
+		"diagnostic_code": reconcileOwnerUnprovenLegacy, "reason": reconcileOwnerUnprovenLegacy, "proof": reconcileHeartbeatAbsent,
+		"observation_age_seconds": int(age.Seconds()),
+	}
+	if pid > 0 {
+		payload["pid"] = pid
+	}
+	event, canonical, err := syntheticEvent(execution, model.EventTerminal, execution.State, payload, "reconcile", now)
+	if err != nil {
+		return model.Execution{}, err
+	}
+	updated, _, _, _, err := journal.CommitTerminalOutcome(ctx, execution, execution.Revision, outcome, event, canonical)
+	return updated, err
+}
+
+func legacyStaleAfter(opts reconcileOptions) time.Duration {
+	if opts.legacyStaleAfter <= 0 {
+		return defaultLegacyStaleAfter
+	}
+	return opts.legacyStaleAfter
+}
+
+func legacyEligible(execution model.Execution, host ids.HostID, now time.Time, opts reconcileOptions) bool {
+	if !opts.includeLegacy || execution.Launch != nil || execution.Authority != model.AuthorityNative || execution.State.Terminal() {
+		return false
+	}
+	if execution.OriginHostID != host || !reconcileFilterMatches(execution, opts) || runnerLeaseActive(execution, now) {
+		return false
+	}
+	return observationAge(execution, now) >= legacyStaleAfter(opts)
+}
+
+// legacyNumericPIDs is the decimal opaque id historically stored on a launch
+// binding before the launch record existed. It is not ownership proof. Reconcile
+// uses it only to refuse a PID that currently exists.
+func legacyNumericPIDs(execution model.Execution) []int {
+	var pids []int
+	for _, binding := range execution.SourceBindings {
+		if !legacyLaunchKind(binding.Kind) || binding.OpaqueID == nil {
+			continue
+		}
+		raw := strings.TrimSpace(*binding.OpaqueID)
+		pid, err := strconv.Atoi(raw)
+		if err != nil || pid <= 0 || pid > model.MaxLaunchPID || strconv.Itoa(pid) != raw {
+			continue
+		}
+		pids = append(pids, pid)
+	}
+	return pids
+}
+
+func legacyLaunchKind(kind string) bool {
+	switch kind {
+	case "process", "codex_thread", "cursor_session", "claude_session", "omp_session", "zcode_session", "devin_session":
+		return true
+	default:
+		return false
+	}
+}
+
+// legacyPIDPresent reports whether any legacy numeric value is a process that
+// exists now. Start time is ignored: a reused or uncompared PID still blocks.
+// The returned pid is the blocking pid, or the first checked pid when none block.
+func legacyPIDPresent(prove func(processIdentity) processProof, pids []int) (bool, int) {
+	for _, pid := range pids {
+		if prove(processIdentity{PID: pid}).Present {
+			return true, pid
+		}
+	}
+	if len(pids) == 0 {
+		return false, 0
+	}
+	return false, pids[0]
+}
+
 func reconcileArgv(opts reconcileOptions, planDigest string) []string {
-	argv := []string{"agentctl", "reconcile", "--stale-after", opts.staleAfterRaw, "--collect-older-than", opts.collectOlderRaw}
+	argv := []string{"agentctl", "reconcile", "--stale-after", opts.staleAfterRaw, "--collect-older-than", opts.collectOlderRaw, "--legacy-stale-after", opts.legacyStaleAfterRaw}
+	if opts.includeLegacy {
+		argv = append(argv, "--include-legacy-unproven")
+	}
 	if opts.adapter != "" {
 		argv = append(argv, "--adapter", opts.adapter)
 	}
@@ -568,6 +757,9 @@ func reconcilePlanDigest(report reconcileReport, opts reconcileOptions) string {
 		}
 		candidates = append(candidates, candidate)
 	}
+	for _, item := range report.LegacyOrphan.Executions {
+		candidates = append(candidates, reconcileDigestCandidate{ID: item.ID.String(), Action: "legacy_orphan", Proof: item.Evidence.Proof, PID: item.Evidence.PID})
+	}
 	for _, item := range report.Collect.Executions {
 		candidates = append(candidates, reconcileDigestCandidate{ID: item.ID.String(), Action: "collect"})
 	}
@@ -585,11 +777,13 @@ func reconcilePlanDigest(report reconcileReport, opts reconcileOptions) string {
 		SchemaVersion           int                        `json:"schema_version"`
 		StaleAfterSeconds       int64                      `json:"stale_after_seconds"`
 		CollectOlderThanSeconds int64                      `json:"collect_older_than_seconds"`
+		LegacyStaleAfterSeconds int64                      `json:"legacy_stale_after_seconds"`
 		IncludeFailures         bool                       `json:"include_failures"`
+		IncludeLegacyUnproven   bool                       `json:"include_legacy_unproven"`
 		Adapter                 string                     `json:"adapter"`
 		Labels                  []string                   `json:"labels"`
 		Candidates              []reconcileDigestCandidate `json:"candidates"`
-	}{1, int64(opts.staleAfter / time.Second), int64(opts.collectOlder / time.Second), opts.includeFailures, opts.adapter, labels, candidates})
+	}{1, int64(opts.staleAfter / time.Second), int64(opts.collectOlder / time.Second), int64(legacyStaleAfter(opts) / time.Second), opts.includeFailures, opts.includeLegacy, opts.adapter, labels, candidates})
 	if err != nil {
 		return ""
 	}

@@ -253,6 +253,72 @@ func TestSubscriptionFanoutUsesNormalizedEnvelopeAndExactFilters(t *testing.T) {
 	}
 }
 
+func TestAcknowledgedEventStaysInJournalUnlessKindIsExplicit(t *testing.T) {
+	ctx := context.Background()
+	journal, _, now := openTestJournal(t)
+	created, _, err := journal.CreateExecution(ctx, sampleExecution(now), contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	put := func(payload uint64, kinds []string) string {
+		t.Helper()
+		sub := durableTestSubscription(durableTestID(ids.TypeSubscription, payload))
+		sub.Filter.ExecutionIDs = []string{created.ID.String()}
+		sub.Filter.Kinds = kinds
+		stored, _, err := journal.PutSubscription(ctx, sub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return stored.ID
+	}
+	broad := put(830, nil)
+	defaults := put(831, []string{string(model.EventTerminal), string(model.EventAttention), string(model.EventArtifact)})
+	explicit := put(832, []string{string(model.EventAcknowledged)})
+	withTerminal := put(833, []string{string(model.EventTerminal), string(model.EventAcknowledged)})
+	key, projection := semanticEvent(t, created.Adapter, map[string]any{"event": "started"})
+	started := model.Event{ExecutionID: created.ID, Authority: created.Authority, Adapter: created.Adapter, Ordering: model.OrderingObservation, Kind: model.EventStarted, ObservedAt: now, DedupeKey: key, DedupeVersion: 1, Payload: map[string]any{"accepted": true}}
+	if _, _, err := journal.AppendEvent(ctx, started, projection); err != nil {
+		t.Fatal(err)
+	}
+	terminalAt := now.Add(time.Second)
+	completed := created
+	completed.State = model.StateCompleted
+	completed.Liveness = model.LivenessExited
+	completed.TerminalAt = &terminalAt
+	completed.UpdatedAt = terminalAt
+	completed.Observation.ObservedAt = terminalAt
+	if _, err := journal.UpdateExecution(ctx, completed, created.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := journal.AcknowledgeExecution(ctx, created.ID, AcknowledgementBulk); err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.ListEvents(ctx, created.ID, contracts.EventQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journaled := false
+	for _, event := range events {
+		if event.Kind == model.EventAcknowledged {
+			journaled = true
+		}
+	}
+	if !journaled {
+		t.Fatal("acknowledged event was not journaled")
+	}
+	pending, err := journal.ListPendingDeliveries(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, delivery := range pending {
+		got[delivery.SubscriptionID]++
+	}
+	if got[broad] != 1 || got[defaults] != 0 || got[explicit] != 1 || got[withTerminal] != 1 || len(pending) != 3 {
+		t.Fatalf("deliveries=%v pending=%d", got, len(pending))
+	}
+}
+
 func TestLegacyDirectAuthorityFilterMatchesNativeEvent(t *testing.T) {
 	now := time.Now().UTC()
 	value := subscription.Subscription{State: subscription.StateActive, ExpiresAt: now.Add(time.Hour), Filter: subscription.EventFilter{Authority: "direct"}}

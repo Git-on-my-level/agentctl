@@ -407,7 +407,13 @@ recorded by the launcher is provably gone and its last observation is older
 than `--stale-after` (24h by default). A numeric session id is not that PID.
 `journal_host_match` compares the journal's stored host id, not a machine
 fingerprint. That orphaned state means the owner was lost and the outcome was
-not recovered; it is not success or failure. Completed and cancelled terminals
+not recovered; it is not success or failure. Rows with no launch record stay
+unchanged unless `--include-legacy-unproven` is set. Those rows must be native,
+match the journal host, and be older than `--legacy-stale-after` (default 168h,
+minimum 72h). The plan lists them under `legacy_orphan` with evidence
+`heartbeat_absent` and outcome `owner_unproven_legacy`. A legacy numeric PID
+that currently exists is reported `legacy_pid_present` and left unchanged.
+Completed and cancelled terminals
 older than `--collect-older-than` (168h by default) receive a `bulk_reconciled`
 collection stamp without anyone reading the result. `recent` and `status` show
 that source, and the stamp makes the result eligible for `data cleanup`.

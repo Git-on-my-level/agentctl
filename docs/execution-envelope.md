@@ -104,7 +104,15 @@ observation is older than the requested stale bound. The PID is the `launch`
 record written at process start, not a numeric session id. That transition is
 an explicit operator action bound to the reviewed `plan_digest`. It claims
 neither success nor failure, and an unreachable liveness reading by itself is
-not enough.
+not enough. Rows with no launch record stay `ownership_unproven` unless
+`--include-legacy-unproven` is set. That path requires native authority, a
+matching journal host id, and a last observation older than
+`--legacy-stale-after` (default 168h, minimum 72h). Its evidence is
+`heartbeat_absent`: the runner heartbeats every 10 seconds, so a multi-day gap
+is evidence the owner was not observed, not proof a process is gone. If the
+legacy numeric value is a PID that currently exists, the row is left unchanged
+and reported `legacy_pid_present`, without comparing start time. The outcome
+is `orphaned` with `owner_unproven_legacy`, never `owner_lost`.
 
 `attention` means work may continue but an external decision or intervention is
 currently required. `waiting` is non-actionable waiting on an external event.

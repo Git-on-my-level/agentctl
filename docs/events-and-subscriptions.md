@@ -118,7 +118,7 @@ are separately defined in [Identifiers](identifiers.md).
 | `terminal` | Completed, failed, cancelled, or orphaned |
 | `promoted` | Direct execution linked to a new durable execution |
 | `superseded` | A replacement execution became the continuation target |
-| `acknowledged` | A bulk reconcile collection stamp; payload `acknowledgement_source` is `bulk_reconciled` |
+| `acknowledged` | A bulk reconcile collection stamp; payload `acknowledgement_source` is `bulk_reconciled`. It is appended to the execution event log and is not delivered to a subscription unless that subscription's kind filter lists `acknowledged`. An empty kind list, including `--kind all`, matches every other kind and does not match `acknowledged` |
 
 Before journaling `terminal`, an adapter re-fetches the strongest authoritative
 state its negotiated capability allows. A later contradictory terminal claim
@@ -165,7 +165,8 @@ current CLI intentionally does not create broad authority queries; reserved
 query/scope filters fail closed in local fan-out. `agentctl subscribe create` listens for `terminal`,
 `attention`, and `artifact` by default: these are the minimum events needed to
 drive a parent agent without subscribing it to progress chatter. `--kind all`
-is an explicit broad subscription, while `--kind <names>` narrows the set.
+is an explicit broad subscription for every kind except `acknowledged`, while `--kind <names>` narrows the set.
+`acknowledged` is delivered only when the filter lists that kind.
 `--authority direct` is normalized to the stored native authority; display
 labels are insufficient authority identifiers.
 

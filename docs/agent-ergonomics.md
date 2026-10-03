@@ -372,12 +372,24 @@ A matching live process, an unexpired runner lease, a newer observation, or a
 start time that cannot be proved is left unchanged. The resulting state is
 `orphaned` with reason `owner_lost`: outcome unknown.
 
+Rows with no launch record stay `ownership_unproven` unless
+`--include-legacy-unproven` is explicit. Eligible rows are native, match the
+journal host id, and have a last observation older than `--legacy-stale-after`
+(default 168h, minimum 72h). They are listed under `legacy_orphan`, included in
+`plan_digest`, and recorded with evidence `heartbeat_absent`. The runner
+heartbeats every 10 seconds, so that gap is evidence rather than proof the
+process is gone. If the legacy numeric value is a PID that currently exists,
+the row is left unchanged and reported `legacy_pid_present`; start time is not
+compared. The outcome state is `orphaned` with `owner_unproven_legacy`, never
+`owner_lost`. An unexpired runner lease stays unchanged.
+
 Completed and cancelled terminals whose result was never collected, and whose
 `terminal_at` is at least `--collect-older-than` old (default 168h), are
 stamped `bulk_reconciled`. The command does not read or print result content.
 `recent` and `status` show `acknowledgement_source` so that stamp is distinct
 from `result` or `await` collection, and the stamp emits an `acknowledged`
-event. A `bulk_reconciled` stamp makes the result eligible for `data cleanup`
+event. That event stays in the journal. A subscription receives it only when
+its kind filter lists `acknowledged`; `--kind all` does not. A `bulk_reconciled` stamp makes the result eligible for `data cleanup`
 deletion. Failed, already orphaned, and integrity-conflicted terminals stay
 uncollected unless `--include-failures` is explicit. Terminals that predate
 the journal's acknowledgement epoch are already treated as reconciled.
@@ -516,7 +528,8 @@ escape for callers that intentionally need weaker or broader behavior:
   default, expires after acknowledged terminal delivery, and has a bounded
   twenty-four-hour TTL. Transient delivery failures retry with bounded backoff
   until that TTL; permanent delivery classes still dead-letter. `--kind all`
-  is an explicit broad subscription.
+  is an explicit broad subscription for every kind except `acknowledged`.
+  `acknowledged` is delivered only when `--kind` lists it.
 
 These defaults do not weaken authority boundaries: permission flags such as
 Cursor `--trust`, remote promotion, supervisor service creation, and cleanup

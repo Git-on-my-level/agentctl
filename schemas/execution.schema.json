@@ -342,7 +342,16 @@
     "deadline_at": {"type": ["string", "null"], "format": "date-time"},
     "updated_at": {"type": "string", "format": "date-time"},
     "terminal_at": {"type": ["string", "null"], "format": "date-time"},
-    "observation": {"$ref": "#/$defs/observation"}
+    "observation": {"$ref": "#/$defs/observation"},
+    "acknowledgement_source": {
+      "description": "Collection stamp reported by status and recent when one exists. result and await record caller collection; bulk_reconciled is the reconcile operator stamp. Not stored on the execution record.",
+      "enum": ["result", "await", "bulk_reconciled"]
+    },
+    "acknowledged_at": {
+      "description": "UTC time of the collection stamp reported by status and recent. Absent when the execution has no stamp.",
+      "type": "string",
+      "format": "date-time"
+    }
   },
   "allOf": [
     {

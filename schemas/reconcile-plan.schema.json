@@ -15,9 +15,12 @@
     "stale_after_seconds",
     "collect_older_than_seconds",
     "include_failures",
+    "include_legacy_unproven",
+    "legacy_stale_after_seconds",
     "adapter",
     "labels",
     "orphan",
+    "legacy_orphan",
     "collect",
     "multica",
     "unchanged",
@@ -36,6 +39,15 @@
     "stale_after_seconds": {"type": "number", "exclusiveMinimum": 0},
     "collect_older_than_seconds": {"type": "number", "exclusiveMinimum": 0},
     "include_failures": {"type": "boolean"},
+    "include_legacy_unproven": {
+      "type": "boolean",
+      "description": "When false, rows with no launch record stay ownership_unproven. When true, eligible native rows are listed under legacy_orphan."
+    },
+    "legacy_stale_after_seconds": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Last-observation age required before a row with no launch record can be listed under legacy_orphan. Default 168h. Minimum 72h."
+    },
     "adapter": {"type": "string"},
     "labels": {"type": "array", "items": {"type": "string"}},
     "orphan": {
@@ -45,6 +57,16 @@
       "properties": {
         "count": {"type": "integer", "minimum": 0},
         "executions": {"type": "array", "items": {"$ref": "#/$defs/orphan_item"}}
+      }
+    },
+    "legacy_orphan": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Native rows with no launch record. Evidence is heartbeat_absent. The outcome code is owner_unproven_legacy.",
+      "required": ["count", "executions"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0},
+        "executions": {"type": "array", "items": {"$ref": "#/$defs/legacy_orphan_item"}}
       }
     },
     "collect": {
@@ -101,6 +123,30 @@
         "reason": {"const": "owner_lost"},
         "observation_age_seconds": {"type": "number", "minimum": 0},
         "evidence": {"$ref": "#/$defs/process_evidence"}
+      }
+    },
+    "legacy_orphan_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "adapter", "state", "liveness", "reason", "evidence", "observation_age_seconds"],
+      "properties": {
+        "id": {"$ref": "#/$defs/execution_id"},
+        "adapter": {"type": "string"},
+        "state": {"type": "string"},
+        "liveness": {"type": "string"},
+        "reason": {"const": "owner_unproven_legacy"},
+        "observation_age_seconds": {"type": "number", "minimum": 0},
+        "evidence": {"$ref": "#/$defs/legacy_evidence"}
+      }
+    },
+    "legacy_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A multi-day gap since the runner's 10s heartbeat. This is evidence the owner was not observed, not proof that a process is gone.",
+      "required": ["proof"],
+      "properties": {
+        "proof": {"const": "heartbeat_absent"},
+        "pid": {"type": "integer", "minimum": 1, "maximum": 4194303}
       }
     },
     "process_evidence": {

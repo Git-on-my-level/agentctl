@@ -184,7 +184,9 @@ matches. Failures, orphans, and integrity conflicts are not stamped unless
 `--include-failures` is explicit. The stamp is an operator acknowledgement
 that the result will not be collected, not a claim that its content was
 reviewed. It is visible on `recent` and `status` as `acknowledgement_source`
-and is recorded as an `acknowledged` event. Because cleanup treats any
+and is recorded as an `acknowledged` event. That event stays in the journal
+and is not delivered to a subscription unless the subscription's kind filter
+lists `acknowledged`. Because cleanup treats any
 acknowledgement as collection, a `bulk_reconciled` stamp makes those results
 eligible for `data cleanup` deletion once they are older than the cutoff.
 

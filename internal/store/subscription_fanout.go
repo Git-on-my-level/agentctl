@@ -143,17 +143,25 @@ func matchesEventScope(value subscription.Subscription, event *model.Event, now 
 }
 
 func matchesEventKind(value subscription.Subscription, event *model.Event) bool {
-	if len(value.Filter.Kinds) > 0 {
-		matched := false
-		for _, kind := range value.Filter.Kinds {
-			if strings.TrimSpace(kind) == string(event.Kind) {
-				matched = true
-				break
-			}
+	if event == nil {
+		return false
+	}
+	matched := false
+	for _, kind := range value.Filter.Kinds {
+		if strings.TrimSpace(kind) == string(event.Kind) {
+			matched = true
+			break
 		}
-		if !matched {
-			return false
-		}
+	}
+	// acknowledged is a collection stamp. It stays in the journal event log
+	// and is delivered only when a subscription names that kind. An empty
+	// kind list, including subscribe --kind all, matches every other kind
+	// and does not match acknowledged.
+	if event.Kind == model.EventAcknowledged {
+		return matched
+	}
+	if len(value.Filter.Kinds) > 0 && !matched {
+		return false
 	}
 	return true
 }

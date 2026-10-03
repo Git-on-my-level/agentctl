@@ -33,7 +33,7 @@ func TestReconcilePlanWritesNothingAndSkipsLiveWork(t *testing.T) {
 	world := seedReconcileWorld(t)
 	stdout, app := reconcileApp(t, world)
 	planned := world.run(t, app, stdout)
-	assertResultMatchesSchemaShape(t, stdout.String(), "reconcile-plan.schema.json", "orphan", "collect", "multica", "unchanged")
+	assertResultMatchesSchemaShape(t, stdout.String(), "reconcile-plan.schema.json", "orphan", "legacy_orphan", "collect", "multica", "unchanged")
 	if planned.Applied || planned.Mode != "plan" || strings.Contains(stdout.String(), reconcileSecret) {
 		t.Fatalf("plan wrote or leaked content: %s", stdout.String())
 	}
@@ -48,6 +48,9 @@ func TestReconcilePlanWritesNothingAndSkipsLiveWork(t *testing.T) {
 	}
 	if planned.Unchanged.Alive != 1 || planned.Unchanged.Recent != 2 {
 		t.Fatalf("unchanged=%+v", planned.Unchanged)
+	}
+	if planned.IncludeLegacyUnproven || planned.LegacyOrphan.Count != 0 || planned.LegacyStaleAfterSeconds != defaultLegacyStaleAfter.Seconds() {
+		t.Fatalf("legacy path defaulted on: %+v", planned.LegacyOrphan)
 	}
 	if !planned.JournalHostMatch || !strings.HasPrefix(planned.PlanDigest, "sha256:") || strings.Contains(stdout.String(), `"host_local"`) {
 		t.Fatalf("plan digest=%s host field in %s", planned.PlanDigest, stdout.String())
@@ -215,8 +218,21 @@ func TestParseReconcileRequiresOneModeAndBoundedDurations(t *testing.T) {
 		}
 	}
 	opts, problem := parseReconcile([]string{"--plan", "--stale-after", "24h", "--collect-older-than", "7d", "--include-failures", "--adapter", "cursor", "--label", "review"})
-	if problem != nil || opts.staleAfter != 24*time.Hour || opts.collectOlder != 7*24*time.Hour || !opts.includeFailures || opts.adapter != "cursor" || len(opts.labels) != 1 {
+	if problem != nil || opts.staleAfter != 24*time.Hour || opts.collectOlder != 7*24*time.Hour || !opts.includeFailures || opts.includeLegacy || opts.legacyStaleAfter != defaultLegacyStaleAfter || opts.adapter != "cursor" || len(opts.labels) != 1 {
 		t.Fatalf("options=%+v problem=%v", opts, problem)
+	}
+	for _, value := range []string{"71h", "71h59m", "2d", "8761h"} {
+		if _, problem := parseReconcile([]string{"--plan", "--legacy-stale-after", value}); problem == nil {
+			t.Fatalf("legacy-stale-after %q accepted", value)
+		}
+	}
+	legacyOpts, problem := parseReconcile([]string{"--plan", "--include-legacy-unproven", "--legacy-stale-after", "72h"})
+	if problem != nil || !legacyOpts.includeLegacy || legacyOpts.legacyStaleAfter != 72*time.Hour || legacyOpts.legacyStaleAfterRaw != "72h" {
+		t.Fatalf("legacy options=%+v problem=%v", legacyOpts, problem)
+	}
+	days, problem := parseReconcile([]string{"--plan", "--include-legacy-unproven", "--legacy-stale-after", "3d"})
+	if problem != nil || days.legacyStaleAfter != minimumLegacyStaleAfter {
+		t.Fatalf("3d legacy=%s problem=%v", days.legacyStaleAfter, problem)
 	}
 	week, err := parseReconcileDuration("7d")
 	if err != nil || week != 168*time.Hour {
@@ -271,16 +287,64 @@ func TestReconcileAliveAtApplyLeavesRowUnchanged(t *testing.T) {
 func TestReconcileRevisionConflictDuringApplyIsSkipped(t *testing.T) {
 	world := seedReconcileWorld(t)
 	stdout, app := reconcileApp(t, world)
-	app.forceStaleRevision = func(id ids.ExecutionID) bool { return id == world.gone.ID }
-	applied := world.apply(t, app, stdout)
-	if sameIDs(idsOfOrphans(applied), world.gone.ID) || !sameIDs(idsOfOrphans(applied), world.codex.ID) {
-		t.Fatalf("conflicted row was not skipped: %v", idsOfOrphans(applied))
+	if planned := world.run(t, app, stdout); planned.Orphan.Count == 0 {
+		t.Fatal("plan had no orphans")
 	}
 	journal := openReconcileJournal(t, world.path)
 	defer journal.Close()
+	host, err := journal.HostID(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	executions, err := journal.ListExecutions(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acks, err := journal.AcknowledgementIndex(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := reconcileOptions{
+		apply: true, staleAfter: defaultReconcileStaleAfter, collectOlder: defaultReconcileCollectAfter,
+		legacyStaleAfter: defaultLegacyStaleAfter, labels: []string{},
+	}
+	report := classifyReconcile(executions, acks, host, world.now, opts, app.proveProcess)
+	before, err := journal.GetExecution(context.Background(), world.gone.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.processProof = func(id processIdentity) processProof {
+		if id.PID == 4242 {
+			current, readErr := journal.GetExecution(context.Background(), world.gone.ID)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			current.UpdatedAt = current.UpdatedAt.Add(time.Second)
+			if _, updateErr := journal.UpdateExecution(context.Background(), current, current.Revision); updateErr != nil {
+				t.Fatal(updateErr)
+			}
+		}
+		switch id.PID {
+		case 4242, 4646:
+			return processProof{Proof: "pid_absent", Gone: true}
+		case 4343:
+			return processProof{Proof: "pid_alive", Alive: true, Present: true}
+		case 4848:
+			return processProof{Proof: "start_unproven", Present: true}
+		default:
+			t.Errorf("unexpected process proof for pid %d", id.PID)
+			return processProof{Proof: "start_unproven"}
+		}
+	}
+	if problem := app.applyReconcile(context.Background(), journal, host, world.now, opts, &report); problem != nil {
+		t.Fatal(problem)
+	}
+	if sameIDs(idsOfOrphans(report), world.gone.ID) || !sameIDs(idsOfOrphans(report), world.codex.ID) {
+		t.Fatalf("conflicted row was not skipped: %v", idsOfOrphans(report))
+	}
 	kept, err := journal.GetExecution(context.Background(), world.gone.ID)
-	if err != nil || kept.State != model.StateRunning || kept.Revision != world.gone.Revision {
-		t.Fatalf("conflicted row changed: %+v err=%v", kept, err)
+	if err != nil || kept.State != model.StateRunning || kept.Revision != before.Revision+1 {
+		t.Fatalf("conflicted row changed: rev %d->%d state %s err=%v", before.Revision, kept.Revision, kept.State, err)
 	}
 	orphaned, err := journal.GetExecution(context.Background(), world.codex.ID)
 	if err != nil || orphaned.State != model.StateOrphaned {
@@ -356,6 +420,426 @@ func TestBulkAcknowledgementSourceIsVisible(t *testing.T) {
 	if !strings.Contains(stdout.String(), `"acknowledgement_source":"bulk_reconciled"`) {
 		t.Fatalf("status hid bulk acknowledgement: %s", stdout.String())
 	}
+}
+
+func TestReconcileLegacyUnprovenRules(t *testing.T) {
+	now := time.Date(2026, 10, 4, 3, 0, 0, 0, time.UTC)
+	hostRaw, err := ids.New(ids.TypeHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := ids.ParseHostID(hostRaw.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignRaw, err := ids.New(ids.TypeHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := ids.ParseHostID(foreignRaw.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := now.Add(-defaultLegacyStaleAfter)
+	younger := now.Add(-defaultLegacyStaleAfter + time.Hour)
+	between := now.Add(-48 * time.Hour)
+	base := reconcileOptions{staleAfter: defaultReconcileStaleAfter, collectOlder: defaultReconcileCollectAfter, legacyStaleAfter: defaultLegacyStaleAfter, labels: []string{}}
+
+	t.Run("flag off leaves the row unproven", func(t *testing.T) {
+		calls := 0
+		report := classifyReconcile([]model.Execution{legacyFixture(t, host, "cursor_session", "4242", old, false)}, store.AcknowledgementIndex{}, host, now, base, func(processIdentity) processProof {
+			calls++
+			return processProof{Present: true}
+		})
+		if calls != 0 || report.LegacyOrphan.Count != 0 || len(report.Unproven) != 1 || report.Unproven[0].Reason != "ownership_unproven" {
+			t.Fatalf("calls=%d report=%+v", calls, report)
+		}
+	})
+
+	t.Run("observation younger than legacy-stale-after stays unproven", func(t *testing.T) {
+		opts := base
+		opts.includeLegacy = true
+		calls := 0
+		report := classifyReconcile([]model.Execution{legacyFixture(t, host, "cursor_session", "4242", younger, false)}, store.AcknowledgementIndex{}, host, now, opts, func(processIdentity) processProof {
+			calls++
+			return processProof{}
+		})
+		if calls != 0 || report.LegacyOrphan.Count != 0 || report.Unproven[0].Reason != "ownership_unproven" {
+			t.Fatalf("calls=%d %+v", calls, report)
+		}
+	})
+
+	t.Run("age between stale-after and legacy-stale-after stays unproven", func(t *testing.T) {
+		opts := base
+		opts.includeLegacy = true
+		report := classifyReconcile([]model.Execution{legacyFixture(t, host, "process", "not-a-pid", between, false)}, store.AcknowledgementIndex{}, host, now, opts, func(processIdentity) processProof {
+			t.Fatal("proved a row that is not legacy-eligible")
+			return processProof{}
+		})
+		if report.LegacyOrphan.Count != 0 || report.Unchanged.Recent != 0 || report.Unproven[0].Reason != "ownership_unproven" {
+			t.Fatalf("%+v", report)
+		}
+	})
+
+	t.Run("no numeric value records heartbeat_absent", func(t *testing.T) {
+		opts := base
+		opts.includeLegacy = true
+		row := legacyFixture(t, host, "cursor_session", "chat-1", old, false)
+		report := classifyReconcile([]model.Execution{row}, store.AcknowledgementIndex{}, host, now, opts, func(processIdentity) processProof {
+			t.Fatal("proved a row with no numeric value")
+			return processProof{}
+		})
+		if report.LegacyOrphan.Count != 1 || report.Orphan.Count != 0 {
+			t.Fatalf("%+v", report)
+		}
+		item := report.LegacyOrphan.Executions[0]
+		if item.ID != row.ID || item.Reason != "owner_unproven_legacy" || item.Evidence.Proof != "heartbeat_absent" || item.Evidence.PID != 0 {
+			t.Fatalf("%+v", item)
+		}
+	})
+
+	t.Run("absent numeric pid is heartbeat evidence not pid proof", func(t *testing.T) {
+		opts := base
+		opts.includeLegacy = true
+		var saw processIdentity
+		report := classifyReconcile([]model.Execution{legacyFixture(t, host, "codex_thread", "4242", old, false)}, store.AcknowledgementIndex{}, host, now, opts, func(id processIdentity) processProof {
+			saw = id
+			return processProof{Proof: "pid_absent", Gone: true}
+		})
+		item := report.LegacyOrphan.Executions[0]
+		if saw.PID != 4242 || !saw.StartedAt.IsZero() || item.Evidence.Proof != "heartbeat_absent" || item.Evidence.PID != 4242 || item.Reason != "owner_unproven_legacy" {
+			t.Fatalf("saw=%+v item=%+v", saw, item)
+		}
+	})
+
+	t.Run("live pid blocks regardless of start time", func(t *testing.T) {
+		opts := base
+		opts.includeLegacy = true
+		for _, proof := range []processProof{
+			{Present: true, Proof: "pid_reused", Gone: true},
+			{Present: true, Proof: "start_unproven"},
+		} {
+			var saw processIdentity
+			report := classifyReconcile([]model.Execution{legacyFixture(t, host, "cursor_session", "4242", old, false)}, store.AcknowledgementIndex{}, host, now, opts, func(id processIdentity) processProof {
+				saw = id
+				return proof
+			})
+			if !saw.StartedAt.IsZero() || report.LegacyOrphan.Count != 0 || report.Orphan.Count != 0 || len(report.Unproven) != 1 || report.Unproven[0].Reason != "legacy_pid_present" {
+				t.Fatalf("proof=%+v saw=%+v report=%+v", proof, saw, report)
+			}
+		}
+	})
+
+	t.Run("a later live pid blocks", func(t *testing.T) {
+		opts := base
+		opts.includeLegacy = true
+		row := legacyFixture(t, host, "process", "1111", old, false)
+		second := "2222"
+		row.SourceBindings = append(row.SourceBindings, testSourceBinding(t, "process", ids.TypeSource, second))
+		seen := []int{}
+		report := classifyReconcile([]model.Execution{row}, store.AcknowledgementIndex{}, host, now, opts, func(id processIdentity) processProof {
+			seen = append(seen, id.PID)
+			if !id.StartedAt.IsZero() {
+				t.Fatal("compared start time")
+			}
+			if id.PID == 2222 {
+				return processProof{Present: true, Proof: "pid_reused", Gone: true}
+			}
+			return processProof{Proof: "pid_absent", Gone: true}
+		})
+		if len(seen) != 2 || report.LegacyOrphan.Count != 0 || report.Unproven[0].Reason != "legacy_pid_present" {
+			t.Fatalf("seen=%v %+v", seen, report)
+		}
+	})
+
+	t.Run("noncanonical numeric value is not a pid", func(t *testing.T) {
+		opts := base
+		opts.includeLegacy = true
+		report := classifyReconcile([]model.Execution{legacyFixture(t, host, "process", "04242", old, false)}, store.AcknowledgementIndex{}, host, now, opts, func(processIdentity) processProof {
+			t.Fatal("treated a noncanonical value as a pid")
+			return processProof{Present: true}
+		})
+		if report.LegacyOrphan.Count != 1 || report.LegacyOrphan.Executions[0].Evidence.PID != 0 || report.LegacyOrphan.Executions[0].Evidence.Proof != "heartbeat_absent" {
+			t.Fatalf("%+v", report.LegacyOrphan)
+		}
+	})
+
+	t.Run("numeric value outside a launch kind does not block", func(t *testing.T) {
+		opts := base
+		opts.includeLegacy = true
+		report := classifyReconcile([]model.Execution{legacyFixture(t, host, "note", "4242", old, false)}, store.AcknowledgementIndex{}, host, now, opts, func(processIdentity) processProof {
+			t.Fatal("proved a non-launch binding")
+			return processProof{Present: true}
+		})
+		if report.LegacyOrphan.Count != 1 || report.Unproven != nil && len(report.Unproven) != 0 {
+			t.Fatalf("%+v", report)
+		}
+	})
+
+	t.Run("foreign host is not a legacy orphan", func(t *testing.T) {
+		opts := base
+		opts.includeLegacy = true
+		report := classifyReconcile([]model.Execution{legacyFixture(t, foreign, "process", "4242", old, false)}, store.AcknowledgementIndex{}, host, now, opts, func(processIdentity) processProof {
+			t.Fatal("proved a foreign host")
+			return processProof{Gone: true}
+		})
+		if report.LegacyOrphan.Count != 0 || report.Unproven[0].Reason != "foreign_host" {
+			t.Fatalf("%+v", report)
+		}
+	})
+
+	t.Run("launch record stays on the owner_lost path", func(t *testing.T) {
+		opts := base
+		opts.includeLegacy = true
+		var saw processIdentity
+		report := classifyReconcile([]model.Execution{legacyFixture(t, host, "cursor_session", "4242", old, true)}, store.AcknowledgementIndex{}, host, now, opts, func(id processIdentity) processProof {
+			saw = id
+			return processProof{Proof: "pid_absent", Gone: true}
+		})
+		if report.LegacyOrphan.Count != 0 || report.Orphan.Count != 1 || report.Orphan.Executions[0].Reason != "owner_lost" || saw.PID != 4242 || saw.StartedAt.IsZero() {
+			t.Fatalf("saw=%+v %+v", saw, report)
+		}
+	})
+
+	t.Run("multica is not a legacy orphan", func(t *testing.T) {
+		opts := base
+		opts.includeLegacy = true
+		row := legacyFixture(t, host, "multica_issue", "4242", old, false)
+		row.Authority = model.AuthorityMultica
+		row.Adapter = "multica"
+		report := classifyReconcile([]model.Execution{row}, store.AcknowledgementIndex{}, host, now, opts, func(processIdentity) processProof {
+			t.Fatal("proved multica")
+			return processProof{}
+		})
+		if report.LegacyOrphan.Count != 0 || report.Orphan.Count != 0 {
+			t.Fatalf("%+v", report)
+		}
+	})
+
+	t.Run("active runner lease is unchanged", func(t *testing.T) {
+		opts := base
+		opts.includeLegacy = true
+		row := legacyFixture(t, host, "process", "4242", old, false)
+		lease := 400 * 3600
+		row.Liveness = model.LivenessAlive
+		row.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: old, FreshForSeconds: &lease}
+		report := classifyReconcile([]model.Execution{row}, store.AcknowledgementIndex{}, host, now, opts, func(processIdentity) processProof {
+			t.Fatal("proved a live lease")
+			return processProof{Gone: true}
+		})
+		if report.LegacyOrphan.Count != 0 || report.Unchanged.Recent != 1 || len(report.Unproven) != 0 {
+			t.Fatalf("%+v", report)
+		}
+	})
+
+	t.Run("minimum legacy age is accepted at the boundary", func(t *testing.T) {
+		opts := base
+		opts.includeLegacy = true
+		opts.legacyStaleAfter = minimumLegacyStaleAfter
+		row := legacyFixture(t, host, "claude_session", "session", now.Add(-minimumLegacyStaleAfter), false)
+		report := classifyReconcile([]model.Execution{row}, store.AcknowledgementIndex{}, host, now, opts, func(processIdentity) processProof {
+			t.Fatal("proved a non-numeric row")
+			return processProof{}
+		})
+		if report.LegacyOrphan.Count != 1 || report.LegacyOrphan.Executions[0].Evidence.Proof != "heartbeat_absent" {
+			t.Fatalf("%+v", report.LegacyOrphan)
+		}
+	})
+}
+
+func TestReconcileLegacyApplyRecordsUnprovenOwner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	journal, err := store.Open(path, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Add(time.Minute)
+	observed := now.Add(-200 * time.Hour)
+	row := mustCreateLegacyRow(t, journal, "cursor_session", "5151", observed)
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	app := testApp(&stdout, &stderr)
+	app.now = func() time.Time { return now }
+	wrapped := &reconcileTestApp{app: app, processCalls: map[int]int{}}
+	app.processProof = func(id processIdentity) processProof {
+		wrapped.processCalls[id.PID]++
+		if !id.StartedAt.IsZero() {
+			t.Errorf("legacy proof compared start time %s", id.StartedAt)
+		}
+		return processProof{Proof: "pid_absent", Gone: true}
+	}
+	planned := reconcileWorld{path: path, now: now}.run(t, wrapped, &stdout, "--include-legacy-unproven")
+	if planned.LegacyOrphan.Count != 1 || planned.Orphan.Count != 0 || !strings.Contains(planned.PlanDigest, "sha256:") {
+		t.Fatalf("plan=%+v", planned.LegacyOrphan)
+	}
+	item := planned.LegacyOrphan.Executions[0]
+	if item.ID != row.ID || item.Reason != "owner_unproven_legacy" || item.Evidence.Proof != "heartbeat_absent" || item.Evidence.PID != 5151 {
+		t.Fatalf("item=%+v", item)
+	}
+	if !strings.Contains(stdout.String(), "--include-legacy-unproven") || !strings.Contains(stdout.String(), planned.PlanDigest) {
+		t.Fatalf("next action missing legacy flag: %s", stdout.String())
+	}
+	applied := reconcileWorld{path: path, now: now}.apply(t, wrapped, &stdout, "--include-legacy-unproven")
+	if applied.LegacyOrphan.Count != 1 || strings.Contains(stdout.String(), `"owner_lost"`) {
+		t.Fatalf("apply=%s", stdout.String())
+	}
+	journal = openReconcileJournal(t, path)
+	stored, err := journal.GetExecution(context.Background(), row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != model.StateOrphaned || stored.SourceState == nil || *stored.SourceState != "owner_unproven_legacy" {
+		t.Fatalf("stored=%+v", stored)
+	}
+	outcome, err := journal.GetOutcome(context.Background(), row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Content != nil || outcome.Failure == nil || outcome.Failure.Code != "owner_unproven_legacy" || outcome.Failure.Kind != "observation" || outcome.NativeExitCode != nil || strings.Contains(outcome.Failure.Code, "owner_lost") {
+		t.Fatalf("outcome=%+v", outcome)
+	}
+	events, err := journal.ListEvents(context.Background(), row.ID, contracts.EventQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Kind == model.EventTerminal && event.Payload["proof"] == "heartbeat_absent" && event.Payload["diagnostic_code"] == "owner_unproven_legacy" {
+			found = true
+			if event.Payload["reason"] == "owner_lost" || event.Payload["diagnostic_code"] == "owner_lost" {
+				t.Fatalf("legacy event used owner_lost: %+v", event.Payload)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("events=%+v", events)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again := reconcileWorld{path: path, now: now}.apply(t, wrapped, &stdout, "--include-legacy-unproven")
+	if again.LegacyOrphan.Count != 0 || again.Orphan.Count != 0 {
+		t.Fatalf("replay wrote again: %+v", again.LegacyOrphan)
+	}
+}
+
+func TestReconcileLegacyPIDPresentIsLeftUnchanged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	journal, err := store.Open(path, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Add(time.Minute)
+	row := mustCreateLegacyRow(t, journal, "process", "6161", now.Add(-200*time.Hour))
+	revision := row.Revision
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	app := testApp(&stdout, &stderr)
+	app.now = func() time.Time { return now }
+	wrapped := &reconcileTestApp{app: app, processCalls: map[int]int{}}
+	app.processProof = func(id processIdentity) processProof {
+		wrapped.processCalls[id.PID]++
+		if !id.StartedAt.IsZero() {
+			t.Errorf("compared start time")
+		}
+		return processProof{Present: true, Proof: "pid_reused", Gone: true}
+	}
+	planned := reconcileWorld{path: path, now: now}.run(t, wrapped, &stdout, "--include-legacy-unproven")
+	if planned.LegacyOrphan.Count != 0 || len(planned.Unproven) != 1 || planned.Unproven[0].Reason != "legacy_pid_present" || planned.Unproven[0].ID != row.ID {
+		t.Fatalf("plan=%s", stdout.String())
+	}
+	applied := reconcileWorld{path: path, now: now}.apply(t, wrapped, &stdout, "--include-legacy-unproven")
+	if applied.LegacyOrphan.Count != 0 {
+		t.Fatalf("present pid was orphaned: %s", stdout.String())
+	}
+	journal = openReconcileJournal(t, path)
+	defer journal.Close()
+	kept, err := journal.GetExecution(context.Background(), row.ID)
+	if err != nil || kept.State != model.StateRunning || kept.Revision != revision {
+		t.Fatalf("kept=%+v err=%v", kept, err)
+	}
+}
+
+func TestReconcileLegacyPIDAppearingAtApplyIsSkipped(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	journal, err := store.Open(path, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Add(time.Minute)
+	row := mustCreateLegacyRow(t, journal, "omp_session", "7171", now.Add(-200*time.Hour))
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	app := testApp(&stdout, &stderr)
+	app.now = func() time.Time { return now }
+	calls := 0
+	app.processProof = func(id processIdentity) processProof {
+		calls++
+		if !id.StartedAt.IsZero() {
+			t.Errorf("compared start time")
+		}
+		if calls >= 3 {
+			return processProof{Present: true, Proof: "pid_reused", Gone: true}
+		}
+		return processProof{Proof: "pid_absent", Gone: true}
+	}
+	wrapped := &reconcileTestApp{app: app, processCalls: map[int]int{}}
+	applied := reconcileWorld{path: path, now: now}.apply(t, wrapped, &stdout, "--include-legacy-unproven")
+	if applied.LegacyOrphan.Count != 0 {
+		t.Fatalf("pid that appeared was written: %s", stdout.String())
+	}
+	journal = openReconcileJournal(t, path)
+	defer journal.Close()
+	kept, err := journal.GetExecution(context.Background(), row.ID)
+	if err != nil || kept.State != model.StateRunning || kept.Revision != row.Revision {
+		t.Fatalf("kept=%+v err=%v", kept, err)
+	}
+}
+
+func legacyFixture(t *testing.T, host ids.HostID, kind, opaque string, observed time.Time, launch bool) model.Execution {
+	t.Helper()
+	raw, err := ids.New(ids.TypeExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := ids.ParseExecutionID(raw.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := model.Execution{
+		ID: id, OriginHostID: host, Authority: model.AuthorityNative, Adapter: "cursor",
+		State: model.StateRunning, Liveness: model.LivenessUnreachable,
+		SourceBindings: []model.SourceBinding{testSourceBinding(t, kind, ids.TypeSource, opaque)},
+		Observation:    model.Observation{ObservedAt: observed},
+	}
+	if launch {
+		pid, convErr := strconv.Atoi(opaque)
+		if convErr != nil {
+			t.Fatal(convErr)
+		}
+		execution.Launch = &model.LaunchIdentity{PID: pid, StartedAt: observed}
+	}
+	return execution
+}
+
+func mustCreateLegacyRow(t *testing.T, journal *store.Journal, kind, opaque string, observed time.Time) model.Execution {
+	t.Helper()
+	created := mustCreateRunning(t, journal, "cursor", kind, opaque, observed, nil)
+	if created.Launch != nil {
+		created.Launch = nil
+		var err error
+		created, err = journal.UpdateExecution(context.Background(), created, created.Revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return created
 }
 
 type reconcileTestApp struct {

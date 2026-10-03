@@ -40,10 +40,7 @@ type app struct {
 	// processProof overrides host process-identity checks. Production leaves it
 	// nil and reads the kernel process table; tests inject a deterministic proof.
 	processProof func(processIdentity) processProof
-	// forceStaleRevision makes reconcile submit a stale compare-and-swap
-	// revision for one execution. Production leaves it nil.
-	forceStaleRevision func(ids.ExecutionID) bool
-	updateNotice       func(context.Context, string, common) *output.Warning
+	updateNotice func(context.Context, string, common) *output.Warning
 	// supervisorHealthProbe overrides the owner-only supervisor status RPC that
 	// doctor folds into its readiness report. Production leaves it nil and
 	// dials the socket; tests inject a bounded fake health response.
