@@ -19,6 +19,17 @@ func TestWithoutCallerDeclarationPreservesEnvironment(t *testing.T) {
 	}
 }
 
+func TestMergeEnvironmentReplacesInheritedSelectors(t *testing.T) {
+	got := mergeEnvironment(
+		[]string{"KEEP=two=three", "ZCODE_MODEL=glm-5.3-flash", "ZCODE_MODEL=duplicate"},
+		[]string{"ZCODE_MODEL=glm-5.3", "ZCODE_MODEL="},
+	)
+	want := []string{"KEEP=two=three", "ZCODE_MODEL="}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("environment=%v want=%v", got, want)
+	}
+}
+
 func TestWithoutCallerDeclarationMatchesPlatformKeySemantics(t *testing.T) {
 	lowercase := "agentctl_caller_harness=hermes"
 	got := WithoutCallerDeclaration([]string{lowercase})

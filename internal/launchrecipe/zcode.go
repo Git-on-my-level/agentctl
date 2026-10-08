@@ -20,9 +20,11 @@ func buildZCode(executable, model, speed, effort string) (Recipe, error) {
 	if effort != "" && effort != "high" {
 		return Recipe{}, fail("effort_unavailable", "zcode effort is the CLI reasoningLevel; only high is accepted because that is the configured default")
 	}
-	var env []string
+	// Clear ambient selectors so the base model uses the configured default,
+	// including on hosts that have no provisioned per-model config.
+	env := []string{"ZCODE_MODEL="}
 	if nativeModel == "glm-5.3-flash" {
-		env = []string{"ZCODE_MODEL=" + nativeModel}
+		env[0] += nativeModel
 	}
 	return Recipe{Argv: []string{exe, "--json", "--mode", "yolo", "--prompt"}, PromptDelivery: PromptDeliveryArgv, Env: env}, nil
 }

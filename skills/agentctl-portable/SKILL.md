@@ -180,7 +180,8 @@ Multica delegation is rejected until its result/settings contract is available;
 explicit `dispatch` retains its existing lifecycle-only guarantees. The ZCode
 Flash recipe sets the non-secret `ZCODE_MODEL` selector; the host-managed
 launcher needs its config from `zcode-cli-provision`. GLM-5.3 keeps the configured
-default. Missing variants fail before a prompt runs. Requested model/settings
+default by clearing inherited selectors with `ZCODE_MODEL=`. Launch values
+replace inherited entries. Missing variants fail before a prompt runs. Requested model/settings
 are not proof of provider-side model identity or task correctness.
 
 ## Expert native path

@@ -209,7 +209,11 @@ func TestZCodeRecipeUsesProvisionedModel(t *testing.T) {
 	}
 	for _, model := range []string{"glm-5.3", "glm-5.3-flash"} {
 		selected, err := Build(Input{Harness: "zcode", Model: "zai/" + model})
-		if err != nil || (model == "glm-5.3" && len(selected.Env) != 0) || (model == "glm-5.3-flash" && (len(selected.Env) != 1 || selected.Env[0] != "ZCODE_MODEL="+model)) {
+		selector := "ZCODE_MODEL="
+		if model == "glm-5.3-flash" {
+			selector += model
+		}
+		if err != nil || len(selected.Env) != 1 || selected.Env[0] != selector {
 			t.Fatalf("model=%s env=%v err=%v", model, selected.Env, err)
 		}
 	}
