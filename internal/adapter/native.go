@@ -697,7 +697,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	if req.Cwd != "" {
 		cmd.Dir = req.Cwd
 	}
-	cmd.Env = append(WithoutCallerDeclaration(os.Environ()), req.Env...)
+	cmd.Env = mergeEnvironment(WithoutCallerDeclaration(os.Environ()), req.Env)
 	if context := req.ExecutionContext; context != nil && context.Authority == "native" {
 		cmd.Env = setEnvironment(cmd.Env, map[string]string{
 			"AGENTCTL_EXECUTION_ID": context.ExecutionID,

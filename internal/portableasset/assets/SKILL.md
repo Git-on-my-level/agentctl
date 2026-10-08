@@ -36,7 +36,7 @@ agentctl delegate --request-file request.json --prompt-file task.md --plan
 agentctl delegate --request-file request.json --prompt-file task.md --wait
 ```
 
-Inspect `native.argv` and `native.permissions` on the plan before launching.
+Inspect `native.argv`, `native.env`, and `native.permissions` on the plan before launching.
 Coding is the default access. It adds Cursor `--force` and Codex
 `--dangerously-bypass-approvals-and-sandbox` only when
 `delegation.unattended_coding_permissions` is true. `settings.access:
@@ -177,8 +177,12 @@ collection after delivery. `--content` returns exact answer text. Explicit
 This is foreground-owned native work, with optional `--timeout`; background and
 external context handles are not supported by delegate yet. Plans are read-only.
 Multica delegation is rejected until its result/settings contract is available;
-explicit `dispatch` retains its existing lifecycle-only guarantees. Requested
-model/settings are not proof of provider-side model identity or task correctness.
+explicit `dispatch` retains its existing lifecycle-only guarantees. The ZCode
+Flash recipe sets the non-secret `ZCODE_MODEL` selector; the host-managed
+launcher needs its config from `zcode-cli-provision`. GLM-5.3 keeps the configured
+default by clearing inherited selectors with `ZCODE_MODEL=`. Launch values
+replace inherited entries. Missing variants fail before a prompt runs. Requested model/settings
+are not proof of provider-side model identity or task correctness.
 
 ## Expert native path
 

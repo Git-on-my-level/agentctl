@@ -7,6 +7,22 @@ import (
 
 const CallerHarnessEnv = "AGENTCTL_CALLER_HARNESS"
 
+// mergeEnvironment replaces inherited entries with explicit launch values,
+// including empty values. Repeated overrides use the last value.
+func mergeEnvironment(env, overrides []string) []string {
+	values := make(map[string]string, len(overrides))
+	for _, entry := range overrides {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[key] = value
+		} else {
+			// Preserve exec.Cmd's handling of entries without an equals sign.
+			env = append(env, entry)
+		}
+	}
+	return setEnvironment(env, values)
+}
+
 // WithoutCallerDeclaration removes an invocation's caller declaration from
 // inherited child environments. A native child is a new caller; it must declare
 // itself before coordinating further work. Explicit LaunchRequest.Env entries

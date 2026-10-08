@@ -245,14 +245,14 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 	}
 	binding := &model.DelegationBinding{RequestSHA256: inputDigest, ConfigurationSHA256: source.Delegation.ConfigurationSHA256, Requested: append(json.RawMessage(nil), source.Delegation.Requested...),
 		Resolved: source.Delegation.Resolved, Defaulted: append([]string(nil), source.Delegation.Defaulted...),
-		NativePlan: &model.DelegationNativePlan{Argv: argv, PromptDelivery: plan.PromptDelivery, Permissions: plan.Permissions, RecipeArgv: append([]string(nil), recipe...)}}
+		NativePlan: &model.DelegationNativePlan{Env: append([]string(nil), plan.Env...), Argv: argv, PromptDelivery: plan.PromptDelivery, Permissions: plan.Permissions, RecipeArgv: append([]string(nil), recipe...)}}
 	prompt.Delivery = plan.PromptDelivery
 	labels := opts.labels
 	if len(labels) == 0 {
 		labels = append([]string(nil), source.Labels...)
 	}
 	admissionReused, admissionRecorded := false, false
-	run := runOptions{adapter: source.Adapter, cwd: *source.CWD, argv: append([]string(nil), argv...), preparedPrompt: prompt, plan: opts.plan, timeout: opts.timeout, labels: labels,
+	run := runOptions{env: append([]string(nil), plan.Env...), adapter: source.Adapter, cwd: *source.CWD, argv: append([]string(nil), argv...), preparedPrompt: prompt, plan: opts.plan, timeout: opts.timeout, labels: labels,
 		delegation: binding, supersedes: []ids.ExecutionID{id}, mutationOverride: &mutation, admissionReused: &admissionReused, admissionRecorded: &admissionRecorded}
 	// Two invocations can both pass the checks above. Each journals its turn
 	// first and then looks again, so exactly one of them launches: the turn
@@ -292,7 +292,7 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 		if err := json.Unmarshal(captured.Bytes(), &document); err != nil {
 			return output.Wrap(output.CodeInternal, "decode native preflight", false, err)
 		}
-		return writeContinuePlan(renderer, id, *binding, map[string]any{"argv": redactSession(argv, session), "prompt_delivery": plan.PromptDelivery, "permissions": plan.Permissions, "preflight": document.Result}, "")
+		return writeContinuePlan(renderer, id, *binding, map[string]any{"env": plan.Env, "argv": redactSession(argv, session), "prompt_delivery": plan.PromptDelivery, "permissions": plan.Permissions, "preflight": document.Result}, "")
 	}
 	execution, found, problem := a.findDelegation(ctx, c, mutation)
 	if problem != nil {
@@ -360,7 +360,7 @@ func writeContinuePlan(renderer output.Renderer, source ids.ExecutionID, binding
 	if native != nil {
 		result["native"] = native
 	} else if binding.NativePlan != nil {
-		result["native"] = map[string]any{"prompt_delivery": binding.NativePlan.PromptDelivery, "permissions": binding.NativePlan.Permissions, "source": "frozen_admission", "preflight_repeated": false}
+		result["native"] = map[string]any{"env": binding.NativePlan.Env, "prompt_delivery": binding.NativePlan.PromptDelivery, "permissions": binding.NativePlan.Permissions, "source": "frozen_admission", "preflight_repeated": false}
 	}
 	if reusedID != "" {
 		result["id"] = reusedID

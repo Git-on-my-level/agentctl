@@ -22,7 +22,7 @@ func TestDelegationSurvivesLegacyProjectionRewrite(t *testing.T) {
 	j, _, now := openTestJournal(t)
 	initial := sampleExecution(now)
 	initial.Delegation = storedDelegationFixture()
-	initial.Delegation.NativePlan = &model.DelegationNativePlan{Argv: []string{"cursor-agent", "--print"}, PromptDelivery: "argv"}
+	initial.Delegation.NativePlan = &model.DelegationNativePlan{Env: []string{"REVIEWED_MODEL=example"}, Argv: []string{"cursor-agent", "--print"}, PromptDelivery: "argv"}
 	mutation := contracts.MutationKey{Scope: "execution:delegate", Key: "request-01", InputDigest: hash('a')}
 	created, _, err := j.CreateExecution(ctx, initial, mutation)
 	if err != nil {
@@ -87,7 +87,7 @@ func TestDelegationRecoversAccessDroppedByLegacyProjection(t *testing.T) {
 	initial := sampleExecution(now)
 	initial.Delegation = storedDelegationFixture()
 	initial.Delegation.Resolved.Settings.Access = "coding"
-	initial.Delegation.NativePlan = &model.DelegationNativePlan{Argv: []string{"cursor-agent", "--print"}, PromptDelivery: "argv"}
+	initial.Delegation.NativePlan = &model.DelegationNativePlan{Env: []string{"REVIEWED_MODEL=example"}, Argv: []string{"cursor-agent", "--print"}, PromptDelivery: "argv"}
 	mutation := contracts.MutationKey{Scope: "execution:delegate", Key: "request-01", InputDigest: hash('a')}
 	created, _, err := j.CreateExecution(ctx, initial, mutation)
 	if err != nil {

@@ -190,7 +190,7 @@ func TestClaudeCodeRejectsEffort(t *testing.T) {
 	}
 }
 
-func TestZCodeRecipeUsesConfiguredModelOnly(t *testing.T) {
+func TestZCodeRecipeUsesProvisionedModel(t *testing.T) {
 	got, err := Build(Input{Harness: "zcode", Model: "zai/glm-5.3", Effort: "high"})
 	if err != nil {
 		t.Fatal(err)
@@ -206,6 +206,16 @@ func TestZCodeRecipeUsesConfiguredModelOnly(t *testing.T) {
 	}
 	if got.PromptDelivery != PromptDeliveryArgv {
 		t.Fatalf("delivery = %q", got.PromptDelivery)
+	}
+	for _, model := range []string{"glm-5.3", "glm-5.3-flash"} {
+		selected, err := Build(Input{Harness: "zcode", Model: "zai/" + model})
+		selector := "ZCODE_MODEL="
+		if model == "glm-5.3-flash" {
+			selector += model
+		}
+		if err != nil || len(selected.Env) != 1 || selected.Env[0] != selector {
+			t.Fatalf("model=%s env=%v err=%v", model, selected.Env, err)
+		}
 	}
 	if _, err := Build(Input{Harness: "zcode", Model: "zai/glm-4.7"}); err == nil {
 		t.Fatal("expected a different model to be refused")
