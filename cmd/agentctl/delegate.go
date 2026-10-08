@@ -369,13 +369,13 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	if access == "" {
 		defaulted = append(defaulted, "settings.access")
 	}
-	binding := &model.DelegationBinding{RequestSHA256: inputDigest, ConfigurationSHA256: configDigest, Requested: requested, NativePlan: &model.DelegationNativePlan{Argv: append([]string(nil), recipe.Argv...), PromptDelivery: recipe.PromptDelivery, Permissions: recipe.Permissions},
+	binding := &model.DelegationBinding{RequestSHA256: inputDigest, ConfigurationSHA256: configDigest, Requested: requested, NativePlan: &model.DelegationNativePlan{Env: append([]string(nil), recipe.Env...), Argv: append([]string(nil), recipe.Argv...), PromptDelivery: recipe.PromptDelivery, Permissions: recipe.Permissions},
 		Resolved: model.DelegationTarget{Harness: selected.Harness, Family: selected.Family, Version: selected.Version, Model: selected.Model, Host: host, Authority: model.AuthorityNative,
 			Settings: model.DelegationSettings{Speed: selected.Speed, Effort: selected.Effort, Access: resolvedAccess(access)}}, Defaulted: defaulted}
 	prompt.Delivery = recipe.PromptDelivery
 	admissionReused := false
 	admissionRecorded := false
-	run := runOptions{adapter: selected.Harness, cwd: cwd, argv: append([]string(nil), recipe.Argv...), preparedPrompt: prompt,
+	run := runOptions{env: append([]string(nil), recipe.Env...), adapter: selected.Harness, cwd: cwd, argv: append([]string(nil), recipe.Argv...), preparedPrompt: prompt,
 		plan: opts.plan, timeout: opts.timeout, labels: opts.labels, delegation: binding, mutationOverride: &mutation, admissionReused: &admissionReused, admissionRecorded: &admissionRecorded}
 	var captured bytes.Buffer
 	inner := output.Renderer{Mode: output.JSON, Writer: &captured}
@@ -396,7 +396,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 		if err := json.Unmarshal(captured.Bytes(), &document); err != nil {
 			return output.Wrap(output.CodeInternal, "decode native preflight", false, err)
 		}
-		return writeDelegatePlan(renderer, *binding, map[string]any{"argv": recipe.Argv, "prompt_delivery": recipe.PromptDelivery, "permissions": recipe.Permissions, "preflight": document.Result}, "")
+		return writeDelegatePlan(renderer, *binding, map[string]any{"env": recipe.Env, "argv": recipe.Argv, "prompt_delivery": recipe.PromptDelivery, "permissions": recipe.Permissions, "preflight": document.Result}, "")
 	}
 	execution, found, problem := a.findDelegation(ctx, c, mutation)
 	if problem != nil {
@@ -476,7 +476,7 @@ func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding
 	if native != nil {
 		result["native"] = native
 	} else if binding.NativePlan != nil {
-		result["native"] = map[string]any{"argv": binding.NativePlan.Argv, "prompt_delivery": binding.NativePlan.PromptDelivery, "permissions": binding.NativePlan.Permissions, "source": "frozen_admission", "preflight_repeated": false}
+		result["native"] = map[string]any{"env": binding.NativePlan.Env, "argv": binding.NativePlan.Argv, "prompt_delivery": binding.NativePlan.PromptDelivery, "permissions": binding.NativePlan.Permissions, "source": "frozen_admission", "preflight_repeated": false}
 	}
 	if reusedID != "" {
 		result["id"] = reusedID

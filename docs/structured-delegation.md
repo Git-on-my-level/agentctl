@@ -216,3 +216,12 @@ Devin passes exact configured model IDs instead of a frozen version list, while
 continuing to refuse fast/priority variants and unsafe argument forms. Claude
 Code's documented native `[1m]` suffix is preserved only for that adapter; other
 harnesses retain their reviewed bracket grammar. Neither change remaps models.
+
+ZCode's host-managed launcher accepts `ZCODE_MODEL=glm-5.3` or
+`ZCODE_MODEL=glm-5.3-flash`. The Flash recipe selects its provisioned
+provider config through this environment value; the GLM-5.3 recipe preserves
+the existing configured default and adds no environment selector. It adds no native `--model` flag. Provision both configs with `zcode-cli-provision` before delegating.
+Plans expose these reviewed, non-secret values in `native.env`; the immutable
+admission retains them for retries and follow-up turns. Arbitrary caller env
+and credentials are not accepted through this recipe mechanism. Effort remains
+the configured high default; `fast` service speed is still unsupported.

@@ -38,6 +38,8 @@ type Input struct {
 
 // Recipe is the exact native invocation plan before prompt attachment.
 type Recipe struct {
+	// Env contains reviewed, non-secret model selectors for the native launcher.
+	Env            []string
 	Argv           []string
 	PromptDelivery string
 	// Permissions is full, constrained, read_only, or unsupported.

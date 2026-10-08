@@ -27,6 +27,7 @@ import (
 )
 
 type runOptions struct {
+	env        []string
 	delegation *model.DelegationBinding
 	supersedes []ids.ExecutionID
 	// admit runs after the execution is journaled and before anything is
@@ -268,7 +269,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		}
 	}
 	launchCtx := operationCtx
-	launchRequest := adapter.LaunchRequest{Argv: opts.argv, Cwd: opts.cwd, Context: contextInput(c), DiscoveryWindow: 250 * time.Millisecond, StartOnly: true,
+	launchRequest := adapter.LaunchRequest{Env: opts.env, Argv: opts.argv, Cwd: opts.cwd, Context: contextInput(c), DiscoveryWindow: 250 * time.Millisecond, StartOnly: true,
 		ExecutionContext: &adapter.ExecutionContext{ExecutionID: execution.ID.String(), Adapter: execution.Adapter, HostID: execution.OriginHostID.String(), Labels: append([]string(nil), execution.Labels...), Authority: string(execution.Authority)}}
 	launchRequest.PromptDelivery, launchRequest.PromptArgs = promptDelivery, promptArgs
 	if prompt != nil && (prompt.Delivery == "stdin" || prompt.Delivery == adapter.PromptDeliveryStream) {

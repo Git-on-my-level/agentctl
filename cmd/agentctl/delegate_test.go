@@ -297,3 +297,39 @@ func TestDelegateConcurrentFailedProbeRecoversAdmission(t *testing.T) {
 		t.Fatalf("launches=%q", launches)
 	}
 }
+
+func TestZCodeModelEnvironmentAndReplay(t *testing.T) {
+	// The inherited model conflicts; reviewed recipe selectors must win.
+	t.Setenv("ZCODE_MODEL", "glm-5.3")
+	f := newDelegateFixture(t, delegateSuccessScript)
+	native := filepath.Join(f.root, "zcode")
+	script := `#!/bin/sh
+if [ "$1" = --version ]; then echo 0.16.9; exit 0; fi
+printf '{"sessionId":"sess_env_test","response":"%s"}\n' "$ZCODE_MODEL"
+`
+	if err := os.WriteFile(native, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	value := map[string]any{"schema_version": 1, "default_profile": "test", "profiles": map[string]any{"test": map[string]any{
+		"adapters":          map[string]any{"zcode": map[string]any{"executable": native}},
+		"agent_preferences": map[string]any{"mode": "advisory", "preferred": []any{map[string]any{"agent": "zcode", "family": "glm-flash", "model": "zai/glm-5.3-flash", "use_for": "alias:glm-flash"}}},
+	}}}
+	data, _ := json.Marshal(value)
+	if err := os.WriteFile(f.config, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.selectRequest(t, `{"family":"glm-flash"}`)
+	code, plan := f.invoke("reply with model", "--plan")
+	if code != 0 || !strings.Contains(plan, `"env":["ZCODE_MODEL=glm-5.3-flash"]`) {
+		t.Fatalf("plan exit=%d %s", code, plan)
+	}
+	code, out := f.invoke("reply with model", "--wait")
+	if code != 0 || !strings.Contains(out, `"text":"glm-5.3-flash"`) {
+		t.Fatalf("delegate exit=%d %s", code, out)
+	}
+	t.Setenv("ZCODE_MODEL", "wrong-inherited-model")
+	code, out = f.invoke("reply with model", "--plan")
+	if code != 0 || !strings.Contains(out, `"env":["ZCODE_MODEL=glm-5.3-flash"]`) || !strings.Contains(out, "frozen_admission") {
+		t.Fatalf("replay exit=%d %s", code, out)
+	}
+}

@@ -23,6 +23,8 @@ type DelegationBinding struct {
 // DelegationNativePlan is private operational metadata. The store retains it
 // in the immutable idempotency record; normal execution JSON never exposes it.
 type DelegationNativePlan struct {
+	// Env pins reviewed non-secret launcher selectors alongside the argv.
+	Env            []string `json:"env,omitempty"`
 	Argv           []string `json:"argv"`
 	PromptDelivery string   `json:"prompt_delivery"`
 	Permissions    string   `json:"permissions,omitempty"`
@@ -82,6 +84,15 @@ func (b DelegationBinding) Validate() error {
 	if b.NativePlan != nil {
 		if len(b.NativePlan.Argv) == 0 || len(b.NativePlan.Argv) > 64 || (b.NativePlan.PromptDelivery != "argv" && b.NativePlan.PromptDelivery != "stdin" && b.NativePlan.PromptDelivery != "stream") {
 			return errors.New("invalid delegation native plan")
+		}
+		if len(b.NativePlan.Env) > 32 {
+			return errors.New("invalid delegation native environment")
+		}
+		for _, entry := range b.NativePlan.Env {
+			key, _, ok := strings.Cut(entry, "=")
+			if !ok || key == "" || len(entry) > 4096 || strings.ContainsAny(entry, "\x00\r\n") {
+				return errors.New("invalid delegation native environment")
+			}
 		}
 		if len(b.NativePlan.RecipeArgv) > 64 {
 			return errors.New("invalid delegation native plan")
