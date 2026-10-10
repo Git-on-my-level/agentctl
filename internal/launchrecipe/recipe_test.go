@@ -369,6 +369,35 @@ func TestCodexReadOnlyUsesSandbox(t *testing.T) {
 	}
 }
 
+func TestDevinFullPermissionsUsesDangerousMode(t *testing.T) {
+	got, err := Build(Input{Harness: "devin", Model: "fusion-gpt-6.1-sol-high-sidekick-swe-2-high", UnattendedCodingPermissions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"devin", "--model", "fusion-gpt-6.1-sol-high-sidekick-swe-2-high", "-p", "--respect-workspace-trust", "false", "--permission-mode", "dangerous", "--"}
+	if got.Permissions != PermissionsFull || strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("argv=%v permissions=%s", got.Argv, got.Permissions)
+	}
+}
+
+func TestDevinRejectsReadOnlyAccess(t *testing.T) {
+	_, err := Build(Input{Harness: "devin", Model: "swe-2-high", Access: AccessReadOnly, UnattendedCodingPermissions: true})
+	var buildErr *Error
+	if !errors.As(err, &buildErr) || buildErr.Code != "access_unavailable" {
+		t.Fatalf("err=%v want access_unavailable", err)
+	}
+}
+
+func TestDevinGrantAbsentStaysConstrained(t *testing.T) {
+	got, err := Build(Input{Harness: "devin", Model: "swe-2-high"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Permissions != PermissionsConstrained || contains(got.Argv, "--permission-mode") || contains(got.Argv, "dangerous") {
+		t.Fatalf("argv=%v permissions=%s", got.Argv, got.Permissions)
+	}
+}
+
 func TestOMPRejectsReadOnlyAccess(t *testing.T) {
 	_, err := Build(Input{Harness: "omp", Model: "zai/glm-5.3", Access: AccessReadOnly})
 	var buildErr *Error

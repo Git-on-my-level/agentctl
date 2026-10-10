@@ -9,7 +9,8 @@
 //   - Permission-broadening flags are injected only when
 //     UnattendedCodingPermissions is true, access is coding (the default),
 //     and the harness has a reviewed flag: Cursor --force, Codex
-//     --dangerously-bypass-approvals-and-sandbox. Read-only access never
+//     --dangerously-bypass-approvals-and-sandbox, Devin --permission-mode
+//     dangerous. Read-only access never
 //     receives them. Other harnesses are labeled unsupported and are not
 //     given an inferred bypass.
 //   - Cursor --trust is included only when CursorWorkspaceTrust is true.
