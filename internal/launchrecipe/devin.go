@@ -9,7 +9,15 @@ import "strings"
 // Print mode fails in an untrusted directory unless workspace trust
 // is disabled, so the recipe passes that flag. The prompt is a positional
 // argument after --.
-func buildDevin(executable, model, speed, effort string) (Recipe, error) {
+//
+// Print mode cannot answer an approval prompt: a tool call
+// the mode does not auto-approve is rejected, its sibling calls are canceled,
+// and devin exits 0 with only the text emitted so far. Unattended coding
+// therefore needs --permission-mode dangerous. Read-only access is refused
+// before this point: auto blocks writes but ends the run at the first
+// rejected call, so a truncated answer would be recorded as success. "smart"
+// is not offered by every model (Fusion rejects it), so it is never selected.
+func buildDevin(executable, model, speed, effort, access string, grant bool) (Recipe, error) {
 	exe, err := resolveExecutable("devin", executable)
 	if err != nil {
 		return Recipe{}, err
@@ -23,7 +31,12 @@ func buildDevin(executable, model, speed, effort string) (Recipe, error) {
 	if err := devinModel(model); err != nil {
 		return Recipe{}, err
 	}
-	return Recipe{Argv: []string{exe, "--model", model, "-p", "--respect-workspace-trust", "false", "--"}, PromptDelivery: PromptDeliveryArgv}, nil
+	argv := []string{exe, "--model", model, "-p", "--respect-workspace-trust", "false"}
+	if applyCodingPermissions(access, grant) {
+		argv = append(argv, "--permission-mode", "dangerous")
+	}
+	argv = append(argv, "--")
+	return Recipe{Argv: argv, PromptDelivery: PromptDeliveryArgv}, nil
 }
 
 func devinModel(model string) error {

@@ -219,7 +219,14 @@ precede the answer; the answer is the text after that banner. Launch recipes
 pass `--model` with an accepted account id (`swe-2-high` or
 `fusion-gpt-6-sol-high-sidekick-swe-2-high`) and `-p`, and disable workspace
 trust so print mode can run in an untrusted directory. Fast and priority model
-ids are refused. `devin acp` is a separate JSON-RPC server and is not the print
+ids are refused. Print mode cannot answer an approval prompt: a tool call the
+permission mode does not auto-approve is rejected, the calls issued alongside
+it are canceled, and devin exits 0 with only the text emitted so far. The
+default `auto` mode rejects any command it does not judge read-only, so coding
+launches add `--permission-mode dangerous` when
+`delegation.unattended_coding_permissions` is true; `smart` is not offered by
+every model and is never selected. Read-only access is refused for the same
+reason. `devin acp` is a separate JSON-RPC server and is not the print
 payload.
 
 ### OMP

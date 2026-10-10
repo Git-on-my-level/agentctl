@@ -109,7 +109,7 @@ func Build(in Input) (Recipe, error) {
 	case "zcode":
 		recipe, err = buildZCode(in.Executable, model, speed, effort)
 	case "devin":
-		recipe, err = buildDevin(in.Executable, model, speed, effort)
+		recipe, err = buildDevin(in.Executable, model, speed, effort, access, in.UnattendedCodingPermissions)
 	case "claude-code":
 		recipe, err = buildClaudeCode(in.Executable, model, speed, effort)
 	default:
@@ -150,6 +150,8 @@ func requireReviewedAccess(harness, access string) error {
 	switch harness {
 	case "cursor", "codex":
 		return nil
+	case "devin":
+		return fail("access_unavailable", "devin print mode ends the run with exit 0 and a partial answer when its read-only permission mode rejects a tool call; omit access or choose another harness")
 	default:
 		return fail("access_unavailable", fmt.Sprintf("%s cannot guarantee read-only access; omit access or choose another harness", harness))
 	}
@@ -163,7 +165,7 @@ func permissionLabel(harness, access string, grant bool) string {
 		return PermissionsConstrained
 	}
 	switch harness {
-	case "cursor", "codex":
+	case "cursor", "codex", "devin":
 		return PermissionsFull
 	default:
 		return PermissionsUnsupported

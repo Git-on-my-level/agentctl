@@ -90,11 +90,14 @@ harness, model, or settings constraints.
 Workspace trust is a separate grant: `delegation.cursor_workspace_trust: true`
 on the profile allows the recipe to include Cursor `--trust`. A model alias or
 allowlist entry never grants it. Unattended coding permissions are a second
-grant: `delegation.unattended_coding_permissions: true` adds Cursor `--force`
-and Codex `--dangerously-bypass-approvals-and-sandbox` on coding launches
-(the default `settings.access`). `settings.access: "read_only"` uses Cursor
-`--mode ask` and Codex `--sandbox read-only` and never adds those bypass
-flags. Harnesses without a reviewed bypass flag are labeled
+grant: `delegation.unattended_coding_permissions: true` adds Cursor `--force`,
+Codex `--dangerously-bypass-approvals-and-sandbox`, and Devin
+`--permission-mode dangerous` on coding launches (the default
+`settings.access`). `settings.access: "read_only"` uses Cursor `--mode ask`
+and Codex `--sandbox read-only` and never adds those bypass flags. Devin
+refuses `read_only` with `access_unavailable`: its print mode cannot answer an
+approval prompt, so the first tool call its read-only mode rejects ends the
+run with exit 0 and a partial answer. Harnesses without a reviewed bypass flag are labeled
 `permissions: unsupported` and are not given an inferred flag. Expert `run`
 never reads either grant. Review both grants before enabling them.
 
