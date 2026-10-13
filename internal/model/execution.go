@@ -617,3 +617,10 @@ func validateBinding(v SourceBinding) error {
 	}
 	return nil
 }
+
+// RecordProgress advances known evidence without backfilling unknown history.
+func (e *Execution) RecordProgress(at time.Time) {
+	if !at.IsZero() && (e.ProgressAt == nil || at.After(*e.ProgressAt)) {
+		e.ProgressAt = &at
+	}
+}

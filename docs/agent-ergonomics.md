@@ -668,7 +668,8 @@ Caller attribution is preserved in execution-owned immutable metadata, so a newe
 
 `status` and `recent` expose nullable `progress_at`: the observation time of the
 latest newly recorded scoped progress, attention or terminal event, or a verified
-snapshot state/source-state change. It is monotonic. Legacy records and execution
+launch/session, snapshot or result state/source-state change. Native state and
+source-state transitions also record it; runner lease heartbeats do not. It is monotonic. Legacy records and execution
 paths that have not recorded such evidence return null; never substitute
 `created_at`, `updated_at` or a probe timestamp for unknown progress.
 
@@ -679,3 +680,9 @@ An advancing workspace cursor may still be checkpointed for pagination, without
 advancing execution progress. Event ingestion already commits new evidence; the
 supervisor does not apply a second envelope update. These fields remain metadata
 and do not prove task acceptance or successful answer collection.
+
+An empty workspace event response proves only that the workspace API answered.
+It does not observe the exact bound issue/run, restore its cached liveness, or
+refresh task observation age for inbox/reconcile. A durable per-execution API
+contact diagnostic would be separate from task evidence and requires a future
+storage/consumer contract; empty probes remain non-journaled in this landing.

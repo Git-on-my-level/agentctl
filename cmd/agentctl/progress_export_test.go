@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Git-on-my-level/agentctl/internal/adapter"
+	"github.com/Git-on-my-level/agentctl/internal/contracts"
+	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
@@ -102,4 +105,52 @@ func TestStatusRecentProgressExportIsReadOnly(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Fatal("status/recent progress export mutated journal")
 	}
+}
+
+func TestNativeProgressWritersExcludeHeartbeats(t *testing.T) {
+	ctx := context.Background()
+	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	journal, err := store.Open(filepath.Join(t.TempDir(), "state", "journal.db"), store.Options{Clock: func() time.Time { return at }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	execution, _, err := journal.CreateExecution(ctx, model.Execution{Authority: model.AuthorityNative, Mode: model.ModeDirect, Adapter: "generic-process", Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, Capabilities: model.CapabilitySnapshot{NegotiatedAt: at, AdapterVersion: "test"}, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: at}}, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := at.Add(time.Second)
+	execution, err = applySession(journal, execution, adapter.Session{State: adapter.StateRunning, Liveness: adapter.LivenessAlive, Observation: adapter.Observation{ObservedAt: started}}, started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProgress := func(want time.Time) {
+		t.Helper()
+		if execution.ProgressAt == nil || !execution.ProgressAt.Equal(want) {
+			t.Fatalf("progress=%v want=%s", execution.ProgressAt, want)
+		}
+	}
+	assertProgress(started)
+	progressed := at.Add(2 * time.Second)
+	execution, err = appendNativeEvent(ctx, journal, execution, adapter.Event{Kind: "progress", State: adapter.StateRunning, SourceState: "tool.started", ObservedAt: progressed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProgress(progressed)
+	execution, err = refreshRunnerLease(journal, execution, at.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProgress(progressed)
+	execution, err = appendNativeEvent(ctx, journal, execution, adapter.Event{Kind: "progress", State: adapter.StateRunning, SourceState: "tool.started", Cursor: "second", ObservedAt: at.Add(4 * time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProgress(progressed)
+	finished := at.Add(5 * time.Second)
+	execution, err = finalizeResultConverging(ctx, journal, execution, adapter.Result{State: adapter.StateCompleted, Success: true, Content: "answer", ContentType: "text/plain"}, finished, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProgress(finished)
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/supervisor"
 )
@@ -64,6 +65,23 @@ func TestMulticaEventProbeProgress(t *testing.T) {
 	events, _ := journal.ListEvents(ctx, execution.ID, contracts.EventQuery{})
 	if len(events) != 0 {
 		t.Fatalf("empty polls journaled events: %#v", events)
+	}
+
+	// An empty workspace response after a failed observation is not evidence
+	// that this bound issue is live. Keep that uncertainty rather than healing
+	// cached liveness from workspace API reachability (also v0.15.0 behavior).
+	fake.eventsPageFn = nil
+	fake.eventsErr = &adapter.AdapterError{Code: adapter.ErrTimeout, Message: "fixture timeout"}
+	probe()
+	execution, _ = journal.GetExecution(ctx, execution.ID)
+	if execution.Liveness != model.LivenessUnreachable {
+		t.Fatalf("failure did not retain uncertainty: %#v", execution)
+	}
+	fake.eventsErr = nil
+	for range 3 {
+		probe()
+		assertUnchanged(execution)
+		now = now.Add(time.Minute)
 	}
 
 	// Pagination through unrelated workspace work needs a cursor checkpoint,
@@ -171,5 +189,114 @@ func TestRuntimeCASPreservesNewerProgress(t *testing.T) {
 	}
 	if got.ProgressAt == nil || !got.ProgressAt.Equal(at) {
 		t.Fatalf("CAS lost newer progress: %#v", got)
+	}
+}
+
+func TestMulticaEventCASRaceDoesNotLosePage(t *testing.T) {
+	for _, scenario := range []string{"progress", "terminal", "terminal-wins", "exhausted-retry"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx := context.Background()
+			config := adapter.MulticaConfig{Binary: "/opt/multica", Profile: "private", Endpoint: "https://multica.internal", Workspace: "workspace-1", Issue: "issue-2"}
+			fake := &fakeAdapter{name: "multica"}
+			registry := NewRegistry()
+			if err := registry.Register("multica", func(AdapterSpec) (adapter.Adapter, error) { return fake, nil }); err != nil {
+				t.Fatal(err)
+			}
+			engine, journal, _ := testEngine(t, registry)
+			execution := createPromotedIssueExecution(t, engine, journal, AdapterSpec{Name: "multica", Executable: config.Binary, Multica: &config})
+			at := fixtureNow.Add(time.Minute)
+			kind, state, source := "progress", adapter.StateRunning, "issue.started"
+			if scenario == "terminal" || scenario == "exhausted-retry" {
+				kind, state, source = "terminal", adapter.StateCompleted, "issue.completed"
+			}
+			fake.eventsPageFn = func(adapter.EventsRequest) (adapter.MulticaEventPage, error) {
+				return adapter.MulticaEventPage{Events: []adapter.Event{{Kind: kind, State: state, SourceState: source, ObservedAt: at, Ordering: "source", DedupeKey: "raced-event", Payload: map[string]any{"workspace_id": config.Workspace, "issue_id": config.Issue, "aggregate_kind": "issue"}}}, Scanned: 1, NextCursor: "evt1.1"}, nil
+			}
+			writes := 0
+			journal.beforeUpdate = func(j *fakeJournal, id ids.ExecutionID) {
+				writes++
+				if writes > 1 && scenario != "exhausted-retry" {
+					return
+				}
+				current := j.executions[id]
+				current.Revision++
+				current.Labels = []string{"concurrent"}
+				if scenario == "terminal-wins" {
+					current.State, current.Liveness = model.StateCompleted, model.LivenessExited
+					current.TerminalAt, current.ProgressAt = &at, &at
+					current.Observation = model.Observation{Source: model.ObservationDurableOutbox, Integrity: model.IntegrityVerified, ObservedAt: at}
+				}
+				j.executions[id] = current
+			}
+			bridge := SupervisorExecutions{Engine: engine}
+			result, err := bridge.Reprobe(ctx, supervisor.Execution{ID: execution.ID.String()})
+			if scenario == "exhausted-retry" {
+				if errorCode(err) != CodeConflict {
+					t.Fatalf("exhausted retry error=%v", err)
+				}
+				cursor, cursorErr := bridge.latestSourceCursor(ctx, execution.ID)
+				if cursorErr != nil || cursor != "" {
+					t.Fatalf("failed apply advanced cursor: %q %v", cursor, cursorErr)
+				}
+				journal.beforeUpdate = nil
+				result, err = bridge.Reprobe(ctx, supervisor.Execution{ID: execution.ID.String()})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := bridge.ApplyProbe(ctx, execution.ID.String(), result); err != nil {
+				t.Fatal(err)
+			}
+			current, _ := journal.GetExecution(ctx, execution.ID)
+			want := model.State(state)
+			if scenario == "terminal-wins" {
+				want = model.StateCompleted
+			}
+			if current.State != want || current.ProgressAt == nil || !current.ProgressAt.Equal(at) || len(current.Labels) != 1 || current.Labels[0] != "concurrent" || current.Observation.Integrity != model.IntegrityVerified {
+				t.Fatalf("race lost evidence or coordination: %#v", current)
+			}
+			if !current.State.Terminal() {
+				cursor, _ := bridge.latestSourceCursor(ctx, execution.ID)
+				if cursor != "evt1.1" {
+					t.Fatalf("successful apply did not checkpoint page: %q", cursor)
+				}
+			}
+		})
+	}
+}
+
+func TestRuntimeLaunchAndResultRecordProgress(t *testing.T) {
+	ctx := context.Background()
+	session := fixtureSession("fixture", "fixture_session", "session-1", adapter.StateRunning)
+	fake := &fakeAdapter{name: "fixture", launch: adapter.LaunchResult{Session: session}}
+	registry := NewRegistry()
+	if err := registry.Register("fixture", func(AdapterSpec) (adapter.Adapter, error) { return fake, nil }); err != nil {
+		t.Fatal(err)
+	}
+	engine, _, _ := testEngine(t, registry)
+	execution, err := engine.Launch(ctx, LaunchOptions{Adapter: AdapterSpec{Name: "fixture"}, Request: adapter.LaunchRequest{Argv: []string{"fixture"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.ProgressAt == nil || !execution.ProgressAt.Equal(fixtureNow) {
+		t.Fatalf("launch has unknown progress: %#v", execution)
+	}
+	completed := fixtureNow.Add(time.Minute)
+	engine.clock = func() time.Time { return completed }
+	fake.result = adapter.Result{State: adapter.StateCompleted, Success: true, SessionRef: session.Ref}
+	execution, err = engine.Result(ctx, execution.ID, adapter.PollOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.State != model.StateCompleted || execution.ProgressAt == nil || !execution.ProgressAt.Equal(completed) {
+		t.Fatalf("result did not record terminal progress: %#v", execution)
+	}
+	engine.clock = func() time.Time { return completed.Add(time.Hour) }
+	execution, err = engine.Result(ctx, execution.ID, adapter.PollOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.ProgressAt == nil || !execution.ProgressAt.Equal(completed) {
+		t.Fatalf("identical result poll manufactured progress: %#v", execution)
 	}
 }
