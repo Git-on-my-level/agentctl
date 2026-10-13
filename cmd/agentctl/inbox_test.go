@@ -17,6 +17,29 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
+func TestInboxStaleBoundUsesLastVerifiedObservation(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	fresh := model.Execution{State: model.StateRunning, Liveness: model.LivenessAlive, Observation: model.Observation{ObservedAt: now.Add(-10 * time.Minute), Source: model.ObservationStatusAPI, Integrity: model.IntegrityVerified}}
+	if _, actionable := projectInbox(fresh, now, time.Hour, store.AcknowledgementIndex{}, output.JSON); actionable {
+		t.Fatal("a 10 minute observation was stale inside a 1 hour bound")
+	}
+	stale := fresh
+	stale.Observation.ObservedAt = now.Add(-2 * time.Hour)
+	item, actionable := projectInbox(stale, now, time.Hour, store.AcknowledgementIndex{}, output.JSON)
+	if !actionable || len(item.Reasons) != 1 || item.Reasons[0].Code != "running_observation_stale" {
+		t.Fatalf("stale running observation: %#v", item.Reasons)
+	}
+	attention := fresh
+	attention.State = model.StateAttention
+	attention.Liveness = model.LivenessBlocked
+	item, _ = projectInbox(attention, now, time.Hour, store.AcknowledgementIndex{}, output.JSON)
+	for _, reason := range item.Reasons {
+		if reason.Code == "running_observation_stale" {
+			t.Fatal("attention was reported as a stale running observation")
+		}
+	}
+}
+
 func TestInboxCommandExplainsWithoutReadingResultContent(t *testing.T) {
 	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
 	var stdout, stderr bytes.Buffer

@@ -76,8 +76,8 @@ func parseContinue(args []string) (string, string, delegateOptions, *output.Erro
 				}
 				opts.timeout = v
 			case "--label":
-				if !validRunLabel(value) || containsArg(opts.labels, value) || len(opts.labels) >= 16 {
-					return "", "", opts, delegateError(output.CodeUsage, "continue_invalid_label", "continue requires at most 16 distinct exact labels")
+				if problem := rejectExactLabel("continue", value, opts.labels); problem != nil {
+					return "", "", opts, problem
 				}
 				opts.labels = append(opts.labels, value)
 			case "--require-result-source":

@@ -147,6 +147,60 @@ func TestMulticaEventProbeProgress(t *testing.T) {
 	}
 }
 
+func TestIdenticalStatusAPISnapshotSkipsRevisionUntilContactIsStale(t *testing.T) {
+	ctx := context.Background()
+	engine, journal, _ := testEngine(t, NewRegistry())
+	config := adapter.MulticaConfig{Binary: "/opt/multica", Profile: "private", Endpoint: "https://multica.internal", Workspace: "workspace-1", Issue: "issue-contact"}
+	execution := createPromotedIssueExecution(t, engine, journal, AdapterSpec{Name: "multica", Executable: config.Binary, Multica: &config})
+	bridge := SupervisorExecutions{Engine: engine}
+	first := fixtureNow.Add(time.Minute)
+	probe := supervisor.ProbeResult{State: "attention", Liveness: "blocked", Source: "status_api", ObservedAt: first, Revision: execution.Revision}
+	if err := bridge.ApplyProbe(ctx, execution.ID.String(), probe); err != nil {
+		t.Fatal(err)
+	}
+	current, err := journal.GetExecution(ctx, execution.ID)
+	if err != nil || current.Revision == execution.Revision || current.State != model.StateAttention {
+		t.Fatalf("state change did not write: %#v %v", current, err)
+	}
+	written := current
+	probe.Revision = current.Revision
+	probe.ObservedAt = first.Add(time.Minute)
+	if err := bridge.ApplyProbe(ctx, execution.ID.String(), probe); err != nil {
+		t.Fatal(err)
+	}
+	current, _ = journal.GetExecution(ctx, execution.ID)
+	if current.Revision != written.Revision || !current.Observation.ObservedAt.Equal(written.Observation.ObservedAt) || current.ProgressAt == nil || !current.ProgressAt.Equal(*written.ProgressAt) {
+		t.Fatalf("identical snapshot rewrote the envelope: %#v", current)
+	}
+	probe.State, probe.Liveness = "running", "alive"
+	probe.ObservedAt = first.Add(2 * time.Minute)
+	if err := bridge.ApplyProbe(ctx, execution.ID.String(), probe); err != nil {
+		t.Fatal(err)
+	}
+	current, _ = journal.GetExecution(ctx, execution.ID)
+	if current.Revision == written.Revision || current.State != model.StateRunning || current.ProgressAt == nil || !current.ProgressAt.Equal(probe.ObservedAt) {
+		t.Fatalf("state change did not write: %#v", current)
+	}
+	running := current
+	probe.Revision = current.Revision
+	probe.ObservedAt = probe.ObservedAt.Add(time.Minute)
+	if err := bridge.ApplyProbe(ctx, execution.ID.String(), probe); err != nil {
+		t.Fatal(err)
+	}
+	current, _ = journal.GetExecution(ctx, execution.ID)
+	if current.Revision != running.Revision || !current.Observation.ObservedAt.Equal(running.Observation.ObservedAt) {
+		t.Fatalf("fresh identical running snapshot rewrote the envelope: %#v", current)
+	}
+	probe.ObservedAt = running.Observation.ObservedAt.Add(statusAPIContactRefresh + time.Second)
+	if err := bridge.ApplyProbe(ctx, execution.ID.String(), probe); err != nil {
+		t.Fatal(err)
+	}
+	current, _ = journal.GetExecution(ctx, execution.ID)
+	if current.Revision == running.Revision || !current.Observation.ObservedAt.Equal(probe.ObservedAt) || current.ProgressAt == nil || !current.ProgressAt.Equal(*running.ProgressAt) {
+		t.Fatalf("stale contact was not refreshed without a progress change: %#v", current)
+	}
+}
+
 func TestSnapshotProbeProgressOnlyStateChanges(t *testing.T) {
 	ctx := context.Background()
 	engine, journal, _ := testEngine(t, NewRegistry())

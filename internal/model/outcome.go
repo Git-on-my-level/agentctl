@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,10 +14,20 @@ import (
 )
 
 const (
-	OutcomeInlineLimit  = 1 << 20
-	OutcomePreviewLimit = 512
-	OutcomeFailureLimit = 4096
+	OutcomeInlineLimit        = 1 << 20
+	OutcomePreviewLimit       = 512
+	OutcomeFailureLimit       = 4096
+	NativeFailureMessageLimit = 200
 )
+
+// nativeFailureCodePattern accepts a provider diagnostic code. Free text stays
+// out of native_code so a message cannot be copied into the code field.
+var nativeFailureCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// ValidNativeFailureCode reports whether value is a bounded provider code.
+func ValidNativeFailureCode(value string) bool {
+	return nativeFailureCodePattern.MatchString(value)
+}
 
 type OutcomeAvailability string
 
@@ -38,11 +49,13 @@ type OutcomeContent struct {
 }
 
 type OutcomeFailure struct {
-	Code      string `json:"code"`
-	Kind      string `json:"kind"`
-	Source    string `json:"source"`
-	Retryable bool   `json:"retryable"`
-	Message   string `json:"message"`
+	Code       string `json:"code"`
+	Kind       string `json:"kind"`
+	Source     string `json:"source"`
+	Retryable  bool   `json:"retryable"`
+	Message    string `json:"message"`
+	Category   string `json:"category,omitempty"`
+	NativeCode string `json:"native_code,omitempty"`
 }
 
 type Outcome struct {
@@ -108,8 +121,18 @@ func (o Outcome) Validate() error {
 		}
 	}
 	if o.Failure != nil {
-		if strings.TrimSpace(o.Failure.Code) == "" || strings.TrimSpace(o.Failure.Kind) == "" || strings.TrimSpace(o.Failure.Source) == "" || len(o.Failure.Message) > OutcomeFailureLimit {
+		limit := OutcomeFailureLimit
+		if o.Failure.Category != "" || o.Failure.NativeCode != "" {
+			limit = NativeFailureMessageLimit
+		}
+		if strings.TrimSpace(o.Failure.Code) == "" || strings.TrimSpace(o.Failure.Kind) == "" || strings.TrimSpace(o.Failure.Source) == "" || len(o.Failure.Message) > limit {
 			return errors.New("invalid outcome failure")
+		}
+		if o.Failure.Category != "" && !nativeFailureCodePattern.MatchString(o.Failure.Category) {
+			return errors.New("invalid outcome failure category")
+		}
+		if o.Failure.NativeCode != "" && !nativeFailureCodePattern.MatchString(o.Failure.NativeCode) {
+			return errors.New("invalid outcome failure native code")
 		}
 	}
 	return nil

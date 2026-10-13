@@ -62,7 +62,16 @@ agentctl skills update         # fast-forward fetch + auto-clean reconcile
 agentctl skills plan           # pinned local projection, read-only
 agentctl skills status         # pinned local projection, read-only
 agentctl skills reconcile      # strict local reconcile, no network
+agentctl skills source rebind --plan
+agentctl skills source rebind --apply --expected-digest sha256:...
 ```
+
+`skills update` names a remote or ref conflict instead of asking the operator
+to move `skill-source.json` aside. `skills source rebind --plan` is read-only
+and returns a digest. `--apply` fetches the configured ref and changes only
+the recorded remote after `merge-base --is-ancestor` proves the pinned commit
+is in that history. A ref change, a dirty checkout, or a digest mismatch does
+not fetch.
 
 All Git advances are fast-forward only. A dirty checkout, changed remote,
 invalid fetched manifest, unsafe path, symlink, oversized tree, or unsupported

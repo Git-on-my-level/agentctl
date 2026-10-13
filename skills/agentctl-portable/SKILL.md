@@ -433,10 +433,13 @@ shared context. Never compile credentials, raw prompts, transcripts, harness
 databases, worktrees, or unreviewed private logs.
 
 Use `agentctl help skills` before personal skill reconciliation. `skills plan`,
-`status`, `doctor`, and `update --plan` are read-only. `skills update`
-fast-forwards the independently selected Skill Hub and replaces only unchanged
-marker-owned copies. Local edits remain drifted for `skills diff`, plan-first
-`restore`, or plan-first `propose`; publication is always separate. The embedded
+`status`, `doctor`, `update --plan`, and `skills source rebind --plan` are
+read-only. `skills update` fast-forwards the independently selected Skill Hub
+and replaces only unchanged marker-owned copies. A remote or ref conflict names
+its reason. `skills source rebind --apply --expected-digest` changes only the
+remote after the pinned commit is an ancestor of the configured ref. Local edits
+remain drifted for `skills diff`, plan-first `restore`, or plan-first
+`propose`; publication is always separate. The embedded
 `agentctl-portable` skill is bootstrap-owned and cannot appear in a Hub pack.
 Multica skill installation remains authority-owned and must be advertised by a
 reviewed runtime-bundle installer.
@@ -445,5 +448,8 @@ reviewed runtime-bundle installer.
 
 Use full typed six-word IDs for mutations. Display labels and prefixes are not
 mutation targets. Portable URIs contain typed aliases, not credentials, native
-UUIDs, or local paths. Status, events, and callbacks remain metadata-only;
-explicit `result` is the supported final-answer read path.
+UUIDs, or local paths. Status, events, and callbacks remain metadata-only.
+A failed native turn adds a bounded failure reason (category, message of at
+most 200 characters, native code) to status, result, and a failed
+`delegate --wait`. Capacity and overload are retryable. That reason is not
+prompt or answer text. Explicit `result` is the supported final-answer read path.

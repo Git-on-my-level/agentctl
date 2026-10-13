@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,6 +14,9 @@ type codexParser struct{}
 
 func (codexParser) Name() string { return "codex-json" }
 func (codexParser) Parse(line []byte, stderr bool) parsedObservation {
+	if failure, ok := codexStructuredFailure(line); ok {
+		return failure
+	}
 	obs := parseAgentJSON(line, stderr, "codex", []string{"thread_id"}, []string{"turn.completed", "turn.failed", "error"})
 	if value, ok := decodeLine(line); ok {
 		if item, ok := value["item"].(map[string]any); ok && firstString(item, "type") == "agent_message" {
@@ -23,6 +27,78 @@ func (codexParser) Parse(line []byte, stderr bool) parsedObservation {
 		}
 	}
 	return obs
+}
+
+// nativeDiagnosticCodePattern keeps provider codes in native_code. Free text
+// stays in the bounded message.
+var nativeDiagnosticCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// codexStructuredFailure reads a terminal Codex error from the exec stream.
+// turn.failed carries error.message; session-shaped event_msg task_complete
+// records may also carry error.codex_error_info. The observation stores neither
+// the prompt nor any earlier assistant answer.
+func codexStructuredFailure(line []byte) (parsedObservation, bool) {
+	value, ok := decodeLine(line)
+	if !ok {
+		return parsedObservation{}, false
+	}
+	typ := strings.ToLower(firstString(value, "type"))
+	var raw any
+	var source string
+	switch typ {
+	case "turn.failed", "error":
+		raw, source = value["error"], typ
+	case "event_msg":
+		payload, _ := value["payload"].(map[string]any)
+		if payload == nil {
+			return parsedObservation{}, false
+		}
+		payloadType := strings.ToLower(firstString(payload, "type"))
+		if payloadType != "task_complete" && payloadType != "error" {
+			return parsedObservation{}, false
+		}
+		raw, source = payload["error"], payloadType
+	default:
+		return parsedObservation{}, false
+	}
+	message, code := codexErrorParts(raw)
+	if message == "" && code == "" {
+		return parsedObservation{}, false
+	}
+	message = boundedUTF8(safeFailureDiagnostic(message), 200)
+	if message == "" && code == "" {
+		return parsedObservation{}, false
+	}
+	data := map[string]any{"family": "codex", "failure_structured": true}
+	if code != "" {
+		data["native_code"] = code
+	}
+	return parsedObservation{
+		SessionID:   firstString(value, "thread_id"),
+		Kind:        "terminal",
+		SourceState: source,
+		State:       StateFailed,
+		Liveness:    LivenessExited,
+		Terminal:    true,
+		Error:       message,
+		Data:        data,
+	}, true
+}
+
+func codexErrorParts(raw any) (string, string) {
+	switch value := raw.(type) {
+	case string:
+		return strings.TrimSpace(value), ""
+	case map[string]any:
+		message := strings.TrimSpace(firstString(value, "message", "detail"))
+		code := strings.ToLower(strings.TrimSpace(firstString(value, "codex_error_info", "code")))
+		if !nativeDiagnosticCodePattern.MatchString(code) {
+			code = ""
+		}
+		return message, code
+	default:
+		return "", ""
+	}
 }
 
 type cursorParser struct{}

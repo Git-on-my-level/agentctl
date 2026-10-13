@@ -73,8 +73,8 @@ func parseDelegate(args []string) (delegateOptions, *output.Error) {
 				}
 				opts.timeout = v
 			case "--label":
-				if !validRunLabel(value) || containsArg(opts.labels, value) || len(opts.labels) >= 16 {
-					return opts, delegateError(output.CodeUsage, "delegate_invalid_label", "delegate requires at most 16 distinct exact labels")
+				if problem := rejectExactLabel("delegate", value, opts.labels); problem != nil {
+					return opts, problem
 				}
 				opts.labels = append(opts.labels, value)
 			case "--require-result-source":
@@ -526,7 +526,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		}
 		switch execution.State {
 		case model.StateFailed:
-			return delegateExecutionError(output.CodeExecutionFailed, "delegated execution failed", execution)
+			return a.delegateFailedExecution(ctx, c, execution)
 		case model.StateCancelled:
 			return delegateExecutionError(output.CodeExecutionCancelled, "delegated execution was cancelled", execution)
 		case model.StateOrphaned:
@@ -586,4 +586,22 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 func delegateExecutionError(code output.Code, message string, execution model.Execution) *output.Error {
 	return delegateError(code, "delegate_"+string(code), message).WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State).
 		WithActions(output.NextAction{Label: "Inspect execution", Argv: []string{"agentctl", "status", execution.ID.String()}, SideEffectClass: output.ReadOnly})
+}
+
+func (a *app) delegateFailedExecution(ctx context.Context, c common, execution model.Execution) *output.Error {
+	problem := delegateExecutionError(output.CodeExecutionFailed, "delegated execution failed", execution)
+	journal, openErr := a.openRead(c)
+	if openErr != nil {
+		return problem
+	}
+	defer journal.Close()
+	outcome, err := journal.GetOutcome(ctx, execution.ID)
+	if err != nil {
+		return problem
+	}
+	if view := projectNativeFailure(outcome.Failure); view != nil {
+		problem.Retryable = outcome.Failure.Retryable
+		problem.WithDetail("failure", view)
+	}
+	return problem
 }

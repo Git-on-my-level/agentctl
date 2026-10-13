@@ -645,6 +645,7 @@ func (e *Engine) applyObservedState(ctx context.Context, execution model.Executi
 // that stale observation becomes a no-op instead of conflicting with or
 // downgrading verified terminal evidence.
 func (e *Engine) applyObservedStateFromRevision(ctx context.Context, execution model.Execution, state model.State, source *string, observation model.Observation, sourceRevision uint64) (model.Execution, error) {
+	stored := execution
 	// Session/result/snapshot source strings are normalized state labels;
 	// changing that label alone is not a newly observed task transition.
 	if !execution.State.Terminal() && observation.Integrity == model.IntegrityVerified && observation.Source != model.ObservationUnknown && execution.State != state {
@@ -668,6 +669,9 @@ func (e *Engine) applyObservedStateFromRevision(ctx context.Context, execution m
 		}
 	}
 	execution.UpdatedAt = observation.ObservedAt
+	if skipIdenticalStatusAPI(stored, execution) {
+		return stored, nil
+	}
 	return e.updateCASFromRevision(ctx, execution, sourceRevision)
 }
 
