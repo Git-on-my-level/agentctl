@@ -1164,6 +1164,7 @@ func commitCancellation(ctx context.Context, journal *store.Journal, execution m
 			return current, nil
 		}
 		next := current
+		next.RecordProgress(now)
 		next.State = model.StateCancelled
 		next.Liveness = model.LivenessExited
 		next.TerminalAt = &now
@@ -1380,12 +1381,16 @@ func applySession(journal *store.Journal, execution model.Execution, session ada
 		state = model.StateRunning
 		liveness = model.LivenessAlive
 	}
+	changedState := execution.State != state
 	execution.State = state
 	execution.Liveness = liveness
 	execution.UpdatedAt = now
 	observedAt := session.Observation.ObservedAt
 	if observedAt.IsZero() {
 		observedAt = now
+	}
+	if changedState {
+		execution.RecordProgress(observedAt)
 	}
 	leaseSeconds := nativeRunnerLeaseSeconds
 	execution.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: observedAt, FreshForSeconds: &leaseSeconds}
@@ -1429,6 +1434,9 @@ func runnerLeaseLiveness(state model.State) model.Liveness {
 	}
 }
 func finalizeResult(ctx context.Context, journal *store.Journal, execution model.Execution, result adapter.Result, now time.Time, noStoreResult bool) (model.Execution, error) {
+	if !execution.State.Terminal() && execution.State != toModelState(result.State) {
+		execution.RecordProgress(now)
+	}
 	execution.State = toModelState(result.State)
 	execution.Liveness = model.LivenessExited
 	execution.TerminalAt = &now
@@ -1622,6 +1630,9 @@ func appendNativeEvent(ctx context.Context, journal *store.Journal, execution mo
 	case model.StateStarting, model.StateRunning:
 		next.Liveness = model.LivenessAlive
 	}
+	if kind != model.EventHealth && (next.State != execution.State || !sameSourceState(next.SourceState, execution.SourceState)) {
+		next.RecordProgress(observedAt)
+	}
 	freshFor := int(nativeEventFreshness / time.Second)
 	next.UpdatedAt = observedAt
 	next.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: observedAt, FreshForSeconds: &freshFor}
@@ -1702,3 +1713,10 @@ func mapAdapterError(message string, err error) *output.Error {
 }
 
 var _ = fmt.Sprintf
+
+func sameSourceState(left, right *string) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}

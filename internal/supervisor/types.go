@@ -74,11 +74,15 @@ func (e Execution) IsTerminal() bool {
 // intentionally a string to allow adapters to preserve newer states without
 // requiring a supervisor release.
 type ProbeResult struct {
-	State      string    `json:"state"`
-	Liveness   string    `json:"liveness,omitempty"`
-	Revision   uint64    `json:"revision,omitempty"`
-	ObservedAt time.Time `json:"observed_at"`
-	Source     string    `json:"source,omitempty"`
+	// ProbedAt is the attempt time; it is not execution progress and is not journaled.
+	ProbedAt time.Time `json:"probed_at,omitempty"`
+	// AlreadyApplied means event ingestion has already committed any new evidence.
+	AlreadyApplied bool      `json:"already_applied,omitempty"`
+	State          string    `json:"state"`
+	Liveness       string    `json:"liveness,omitempty"`
+	Revision       uint64    `json:"revision,omitempty"`
+	ObservedAt     time.Time `json:"observed_at"`
+	Source         string    `json:"source,omitempty"`
 }
 
 // ExecutionRepository is the host-local journal adapter used for recovery.

@@ -248,23 +248,74 @@ func (e *Engine) ingestEvents(ctx context.Context, executionID ids.ExecutionID, 
 				}
 			}
 		}
-		appended, _, appendErr := e.journal.AppendEvent(ctx, normalized, projection)
+		appended, reused, appendErr := e.journal.AppendEvent(ctx, normalized, projection)
 		if appendErr != nil {
 			return stored, &Error{Code: CodeConflict, Operation: "append_event", Adapter: adapterName, Message: "journal rejected normalized event", Cause: appendErr}
 		}
 		stored = append(stored, appended)
-		if event.State != "" {
-			observation := observationFromEvent(event, e.now())
-			if current.Authority == model.AuthorityMultica && crossRestartEventsUsable(current.Capabilities) {
-				observation.Source = model.ObservationDurableOutbox
-			}
-			_, applyErr := e.applyObservedState(ctx, current, mapState(event.State), sourceState(event.SourceState), observation)
-			if applyErr != nil {
-				return stored, applyErr
-			}
+		if _, applyErr := e.applyAdmittedEvent(ctx, executionID, event, appended.ObservedAt, reused); applyErr != nil {
+			return stored, applyErr
 		}
 	}
 	return stored, nil
+}
+
+// An admitted event must converge the envelope before its page cursor advances.
+// Re-read and merge only its authority state on a CAS retry; preserve concurrent
+// bindings/coordination edits and never reopen or degrade a terminal row.
+func (e *Engine) applyAdmittedEvent(ctx context.Context, id ids.ExecutionID, event adapter.Event, observedAt time.Time, reused bool) (model.Execution, error) {
+	meaningful := event.SourceState != "cancel_requested" &&
+		(event.Kind == string(model.EventProgress) || event.Kind == string(model.EventAttention) || event.Kind == string(model.EventTerminal))
+	for range 3 {
+		current, err := e.journal.GetExecution(ctx, id)
+		if err != nil {
+			return model.Execution{}, wrapError("get_execution", "", err)
+		}
+		if current.State.Terminal() {
+			return current, nil
+		}
+		if event.State == "" && !meaningful {
+			return current, nil
+		}
+		observation := observationFromEvent(event, observedAt)
+		observation.ObservedAt = observedAt
+		if current.Authority == model.AuthorityMultica && crossRestartEventsUsable(current.Capabilities) {
+			observation.Source = model.ObservationDurableOutbox
+		}
+		next := current
+		if event.State != "" {
+			next.State, next.SourceState = mapState(event.State), sourceState(event.SourceState)
+		}
+		changed := current.State != next.State || !equalOptionalString(current.SourceState, next.SourceState)
+		if reused && !changed {
+			// Replay is not fresh contact and must not heal a later failed probe.
+			return current, nil
+		}
+		if meaningful && (!reused || changed) {
+			advanceProgress(&next, observedAt)
+		}
+		if current.Observation.ObservedAt.After(observedAt) && !next.State.Terminal() {
+			// The admitted event is superseded by newer task/health evidence.
+			// Preserve that envelope, retaining only any monotonic progress it adds.
+			if next.ProgressAt == nil || (current.ProgressAt != nil && !next.ProgressAt.After(*current.ProgressAt)) {
+				return current, nil
+			}
+			progress := *next.ProgressAt
+			next = current
+			next.RecordProgress(progress)
+		} else {
+			next.Observation, next.UpdatedAt = observation, observedAt
+			next.Liveness = livenessForState(next.State, current.Liveness)
+			if next.State.Terminal() {
+				next.TerminalAt = &observedAt
+				next.Liveness = model.LivenessExited
+			}
+		}
+		if updated, err := e.journal.UpdateExecution(ctx, next, current.Revision); err == nil {
+			return updated, nil
+		}
+	}
+	return model.Execution{}, &Error{Code: CodeConflict, Operation: "apply_event", Message: "execution changed while applying admitted event; page cursor was not advanced"}
 }
 
 func constrainMulticaEventAuthority(event adapter.Event, ref adapter.SourceRef) adapter.Event {
@@ -594,6 +645,11 @@ func (e *Engine) applyObservedState(ctx context.Context, execution model.Executi
 // that stale observation becomes a no-op instead of conflicting with or
 // downgrading verified terminal evidence.
 func (e *Engine) applyObservedStateFromRevision(ctx context.Context, execution model.Execution, state model.State, source *string, observation model.Observation, sourceRevision uint64) (model.Execution, error) {
+	// Session/result/snapshot source strings are normalized state labels;
+	// changing that label alone is not a newly observed task transition.
+	if !execution.State.Terminal() && observation.Integrity == model.IntegrityVerified && observation.Source != model.ObservationUnknown && execution.State != state {
+		advanceProgress(&execution, observation.ObservedAt)
+	}
 	if execution.State.Terminal() && execution.State != state {
 		execution.Liveness = model.LivenessUnknown
 		execution.Observation = observation
@@ -644,6 +700,9 @@ func (e *Engine) updateCASFromRevision(ctx context.Context, desired model.Execut
 		desired.Promotion = current.Promotion
 		desired.TaskContract = current.TaskContract
 		desired.LastOperationFailure = current.LastOperationFailure
+		if current.ProgressAt != nil {
+			advanceProgress(&desired, *current.ProgressAt)
+		}
 		if current.Launch != nil {
 			desired.Launch = current.Launch
 		}
@@ -813,4 +872,9 @@ func mapLiveness(value adapter.Liveness) model.Liveness {
 	default:
 		return ""
 	}
+}
+
+// advanceProgress never invents history or lets delayed evidence move progress back.
+func advanceProgress(execution *model.Execution, at time.Time) {
+	execution.RecordProgress(at)
 }

@@ -34,10 +34,12 @@ func (b SupervisorExecutions) ListNonTerminal(ctx context.Context) ([]supervisor
 // Reprobe reconstructs the adapter exclusively from the journaled execution
 // bindings. Native adapters without a cross-restart status route become
 // explicitly unreachable; they are never recovered through stale PID memory.
-func (b SupervisorExecutions) Reprobe(ctx context.Context, minimal supervisor.Execution) (supervisor.ProbeResult, error) {
+func (b SupervisorExecutions) Reprobe(ctx context.Context, minimal supervisor.Execution) (result supervisor.ProbeResult, err error) {
 	if b.Engine == nil {
 		return supervisor.ProbeResult{}, errors.New("runtime engine is required")
 	}
+	probedAt := b.Engine.now()
+	defer func() { result.ProbedAt = probedAt }()
 	id, err := ids.ParseExecutionID(minimal.ID)
 	if err != nil {
 		return supervisor.ProbeResult{}, &Error{Code: CodeUsage, Operation: "reprobe", Message: "invalid execution ID", Cause: err}
@@ -93,20 +95,16 @@ func (b SupervisorExecutions) reprobeFromEvents(ctx context.Context, execution m
 		return supervisor.ProbeResult{}, true, err
 	}
 	request := adapter.EventsRequest{Ref: ref, Cursor: cursor, Poll: adapter.PollOptions{Attempts: 1, Fresh: true}}
-	stateEventCount := 0
-	observedCount := 0
 	if paged, ok := value.(adapter.PagedEvents); ok {
 		page, pageErr := paged.EventsPage(ctx, request)
 		if pageErr != nil {
 			return supervisor.ProbeResult{}, true, wrapError("reprobe_events", value.Name(), pageErr)
 		}
-		stored, ingestErr := b.Engine.ingestEvents(ctx, execution.ID, value.Name(), ref, page.Events)
+		_, ingestErr := b.Engine.ingestEvents(ctx, execution.ID, value.Name(), ref, page.Events)
 		if ingestErr != nil {
 			return supervisor.ProbeResult{}, true, ingestErr
 		}
-		stateEventCount = len(page.Events)
-		observedCount = len(stored)
-		if page.NextCursor != "" && page.NextCursor != cursor {
+		if page.Scanned > 0 && page.NextCursor != "" && page.NextCursor != cursor {
 			current, currentErr := b.Engine.journal.GetExecution(ctx, execution.ID)
 			if currentErr != nil {
 				return supervisor.ProbeResult{}, true, wrapError("get_execution", execution.Adapter, currentErr)
@@ -116,33 +114,26 @@ func (b SupervisorExecutions) reprobeFromEvents(ctx context.Context, execution m
 			// terminal-event invariant, and no future page is needed for this
 			// execution anyway.
 			if !current.State.Terminal() {
-				checkpoint, checkpointErr := b.Engine.recordWorkspaceCursor(ctx, execution.ID, page.NextCursor, page.Scanned, page.Filtered)
+				_, checkpointErr := b.Engine.recordWorkspaceCursor(ctx, execution.ID, page.NextCursor, page.Scanned, page.Filtered)
 				if checkpointErr != nil {
 					return supervisor.ProbeResult{}, true, checkpointErr
-				}
-				if checkpoint != nil {
-					observedCount++
 				}
 			}
 		}
 	} else {
-		stored, eventsErr := b.Engine.Events(ctx, execution.ID, cursor, request.Poll)
+		_, eventsErr := b.Engine.Events(ctx, execution.ID, cursor, request.Poll)
 		if eventsErr != nil {
 			return supervisor.ProbeResult{}, true, eventsErr
 		}
-		stateEventCount, observedCount = len(stored), len(stored)
 	}
 	refreshed, err := b.Engine.journal.GetExecution(ctx, execution.ID)
 	if err != nil {
 		return supervisor.ProbeResult{}, true, wrapError("get_execution", execution.Adapter, err)
 	}
-	observedAt := refreshed.Observation.ObservedAt
-	if stateEventCount == 0 || observedCount == 0 || observedAt.IsZero() {
-		observedAt = b.Engine.now()
-	}
 	return supervisor.ProbeResult{
 		State: string(refreshed.State), Liveness: string(refreshed.Liveness), Revision: refreshed.Revision,
-		ObservedAt: observedAt, Source: string(model.ObservationDurableOutbox),
+		ObservedAt: refreshed.Observation.ObservedAt, Source: string(refreshed.Observation.Source),
+		AlreadyApplied: true,
 	}, true, nil
 }
 
@@ -217,6 +208,11 @@ func (b SupervisorExecutions) ApplyProbe(ctx context.Context, id string, result 
 	if b.Engine == nil {
 		return errors.New("runtime engine is required")
 	}
+	// Event ingestion already applied its scoped evidence. An empty page is
+	// only an attempt, and must not rewrite the current (possibly terminal) row.
+	if result.AlreadyApplied {
+		return nil
+	}
 	executionID, err := ids.ParseExecutionID(id)
 	if err != nil {
 		return &Error{Code: CodeUsage, Operation: "apply_probe", Message: "invalid execution ID", Cause: err}
@@ -280,6 +276,10 @@ func (b SupervisorExecutions) ApplyProbe(ctx context.Context, id string, result 
 		integrity = model.IntegrityConflicted
 		targetLiveness = model.LivenessUnknown
 	} else {
+		// Snapshot probes carry normalized state, not a new adapter source event.
+		if source != model.ObservationUnknown && integrity == model.IntegrityVerified && execution.State != state {
+			advanceProgress(&execution, observedAt)
+		}
 		execution.State = state
 		execution.SourceState = targetSourceState
 		if state.Terminal() {

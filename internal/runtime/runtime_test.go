@@ -123,6 +123,7 @@ type fakeJournal struct {
 	projection       map[string]string
 	getExecutionCall int
 	beforeGetReturn  func(*fakeJournal, ids.ExecutionID, int)
+	beforeUpdate     func(*fakeJournal, ids.ExecutionID)
 }
 
 func newFakeJournal(t *testing.T, generator ids.Generator) *fakeJournal {
@@ -173,6 +174,9 @@ func (j *fakeJournal) GetExecution(_ context.Context, id ids.ExecutionID) (model
 func (j *fakeJournal) UpdateExecution(_ context.Context, next model.Execution, revision uint64) (model.Execution, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.beforeUpdate != nil {
+		j.beforeUpdate(j, next.ID)
+	}
 	previous, ok := j.executions[next.ID]
 	if !ok {
 		return model.Execution{}, errors.New("not found")

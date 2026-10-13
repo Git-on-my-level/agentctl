@@ -341,6 +341,7 @@
     },
     "deadline_at": {"type": ["string", "null"], "format": "date-time"},
     "updated_at": {"type": "string", "format": "date-time"},
+    "progress_at": {"type": ["string", "null"], "format": "date-time", "description": "Latest newly recorded scoped task progress event or snapshot state change. Null means unknown history; probe attempts, heartbeats, empty/duplicate events and cursor checkpoints do not establish progress."},
     "terminal_at": {"type": ["string", "null"], "format": "date-time"},
     "observation": {"$ref": "#/$defs/observation"},
     "acknowledgement_source": {

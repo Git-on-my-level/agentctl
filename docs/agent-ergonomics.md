@@ -663,3 +663,33 @@ and content remain omitted.
 Caller attribution is preserved in execution-owned immutable metadata, so a newer reader can restore it after an older supervisor rewrites an execution envelope. Historical executions without attribution remain unknown.
 
 `recent` durations use the current page observation time; the cursor `as_of` is only a creation-time cutoff. State, lifecycle timestamps, duration, and acknowledgement evidence are read live on each page.
+
+### Progress timestamps
+
+`status` and `recent` expose nullable `progress_at`: the observation time of the
+latest newly recorded scoped progress, attention or terminal event, or a verified
+launch/session, snapshot or result task-state change. Normalizing their source
+label without a task-state change does not count as progress. Native state and
+source-state transitions also record it; runner lease heartbeats do not. It is monotonic. Legacy records and execution
+paths that have not recorded such evidence return null; never substitute
+`created_at`, `updated_at` or a probe timestamp for unknown progress.
+
+Supervisor probe results carry `probed_at` separately as attempt metadata. Empty
+Multica event pages do not update execution timestamps or revisions. Duplicate
+events do not advance `progress_at`; existing state-replay semantics are preserved.
+An advancing workspace cursor may still be checkpointed for pagination, without
+advancing execution progress. Event ingestion already commits new evidence; the
+supervisor does not apply a second envelope update. These fields remain metadata
+and do not prove task acceptance or successful answer collection.
+
+An empty workspace event response proves only that the workspace API answered.
+It does not observe the exact bound issue/run, restore its cached liveness, or
+refresh task observation age for inbox/reconcile. A durable per-execution API
+contact diagnostic would be separate from task evidence and requires a future
+storage/consumer contract; empty probes remain non-journaled in this landing.
+
+Duplicate events whose state/source-state is already applied are envelope no-ops.
+An older nonterminal event cannot replace a newer observation during CAS retry;
+any additional progress evidence is retained monotonically without changing that
+newer state, liveness or observation. Unapplied terminal events still terminalize
+nonterminal rows. Superseded events allow the page cursor to advance safely.

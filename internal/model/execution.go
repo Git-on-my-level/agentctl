@@ -344,11 +344,14 @@ type Execution struct {
 	StartedAt            *time.Time         `json:"started_at,omitempty"`
 	// Launch is the process the launcher recorded at start. Session discovery
 	// must not overwrite it. Reconcile accepts a PID only from this record.
-	Launch      *LaunchIdentity `json:"launch,omitempty"`
-	DeadlineAt  *time.Time      `json:"deadline_at,omitempty"`
-	UpdatedAt   time.Time       `json:"updated_at"`
-	TerminalAt  *time.Time      `json:"terminal_at"`
-	Observation Observation     `json:"observation"`
+	Launch     *LaunchIdentity `json:"launch,omitempty"`
+	DeadlineAt *time.Time      `json:"deadline_at,omitempty"`
+	UpdatedAt  time.Time       `json:"updated_at"`
+	// ProgressAt is newly recorded task progress, not a probe or heartbeat.
+	// Nil preserves unknown history; UpdatedAt is never a backfill source.
+	ProgressAt  *time.Time  `json:"progress_at"`
+	TerminalAt  *time.Time  `json:"terminal_at"`
+	Observation Observation `json:"observation"`
 }
 
 var (
@@ -613,4 +616,11 @@ func validateBinding(v SourceBinding) error {
 		return errors.New("invalid fingerprint")
 	}
 	return nil
+}
+
+// RecordProgress advances known evidence without backfilling unknown history.
+func (e *Execution) RecordProgress(at time.Time) {
+	if !at.IsZero() && (e.ProgressAt == nil || at.After(*e.ProgressAt)) {
+		e.ProgressAt = &at
+	}
 }
