@@ -287,14 +287,29 @@ func (e *Engine) applyAdmittedEvent(ctx context.Context, id ids.ExecutionID, eve
 			next.State, next.SourceState = mapState(event.State), sourceState(event.SourceState)
 		}
 		changed := current.State != next.State || !equalOptionalString(current.SourceState, next.SourceState)
+		if reused && !changed {
+			// Replay is not fresh contact and must not heal a later failed probe.
+			return current, nil
+		}
 		if meaningful && (!reused || changed) {
 			advanceProgress(&next, observedAt)
 		}
-		next.Observation, next.UpdatedAt = observation, observedAt
-		next.Liveness = livenessForState(next.State, current.Liveness)
-		if next.State.Terminal() {
-			next.TerminalAt = &observedAt
-			next.Liveness = model.LivenessExited
+		if current.Observation.ObservedAt.After(observedAt) && !next.State.Terminal() {
+			// The admitted event is superseded by newer task/health evidence.
+			// Preserve that envelope, retaining only any monotonic progress it adds.
+			if next.ProgressAt == nil || (current.ProgressAt != nil && !next.ProgressAt.After(*current.ProgressAt)) {
+				return current, nil
+			}
+			progress := *next.ProgressAt
+			next = current
+			next.RecordProgress(progress)
+		} else {
+			next.Observation, next.UpdatedAt = observation, observedAt
+			next.Liveness = livenessForState(next.State, current.Liveness)
+			if next.State.Terminal() {
+				next.TerminalAt = &observedAt
+				next.Liveness = model.LivenessExited
+			}
 		}
 		if updated, err := e.journal.UpdateExecution(ctx, next, current.Revision); err == nil {
 			return updated, nil

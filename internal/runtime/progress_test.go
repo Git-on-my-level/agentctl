@@ -99,14 +99,27 @@ func TestMulticaEventProbeProgress(t *testing.T) {
 	if progressed.ProgressAt == nil || !progressed.ProgressAt.Equal(at) || progressed.Revision != execution.Revision+1 {
 		t.Fatalf("real event did not record exactly one progress update: %#v", progressed)
 	}
-	// Replayed source evidence cannot manufacture new progress.
+	// Replay must preserve the full envelope, not just progress_at.
 	now = now.Add(time.Minute)
 	probe()
+	assertUnchanged(progressed)
 	replayed, _ := journal.GetExecution(ctx, execution.ID)
 	if replayed.ProgressAt == nil || !replayed.ProgressAt.Equal(at) {
 		t.Fatalf("duplicate event manufactured progress: %#v", replayed)
 	}
-	progressed = replayed
+	// A timeout after that event cannot be healed by its duplicate delivery.
+	failure := unreachableProbe(replayed, now)
+	if err := bridge.ApplyProbe(ctx, execution.ID.String(), failure); err != nil {
+		t.Fatal(err)
+	}
+	failed, _ := journal.GetExecution(ctx, execution.ID)
+	probe()
+	assertUnchanged(failed)
+	stillFailed, _ := journal.GetExecution(ctx, execution.ID)
+	if stillFailed.Liveness != model.LivenessUnreachable || stillFailed.Observation.Integrity != model.IntegrityDegraded {
+		t.Fatalf("replay healed failed probe: %#v", stillFailed)
+	}
+	progressed = failed
 	fake.events = nil
 	for range 3 {
 		probe()
@@ -193,7 +206,7 @@ func TestRuntimeCASPreservesNewerProgress(t *testing.T) {
 }
 
 func TestMulticaEventCASRaceDoesNotLosePage(t *testing.T) {
-	for _, scenario := range []string{"progress", "terminal", "terminal-wins", "exhausted-retry"} {
+	for _, scenario := range []string{"progress", "terminal", "terminal-wins", "exhausted-retry", "newer-attention", "older-terminal", "newer-unreachable"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx := context.Background()
 			config := adapter.MulticaConfig{Binary: "/opt/multica", Profile: "private", Endpoint: "https://multica.internal", Workspace: "workspace-1", Issue: "issue-2"}
@@ -206,7 +219,7 @@ func TestMulticaEventCASRaceDoesNotLosePage(t *testing.T) {
 			execution := createPromotedIssueExecution(t, engine, journal, AdapterSpec{Name: "multica", Executable: config.Binary, Multica: &config})
 			at := fixtureNow.Add(time.Minute)
 			kind, state, source := "progress", adapter.StateRunning, "issue.started"
-			if scenario == "terminal" || scenario == "exhausted-retry" {
+			if scenario == "terminal" || scenario == "exhausted-retry" || scenario == "older-terminal" {
 				kind, state, source = "terminal", adapter.StateCompleted, "issue.completed"
 			}
 			fake.eventsPageFn = func(adapter.EventsRequest) (adapter.MulticaEventPage, error) {
@@ -225,6 +238,19 @@ func TestMulticaEventCASRaceDoesNotLosePage(t *testing.T) {
 					current.State, current.Liveness = model.StateCompleted, model.LivenessExited
 					current.TerminalAt, current.ProgressAt = &at, &at
 					current.Observation = model.Observation{Source: model.ObservationDurableOutbox, Integrity: model.IntegrityVerified, ObservedAt: at}
+				}
+				if scenario == "newer-attention" || scenario == "older-terminal" {
+					newer := at.Add(time.Minute)
+					current.State, current.Liveness = model.StateAttention, model.LivenessBlocked
+					current.SourceState = sourceState("attention")
+					current.ProgressAt, current.UpdatedAt = &newer, newer
+					current.Observation = model.Observation{Source: model.ObservationStatusAPI, Integrity: model.IntegrityVerified, ObservedAt: newer}
+				}
+				if scenario == "newer-unreachable" {
+					newer := at.Add(time.Minute)
+					current.State, current.SourceState = model.StateRunning, sourceState(source)
+					current.Liveness, current.UpdatedAt = model.LivenessUnreachable, newer
+					current.Observation = model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityDegraded, ObservedAt: newer}
 				}
 				j.executions[id] = current
 			}
@@ -252,7 +278,25 @@ func TestMulticaEventCASRaceDoesNotLosePage(t *testing.T) {
 			if scenario == "terminal-wins" {
 				want = model.StateCompleted
 			}
-			if current.State != want || current.ProgressAt == nil || !current.ProgressAt.Equal(at) || len(current.Labels) != 1 || current.Labels[0] != "concurrent" || current.Observation.Integrity != model.IntegrityVerified {
+			wantProgress := at
+			if scenario == "newer-attention" || scenario == "older-terminal" {
+				wantProgress = at.Add(time.Minute)
+			}
+			if scenario == "newer-attention" {
+				want = model.StateAttention
+				if current.Revision != execution.Revision+1 || current.Liveness != model.LivenessBlocked || current.Observation.Source != model.ObservationStatusAPI || !current.Observation.ObservedAt.Equal(wantProgress) || !current.UpdatedAt.Equal(wantProgress) {
+					t.Fatalf("older event overwrote newer snapshot: %#v", current)
+				}
+			}
+			wantIntegrity := model.IntegrityVerified
+			if scenario == "newer-unreachable" {
+				wantIntegrity = model.IntegrityDegraded
+				newer := at.Add(time.Minute)
+				if current.Liveness != model.LivenessUnreachable || current.Observation.Source != model.ObservationUnknown || !current.Observation.ObservedAt.Equal(newer) || !current.UpdatedAt.Equal(newer) {
+					t.Fatalf("older event healed newer failure: %#v", current)
+				}
+			}
+			if current.State != want || current.ProgressAt == nil || !current.ProgressAt.Equal(wantProgress) || len(current.Labels) != 1 || current.Labels[0] != "concurrent" || current.Observation.Integrity != wantIntegrity {
 				t.Fatalf("race lost evidence or coordination: %#v", current)
 			}
 			if !current.State.Terminal() {

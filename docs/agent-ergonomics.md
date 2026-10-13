@@ -686,3 +686,9 @@ It does not observe the exact bound issue/run, restore its cached liveness, or
 refresh task observation age for inbox/reconcile. A durable per-execution API
 contact diagnostic would be separate from task evidence and requires a future
 storage/consumer contract; empty probes remain non-journaled in this landing.
+
+Duplicate events whose state/source-state is already applied are envelope no-ops.
+An older nonterminal event cannot replace a newer observation during CAS retry;
+any additional progress evidence is retained monotonically without changing that
+newer state, liveness or observation. Unapplied terminal events still terminalize
+nonterminal rows. Superseded events allow the page cursor to advance safely.
