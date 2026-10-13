@@ -329,12 +329,22 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 // resultFromObservation builds the session result from a native terminal
 // record. The caller holds p.mu.
 func (p *processRecord) resultFromObservation(obs parsedObservation) *Result {
-	content := firstNonEmpty(obs.Content, p.finalContent)
-	contentType := firstNonEmpty(obs.ContentType, p.contentType)
-	contentSource := firstNonEmpty(obs.ContentSource, p.contentSource)
 	data := cloneMap(obs.Data)
 	if data == nil {
 		data = map[string]any{}
+	}
+	// A structured failure is a diagnostic, not an answer. Do not keep an
+	// earlier assistant message as the failed turn's content.
+	structured, _ := data["failure_structured"].(bool)
+	content, contentType, contentSource := "", "", ""
+	summary := obs.Summary
+	truncated := obs.ContentTruncated
+	if !structured {
+		content = firstNonEmpty(obs.Content, p.finalContent)
+		contentType = firstNonEmpty(obs.ContentType, p.contentType)
+		contentSource = firstNonEmpty(obs.ContentSource, p.contentSource)
+		summary = firstNonEmpty(obs.Summary, boundedString(content, 2048))
+		truncated = obs.ContentTruncated || p.contentTruncated
 	}
 	if data["diagnostic_code"] == "empty_terminal_result" && content != "" {
 		data["result_content_source"] = "assistant_message_fallback"
@@ -345,7 +355,7 @@ func (p *processRecord) resultFromObservation(obs parsedObservation) *Result {
 	if obs.SourceState != "" {
 		data["terminal_source_state"] = obs.SourceState
 	}
-	result := &Result{Success: obs.Success, State: obs.State, Summary: firstNonEmpty(obs.Summary, boundedString(content, 2048)), Content: content, ContentType: contentType, ContentTruncated: obs.ContentTruncated || p.contentTruncated, Error: obs.Error, SessionRef: p.ref, Data: data}
+	result := &Result{Success: obs.Success, State: obs.State, Summary: summary, Content: content, ContentType: contentType, ContentTruncated: truncated, Error: obs.Error, SessionRef: p.ref, Data: data}
 	applyParseWarning(result, p.parseWarnings)
 	return result
 }
@@ -385,18 +395,8 @@ func (p *processRecord) finish(err error) {
 		if data, readErr := os.ReadFile(p.resultPath); readErr == nil && len(data) <= p.maxOutput {
 			obs := p.parser.Parse(bytes.TrimSpace(data), false)
 			if obs.Terminal {
-				content := firstNonEmpty(obs.Content, p.finalContent)
-				data := cloneMap(obs.Data)
-				if data == nil {
-					data = map[string]any{}
-				}
-				if content != "" {
-					data["result_content_source"] = firstNonEmpty(obs.ContentSource, p.contentSource, "terminal_result")
-				}
-				if obs.SourceState != "" {
-					data["terminal_source_state"] = obs.SourceState
-				}
-				p.result = &Result{Success: obs.Success, State: obs.State, Summary: obs.Summary, Content: content, ContentType: firstNonEmpty(obs.ContentType, p.contentType), ContentTruncated: obs.ContentTruncated || p.contentTruncated, Error: obs.Error, ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
+				p.result = p.resultFromObservation(obs)
+				p.result.ExitCode = p.exitCode
 			}
 		} else if readErr != nil && !os.IsNotExist(readErr) {
 			p.addParseWarningLocked(diagnosticResultFileUnreadable)

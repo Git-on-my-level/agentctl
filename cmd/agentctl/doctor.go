@@ -16,6 +16,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
 	"github.com/Git-on-my-level/agentctl/internal/supervisor"
+	"github.com/Git-on-my-level/agentctl/internal/updatecheck"
 )
 
 type doctorJournal struct {
@@ -45,6 +46,11 @@ type doctorAdapter struct {
 	Error        map[string]any                 `json:"error,omitempty"`
 }
 
+type doctorUpdate struct {
+	Check         string `json:"update_check,omitempty"`
+	LatestVersion string `json:"latest_version,omitempty"`
+}
+
 type doctorReadinessReport struct {
 	Healthy    bool            `json:"healthy"`
 	Bootstrap  bootstrapStatus `json:"bootstrap"`
@@ -53,6 +59,7 @@ type doctorReadinessReport struct {
 	Supervisor map[string]any  `json:"supervisor"`
 	Adapters   []doctorAdapter `json:"adapters"`
 	Problems   []string        `json:"problems"`
+	Update     doctorUpdate    `json:"update,omitempty"`
 }
 
 func (a *app) doctorReadiness(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
@@ -210,6 +217,7 @@ func (a *app) doctorReadiness(ctx context.Context, renderer output.Renderer, c c
 	}
 	sort.Strings(report.Problems)
 	report.Problems = uniqueStrings(report.Problems)
+	report.Update = a.doctorUpdate()
 	lines := []output.Line{{Lead: "doctor", Fields: []output.Field{{Name: "healthy", Value: report.Healthy}, {Name: "journal", Value: report.Journal.Status}, {Name: "config", Value: report.Config.Status}, {Name: "supervisor", Value: report.Supervisor["status"]}, {Name: "adapters", Value: len(report.Adapters)}}}}
 	for _, value := range report.Adapters {
 		lines = append(lines, output.Line{Lead: "adapter", Fields: []output.Field{{Name: "name", Value: value.Name}, {Name: "status", Value: value.Status}, {Name: "executable", Value: value.Executable}}})
@@ -231,6 +239,21 @@ func (a *app) doctorReadiness(ctx context.Context, renderer output.Renderer, c c
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil
+}
+
+func (a *app) doctorUpdate() doctorUpdate {
+	if updatecheck.DevBuildVersion(version) {
+		return doctorUpdate{Check: "skipped_dev_build"}
+	}
+	statePath, policyPath, err := updatecheck.DefaultPaths(a.getenv)
+	if err != nil {
+		return doctorUpdate{}
+	}
+	status, err := updatecheck.ReadStatus(statePath, policyPath, a.getenv)
+	if err != nil {
+		return doctorUpdate{}
+	}
+	return doctorUpdate{LatestVersion: status.LatestVersion}
 }
 
 func doctorAdapterSelection(explicit, configured, detected []string) []string {

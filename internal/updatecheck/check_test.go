@@ -137,6 +137,7 @@ func TestCheckSkipsCurrentDevelopmentAndDisabledVersions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "update-check.json")
 	for _, test := range []Options{
 		{CurrentVersion: "0.1.0-dev", StatePath: path},
+		{CurrentVersion: "v0.14.0-1-g073be4b", StatePath: path},
 		{CurrentVersion: "v0.3.2-dirty", StatePath: path},
 		{CurrentVersion: "v0.3.2", StatePath: path, Getenv: func(string) string { return "off" }},
 	} {

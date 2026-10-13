@@ -85,6 +85,10 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 	if err != nil {
 		return mapStoreError("list execution acknowledgements", err)
 	}
+	contacts, err := journal.StatusContactIndex(ctx)
+	if err != nil {
+		return mapStoreError("list status contacts", err)
+	}
 	now := a.now().UTC()
 	items := make([]inboxExecution, 0, opts.limit)
 	matched := 0
@@ -93,7 +97,7 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 		if !inboxFilterMatches(execution, opts) {
 			continue
 		}
-		item, actionable := projectInbox(execution, now, opts.staleAfter, acks, renderer.Mode)
+		item, actionable := projectInboxAt(execution, contacts[execution.ID], now, opts.staleAfter, acks, renderer.Mode)
 		if !actionable {
 			continue
 		}
@@ -200,10 +204,23 @@ func inboxFilterMatches(execution model.Execution, opts inboxOptions) bool {
 }
 
 func projectInbox(execution model.Execution, now time.Time, staleAfter time.Duration, acks store.AcknowledgementIndex, mode output.Mode) (inboxExecution, bool) {
-	observationAge := now.Sub(execution.Observation.ObservedAt)
-	if observationAge < 0 {
-		observationAge = 0
+	return projectInboxAt(execution, time.Time{}, now, staleAfter, acks, mode)
+}
+
+func inboxObservationAge(execution model.Execution, contact, now time.Time) time.Duration {
+	at := execution.Observation.ObservedAt
+	if contact.After(at) {
+		at = contact
 	}
+	age := now.Sub(at)
+	if age < 0 {
+		return 0
+	}
+	return age
+}
+
+func projectInboxAt(execution model.Execution, contact, now time.Time, staleAfter time.Duration, acks store.AcknowledgementIndex, mode output.Mode) (inboxExecution, bool) {
+	observationAge := inboxObservationAge(execution, contact, now)
 	unreconciled := acks.Unreconciled(execution)
 	reasons := make([]inboxReason, 0, 4)
 	workHealth := "active"

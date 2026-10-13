@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -11,6 +13,12 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/supervisor"
 )
+
+// statusAPIContactRefresh bounds how often an identical verified status_api
+// snapshot may rewrite the envelope just to refresh observed_at. Each skipped
+// poll still records a side contact. Inbox ages a running task from the later
+// of that contact and observed_at, so a 1m --stale-after sees continued contact.
+const statusAPIContactRefresh = 15 * time.Minute
 
 // SupervisorExecutions adapts the normalized journal and stored bindings to
 // both supervisor recovery contracts. It intentionally has no process table.
@@ -272,6 +280,7 @@ func (b SupervisorExecutions) ApplyProbe(ctx context.Context, id string, result 
 		// execution revision on every supervisor cycle.
 		return nil
 	}
+	before := execution
 	if execution.State.Terminal() && execution.State != state {
 		integrity = model.IntegrityConflicted
 		targetLiveness = model.LivenessUnknown
@@ -291,8 +300,35 @@ func (b SupervisorExecutions) ApplyProbe(ctx context.Context, id string, result 
 	execution.Liveness = targetLiveness
 	execution.Observation = model.Observation{Source: source, Integrity: integrity, ObservedAt: observedAt}
 	execution.UpdatedAt = observedAt
+	if skipIdenticalStatusAPI(before, execution) {
+		return recordStatusContact(ctx, b.Engine.journal, execution.ID, observedAt)
+	}
 	_, err = b.Engine.updateCASFromRevision(ctx, execution, sourceRevision)
 	return err
+}
+
+func skipIdenticalStatusAPI(stored, desired model.Execution) bool {
+	if !sameVerifiedStatusAPI(stored, desired) {
+		return false
+	}
+	return !desired.Observation.ObservedAt.After(stored.Observation.ObservedAt.Add(statusAPIContactRefresh))
+}
+
+func sameVerifiedStatusAPI(stored, desired model.Execution) bool {
+	if stored.Observation.Source != model.ObservationStatusAPI || desired.Observation.Source != model.ObservationStatusAPI {
+		return false
+	}
+	if stored.Observation.Integrity != model.IntegrityVerified || desired.Observation.Integrity != model.IntegrityVerified {
+		return false
+	}
+	right := desired
+	right.Revision = stored.Revision
+	right.CreatedAt = stored.CreatedAt
+	right.UpdatedAt = stored.UpdatedAt
+	right.Observation.ObservedAt = stored.Observation.ObservedAt
+	leftJSON, errLeft := json.Marshal(stored)
+	rightJSON, errRight := json.Marshal(right)
+	return errLeft == nil && errRight == nil && bytes.Equal(leftJSON, rightJSON)
 }
 
 func unchangedUnreachableUnknown(execution model.Execution, state model.State, liveness model.Liveness, sourceStateValue *string, source model.ObservationSource, integrity model.Integrity) bool {

@@ -559,7 +559,16 @@ func (a *app) status(ctx context.Context, renderer output.Renderer, c common, ar
 	} else if !errors.Is(ackErr, store.ErrNotFound) {
 		return mapStoreError("read execution acknowledgement", ackErr)
 	}
-	return writeExecutionReported(renderer, execution, "status", executionWriteOptions{acknowledgement: acknowledgement})
+	opts := executionWriteOptions{acknowledgement: acknowledgement}
+	if execution.State == model.StateFailed {
+		outcome, err := journal.GetOutcome(ctx, id)
+		if err == nil {
+			opts.failure = projectNativeFailure(outcome.Failure)
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return mapStoreError("read execution outcome", err)
+		}
+	}
+	return writeExecutionReported(renderer, execution, "status", opts)
 }
 
 const (
@@ -1332,6 +1341,7 @@ func parseExecutionRef(value string, c common) (ids.ExecutionID, *output.Error) 
 
 type executionWriteOptions struct {
 	acknowledgement *store.ExecutionAcknowledgement
+	failure         *nativeFailureView
 }
 
 func writeExecution(renderer output.Renderer, e model.Execution, operation string, extraWarnings ...output.Warning) *output.Error {
@@ -1390,19 +1400,46 @@ func writeExecutionReported(renderer output.Renderer, e model.Execution, operati
 		reported.AcknowledgedAt = &acknowledgedAt
 		fields = append(fields, output.Field{Name: "acknowledgement_source", Value: opts.acknowledgement.Source})
 	}
+	if opts.failure != nil {
+		reported.Failure = opts.failure
+		fields = append(fields, output.Field{Name: "failure", Value: opts.failure.Message})
+	}
 	if err := renderer.Success(output.Success{Result: reported, Lines: []output.Line{{Lead: e.ID.String(), Fields: fields}}, Warnings: warnings, NextActions: actions}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil
 }
 
+type nativeFailureView struct {
+	Category   string `json:"category,omitempty"`
+	Message    string `json:"message"`
+	NativeCode string `json:"native_code,omitempty"`
+	Retryable  bool   `json:"retryable"`
+}
+
+func projectNativeFailure(failure *model.OutcomeFailure) *nativeFailureView {
+	if failure == nil {
+		return nil
+	}
+	message := allowlistedFailureMessage(*failure)
+	if failure.Category != "" || failure.NativeCode != "" {
+		message, _ = boundedOutcomeText(message, model.NativeFailureMessageLimit)
+	}
+	if message == "" || (message == failureMessageGeneric && failure.Category == "" && failure.NativeCode == "") {
+		return nil
+	}
+	return &nativeFailureView{Category: failure.Category, Message: message, NativeCode: failure.NativeCode, Retryable: failure.Retryable}
+}
+
 type reportedExecution struct {
 	model.Execution
-	AcknowledgementSource string     `json:"acknowledgement_source,omitempty"`
-	AcknowledgedAt        *time.Time `json:"acknowledged_at,omitempty"`
+	AcknowledgementSource string             `json:"acknowledgement_source,omitempty"`
+	AcknowledgedAt        *time.Time         `json:"acknowledged_at,omitempty"`
+	Failure               *nativeFailureView `json:"failure,omitempty"`
 }
 
 func writeExecutionOutcome(renderer output.Renderer, e model.Execution, outcome model.Outcome) *output.Error {
+	outcome = withAllowlistedFailure(outcome)
 	redacted := e
 	redacted.CWD = nil
 	redacted.Repository = nil
@@ -1416,6 +1453,9 @@ func writeExecutionOutcome(renderer output.Renderer, e model.Execution, outcome 
 		Outcome model.Outcome `json:"outcome"`
 	}{Execution: redacted, Outcome: outcome}
 	fields := []output.Field{{Name: "state", Value: e.State}, {Name: "availability", Value: outcome.Availability}, {Name: "content", Value: outcome.Content != nil}, {Name: "result_ref", Value: outcome.ResultRef}}
+	if outcome.Failure != nil {
+		fields = append(fields, output.Field{Name: "failure", Value: outcome.Failure.Message})
+	}
 	warnings := []output.Warning{}
 	if e.TaskContract != nil {
 		fields = append(fields, output.Field{Name: "task_contract", Value: "retained"}, output.Field{Name: "acceptance", Value: "external_required"})

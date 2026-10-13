@@ -30,19 +30,23 @@ type HubState struct {
 	AppliedCommit string       `json:"applied_commit"`
 	AppliedAt     time.Time    `json:"applied_at"`
 	CheckedOn     string       `json:"checked_on,omitempty"`
+	// RebindDigest is the plan digest of the last successful remote rebind.
+	// A later apply of that same digest is already bound and does not fetch.
+	RebindDigest string `json:"rebind_digest,omitempty"`
 }
 
 type HubStatus struct {
-	Configured     bool         `json:"configured"`
-	InSync         bool         `json:"in_sync"`
-	Selection      HubSelection `json:"selection"`
-	CheckoutPath   string       `json:"checkout_path"`
-	StatePath      string       `json:"state_path"`
-	AppliedCommit  string       `json:"applied_commit,omitempty"`
-	CheckoutCommit string       `json:"checkout_commit,omitempty"`
-	CheckoutClean  bool         `json:"checkout_clean"`
-	CheckedOn      string       `json:"checked_on,omitempty"`
-	Drift          []string     `json:"drift,omitempty"`
+	Configured        bool          `json:"configured"`
+	InSync            bool          `json:"in_sync"`
+	Selection         HubSelection  `json:"selection"`
+	CheckoutPath      string        `json:"checkout_path"`
+	StatePath         string        `json:"state_path"`
+	AppliedCommit     string        `json:"applied_commit,omitempty"`
+	CheckoutCommit    string        `json:"checkout_commit,omitempty"`
+	CheckoutClean     bool          `json:"checkout_clean"`
+	CheckedOn         string        `json:"checked_on,omitempty"`
+	Drift             []string      `json:"drift,omitempty"`
+	RecordedSelection *HubSelection `json:"recorded_selection,omitempty"`
 }
 
 type HubUpdate struct {
@@ -103,6 +107,10 @@ func HubSourceStatusWithGit(ctx context.Context, git config.SourceGit, home stri
 	status.CheckedOn = state.CheckedOn
 	if state.Selection != selection || state.CheckoutPath != checkoutPath {
 		status.Drift = append(status.Drift, "selection")
+	}
+	if state.Selection != selection {
+		recorded := state.Selection
+		status.RecordedSelection = &recorded
 	}
 	if git == nil {
 		return HubStatus{}, errors.New("nil Git runner")
@@ -182,7 +190,12 @@ func UpdateHubSourceWithGit(ctx context.Context, git config.SourceGit, home stri
 		return HubUpdate{}, err
 	}
 	if state.Selection.Remote != selection.Remote || state.Selection.Ref != selection.Ref {
-		return HubUpdate{}, fmt.Errorf("%w: changing the Skill Hub remote or ref requires explicit source reinitialization", ErrConflict)
+		return HubUpdate{}, &SelectionConflict{
+			Reason:     hubSelectionChangeReason(state.Selection, selection),
+			Message:    "changing the Skill Hub remote or ref requires skills source rebind",
+			Recorded:   state.Selection,
+			Configured: selection,
+		}
 	}
 	status, err := HubSourceStatusWithGit(ctx, git, home, state.Selection)
 	if err != nil {

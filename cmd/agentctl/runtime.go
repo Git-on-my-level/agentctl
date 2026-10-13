@@ -636,16 +636,10 @@ func parseRun(args []string) (runOptions, *output.Error) {
 			}
 			i++
 			label := strings.TrimSpace(args[i])
-			if !validRunLabel(label) {
-				return o, output.NewError(output.CodeUsage, "--label must match ^[a-z][a-z0-9_.-]{0,127}$", false).WithDetail("label", label)
-			}
-			if containsArg(o.labels, label) {
-				return o, output.NewError(output.CodeUsage, "--label values must be unique", false).WithDetail("label", label)
+			if problem := rejectExactLabel("run", label, o.labels); problem != nil {
+				return o, problem
 			}
 			o.labels = append(o.labels, label)
-			if len(o.labels) > 16 {
-				return o, output.NewError(output.CodeUsage, "run accepts at most 16 labels", false)
-			}
 		case "--background":
 			return o, output.NewError(output.CodeUsage, "run --background is not supported; parent-background a foreground agentctl run, or use dispatch for work that must outlive this process", false).WithDetail("flag", "--background")
 		case "--plan":
@@ -692,6 +686,29 @@ func parseRun(args []string) (runOptions, *output.Error) {
 		o.adapter = inferAdapter(o.argv[0])
 	}
 	return o, nil
+}
+
+const (
+	runLabelPatternText = "^[a-z][a-z0-9_.-]{0,127}$"
+	maxExactLabels      = 16
+)
+
+func rejectExactLabel(command, value string, existing []string) *output.Error {
+	index := len(existing)
+	diagnostic := command + "_invalid_label"
+	switch {
+	case !validRunLabel(value):
+		return delegateError(output.CodeUsage, diagnostic, fmt.Sprintf("%s label index %d must match %s", command, index, runLabelPatternText)).
+			WithDetail("index", index).WithDetail("rule", "pattern").WithDetail("label", value)
+	case containsArg(existing, value):
+		return delegateError(output.CodeUsage, diagnostic, fmt.Sprintf("%s label index %d duplicates an earlier label", command, index)).
+			WithDetail("index", index).WithDetail("rule", "duplicate").WithDetail("label", value)
+	case len(existing) >= maxExactLabels:
+		return delegateError(output.CodeUsage, diagnostic, fmt.Sprintf("%s label index %d exceeds the limit of %d distinct exact labels", command, index, maxExactLabels)).
+			WithDetail("index", index).WithDetail("rule", "limit").WithDetail("label", value)
+	default:
+		return nil
+	}
 }
 
 func validRunLabel(label string) bool {
@@ -1503,10 +1520,20 @@ func buildOutcome(execution model.Execution, result adapter.Result, now time.Tim
 			outcome.Content = item
 		}
 		if strings.TrimSpace(result.Error) != "" || execution.State == model.StateFailed {
-			message, _ := boundedOutcomeText(firstNonEmptyString(result.Error, "native execution failed"), model.OutcomeFailureLimit)
+			nativeCode, _ := result.Data["native_code"].(string)
+			if !model.ValidNativeFailureCode(nativeCode) {
+				nativeCode = ""
+			}
 			diagnosticCode, _ := result.Data["diagnostic_code"].(string)
-			code, kind, retryable := classifyOutcomeFailure(message, diagnosticCode)
-			outcome.Failure = &model.OutcomeFailure{Code: code, Kind: kind, Source: execution.Adapter, Retryable: retryable, Message: message}
+			raw := firstNonEmptyString(result.Error, failureMessageGeneric)
+			code, kind, category, retryable := classifyOutcomeFailure(raw, diagnosticCode, nativeCode)
+			message := allowlistedFailureMessage(model.OutcomeFailure{Code: code, Category: category, NativeCode: nativeCode, Message: raw})
+			limit := model.OutcomeFailureLimit
+			if category != "" || nativeCode != "" {
+				limit = model.NativeFailureMessageLimit
+			}
+			message, _ = boundedOutcomeText(message, limit)
+			outcome.Failure = &model.OutcomeFailure{Code: code, Kind: kind, Source: execution.Adapter, Retryable: retryable, Message: message, Category: category, NativeCode: nativeCode}
 		}
 		if outcome.Content != nil || outcome.Failure != nil {
 			outcome.Availability = model.OutcomeStored
@@ -1528,23 +1555,92 @@ func boundedOutcomeText(value string, max int) (string, bool) {
 	return value, true
 }
 
-func classifyOutcomeFailure(message, diagnosticCode string) (string, string, bool) {
+const (
+	failureMessageCapacity    = "Selected model is at capacity. Please try a different model."
+	failureMessageTrust       = "workspace trust required"
+	failureMessageAuth        = "authentication required"
+	failureMessageApproval    = "approval required"
+	failureMessageQuota       = "quota or rate limit exceeded"
+	failureMessageUnextracted = "native process exited cleanly without an explicit structured terminal result"
+	failureMessageGeneric     = "native execution failed"
+)
+
+// allowlistedFailureMessage is the only failure text that may be stored or
+// shown. Classification may read the provider string; the string itself is not
+// persisted, so a quoted credential or an echoed prompt cannot reach the journal.
+func allowlistedFailureMessage(failure model.OutcomeFailure) string {
+	switch failure.Code {
+	case "provider_capacity":
+		return failureMessageCapacity
+	case "workspace_trust_required":
+		return failureMessageTrust
+	case "authentication_required":
+		return failureMessageAuth
+	case "approval_required":
+		return failureMessageApproval
+	case "quota_exceeded":
+		return failureMessageQuota
+	case "result_extraction_failed":
+		return failureMessageUnextracted
+	}
+	nativeCode := failure.NativeCode
+	if !model.ValidNativeFailureCode(nativeCode) {
+		nativeCode = ""
+	}
+	code, _, category, _ := classifyOutcomeFailure(failure.Message, "", nativeCode)
+	if failure.Category == "capacity" || category == "capacity" {
+		return failureMessageCapacity
+	}
+	switch code {
+	case "workspace_trust_required":
+		return failureMessageTrust
+	case "authentication_required":
+		return failureMessageAuth
+	case "approval_required":
+		return failureMessageApproval
+	case "quota_exceeded":
+		return failureMessageQuota
+	case "result_extraction_failed":
+		return failureMessageUnextracted
+	default:
+		return failureMessageGeneric
+	}
+}
+
+func withAllowlistedFailure(outcome model.Outcome) model.Outcome {
+	if outcome.Failure == nil {
+		return outcome
+	}
+	failure := *outcome.Failure
+	failure.Message = allowlistedFailureMessage(failure)
+	if failure.Category != "" || failure.NativeCode != "" {
+		failure.Message, _ = boundedOutcomeText(failure.Message, model.NativeFailureMessageLimit)
+	}
+	outcome.Failure = &failure
+	return outcome
+}
+
+func classifyOutcomeFailure(message, diagnosticCode, nativeCode string) (string, string, string, bool) {
 	if diagnosticCode == "result_extraction_failed" {
-		return "result_extraction_failed", "observation", false
+		return "result_extraction_failed", "observation", "", false
 	}
 	lower := strings.ToLower(message)
 	switch {
+	case nativeCode == "server_overloaded" || strings.Contains(lower, "at capacity") || strings.Contains(lower, "server overloaded") || strings.Contains(lower, "server_overloaded"):
+		return "provider_capacity", "capacity", "capacity", true
 	case strings.Contains(lower, "workspace") && strings.Contains(lower, "trust"):
-		return "workspace_trust_required", "permission", true
+		return "workspace_trust_required", "permission", "", true
 	case strings.Contains(lower, "auth") || strings.Contains(lower, "login") || strings.Contains(lower, "sign in"):
-		return "authentication_required", "authentication", true
+		return "authentication_required", "authentication", "", true
 	case strings.Contains(lower, "approval") || strings.Contains(lower, "permission"):
-		return "approval_required", "approval", true
+		return "approval_required", "approval", "", true
 	case strings.Contains(lower, "quota") || strings.Contains(lower, "rate limit"):
-		return "quota_exceeded", "quota", true
-	default:
-		return "native_execution_failed", "unknown", false
+		return "quota_exceeded", "quota", "", true
 	}
+	if nativeCode != "" {
+		return "native_execution_failed", "provider", "provider", false
+	}
+	return "native_execution_failed", "unknown", "", false
 }
 
 func firstNonEmptyString(values ...string) string {

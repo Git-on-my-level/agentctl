@@ -146,9 +146,12 @@ observation integrity to `unknown`.
 
 Every newly terminalized direct execution records one versioned outcome in the
 same journal transaction as terminal state, the terminal event, and callback
-fan-out. `agentctl status` and events remain metadata-only; the explicit
+fan-out. `agentctl status` stays metadata-only and, when a native turn failed,
+includes the bounded failure projection (`category`, `message` of at most 200
+characters, `native_code`) without prompt or answer text. Events remain
+metadata-only and expose only the normalized failure code. The explicit
 `agentctl result <execution-id>` read returns the bounded final content and
-normalized failure details. A successful `result`, and `await` when it returns
+the same failure details. A successful `result`, and `await` when it returns
 a terminal state, write one acknowledgement stamp in a separate journal bucket.
 That stamp is how `recent --unreconciled` decides collection; it does not rewrite
 the execution envelope or bump `revision`. `recent` and `status` report
@@ -183,9 +186,12 @@ Stored text content may include a bounded `source` label such as
 `assistant_terminal_result`, `assistant_message_fallback`, or the generic
 `terminal_result`. `agentctl result` can assert that provenance and a
 caller-selected minimum byte count; the semantic `assistant` requirement
-accepts both Cursor assistant sources. Failed outcomes may
-carry one bounded, secret-redacted native diagnostic when structured failure
-data is absent; terminal events expose only its normalized failure code.
+accepts both Cursor assistant sources. A failed native turn records one
+secret-redacted diagnostic: `category`, a message of at most 200 characters,
+and `native_code` when the stream provides a structured code. Capacity and
+overload (`server_overloaded`, or a message that says the provider is at
+capacity) are retryable. `status`, `result`, and a failed `delegate --wait`
+include that reason. Terminal events expose only the normalized failure code.
 
 ## Workspace provenance and active owners
 

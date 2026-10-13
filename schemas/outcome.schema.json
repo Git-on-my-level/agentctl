@@ -30,14 +30,24 @@
     },
     "failure": {
       "type": "object",
-      "required": ["code", "kind", "source", "retryable", "message"],
-      "properties": {
-        "code": {"type": "string", "minLength": 1},
-        "kind": {"type": "string", "minLength": 1},
-        "source": {"type": "string", "minLength": 1},
-        "retryable": {"type": "boolean"},
-        "message": {"type": "string", "maxLength": 4096}
-      }
+      "allOf": [
+        {
+          "required": ["code", "kind", "source", "retryable", "message"],
+          "properties": {
+            "code": {"type": "string", "minLength": 1},
+            "kind": {"type": "string", "minLength": 1},
+            "source": {"type": "string", "minLength": 1},
+            "retryable": {"type": "boolean"},
+            "message": {"type": "string", "maxLength": 4096},
+            "category": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+            "native_code": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"}
+          }
+        },
+        {
+          "if": {"anyOf": [{"required": ["category"]}, {"required": ["native_code"]}]},
+          "then": {"properties": {"message": {"maxLength": 200}}}
+        }
+      ]
     },
     "native_exit_code": {"type": "integer"}
   }

@@ -435,6 +435,18 @@ func canonicalReleaseVersion(raw string) (string, bool) {
 	return canonical, canonical == raw
 }
 
+// DevBuildVersion reports an installed version that is not a canonical vX.Y.Z
+// release tag. Git-describe builds such as v0.14.0-1-g073be4b match. Those
+// builds skip the release check, so status must not present a cached latest.
+func DevBuildVersion(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	_, ok := canonicalReleaseVersion(value)
+	return !ok
+}
+
 func (version semanticVersion) greaterThan(other semanticVersion) bool {
 	for index := range version {
 		if version[index] != other[index] {

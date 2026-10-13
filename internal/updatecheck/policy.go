@@ -155,6 +155,7 @@ type Status struct {
 	PolicyPath        string `json:"policy_path"`
 	CheckedOn         string `json:"checked_on,omitempty"`
 	LatestVersion     string `json:"latest_version,omitempty"`
+	UpdateCheck       string `json:"update_check,omitempty"`
 	InstalledVersion  string `json:"installed_version,omitempty"`
 	InstalledAt       string `json:"installed_at,omitempty"`
 	LastErrorCode     string `json:"last_error_code,omitempty"`

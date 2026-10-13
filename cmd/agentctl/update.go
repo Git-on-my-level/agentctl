@@ -88,6 +88,7 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c com
 		if err != nil {
 			return output.Wrap(output.CodeInternal, "read update status", false, err).WithDetail("update_error_code", "status_unavailable").WithDetail("safe_cause", "update status could not be read")
 		}
+		status = projectUpdateStatus(status, version)
 		skills := a.skillsUpdateStatus(ctx, c)
 		observed := map[string]any{"version": version, "bookkeeping_matches": status.InstalledVersion == version}
 		if path, err := os.Executable(); err == nil {
@@ -98,7 +99,7 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c com
 		if skill, err := portableasset.Skill(); err == nil {
 			observed["expected_portable_skill_sha256"] = skill.Digest
 		}
-		_ = renderer.Success(output.Success{Result: map[string]any{"binary": status, "skills": skills, "observed_binary": observed, "compatibility_actions": []output.NextAction{{Label: "Inspect installed portable skills", Argv: []string{"agentctl", "bootstrap", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}, {Label: "Inspect running supervisor", Argv: []string{"agentctl", "supervisor", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}}}, Lines: []output.Line{{Lead: "update.binary", Fields: []output.Field{{Name: "mode", Value: status.Mode}, {Name: "checked_on", Value: status.CheckedOn}, {Name: "latest_version", Value: status.LatestVersion}, {Name: "installed_version", Value: status.InstalledVersion}}}, {Lead: "update.skills", Fields: []output.Field{{Name: "policy", Value: skills["policy"]}, {Name: "configured", Value: skills["configured"]}, {Name: "checked_on", Value: skills["checked_on"]}, {Name: "healthy", Value: skills["healthy"]}}}}})
+		_ = renderer.Success(output.Success{Result: map[string]any{"binary": status, "skills": skills, "observed_binary": observed, "compatibility_actions": []output.NextAction{{Label: "Inspect installed portable skills", Argv: []string{"agentctl", "bootstrap", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}, {Label: "Inspect running supervisor", Argv: []string{"agentctl", "supervisor", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}}}, Lines: []output.Line{{Lead: "update.binary", Fields: []output.Field{{Name: "mode", Value: status.Mode}, {Name: "update_check", Value: status.UpdateCheck}, {Name: "checked_on", Value: status.CheckedOn}, {Name: "latest_version", Value: status.LatestVersion}, {Name: "installed_version", Value: status.InstalledVersion}}}, {Lead: "update.skills", Fields: []output.Field{{Name: "policy", Value: skills["policy"]}, {Name: "configured", Value: skills["configured"]}, {Name: "checked_on", Value: skills["checked_on"]}, {Name: "healthy", Value: skills["healthy"]}}}}})
 		return nil
 	case "policy":
 		if len(args) != 2 {
@@ -131,6 +132,15 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c com
 	default:
 		return output.NewError(output.CodeUsage, "usage: agentctl update status|now|policy auto|notify|off", false)
 	}
+}
+
+func projectUpdateStatus(status updatecheck.Status, current string) updatecheck.Status {
+	if !updatecheck.DevBuildVersion(current) {
+		return status
+	}
+	status.LatestVersion = ""
+	status.UpdateCheck = "skipped_dev_build"
+	return status
 }
 
 func mapUpdateApplyError(err error) *output.Error {

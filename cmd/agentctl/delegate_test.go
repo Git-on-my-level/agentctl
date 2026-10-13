@@ -66,6 +66,45 @@ func (f delegateFixture) invoke(prompt string, extra ...string) (int, string) {
 
 const delegateSuccessScript = `printf '%s\n' '{"type":"system","subtype":"init","session_id":"delegate-test"}' '{"type":"result","subtype":"success","is_error":false,"result":"verified answer"}'`
 
+func TestDelegateLabelNamesTheViolatedRule(t *testing.T) {
+	_, problem := parseDelegate([]string{"--request-file", "request.json", "--prompt-file", "prompt.md", "--label", "ecoopt-20261013", "--label", "grok-impl", "--label", "A-agentctl"})
+	if problem == nil || problem.Details["diagnostic_code"] != "delegate_invalid_label" || problem.Details["index"] != 2 || problem.Details["rule"] != "pattern" || !strings.Contains(problem.Message, "index 2") || !strings.Contains(problem.Message, runLabelPatternText) {
+		t.Fatalf("%v", problem)
+	}
+	_, problem = parseDelegate([]string{"--request-file", "request.json", "--prompt-file", "prompt.md", "--label", "grok-impl", "--label", "grok-impl"})
+	if problem == nil || problem.Details["rule"] != "duplicate" || problem.Details["index"] != 1 || !strings.Contains(problem.Message, "duplicates") {
+		t.Fatalf("%v", problem)
+	}
+	args := []string{"--request-file", "request.json", "--prompt-file", "prompt.md"}
+	for i := 0; i < 17; i++ {
+		args = append(args, "--label", "label-"+string(rune('a'+i)))
+	}
+	_, problem = parseDelegate(args)
+	if problem == nil || problem.Details["rule"] != "limit" || problem.Details["index"] != 16 || !strings.Contains(problem.Message, "16 distinct exact labels") {
+		t.Fatalf("%v", problem)
+	}
+}
+
+func TestParseRunLabelNamesTheViolatedRule(t *testing.T) {
+	_, problem := parseRun([]string{"--label", "A-agentctl", "--", "echo"})
+	if problem == nil || problem.Details["diagnostic_code"] != "run_invalid_label" || problem.Details["index"] != 0 || problem.Details["rule"] != "pattern" || !strings.Contains(problem.Message, "index 0") || !strings.Contains(problem.Message, runLabelPatternText) {
+		t.Fatalf("%v", problem)
+	}
+	_, problem = parseRun([]string{"--label", "grok-impl", "--label", "grok-impl", "--", "echo"})
+	if problem == nil || problem.Details["rule"] != "duplicate" || problem.Details["index"] != 1 || !strings.Contains(problem.Message, "duplicates") {
+		t.Fatalf("%v", problem)
+	}
+	args := []string{}
+	for i := 0; i < 17; i++ {
+		args = append(args, "--label", "label-"+string(rune('a'+i)))
+	}
+	args = append(args, "--", "echo")
+	_, problem = parseRun(args)
+	if problem == nil || problem.Details["rule"] != "limit" || problem.Details["index"] != 16 || !strings.Contains(problem.Message, "16 distinct exact labels") {
+		t.Fatalf("%v", problem)
+	}
+}
+
 func TestDelegatePlanNoMutationOrPromptLeak(t *testing.T) {
 	f := newDelegateFixture(t, delegateSuccessScript)
 	code, out := f.invoke("private-task-token", "--plan")

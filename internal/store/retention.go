@@ -58,10 +58,11 @@ type CleanupRecordCounts struct {
 	Outcomes         int `json:"outcomes"`
 	IdempotencyKeys  int `json:"idempotency_keys"`
 	Acknowledgements int `json:"acknowledgements,omitempty"`
+	StatusContacts   int `json:"status_contacts,omitempty"`
 }
 
 func (c CleanupRecordCounts) Total() int {
-	return c.Executions + c.Events + c.EventIndexes + c.EventDedupe + c.TerminalIndexes + c.Outcomes + c.IdempotencyKeys + c.Acknowledgements
+	return c.Executions + c.Events + c.EventIndexes + c.EventDedupe + c.TerminalIndexes + c.Outcomes + c.IdempotencyKeys + c.Acknowledgements + c.StatusContacts
 }
 
 type CleanupExecution struct {
@@ -269,6 +270,11 @@ func (j *Journal) ApplyCleanup(ctx context.Context, before time.Time, expectedPl
 			}
 			if acks := tx.Bucket(bAcknowledgements); acks != nil {
 				if err := acks.Delete([]byte(target.ExecutionID)); err != nil {
+					return err
+				}
+			}
+			if contacts := tx.Bucket(bStatusContacts); contacts != nil {
+				if err := contacts.Delete([]byte(target.ExecutionID)); err != nil {
 					return err
 				}
 			}
@@ -574,6 +580,12 @@ func buildCleanupTarget(tx *bbolt.Tx, execution model.Execution) (cleanupTarget,
 			add([]byte(id), raw)
 		}
 	}
+	if contacts := tx.Bucket(bStatusContacts); contacts != nil {
+		if raw := contacts.Get([]byte(id)); raw != nil {
+			target.Records.StatusContacts++
+			add([]byte(id), raw)
+		}
+	}
 	if terminal := tx.Bucket(bTerminal).Get([]byte(id)); terminal != nil {
 		target.Records.TerminalIndexes++
 		add([]byte(id), terminal)
@@ -643,4 +655,5 @@ func addCleanupCounts(target *CleanupRecordCounts, value CleanupRecordCounts) {
 	target.Outcomes += value.Outcomes
 	target.IdempotencyKeys += value.IdempotencyKeys
 	target.Acknowledgements += value.Acknowledgements
+	target.StatusContacts += value.StatusContacts
 }

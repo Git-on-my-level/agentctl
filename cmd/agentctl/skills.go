@@ -14,17 +14,23 @@ import (
 
 func (a *app) skillsCommand(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
 	if len(args) == 0 {
-		return output.NewError(output.CodeUsage, "usage: agentctl skills plan|status|doctor|update|reconcile|diff|restore|propose ...", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl skills plan|status|doctor|update|reconcile|diff|restore|propose|source ...", false)
 	}
 	command := args[0]
-	if command != "plan" && command != "status" && command != "doctor" && command != "update" && command != "reconcile" && command != "diff" && command != "restore" && command != "propose" {
-		return output.NewError(output.CodeUsage, "skills requires plan, status, doctor, update, reconcile, diff, restore, or propose", false)
+	if command != "plan" && command != "status" && command != "doctor" && command != "update" && command != "reconcile" && command != "diff" && command != "restore" && command != "propose" && command != "source" {
+		return output.NewError(output.CodeUsage, "skills requires plan, status, doctor, update, reconcile, diff, restore, propose, or source", false)
 	}
 	if c.configBundle != "" {
 		return output.NewError(output.CodeUsage, "skills requires the live reviewed config and cannot use an invocation-scoped config bundle", false)
 	}
-	home, harnessValue, proposalRoot, planOnly, apply := "", "", "", false, false
+	home, harnessValue, proposalRoot, expectedDigest, planOnly, apply := "", "", "", "", false, false
 	skillName, start := "", 1
+	if command == "source" {
+		if len(args) < 2 || args[1] != "rebind" {
+			return output.NewError(output.CodeUsage, "usage: agentctl skills source rebind [--plan | --apply --expected-digest sha256:...]", false)
+		}
+		start = 2
+	}
 	if command == "diff" || command == "restore" || command == "propose" {
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
 			return output.NewError(output.CodeUsage, "skills "+command+" requires a skill name", false)
@@ -32,15 +38,15 @@ func (a *app) skillsCommand(ctx context.Context, renderer output.Renderer, c com
 		skillName, start = args[1], 2
 	}
 	for i := start; i < len(args); i++ {
-		if args[i] == "--plan" && command == "update" {
+		if args[i] == "--plan" && (command == "update" || command == "source") {
 			planOnly = true
 			continue
 		}
-		if args[i] == "--apply" && (command == "restore" || command == "propose") {
+		if args[i] == "--apply" && (command == "restore" || command == "propose" || command == "source") {
 			apply = true
 			continue
 		}
-		if args[i] != "--home" && args[i] != "--harness" && !(args[i] == "--worktree-root" && command == "propose") {
+		if args[i] != "--home" && args[i] != "--harness" && !(args[i] == "--worktree-root" && command == "propose") && !(args[i] == "--expected-digest" && command == "source") {
 			return output.NewError(output.CodeUsage, "unknown skills flag", false).WithDetail("flag", args[i])
 		}
 		if i+1 >= len(args) {
@@ -54,6 +60,19 @@ func (a *app) skillsCommand(ctx context.Context, renderer output.Renderer, c com
 			harnessValue = args[i]
 		case "--worktree-root":
 			proposalRoot = args[i]
+		case "--expected-digest":
+			expectedDigest = args[i]
+		}
+	}
+	if command == "source" {
+		if planOnly && apply {
+			return output.NewError(output.CodeUsage, "skills source rebind accepts --plan or --apply, not both", false)
+		}
+		if apply && expectedDigest == "" {
+			return output.NewError(output.CodeUsage, "skills source rebind --apply requires --expected-digest", false)
+		}
+		if !apply {
+			planOnly = true
 		}
 	}
 	if home == "" {
@@ -91,6 +110,9 @@ func (a *app) skillsCommand(ctx context.Context, renderer output.Renderer, c com
 	if err != nil {
 		return mapSkillpackError("inspect Skill Hub source", skillpack.Report{}, err)
 	}
+	if command == "source" {
+		return a.rebindSkillSource(ctx, renderer, home, selection, planOnly, expectedDigest)
+	}
 	if command == "update" && planOnly {
 		result := map[string]any{"operation": "update", "source": selection, "configured": hubStatus.Configured, "in_sync": hubStatus.InSync, "network_access": false, "apply_network_access": true, "apply_mutates": true, "update_policy": cfg.Skills.UpdatePolicy}
 		return renderSkillResult(renderer, "skills.update.plan", result, nil, []output.Field{{Name: "configured", Value: hubStatus.Configured}, {Name: "in_sync", Value: hubStatus.InSync}, {Name: "policy", Value: cfg.Skills.UpdatePolicy}})
@@ -107,7 +129,19 @@ func (a *app) skillsCommand(ctx context.Context, renderer output.Renderer, c com
 			WithActions(output.NextAction{Label: "Fetch and reconcile the selected Skill Hub pack", Argv: []string{"agentctl", "skills", "update"}, Mutates: true, SideEffectClass: output.ExternalSideEffect, Preconditions: []string{"reviewed non-secret Skill Hub selection"}})
 	}
 	if !hubStatus.InSync {
-		return output.NewError(output.CodeConflict, "skills refuse a drifted Skill Hub checkout", false).WithDetail("drift", hubStatus.Drift)
+		problem := output.NewError(output.CodeConflict, "skills refuse a drifted Skill Hub checkout", false).WithDetail("drift", hubStatus.Drift)
+		if hubStatus.RecordedSelection != nil {
+			reason := skillpack.SelectionDriftReason(*hubStatus.RecordedSelection, hubStatus.Selection)
+			problem.WithDetail("reason", reason).
+				WithDetail("recorded_remote", hubStatus.RecordedSelection.Remote).
+				WithDetail("configured_remote", hubStatus.Selection.Remote).
+				WithDetail("recorded_ref", hubStatus.RecordedSelection.Ref).
+				WithDetail("configured_ref", hubStatus.Selection.Ref)
+			if reason == "remote_changed" {
+				problem.WithActions(output.NextAction{Label: "Plan a Skill Hub remote rebind", Argv: []string{"agentctl", "skills", "source", "rebind", "--plan"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"the new remote must contain the pinned commit"}})
+			}
+		}
+		return problem
 	}
 	if proposalRoot == "" {
 		proposalRoot = strings.TrimSpace(a.getenv("AGENTCTL_SKILL_PROPOSAL_ROOT"))
@@ -202,6 +236,25 @@ func renderSkillResult(renderer output.Renderer, lead string, result any, action
 	return nil
 }
 
+func (a *app) rebindSkillSource(ctx context.Context, renderer output.Renderer, home string, selection skillpack.HubSelection, planOnly bool, expectedDigest string) *output.Error {
+	if planOnly {
+		plan, err := skillpack.PlanHubRebind(ctx, home, selection)
+		if err != nil {
+			return mapSkillpackError("plan Skill Hub source rebind", skillpack.Report{}, err)
+		}
+		actions := []output.NextAction{}
+		if plan.Applicable {
+			actions = append(actions, output.NextAction{Label: "Apply the reviewed Skill Hub remote rebind", Argv: []string{"agentctl", "skills", "source", "rebind", "--apply", "--expected-digest", plan.Digest}, Mutates: true, SideEffectClass: output.ExternalSideEffect, Preconditions: []string{"the pinned commit is an ancestor of the configured ref on the new remote"}})
+		}
+		return renderSkillResult(renderer, "skills.source.rebind.plan", plan, actions, []output.Field{{Name: "applicable", Value: plan.Applicable}, {Name: "reason", Value: plan.Reason}, {Name: "digest", Value: plan.Digest}})
+	}
+	applied, err := skillpack.ApplyHubRebind(ctx, home, selection, expectedDigest, a.currentTime())
+	if err != nil {
+		return mapSkillpackError("apply Skill Hub source rebind", skillpack.Report{}, err)
+	}
+	return renderSkillResult(renderer, "skills.source.rebind", applied, nil, []output.Field{{Name: "applied", Value: applied.Applied}, {Name: "reason", Value: applied.Reason}})
+}
+
 func mapSkillpackError(operation string, report skillpack.Report, err error) *output.Error {
 	code := output.CodeUsage
 	if errors.Is(err, skillpack.ErrConflict) || errors.Is(err, config.ErrConflict) {
@@ -220,6 +273,21 @@ func mapSkillpackError(operation string, report skillpack.Report, err error) *ou
 		code = output.CodeInternal
 	}
 	problem := output.Wrap(code, operation, false, err)
+	var selection *skillpack.SelectionConflict
+	if errors.As(err, &selection) {
+		problem.Message = operation + ": " + selection.Reason
+		problem.WithDetail("reason", selection.Reason).
+			WithDetail("recorded_remote", selection.Recorded.Remote).
+			WithDetail("configured_remote", selection.Configured.Remote).
+			WithDetail("recorded_ref", selection.Recorded.Ref).
+			WithDetail("configured_ref", selection.Configured.Ref)
+		if selection.Digest != "" {
+			problem.WithDetail("digest", selection.Digest)
+		}
+		if selection.Reason == "remote_changed" {
+			problem.WithActions(output.NextAction{Label: "Plan a Skill Hub remote rebind", Argv: []string{"agentctl", "skills", "source", "rebind", "--plan"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"the new remote must contain the pinned commit"}})
+		}
+	}
 	if report.SchemaVersion != 0 {
 		problem.WithDetail("report", report)
 	}
