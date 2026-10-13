@@ -1421,8 +1421,11 @@ func projectNativeFailure(failure *model.OutcomeFailure) *nativeFailureView {
 	if failure == nil {
 		return nil
 	}
-	message, _ := boundedOutcomeText(strings.TrimSpace(failure.Message), model.NativeFailureMessageLimit)
-	if message == "" || (message == "native execution failed" && failure.Category == "" && failure.NativeCode == "") {
+	message := allowlistedFailureMessage(*failure)
+	if failure.Category != "" || failure.NativeCode != "" {
+		message, _ = boundedOutcomeText(message, model.NativeFailureMessageLimit)
+	}
+	if message == "" || (message == failureMessageGeneric && failure.Category == "" && failure.NativeCode == "") {
 		return nil
 	}
 	return &nativeFailureView{Category: failure.Category, Message: message, NativeCode: failure.NativeCode, Retryable: failure.Retryable}
@@ -1436,6 +1439,7 @@ type reportedExecution struct {
 }
 
 func writeExecutionOutcome(renderer output.Renderer, e model.Execution, outcome model.Outcome) *output.Error {
+	outcome = withAllowlistedFailure(outcome)
 	redacted := e
 	redacted.CWD = nil
 	redacted.Repository = nil

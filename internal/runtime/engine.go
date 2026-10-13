@@ -26,6 +26,18 @@ type Journal interface {
 	ListEvents(context.Context, ids.ExecutionID, contracts.EventQuery) ([]model.Event, error)
 }
 
+type statusContactWriter interface {
+	RecordStatusContact(context.Context, ids.ExecutionID, time.Time) error
+}
+
+func recordStatusContact(ctx context.Context, journal Journal, id ids.ExecutionID, at time.Time) error {
+	writer, ok := journal.(statusContactWriter)
+	if !ok || at.IsZero() {
+		return nil
+	}
+	return writer.RecordStatusContact(ctx, id, at)
+}
+
 type Clock func() time.Time
 
 type Options struct {
@@ -670,6 +682,9 @@ func (e *Engine) applyObservedStateFromRevision(ctx context.Context, execution m
 	}
 	execution.UpdatedAt = observation.ObservedAt
 	if skipIdenticalStatusAPI(stored, execution) {
+		if err := recordStatusContact(ctx, e.journal, execution.ID, observation.ObservedAt); err != nil {
+			return model.Execution{}, err
+		}
 		return stored, nil
 	}
 	return e.updateCASFromRevision(ctx, execution, sourceRevision)

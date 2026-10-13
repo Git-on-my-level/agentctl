@@ -38,7 +38,7 @@ func TestCodexFailureReasonSurfacesWithoutAnswerOrSecret(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = "--version" ]; then echo 0.0.0-test; exit 0; fi
 printf '%s\n' '{"type":"item","item":{"type":"agent_message","text":"do-not-store-this-answer"}}'
-printf '%s\n' '{"type":"turn.failed","thread_id":"thread-1","error":{"message":"Selected model is at capacity. Please try a different model. token=secret","codex_error_info":"server_overloaded"}}'
+printf '%s\n' '{"type":"turn.failed","thread_id":"thread-1","error":{"message":"request rejected: {\"api_key\":\"private-value\",\"prompt\":\"confidential task\"} Selected model is at capacity.","codex_error_info":"server_overloaded"}}'
 `
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -51,7 +51,7 @@ printf '%s\n' '{"type":"turn.failed","thread_id":"thread-1","error":{"message":"
 	if code := a.run(ctx, []string{"--output", "json", "--journal", journalPath, "run", "--adapter", "codex", "--", bin, "exec", "--json", "task"}); code != 0 {
 		t.Fatalf("run exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	if strings.Contains(stdout.String(), "do-not-store-this-answer") || strings.Contains(stdout.String(), "token=secret") {
+	if strings.Contains(stdout.String(), "do-not-store-this-answer") || strings.Contains(stdout.String(), "private-value") || strings.Contains(stdout.String(), "confidential task") {
 		t.Fatalf("run leaked answer or secret: %s", stdout.String())
 	}
 	id := executionIDFromOutput(t, stdout.String())
@@ -59,12 +59,12 @@ printf '%s\n' '{"type":"turn.failed","thread_id":"thread-1","error":{"message":"
 	if code := a.run(ctx, []string{"--output", "json", "--journal", journalPath, "status", id}); code != 0 {
 		t.Fatalf("status exit=%d %s", code, stdout.String())
 	}
-	for _, want := range []string{`"category":"capacity"`, `"native_code":"server_overloaded"`, `"retryable":true`, "at capacity", "[REDACTED]"} {
+	for _, want := range []string{`"category":"capacity"`, `"native_code":"server_overloaded"`, `"retryable":true`, failureMessageCapacity} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("status missing %s: %s", want, stdout.String())
 		}
 	}
-	if strings.Contains(stdout.String(), "do-not-store-this-answer") || strings.Contains(stdout.String(), "token=secret") {
+	if strings.Contains(stdout.String(), "do-not-store-this-answer") || strings.Contains(stdout.String(), "private-value") || strings.Contains(stdout.String(), "confidential task") {
 		t.Fatalf("status leaked: %s", stdout.String())
 	}
 	stdout.Reset()
@@ -76,14 +76,14 @@ printf '%s\n' '{"type":"turn.failed","thread_id":"thread-1","error":{"message":"
 			t.Fatalf("result missing %s: %s", want, stdout.String())
 		}
 	}
-	if strings.Contains(stdout.String(), "do-not-store-this-answer") || strings.Contains(stdout.String(), "token=secret") {
-		t.Fatalf("result leaked: %s", stdout.String())
+	if strings.Contains(stdout.String(), "do-not-store-this-answer") || strings.Contains(stdout.String(), "private-value") || strings.Contains(stdout.String(), "confidential task") || !strings.Contains(stdout.String(), failureMessageCapacity) {
+		t.Fatalf("result leaked or dropped the capacity reason: %s", stdout.String())
 	}
 	stdout.Reset()
 	if code := a.run(ctx, []string{"--output", "json", "--journal", journalPath, "events", id}); code != 0 {
 		t.Fatalf("events exit=%d %s", code, stdout.String())
 	}
-	if strings.Contains(stdout.String(), "at capacity") || strings.Contains(stdout.String(), "do-not-store") || strings.Contains(stdout.String(), "secret") {
+	if strings.Contains(stdout.String(), "at capacity") || strings.Contains(stdout.String(), "do-not-store") || strings.Contains(stdout.String(), "private-value") || strings.Contains(stdout.String(), "confidential") {
 		t.Fatalf("events leaked the failure message: %s", stdout.String())
 	}
 	parsed, err := ids.ParseExecutionID(id)
@@ -104,8 +104,15 @@ printf '%s\n' '{"type":"turn.failed","thread_id":"thread-1","error":{"message":"
 		t.Fatalf("delegate failure=%v", problem)
 	}
 	view, _ := problem.Details["failure"].(*nativeFailureView)
-	if view == nil || view.NativeCode != "server_overloaded" || view.Category != "capacity" || strings.Contains(view.Message, "secret") {
+	if view == nil || view.NativeCode != "server_overloaded" || view.Category != "capacity" || view.Message != failureMessageCapacity || strings.Contains(view.Message, "private-value") {
 		t.Fatalf("delegate details=%#v", problem.Details["failure"])
+	}
+	raw, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("private-value")) || bytes.Contains(raw, []byte("confidential task")) || bytes.Contains(raw, []byte("do-not-store-this-answer")) {
+		t.Fatal("failure payload entered the journal")
 	}
 }
 
@@ -125,17 +132,38 @@ func TestBuildOutcomeBoundsStructuredFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	secret := `request rejected: {"api_key":"private-value","prompt":"confidential task"}`
 	execution.State = model.StateFailed
 	outcome := buildOutcome(execution, adapter.Result{
 		Success: false, State: adapter.StateFailed,
-		Error: strings.Repeat("x", 500) + " at capacity",
-		Data:  map[string]any{"failure_structured": true, "native_code": "server_overloaded"},
+		Error: secret,
 	}, now, false)
-	if outcome.Failure == nil || len(outcome.Failure.Message) > model.NativeFailureMessageLimit || outcome.Failure.NativeCode != "server_overloaded" || !outcome.Failure.Retryable {
-		t.Fatalf("outcome=%#v", outcome.Failure)
+	if outcome.Failure == nil || outcome.Failure.Message != failureMessageGeneric || strings.Contains(outcome.Failure.Message, "private-value") || strings.Contains(outcome.Failure.Message, "confidential") {
+		t.Fatalf("unknown failure was not allowlisted: %#v", outcome.Failure)
 	}
 	if err := outcome.Validate(); err != nil {
 		t.Fatal(err)
+	}
+	view := projectNativeFailure(&model.OutcomeFailure{Code: "native_execution_failed", Kind: "unknown", Source: "codex", Message: secret})
+	if view != nil && (strings.Contains(view.Message, "private-value") || strings.Contains(view.Message, "confidential")) {
+		t.Fatalf("status projection kept provider text: %#v", view)
+	}
+	long := "server overloaded: " + strings.Repeat("x", 300) + " " + secret
+	updated, err := finalizeResult(context.Background(), journal, execution, adapter.Result{
+		Success: false, State: adapter.StateFailed, Error: long,
+	}, now, false)
+	if err != nil || !updated.State.Terminal() {
+		t.Fatalf("terminal commit failed: %v %#v", err, updated.State)
+	}
+	stored, err := journal.GetOutcome(context.Background(), execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Failure == nil || stored.Failure.Category != "capacity" || !stored.Failure.Retryable || stored.Failure.Message != failureMessageCapacity || len(stored.Failure.Message) > model.NativeFailureMessageLimit {
+		t.Fatalf("stored=%#v", stored.Failure)
+	}
+	if strings.Contains(stored.Failure.Message, "private-value") || strings.Contains(stored.Failure.Message, "xxxx") {
+		t.Fatalf("stored provider text: %s", stored.Failure.Message)
 	}
 }
 

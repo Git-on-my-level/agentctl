@@ -33,6 +33,14 @@ func TestInboxStaleBoundUsesLastVerifiedObservation(t *testing.T) {
 	attention.State = model.StateAttention
 	attention.Liveness = model.LivenessBlocked
 	item, _ = projectInbox(attention, now, time.Hour, store.AcknowledgementIndex{}, output.JSON)
+	aged := fresh
+	aged.Observation.ObservedAt = now.Add(-10 * time.Minute)
+	if _, actionable := projectInboxAt(aged, time.Time{}, now, time.Minute, store.AcknowledgementIndex{}, output.JSON); !actionable {
+		t.Fatal("a 10 minute observation was fresh inside the 1 minute stale bound")
+	}
+	if _, actionable := projectInboxAt(aged, now.Add(-20*time.Second), now, time.Minute, store.AcknowledgementIndex{}, output.JSON); actionable {
+		t.Fatal("a successful poll 20s ago was stale inside the 1 minute bound")
+	}
 	for _, reason := range item.Reasons {
 		if reason.Code == "running_observation_stale" {
 			t.Fatal("attention was reported as a stale running observation")

@@ -15,11 +15,9 @@ import (
 )
 
 // statusAPIContactRefresh bounds how often an identical verified status_api
-// snapshot may rewrite the envelope just to refresh observed_at.
-//
-// ponytail: coarser than inbox's 1m minimum --stale-after; a 1m bound can
-// report stale between refreshes. Upgrade path: a side record of last contact
-// that inbox reads without bumping revision.
+// snapshot may rewrite the envelope just to refresh observed_at. Each skipped
+// poll still records a side contact. Inbox ages a running task from the later
+// of that contact and observed_at, so a 1m --stale-after sees continued contact.
 const statusAPIContactRefresh = 15 * time.Minute
 
 // SupervisorExecutions adapts the normalized journal and stored bindings to
@@ -303,7 +301,7 @@ func (b SupervisorExecutions) ApplyProbe(ctx context.Context, id string, result 
 	execution.Observation = model.Observation{Source: source, Integrity: integrity, ObservedAt: observedAt}
 	execution.UpdatedAt = observedAt
 	if skipIdenticalStatusAPI(before, execution) {
-		return nil
+		return recordStatusContact(ctx, b.Engine.journal, execution.ID, observedAt)
 	}
 	_, err = b.Engine.updateCASFromRevision(ctx, execution, sourceRevision)
 	return err

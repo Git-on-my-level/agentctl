@@ -215,3 +215,40 @@ func TestUpdateStatusAndWorkerKeepExplicitConfigSelection(t *testing.T) {
 		t.Fatalf("worker path=%q err=%v", path, err)
 	}
 }
+
+func TestUpdateStatusAndDoctorSkipDevBuildWithoutStaleLatest(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	statePath := filepath.Join(root, "state", "agentctl", "update-state.json")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, []byte(`{"schema_version":1,"latest_version":"v0.10.2","checked_on":"2026-09-01","installed_version":"v0.14.0"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := version
+	version = "v0.14.0-1-g073be4b"
+	t.Cleanup(func() { version = previous })
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	a.getenv = os.Getenv
+	if code := a.run(context.Background(), []string{"update", "status"}); code != 0 {
+		t.Fatalf("status exit=%d %s %s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"update_check":"skipped_dev_build"`) || strings.Contains(stdout.String(), `"latest_version":"v0.10.2"`) {
+		t.Fatalf("status still presents a stale latest: %s", stdout.String())
+	}
+	cached, err := os.ReadFile(statePath)
+	if err != nil || !bytes.Contains(cached, []byte(`"latest_version":"v0.10.2"`)) {
+		t.Fatalf("status rewrote the cache: %s %v", cached, err)
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"doctor", "--static", "--adapter", "generic-process"}); code != 0 {
+		t.Fatalf("doctor exit=%d %s %s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"update_check":"skipped_dev_build"`) || strings.Contains(stdout.String(), "v0.10.2") {
+		t.Fatalf("doctor update projection: %s", stdout.String())
+	}
+}

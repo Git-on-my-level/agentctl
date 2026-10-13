@@ -44,6 +44,7 @@ var (
 	bIdempotency       = []byte("idempotency")
 	bOutcomes          = []byte("outcomes")
 	bAcknowledgements  = []byte("execution_acknowledgements")
+	bStatusContacts    = []byte("status_contacts")
 	keySchema          = []byte("schema_version")
 	keyHost            = []byte("origin_host_id")
 	keyAckEpoch        = []byte("acknowledgement_epoch")
@@ -162,7 +163,7 @@ func (j *Journal) Path() string { return j.path }
 
 func (j *Journal) initialize() error {
 	return j.db.Update(func(tx *bbolt.Tx) error {
-		for _, name := range [][]byte{bMetadata, bExecutions, bEvents, bEventsByExecution, bDedupe, bTerminal, bIdempotency, bOutcomes, bAcknowledgements} {
+		for _, name := range [][]byte{bMetadata, bExecutions, bEvents, bEventsByExecution, bDedupe, bTerminal, bIdempotency, bOutcomes, bAcknowledgements, bStatusContacts} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return err
 			}

@@ -183,13 +183,21 @@ func TestIdenticalStatusAPISnapshotSkipsRevisionUntilContactIsStale(t *testing.T
 	}
 	running := current
 	probe.Revision = current.Revision
-	probe.ObservedAt = probe.ObservedAt.Add(time.Minute)
-	if err := bridge.ApplyProbe(ctx, execution.ID.String(), probe); err != nil {
-		t.Fatal(err)
+	deadline := running.Observation.ObservedAt.Add(statusAPIContactRefresh)
+	var lastContact time.Time
+	for at := running.Observation.ObservedAt.Add(time.Minute); at.Before(deadline); at = at.Add(time.Minute) {
+		probe.ObservedAt = at
+		if err := bridge.ApplyProbe(ctx, execution.ID.String(), probe); err != nil {
+			t.Fatal(err)
+		}
+		lastContact = at
 	}
 	current, _ = journal.GetExecution(ctx, execution.ID)
 	if current.Revision != running.Revision || !current.Observation.ObservedAt.Equal(running.Observation.ObservedAt) {
-		t.Fatalf("fresh identical running snapshot rewrote the envelope: %#v", current)
+		t.Fatalf("repeated identical polls rewrote the envelope: %#v", current)
+	}
+	if got := journal.statusContact(execution.ID); !got.Equal(lastContact) || lastContact.Sub(current.Observation.ObservedAt) < time.Minute {
+		t.Fatalf("contact=%s observed=%s", got, current.Observation.ObservedAt)
 	}
 	probe.ObservedAt = running.Observation.ObservedAt.Add(statusAPIContactRefresh + time.Second)
 	if err := bridge.ApplyProbe(ctx, execution.ID.String(), probe); err != nil {

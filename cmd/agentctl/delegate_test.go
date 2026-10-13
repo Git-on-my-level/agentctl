@@ -85,6 +85,26 @@ func TestDelegateLabelNamesTheViolatedRule(t *testing.T) {
 	}
 }
 
+func TestParseRunLabelNamesTheViolatedRule(t *testing.T) {
+	_, problem := parseRun([]string{"--label", "A-agentctl", "--", "echo"})
+	if problem == nil || problem.Details["diagnostic_code"] != "run_invalid_label" || problem.Details["index"] != 0 || problem.Details["rule"] != "pattern" || !strings.Contains(problem.Message, "index 0") || !strings.Contains(problem.Message, runLabelPatternText) {
+		t.Fatalf("%v", problem)
+	}
+	_, problem = parseRun([]string{"--label", "grok-impl", "--label", "grok-impl", "--", "echo"})
+	if problem == nil || problem.Details["rule"] != "duplicate" || problem.Details["index"] != 1 || !strings.Contains(problem.Message, "duplicates") {
+		t.Fatalf("%v", problem)
+	}
+	args := []string{}
+	for i := 0; i < 17; i++ {
+		args = append(args, "--label", "label-"+string(rune('a'+i)))
+	}
+	args = append(args, "--", "echo")
+	_, problem = parseRun(args)
+	if problem == nil || problem.Details["rule"] != "limit" || problem.Details["index"] != 16 || !strings.Contains(problem.Message, "16 distinct exact labels") {
+		t.Fatalf("%v", problem)
+	}
+}
+
 func TestDelegatePlanNoMutationOrPromptLeak(t *testing.T) {
 	f := newDelegateFixture(t, delegateSuccessScript)
 	code, out := f.invoke("private-task-token", "--plan")

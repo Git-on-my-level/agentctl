@@ -121,6 +121,7 @@ type fakeJournal struct {
 	events           map[ids.ExecutionID][]model.Event
 	dedupe           map[string]model.Event
 	projection       map[string]string
+	contacts         map[ids.ExecutionID]time.Time
 	getExecutionCall int
 	beforeGetReturn  func(*fakeJournal, ids.ExecutionID, int)
 	beforeUpdate     func(*fakeJournal, ids.ExecutionID)
@@ -132,10 +133,27 @@ func newFakeJournal(t *testing.T, generator ids.Generator) *fakeJournal {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &fakeJournal{host: hostID, generator: generator, executions: map[ids.ExecutionID]model.Execution{}, events: map[ids.ExecutionID][]model.Event{}, dedupe: map[string]model.Event{}, projection: map[string]string{}}
+	return &fakeJournal{host: hostID, generator: generator, executions: map[ids.ExecutionID]model.Execution{}, events: map[ids.ExecutionID][]model.Event{}, dedupe: map[string]model.Event{}, projection: map[string]string{}, contacts: map[ids.ExecutionID]time.Time{}}
 }
 
 func (j *fakeJournal) HostID(context.Context) (ids.HostID, error) { return j.host, nil }
+func (j *fakeJournal) RecordStatusContact(_ context.Context, id ids.ExecutionID, at time.Time) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.contacts == nil {
+		j.contacts = map[ids.ExecutionID]time.Time{}
+	}
+	if prev, ok := j.contacts[id]; ok && !at.After(prev) {
+		return nil
+	}
+	j.contacts[id] = at
+	return nil
+}
+func (j *fakeJournal) statusContact(id ids.ExecutionID) time.Time {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.contacts[id]
+}
 func (j *fakeJournal) CreateExecution(_ context.Context, value model.Execution, _ contracts.MutationKey) (model.Execution, bool, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()

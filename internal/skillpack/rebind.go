@@ -122,7 +122,7 @@ func planHubRebind(ctx context.Context, git config.SourceGit, home string, selec
 	plan.Applicable = true
 	plan.Reason = "remote_changed"
 	plan.Message = "configured Skill Hub remote differs from the recorded remote"
-	plan.Proof = "apply fetches the configured ref and requires the pinned commit to be an ancestor of that ref"
+	plan.Proof = "apply fetches the configured ref and requires the pinned commit to be an ancestor of that ref; a fork that contains the commit also passes"
 	plan.Digest = hubRebindDigest(plan)
 	return plan, nil
 }
@@ -159,7 +159,7 @@ func applyHubRebind(ctx context.Context, git config.SourceGit, home string, sele
 	}
 	if _, err := git.Run(ctx, plan.checkoutPath, "merge-base", "--is-ancestor", plan.AppliedCommit, "FETCH_HEAD"); err != nil {
 		return HubRebind{}, &SelectionConflict{
-			Reason: "not_same_repository", Message: "configured Skill Hub remote does not contain the pinned commit",
+			Reason: "pinned_commit_absent", Message: "configured Skill Hub remote does not contain the pinned commit",
 			Recorded: plan.Recorded, Configured: plan.Configured,
 		}
 	}
