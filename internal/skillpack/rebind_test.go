@@ -80,6 +80,16 @@ func TestHubRebindProvesAncestryBeforeChangingRemote(t *testing.T) {
 	if got := fixtureGit(t, checkout, "remote", "get-url", "origin"); got != mirror {
 		t.Fatalf("origin=%s", got)
 	}
+	retry, err := ApplyHubRebind(context.Background(), home, next, plan.Digest, time.Now())
+	if err != nil || retry.Applied || retry.NetworkAccess || retry.Reason != "already_bound" {
+		t.Fatalf("applied digest retry=%#v %v", retry, err)
+	}
+	if got := fixtureGit(t, checkout, "remote", "get-url", "origin"); got != mirror {
+		t.Fatalf("retry changed origin to %s", got)
+	}
+	if _, err := ApplyHubRebind(context.Background(), home, next, "sha256:"+strings.Repeat("cd", 32), time.Now()); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "digest") {
+		t.Fatalf("stale digest after apply: %v", err)
+	}
 	if head := fixtureGit(t, checkout, "rev-parse", "HEAD"); head != plan.AppliedCommit {
 		t.Fatalf("checkout moved from %s to %s", plan.AppliedCommit, head)
 	}

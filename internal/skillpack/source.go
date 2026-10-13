@@ -30,6 +30,9 @@ type HubState struct {
 	AppliedCommit string       `json:"applied_commit"`
 	AppliedAt     time.Time    `json:"applied_at"`
 	CheckedOn     string       `json:"checked_on,omitempty"`
+	// RebindDigest is the plan digest of the last successful remote rebind.
+	// A later apply of that same digest is already bound and does not fetch.
+	RebindDigest string `json:"rebind_digest,omitempty"`
 }
 
 type HubStatus struct {

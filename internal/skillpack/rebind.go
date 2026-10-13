@@ -57,6 +57,7 @@ type HubRebind struct {
 	Applied            bool         `json:"applied"`
 	checkoutPath       string
 	statePath          string
+	appliedDigest      string
 }
 
 func PlanHubRebind(ctx context.Context, home string, selection HubSelection) (HubRebind, error) {
@@ -93,6 +94,7 @@ func planHubRebind(ctx context.Context, git config.SourceGit, home string, selec
 	}
 	plan.Recorded = state.Selection
 	plan.AppliedCommit = state.AppliedCommit
+	plan.appliedDigest = state.RebindDigest
 	if state.Selection.Ref != selection.Ref {
 		plan.Reason = "ref_changed"
 		if state.Selection.Remote != selection.Remote {
@@ -140,6 +142,9 @@ func applyHubRebind(ctx context.Context, git config.SourceGit, home string, sele
 	if err != nil {
 		return HubRebind{}, err
 	}
+	if plan.Reason == "already_bound" && (plan.Digest == expectedDigest || plan.appliedDigest == expectedDigest) {
+		return plan, nil
+	}
 	if plan.Digest != expectedDigest {
 		return HubRebind{}, &SelectionConflict{
 			Reason: "digest_mismatch", Message: "rebind digest does not match the current plan",
@@ -172,6 +177,7 @@ func applyHubRebind(ctx context.Context, git config.SourceGit, home string, sele
 		return HubRebind{}, err
 	}
 	state.Selection.Remote = plan.Configured.Remote
+	state.RebindDigest = plan.Digest
 	state.CheckedOn = now.UTC().Format("2006-01-02")
 	if err := saveHubState(plan.statePath, state, true); err != nil {
 		_, _ = git.Run(ctx, plan.checkoutPath, "remote", "set-url", "origin", plan.Recorded.Remote)

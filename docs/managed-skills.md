@@ -72,7 +72,8 @@ and returns a digest. `--apply` fetches the configured ref and changes only
 the recorded remote after `merge-base --is-ancestor` proves the pinned commit
 is an ancestor of the configured ref. A fork that contains the commit also
 passes; ancestry is shared history, not repository identity. A ref change, a
-dirty checkout, or a digest mismatch does not fetch.
+dirty checkout, or a digest mismatch does not fetch. Retrying the applied
+digest is `already_bound` and does not fetch.
 
 All Git advances are fast-forward only. A dirty checkout, changed remote,
 invalid fetched manifest, unsafe path, symlink, oversized tree, or unsupported
