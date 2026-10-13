@@ -663,3 +663,19 @@ and content remain omitted.
 Caller attribution is preserved in execution-owned immutable metadata, so a newer reader can restore it after an older supervisor rewrites an execution envelope. Historical executions without attribution remain unknown.
 
 `recent` durations use the current page observation time; the cursor `as_of` is only a creation-time cutoff. State, lifecycle timestamps, duration, and acknowledgement evidence are read live on each page.
+
+### Progress timestamps
+
+`status` and `recent` expose nullable `progress_at`: the observation time of the
+latest newly recorded scoped progress, attention or terminal event, or a verified
+snapshot state/source-state change. It is monotonic. Legacy records and execution
+paths that have not recorded such evidence return null; never substitute
+`created_at`, `updated_at` or a probe timestamp for unknown progress.
+
+Supervisor probe results carry `probed_at` separately as attempt metadata. Empty
+Multica event pages do not update execution timestamps or revisions. Duplicate
+events do not advance `progress_at`; existing state-replay semantics are preserved.
+An advancing workspace cursor may still be checkpointed for pagination, without
+advancing execution progress. Event ingestion already commits new evidence; the
+supervisor does not apply a second envelope update. These fields remain metadata
+and do not prove task acceptance or successful answer collection.

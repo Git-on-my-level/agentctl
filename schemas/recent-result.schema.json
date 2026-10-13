@@ -106,6 +106,9 @@
           "started_at": {
             "$ref": "execution.schema.json#/properties/started_at"
           },
+          "progress_at": {
+            "$ref": "execution.schema.json#/properties/progress_at"
+          },
           "updated_at": {
             "$ref": "execution.schema.json#/properties/updated_at"
           },

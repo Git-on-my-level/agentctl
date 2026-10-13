@@ -248,17 +248,26 @@ func (e *Engine) ingestEvents(ctx context.Context, executionID ids.ExecutionID, 
 				}
 			}
 		}
-		appended, _, appendErr := e.journal.AppendEvent(ctx, normalized, projection)
+		appended, reused, appendErr := e.journal.AppendEvent(ctx, normalized, projection)
 		if appendErr != nil {
 			return stored, &Error{Code: CodeConflict, Operation: "append_event", Adapter: adapterName, Message: "journal rejected normalized event", Cause: appendErr}
 		}
 		stored = append(stored, appended)
-		if event.State != "" {
+		meaningful := !reused && event.SourceState != "cancel_requested" &&
+			(normalized.Kind == model.EventProgress || normalized.Kind == model.EventAttention || normalized.Kind == model.EventTerminal)
+		if event.State != "" || meaningful {
 			observation := observationFromEvent(event, e.now())
+			if meaningful {
+				advanceProgress(&current, observation.ObservedAt)
+			}
 			if current.Authority == model.AuthorityMultica && crossRestartEventsUsable(current.Capabilities) {
 				observation.Source = model.ObservationDurableOutbox
 			}
-			_, applyErr := e.applyObservedState(ctx, current, mapState(event.State), sourceState(event.SourceState), observation)
+			state, source := current.State, current.SourceState
+			if event.State != "" {
+				state, source = mapState(event.State), sourceState(event.SourceState)
+			}
+			_, applyErr := e.applyObservedStateFromRevision(ctx, current, state, source, observation, current.Revision)
 			if applyErr != nil {
 				return stored, applyErr
 			}
@@ -644,6 +653,9 @@ func (e *Engine) updateCASFromRevision(ctx context.Context, desired model.Execut
 		desired.Promotion = current.Promotion
 		desired.TaskContract = current.TaskContract
 		desired.LastOperationFailure = current.LastOperationFailure
+		if current.ProgressAt != nil {
+			advanceProgress(&desired, *current.ProgressAt)
+		}
 		if current.Launch != nil {
 			desired.Launch = current.Launch
 		}
@@ -812,5 +824,12 @@ func mapLiveness(value adapter.Liveness) model.Liveness {
 		return model.LivenessUnreachable
 	default:
 		return ""
+	}
+}
+
+// advanceProgress never invents history or lets delayed evidence move progress back.
+func advanceProgress(execution *model.Execution, at time.Time) {
+	if !at.IsZero() && (execution.ProgressAt == nil || at.After(*execution.ProgressAt)) {
+		execution.ProgressAt = &at
 	}
 }

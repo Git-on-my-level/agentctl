@@ -44,6 +44,7 @@ type recentExecution struct {
 	Liveness              model.Liveness         `json:"liveness"`
 	CreatedAt             time.Time              `json:"created_at"`
 	StartedAt             *time.Time             `json:"started_at,omitempty"`
+	ProgressAt            *time.Time             `json:"progress_at"`
 	UpdatedAt             time.Time              `json:"updated_at"`
 	TerminalAt            *time.Time             `json:"terminal_at,omitempty"`
 	DurationSeconds       float64                `json:"duration_seconds"`
@@ -391,7 +392,7 @@ func projectRecent(execution model.Execution, now time.Time, acks store.Acknowle
 	if labels == nil {
 		labels = []string{}
 	}
-	item := recentExecution{Caller: execution.Caller, ID: execution.ID, Labels: labels, Authority: execution.Authority, Adapter: execution.Adapter, Mode: execution.Mode, State: execution.State, Liveness: execution.Liveness, CreatedAt: execution.CreatedAt, StartedAt: execution.StartedAt, UpdatedAt: execution.UpdatedAt, TerminalAt: execution.TerminalAt, DurationSeconds: duration.Seconds(), Unreconciled: acks.Unreconciled(execution)}
+	item := recentExecution{Caller: execution.Caller, ID: execution.ID, Labels: labels, Authority: execution.Authority, Adapter: execution.Adapter, Mode: execution.Mode, State: execution.State, Liveness: execution.Liveness, CreatedAt: execution.CreatedAt, StartedAt: execution.StartedAt, UpdatedAt: execution.UpdatedAt, ProgressAt: execution.ProgressAt, TerminalAt: execution.TerminalAt, DurationSeconds: duration.Seconds(), Unreconciled: acks.Unreconciled(execution)}
 	if ack, ok := acks.ByID[execution.ID]; ok {
 		acknowledgedAt := ack.AcknowledgedAt
 		item.AcknowledgedAt = &acknowledgedAt

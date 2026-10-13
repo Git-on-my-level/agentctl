@@ -291,6 +291,9 @@ delivered (`--prompt-file` or `--prompt-stdin`), not one embedded in native argv
 Native work remains owned by the invoking agentctl process. A direct adapter
 does not gain cross-process cancellation; add `--timeout` when a hard stop is
 required unless capabilities advertise a durable cancel route. For aggregate usage, use `recent --since <RFC3339> --until <RFC3339> --summary`.
+`status` and `recent` expose nullable `progress_at` for newly recorded task
+progress; probe attempts, empty/duplicate event pages and cursor checkpoints do
+not advance it. Null means unknown history, never a fresh or stale task claim.
 For full metadata export, follow `next_cursor` with `--cursor`, preserving filters.
 Cursors freeze creation cutoff, not live states or acknowledgements. Summary
 and export never read answers or acknowledge. Preflight failures are not counted.
