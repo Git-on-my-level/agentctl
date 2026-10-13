@@ -137,6 +137,16 @@ func TestBuildOutcomeBoundsStructuredFailure(t *testing.T) {
 	if err := outcome.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	inferred := buildOutcome(execution, adapter.Result{
+		Success: false, State: adapter.StateFailed,
+		Error: strings.Repeat("x", 500) + " at capacity",
+	}, now, false)
+	if inferred.Failure == nil || inferred.Failure.Category != "capacity" || inferred.Failure.NativeCode != "" || len(inferred.Failure.Message) > model.NativeFailureMessageLimit || !inferred.Failure.Retryable {
+		t.Fatalf("inferred=%#v", inferred.Failure)
+	}
+	if err := inferred.Validate(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func executionIDFromOutput(t *testing.T, document string) string {

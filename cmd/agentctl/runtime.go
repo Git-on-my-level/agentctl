@@ -1531,13 +1531,12 @@ func buildOutcome(execution model.Execution, result adapter.Result, now time.Tim
 			if !model.ValidNativeFailureCode(nativeCode) {
 				nativeCode = ""
 			}
-			limit := model.OutcomeFailureLimit
-			if structured || nativeCode != "" {
-				limit = model.NativeFailureMessageLimit
-			}
-			message, _ := boundedOutcomeText(firstNonEmptyString(result.Error, "native execution failed"), limit)
 			diagnosticCode, _ := result.Data["diagnostic_code"].(string)
+			message, _ := boundedOutcomeText(firstNonEmptyString(result.Error, "native execution failed"), model.OutcomeFailureLimit)
 			code, kind, category, retryable := classifyOutcomeFailure(message, diagnosticCode, nativeCode)
+			if structured || nativeCode != "" || category != "" {
+				message, _ = boundedOutcomeText(message, model.NativeFailureMessageLimit)
+			}
 			outcome.Failure = &model.OutcomeFailure{Code: code, Kind: kind, Source: execution.Adapter, Retryable: retryable, Message: message, Category: category, NativeCode: nativeCode}
 		}
 		if outcome.Content != nil || outcome.Failure != nil {
