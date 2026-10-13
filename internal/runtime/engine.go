@@ -645,8 +645,9 @@ func (e *Engine) applyObservedState(ctx context.Context, execution model.Executi
 // that stale observation becomes a no-op instead of conflicting with or
 // downgrading verified terminal evidence.
 func (e *Engine) applyObservedStateFromRevision(ctx context.Context, execution model.Execution, state model.State, source *string, observation model.Observation, sourceRevision uint64) (model.Execution, error) {
-	if !execution.State.Terminal() && observation.Integrity == model.IntegrityVerified && observation.Source != model.ObservationUnknown &&
-		(execution.State != state || !equalOptionalString(execution.SourceState, source)) {
+	// Session/result/snapshot source strings are normalized state labels;
+	// changing that label alone is not a newly observed task transition.
+	if !execution.State.Terminal() && observation.Integrity == model.IntegrityVerified && observation.Source != model.ObservationUnknown && execution.State != state {
 		advanceProgress(&execution, observation.ObservedAt)
 	}
 	if execution.State.Terminal() && execution.State != state {

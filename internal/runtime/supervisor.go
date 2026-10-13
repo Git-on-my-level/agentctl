@@ -276,8 +276,8 @@ func (b SupervisorExecutions) ApplyProbe(ctx context.Context, id string, result 
 		integrity = model.IntegrityConflicted
 		targetLiveness = model.LivenessUnknown
 	} else {
-		if source != model.ObservationUnknown && integrity == model.IntegrityVerified &&
-			(execution.State != state || !equalOptionalString(execution.SourceState, targetSourceState)) {
+		// Snapshot probes carry normalized state, not a new adapter source event.
+		if source != model.ObservationUnknown && integrity == model.IntegrityVerified && execution.State != state {
 			advanceProgress(&execution, observedAt)
 		}
 		execution.State = state

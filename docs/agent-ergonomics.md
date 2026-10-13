@@ -668,7 +668,8 @@ Caller attribution is preserved in execution-owned immutable metadata, so a newe
 
 `status` and `recent` expose nullable `progress_at`: the observation time of the
 latest newly recorded scoped progress, attention or terminal event, or a verified
-launch/session, snapshot or result state/source-state change. Native state and
+launch/session, snapshot or result task-state change. Normalizing their source
+label without a task-state change does not count as progress. Native state and
 source-state transitions also record it; runner lease heartbeats do not. It is monotonic. Legacy records and execution
 paths that have not recorded such evidence return null; never substitute
 `created_at`, `updated_at` or a probe timestamp for unknown progress.

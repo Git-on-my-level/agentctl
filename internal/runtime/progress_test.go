@@ -344,3 +344,40 @@ func TestRuntimeLaunchAndResultRecordProgress(t *testing.T) {
 		t.Fatalf("identical result poll manufactured progress: %#v", execution)
 	}
 }
+
+func TestUnchangedSnapshotSourceNormalizationDoesNotAdvanceProgress(t *testing.T) {
+	for _, path := range []string{"supervisor", "session"} {
+		t.Run(path, func(t *testing.T) {
+			ctx := context.Background()
+			engine, journal, _ := testEngine(t, NewRegistry())
+			config := adapter.MulticaConfig{Binary: "/opt/multica", Profile: "private", Endpoint: "https://multica.internal", Workspace: "workspace-1", Issue: "issue-2"}
+			spec := AdapterSpec{Name: "multica", Executable: config.Binary, Multica: &config}
+			execution := createPromotedIssueExecution(t, engine, journal, spec)
+			execution.State, execution.SourceState = model.StateRunning, sourceState("issue.started")
+			execution.ProgressAt = &fixtureNow
+			execution, err := journal.UpdateExecution(ctx, execution, execution.Revision)
+			if err != nil {
+				t.Fatal(err)
+			}
+			later := fixtureNow.Add(time.Hour)
+			if path == "supervisor" {
+				err = (SupervisorExecutions{Engine: engine}).ApplyProbe(ctx, execution.ID.String(), supervisor.ProbeResult{State: "running", Liveness: "alive", Source: "status_api", ObservedAt: later, Revision: execution.Revision})
+			} else {
+				session := fixtureSession("multica", "multica_issue", config.Issue, adapter.StateRunning)
+				session.Observation.Source, session.Observation.ObservedAt = "status_api", later
+				session.Ref.Profile, session.Ref.Endpoint, session.Ref.Workspace, session.Ref.Issue = config.Profile, config.Endpoint, config.Workspace, config.Issue
+				_, err = engine.applySession(ctx, execution, session, spec)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := journal.GetExecution(ctx, execution.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.ProgressAt == nil || !got.ProgressAt.Equal(fixtureNow) {
+				t.Fatalf("normalization manufactured progress: %#v", got)
+			}
+		})
+	}
+}
