@@ -1,0 +1,26 @@
+{
+  "sessionId": "sess_example",
+  "traceId": "trace-example",
+  "turnId": "turn_example",
+  "response": "ok",
+  "usage": {
+    "source": "provider",
+    "modelRequestCount": 1,
+    "inputTokens": 19302,
+    "outputTokens": 19,
+    "totalTokens": 19321,
+    "cacheReadTokens": 15680,
+    "cacheWriteTokens": 0,
+    "reasoningTokens": 0,
+    "webFetchRequests": 0,
+    "webSearchRequests": 0
+  },
+  "eventCount": 30,
+  "projection": {
+    "status": "idle",
+    "turnCount": 1,
+    "totalTokenCount": 19321,
+    "contextUsed": 19321,
+    "contextWindow": 200000
+  }
+}

@@ -20,6 +20,7 @@ func TestRewriteZCodeArgvKeepsExplicitPath(t *testing.T) {
 func TestZCodeParserReadsResponseDocument(t *testing.T) {
 	raw := []byte(`{
   "sessionId": "sess_example",
+  "turnId": "turn_example",
   "response": "Hi!",
   "projection": {"status": "idle"}
 }`)
@@ -33,7 +34,7 @@ func TestZCodeParserReadsResponseDocument(t *testing.T) {
 }
 
 func TestZCodeParserRejectsEmptyResponse(t *testing.T) {
-	obs := zcodeParser{}.Parse([]byte(`{"sessionId":"sess_example","response":""}`), false)
+	obs := zcodeParser{}.Parse([]byte(`{"sessionId":"sess_example","turnId":"turn_example","response":""}`), false)
 	if obs.Success || obs.Data["diagnostic_code"] != "empty_terminal_result" {
 		t.Fatalf("obs = %#v", obs)
 	}
@@ -82,5 +83,71 @@ func TestZCodeProbeWithoutAppBundleStillNamesLauncher(t *testing.T) {
 	}
 	if _, ok := adapterErr.Details["app_bundled_cli"]; ok {
 		t.Fatalf("details = %#v", adapterErr.Details)
+	}
+}
+
+func TestZCodeParserFindsDocumentAfterStdoutNoise(t *testing.T) {
+	doc := "{\n  \"sessionId\": \"sess_example\",\n  \"turnId\": \"turn_example\",\n  \"response\": \"Done.\",\n  \"projection\": {\"status\": \"idle\"}\n}\n"
+	for name, raw := range map[string]string{
+		"banner":           "Update available: 0.17.0\nwarning: something {not json}\n" + doc,
+		"log object first": "{\"level\":\"warn\",\"message\":\"x\"}\n" + doc,
+	} {
+		obs := zcodeParser{}.Parse([]byte(raw), false)
+		if !obs.Terminal || !obs.Success || obs.Content != "Done." || obs.SessionID != "sess_example" {
+			t.Fatalf("%s: obs = %#v", name, obs)
+		}
+	}
+	noise := zcodeParser{}.Parse([]byte("only noise\n"), false)
+	if obs := noise; obs.Terminal {
+		t.Fatalf("noise must not be terminal: %#v", obs)
+	}
+}
+
+// zcode_json_result.json is a real `zcode --json --mode yolo --prompt` document
+// (ZCode 0.16.9) with session, turn, and trace ids scrubbed.
+func TestZCodeParserRealResultDocumentWithNoiseVariants(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("testdata", "zcode_json_result.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, raw := range map[string]string{
+		"clean":        string(doc),
+		"ansi banner":  "\x1b[33mwarning: stale cache\x1b[0m\r\n\x1b[0m" + string(doc),
+		"crlf":         "notice\r\n" + strings.ReplaceAll(string(doc), "\n", "\r\n"),
+		"stderr style": "[zcode] 12 files changed\n" + string(doc),
+	} {
+		obs := zcodeParser{}.Parse([]byte(raw), false)
+		if !obs.Terminal || !obs.Success || obs.Content != "ok" || obs.SessionID != "sess_example" {
+			t.Fatalf("%s: obs = %#v", name, obs)
+		}
+	}
+}
+
+func TestZCodeParserResultIsLastCompleteDocument(t *testing.T) {
+	logLine := `{"timestamp":"2026-10-14T16:03:50.100Z","level":"info","event":"turn.started","sessionId":"sess_example","turnId":"turn_example"}`
+	real := `{"sessionId":"sess_example","turnId":"turn_example","response":"Done.","eventCount":3}`
+	decoy := `{"sessionId":"x","turnId":"t","response":"not the answer"}`
+	truncated := `{"sessionId":"sess_example","turnId":"turn_example","response":"Don`
+	for name, raw := range map[string]string{
+		"log line with sessionId first": logLine + "\n" + real + "\n",
+		"decoy result first":            decoy + "\n" + real + "\n",
+		"several log lines":             logLine + "\n" + logLine + "\n" + real,
+	} {
+		obs := zcodeParser{}.Parse([]byte(raw), false)
+		if !obs.Terminal || !obs.Success || obs.Content != "Done." {
+			t.Fatalf("%s: obs = %#v", name, obs)
+		}
+	}
+	for name, raw := range map[string]string{
+		"truncated after decoy":    decoy + "\n" + truncated,
+		"truncated after log line": logLine + "\n" + truncated,
+		"document then JSON noise": real + "\n" + logLine + "\n",
+		"document then text":       real + "\nbye\n",
+		"log line only":            logLine + "\n",
+	} {
+		obs := zcodeParser{}.Parse([]byte(raw), false)
+		if obs.Terminal || obs.Success {
+			t.Fatalf("%s must produce no result: %#v", name, obs)
+		}
 	}
 }

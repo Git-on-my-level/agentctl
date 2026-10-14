@@ -187,7 +187,7 @@ func (zcodeParser) Parse(line []byte, stderr bool) parsedObservation {
 	if stderr {
 		return parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "stderr", Data: map[string]any{"stream": "stderr", "structured": false}}
 	}
-	value, ok := decodeLine(line)
+	value, ok := decodeZCodeDocument(line)
 	if !ok {
 		return parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "malformed_output", Data: map[string]any{"parse_error": "malformed structured output"}}
 	}
@@ -216,6 +216,59 @@ func (zcodeParser) Parse(line []byte, stderr bool) parsedObservation {
 	obs.Success = true
 	obs.State = StateCompleted
 	return obs
+}
+
+// decodeZCodeDocument finds the `--json` result document in captured stdout.
+// The CLI prints it last, but a long run may print banners, update notices, or
+// log lines before it. The result is the LAST complete top-level JSON value
+// that has the result shape and is followed only by whitespace (ANSI is
+// stripped first). Candidates are the start of the output and every line-initial
+// `{`, tried last to first. A truncated final document therefore yields no
+// result instead of promoting an earlier object, and an earlier object (a log
+// line, or a decoy result) never wins over the real final document.
+func decodeZCodeDocument(raw []byte) (map[string]any, bool) {
+	text := bytes.TrimSpace([]byte(stripANSI(string(raw))))
+	starts := []int{}
+	if len(text) > 0 && text[0] == '{' {
+		starts = append(starts, 0)
+	}
+	for i := 0; i+1 < len(text); i++ {
+		if text[i] == '\n' && text[i+1] == '{' {
+			starts = append(starts, i+1)
+		}
+	}
+	for i := len(starts) - 1; i >= 0; i-- {
+		dec := json.NewDecoder(bytes.NewReader(text[starts[i]:]))
+		var value map[string]any
+		if err := dec.Decode(&value); err != nil || value == nil {
+			continue
+		}
+		if len(bytes.TrimSpace(text[starts[i]+int(dec.InputOffset()):])) != 0 {
+			continue
+		}
+		if looksLikeZCodeDocument(value) {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+// looksLikeZCodeDocument requires the shape of ZCode's `--json` result: a
+// response (or error) together with the session and turn it belongs to. Log
+// records carry a sessionId too, but always a timestamp/event and no response.
+func looksLikeZCodeDocument(value map[string]any) bool {
+	for _, key := range []string{"timestamp", "event", "level"} {
+		if _, ok := value[key]; ok {
+			return false
+		}
+	}
+	if _, hasError := value["error"]; hasError {
+		return true
+	}
+	session, _ := value["sessionId"].(string)
+	turn, _ := value["turnId"].(string)
+	_, hasResponse := value["response"].(string)
+	return session != "" && turn != "" && hasResponse
 }
 
 // devinPrintTrailer is the last line of the one-time welcome banner observed
