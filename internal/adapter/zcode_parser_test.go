@@ -84,3 +84,21 @@ func TestZCodeProbeWithoutAppBundleStillNamesLauncher(t *testing.T) {
 		t.Fatalf("details = %#v", adapterErr.Details)
 	}
 }
+
+func TestZCodeParserFindsDocumentAfterStdoutNoise(t *testing.T) {
+	doc := "{\n  \"sessionId\": \"sess_example\",\n  \"response\": \"Done.\",\n  \"projection\": {\"status\": \"idle\"}\n}\n"
+	for name, raw := range map[string]string{
+		"banner":           "Update available: 0.17.0\nwarning: something {not json}\n" + doc,
+		"log object first": "{\"level\":\"warn\",\"message\":\"x\"}\n" + doc,
+		"trailing text":    doc + "bye\n",
+	} {
+		obs := zcodeParser{}.Parse([]byte(raw), false)
+		if !obs.Terminal || !obs.Success || obs.Content != "Done." || obs.SessionID != "sess_example" {
+			t.Fatalf("%s: obs = %#v", name, obs)
+		}
+	}
+	noise := zcodeParser{}.Parse([]byte("only noise\n"), false)
+	if obs := noise; obs.Terminal {
+		t.Fatalf("noise must not be terminal: %#v", obs)
+	}
+}

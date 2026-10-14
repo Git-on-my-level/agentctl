@@ -187,7 +187,7 @@ func (zcodeParser) Parse(line []byte, stderr bool) parsedObservation {
 	if stderr {
 		return parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "stderr", Data: map[string]any{"stream": "stderr", "structured": false}}
 	}
-	value, ok := decodeLine(line)
+	value, ok := decodeZCodeDocument(line)
 	if !ok {
 		return parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "malformed_output", Data: map[string]any{"parse_error": "malformed structured output"}}
 	}
@@ -216,6 +216,44 @@ func (zcodeParser) Parse(line []byte, stderr bool) parsedObservation {
 	obs.Success = true
 	obs.State = StateCompleted
 	return obs
+}
+
+// decodeZCodeDocument finds the `--json` result document in captured stdout.
+// The CLI prints it as the last top-level object, but a long run may print
+// banners, update notices, or warnings before it. Insisting on a leading `{`
+// turned a clean exit with a valid result into "no terminal result" (orphaned,
+// result lost). Candidates are line-initial objects, tried last to first, and
+// must look like a result document (sessionId, response, or error).
+func decodeZCodeDocument(raw []byte) (map[string]any, bool) {
+	if value, ok := decodeLine(bytes.TrimSpace(raw)); ok && looksLikeZCodeDocument(value) {
+		return value, true
+	}
+	text := raw
+	for end := len(text); end > 0; {
+		idx := bytes.LastIndex(text[:end], []byte("\n{"))
+		if idx < 0 {
+			break
+		}
+		if value, ok := decodeLine(bytes.TrimSpace(text[idx+1:])); ok && looksLikeZCodeDocument(value) {
+			return value, true
+		}
+		end = idx
+	}
+	// Preserve the previous behavior for a document that is not a result
+	// envelope, so existing diagnostics (empty or error responses) still apply.
+	if value, ok := decodeLine(bytes.TrimSpace(raw)); ok {
+		return value, true
+	}
+	return nil, false
+}
+
+func looksLikeZCodeDocument(value map[string]any) bool {
+	for _, key := range []string{"sessionId", "session_id", "response", "error"} {
+		if _, ok := value[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // devinPrintTrailer is the last line of the one-time welcome banner observed

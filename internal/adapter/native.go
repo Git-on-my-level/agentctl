@@ -227,6 +227,11 @@ func applyParseWarning(result *Result, warnings []string) {
 func (p *processRecord) ingestObservation(obs parsedObservation) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.ingestObservationLocked(obs)
+}
+
+// ingestObservationLocked is ingestObservation for a caller holding p.mu.
+func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 	if obs.SessionID != "" {
 		// The session id replaces the launch binding's opaque id. The PID
 		// recorded on launchIdentity stays the process the launcher started,
@@ -449,6 +454,11 @@ type nativeConfig struct {
 	// still owns reaping; this avoids extending a read deadline with the normal
 	// five-second graceful-cancellation window.
 	HardOneShotDeadline bool
+	// NewActivitySource declares a secondary activity signal for CLIs that stay
+	// silent on stdout while working. It receives the child's environment and
+	// returns a source bound to this launch plus environment entries that bind
+	// the child to it. A nil source means no exclusive signal is available.
+	NewActivitySource func(env []string) (activitySource, []string, error)
 }
 
 // NativeAdapter implements the common process/session behavior. Constructors
@@ -728,6 +738,23 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	} else if req.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(req.Stdin)
 	}
+	var activity activitySource
+	if a.config.NewActivitySource != nil {
+		source, extra, err := a.config.NewActivitySource(cmd.Env)
+		if err != nil {
+			return LaunchResult{}, dependencyError("cannot prepare native activity source", err)
+		}
+		if source != nil {
+			activity = source
+			cmd.Env = mergeEnvironment(cmd.Env, extra)
+			// Until the watcher owns the source, a failed launch removes it.
+			defer func() {
+				if activity != nil {
+					activity.Close(0)
+				}
+			}()
+		}
+	}
 	if req.Context != nil {
 		// Handles are intentionally opaque; the child is not assumed to read
 		// them. Required delivery was checked above.
@@ -793,6 +820,10 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		}
 	}
 	a.mu.Unlock()
+	if activity != nil {
+		go a.watchActivity(record, activity, a.Name(), activityPollInterval, activityEmitInterval)
+		activity = nil
+	}
 	record.pipes.Add(2)
 	go a.readPipe(record, stdout, false)
 	go a.readPipe(record, stderr, true)
