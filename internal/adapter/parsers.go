@@ -226,9 +226,9 @@ func (zcodeParser) Parse(line []byte, stderr bool) parsedObservation {
 // must look like a result document (sessionId, response, or error).
 func decodeZCodeDocument(raw []byte) (map[string]any, bool) {
 	raw = []byte(stripANSI(string(raw)))
-	if value, ok := decodeLine(bytes.TrimSpace(raw)); ok && looksLikeZCodeDocument(value) {
-		return value, true
-	}
+	// Line-initial objects last to first. Decoding the full buffer first would
+	// accept a leading log or warning (they carry sessionId / error) and skip
+	// the `--json` result that follows.
 	text := raw
 	for end := len(text); end > 0; {
 		idx := bytes.LastIndex(text[:end], []byte("\n{"))
