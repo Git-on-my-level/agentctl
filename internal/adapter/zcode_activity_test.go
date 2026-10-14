@@ -101,7 +101,7 @@ func TestZCodeLogActivityRemovedAfterCleanExitKeptAfterFailure(t *testing.T) {
 	}
 }
 
-const zcodeFakeResponse = `printf '%s\n' '{"sessionId":"sess_fixture","response":"ok","projection":{"status":"idle"}}'`
+const zcodeFakeResponse = `printf '%s\n' '{"sessionId":"sess_fixture","turnId":"turn_fixture","response":"ok","projection":{"status":"idle"}}'`
 
 func newTestZCode(t *testing.T) *NativeAdapter {
 	t.Helper()

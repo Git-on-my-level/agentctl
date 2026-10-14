@@ -354,7 +354,7 @@ func TestZCodeModelEnvironmentAndReplay(t *testing.T) {
 			native := filepath.Join(f.root, "zcode")
 			script := `#!/bin/sh
 if [ "$1" = --version ]; then echo 0.16.9; exit 0; fi
-printf '{"sessionId":"sess_env_test","response":"selector=%s"}\n' "$ZCODE_MODEL"
+printf '{"sessionId":"sess_env_test","turnId":"turn_env_test","response":"selector=%s"}\n' "$ZCODE_MODEL"
 `
 			if err := os.WriteFile(native, []byte(script), 0700); err != nil {
 				t.Fatal(err)
