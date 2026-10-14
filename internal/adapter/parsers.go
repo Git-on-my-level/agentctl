@@ -225,6 +225,7 @@ func (zcodeParser) Parse(line []byte, stderr bool) parsedObservation {
 // result lost). Candidates are line-initial objects, tried last to first, and
 // must look like a result document (sessionId, response, or error).
 func decodeZCodeDocument(raw []byte) (map[string]any, bool) {
+	raw = []byte(stripANSI(string(raw)))
 	if value, ok := decodeLine(bytes.TrimSpace(raw)); ok && looksLikeZCodeDocument(value) {
 		return value, true
 	}

@@ -102,3 +102,23 @@ func TestZCodeParserFindsDocumentAfterStdoutNoise(t *testing.T) {
 		t.Fatalf("noise must not be terminal: %#v", obs)
 	}
 }
+
+// zcode_json_result.json is a real `zcode --json --mode yolo --prompt` document
+// (ZCode 0.16.9) with session, turn, and trace ids scrubbed.
+func TestZCodeParserRealResultDocumentWithNoiseVariants(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("testdata", "zcode_json_result.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, raw := range map[string]string{
+		"clean":        string(doc),
+		"ansi banner":  "\x1b[33mwarning: stale cache\x1b[0m\r\n\x1b[0m" + string(doc),
+		"crlf":         "notice\r\n" + strings.ReplaceAll(string(doc), "\n", "\r\n"),
+		"stderr style": "[zcode] 12 files changed\n" + string(doc) + "\n[zcode] done\n",
+	} {
+		obs := zcodeParser{}.Parse([]byte(raw), false)
+		if !obs.Terminal || !obs.Success || obs.Content != "ok" || obs.SessionID != "sess_example" {
+			t.Fatalf("%s: obs = %#v", name, obs)
+		}
+	}
+}
