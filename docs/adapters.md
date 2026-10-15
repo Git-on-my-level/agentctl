@@ -209,8 +209,21 @@ meaning.
 ### Claude Code
 
 - Consume structured streaming output when available.
+- Pass configured effort after the model as `--effort <level>` for `low`,
+  `medium`, `high`, `xhigh`, and `max`; other values such as Codex-only
+  `ultra` fail recipe validation.
+- Reject explicit service speed and fast model variants as before.
 - Preserve native permission mode and hooks.
 - Do not read unrelated Claude project/session history during attachment.
+
+### ZCode
+
+- Consume the final `--json` result document when present.
+- On terminal failure, classify provider code `1308`, HTTP `429`, or an explicit
+  usage/quota-limit message as retryable capacity. Preserve a valid provider
+  reset time in the bounded reason when present.
+- Replace unknown provider stderr with a bounded generic failure reason. Raw
+  stderr, request identifiers, and trace identifiers are not stored.
 
 ### Devin
 

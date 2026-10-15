@@ -18,6 +18,9 @@ The default JSON path is:
 The global `--config <absolute-path>` flag selects a file for one invocation.
 The file is schema-versioned, must be a regular owner-only `0600` file, and may
 not be reached through symlinked parent directories.
+Load errors distinguish those file-security requirements from malformed JSON
+or configuration validation failures. Writes still refuse unmanaged content
+unless the caller explicitly enables overwrite.
 
 ```json
 {
@@ -102,9 +105,12 @@ remains advisory text rather than executable routing policy.
 Structured `delegate` also accepts optional `family`, `version`, `effort`, and
 `default` metadata on preferred entries. `speed` may be omitted when a harness
 has no service-speed control. Explicit requested settings must match a reviewed
-entry and a supported native recipe. `delegation.cursor_workspace_trust` is a
-separate boolean grant for Cursor workspace trust. `delegation.unattended_coding_permissions`
-is a separate boolean grant that lets `delegate` add Cursor `--force`, Codex
+entry and a supported native recipe. Claude Code supports effort values `low`,
+`medium`, `high`, `xhigh`, and `max` through its native `--effort` flag; other
+harnesses retain their own recipe limits. `delegation.cursor_workspace_trust`
+is a separate boolean grant for Cursor workspace trust.
+`delegation.unattended_coding_permissions` is a separate boolean grant that
+lets `delegate` add Cursor `--force`, Codex
 `--dangerously-bypass-approvals-and-sandbox`, and Devin `--permission-mode
 dangerous` on coding launches. Neither grant
 is implied by a model alias, and neither rewrites expert `run` argv. See [structured delegation](structured-delegation.md)
