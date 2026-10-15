@@ -763,9 +763,19 @@ func baseManifest(name, version, kind, format string, capabilities []CapabilityD
 	capabilities = append(capabilities, resumeDeclaration(name), steerDeclaration(name))
 	probeActions := []ProbeAction{}
 	if name != "generic-process" {
-		probeActions = append(probeActions, ProbeAction{ID: "version", Argv: []string{"{executable}", "--version"}, SideEffectClass: "read_only", WritesCache: false, TimeoutSeconds: 5})
+		timeoutSeconds := int(VersionProbeTimeout(name) / time.Second)
+		probeActions = append(probeActions, ProbeAction{ID: "version", Argv: []string{"{executable}", "--version"}, SideEffectClass: "read_only", WritesCache: false, TimeoutSeconds: timeoutSeconds})
 	}
 	return Manifest{SchemaVersion: ManifestSchemaVersion, Adapter: name, AdapterVersion: version, CoreCompatibility: VersionRange{Minimum: "1.0.0", MaximumExclusive: "2.0.0"}, DocumentSchemaVersions: map[string][]int{"execution": {1}, "event": {1}}, ExecutableDiscovery: []ExecutableRule{{Kind: "path_lookup", Value: executable, Required: true}}, BackendCompatibility: []BackendCompatibility{}, Capabilities: capabilities, ProbeActions: probeActions, StructuredOutput: StructuredOutputSpec{Format: format, Required: true, DiscoveryKeys: []string{"session_id", "thread_id", "run_id"}, TerminalKeys: []string{"result", "completed", "failed"}}, ContextInjection: ContextInjection{Mechanisms: []ContextMechanism{ContextEnvironmentPath}, Guaranteed: false, Reason: "handle is provided to the child but model delivery is not guaranteed"}, Sensitivity: map[string]string{"opaque_id": "operator-private", "artifact": "project-confidential"}}
+}
+
+// VersionProbeTimeout is the per-adapter default placed in version probe
+// actions. ZCode's Electron CLI can be delayed substantially by host load.
+func VersionProbeTimeout(adapterName string) time.Duration {
+	if adapterName == "zcode" {
+		return 30 * time.Second
+	}
+	return defaultVersionProbeTimeout
 }
 
 func capDecl(name CapabilityName, status CapabilityStatus) CapabilityDeclaration {

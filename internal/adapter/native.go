@@ -595,9 +595,9 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 		}
 		probeTimeout := req.Timeout
 		if probeTimeout <= 0 {
-			probeTimeout = time.Duration(action.TimeoutSeconds) * time.Second
+			probeTimeout = a.config.Manifest.VersionProbeTimeout()
 			if probeTimeout <= 0 {
-				probeTimeout = 5 * time.Second
+				probeTimeout = defaultVersionProbeTimeout
 			}
 		}
 		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
@@ -607,9 +607,13 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 		var out bytes.Buffer
 		cmd.Stdout = &limitedWriter{w: &out, n: 8192}
 		cmd.Stderr = &limitedWriter{w: &out, n: 8192}
+		probeStarted := time.Now()
 		cmdErr := cmd.Run()
 		if cmdErr != nil {
 			if probeCtx.Err() != nil {
+				if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+					return ProbeResult{}, nativeVersionProbeTimeoutError(a.Name(), probeTimeout, time.Since(probeStarted))
+				}
 				return ProbeResult{}, nativeContextError(probeCtx, "native version probe")
 			}
 			return ProbeResult{}, nativeProbeCommandError(out.String(), cmdErr)
@@ -964,6 +968,22 @@ func nativeContextError(ctx context.Context, operation string) *AdapterError {
 		return &AdapterError{Code: ErrTimeout, Message: operation + " timed out", Retryable: true, Cause: err}
 	}
 	return &AdapterError{Code: ErrExecutionCancelled, Message: operation + " cancelled", Retryable: false, Cause: err}
+}
+
+func nativeVersionProbeTimeoutError(adapterName string, timeout, elapsed time.Duration) *AdapterError {
+	return &AdapterError{
+		Code:      ErrTimeout,
+		Message:   fmt.Sprintf("%s version probe timed out (timeout %s, elapsed %s); the host may be overloaded", adapterName, timeout, elapsed),
+		Retryable: true,
+		Details: map[string]any{
+			"diagnostic_code":        "native_version_probe_timeout",
+			"adapter":                adapterName,
+			"timeout":                timeout.String(),
+			"elapsed":                elapsed.String(),
+			"host_may_be_overloaded": true,
+		},
+		Cause: context.DeadlineExceeded,
+	}
 }
 
 func (a *NativeAdapter) readPipe(record *processRecord, r io.Reader, stderr bool) {
