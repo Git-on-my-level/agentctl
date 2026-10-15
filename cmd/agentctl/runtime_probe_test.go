@@ -100,3 +100,21 @@ func TestSlowVersionProbeUsesInjectedPerAdapterBudget(t *testing.T) {
 		}
 	}
 }
+
+func TestCallerDeadlineIsNotReportedAsProbeBudgetTimeout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "slow-version")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nsleep 2\nprintf 'fake-zcode 1.0\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := probeVersionWithTimeout(ctx, adapter.NewZCode(), adapter.ProbeRequest{Executable: path}, 30*time.Second)
+	var adapterErr *adapter.AdapterError
+	if !errors.As(err, &adapterErr) || adapterErr.Code != adapter.ErrTimeout {
+		t.Fatalf("caller deadline error=%v, want timeout", err)
+	}
+	if adapterErr.Details["diagnostic_code"] == "native_version_probe_timeout" || strings.Contains(adapterErr.Error(), "host may be overloaded") {
+		t.Fatalf("caller deadline reported as probe budget expiry: %v %#v", adapterErr, adapterErr.Details)
+	}
+}

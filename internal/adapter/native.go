@@ -611,6 +611,10 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 		cmdErr := cmd.Run()
 		if cmdErr != nil {
 			if probeCtx.Err() != nil {
+				// A caller deadline (e.g. run --timeout) is reported as the caller's, not as the probe budget.
+				if ctx.Err() != nil {
+					return ProbeResult{}, nativeContextError(ctx, "native version probe")
+				}
 				if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
 					return ProbeResult{}, nativeVersionProbeTimeoutError(a.Name(), probeTimeout, time.Since(probeStarted))
 				}
