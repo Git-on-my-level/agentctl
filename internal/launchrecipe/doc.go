@@ -20,5 +20,6 @@
 //   - A configured model id is a requested tuple, not proof the worker will use
 //     that model or provider at runtime.
 //   - Effort is never inferred from model slug suffixes such as "-high".
-//   - Claude Code effort/speed mapping is omitted unless explicitly supported.
+//   - Claude Code effort is passed through its verified --effort flag; service
+//     speed remains unsupported.
 package launchrecipe

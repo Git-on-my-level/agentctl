@@ -82,6 +82,9 @@ func Build(in Input) (Recipe, error) {
 	}
 	effort, err := normalizeEffort(in.Effort)
 	if err != nil {
+		if harness == "claude-code" && strings.TrimSpace(in.Effort) != "" {
+			return Recipe{}, fail("effort_unavailable", "claude-code --effort supports low, medium, high, xhigh, and max")
+		}
 		return Recipe{}, err
 	}
 	if err := validateModelSpeed(model, speed); err != nil && harness == "cursor" {

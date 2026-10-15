@@ -41,6 +41,16 @@ func TestLaunchRecipesDetectExecutableAliasConflict(t *testing.T) {
 	}
 }
 
+func TestClaudeCodePreferredEffortPassesDoctorRecipeCheck(t *testing.T) {
+	profile := Profile{AgentPreferences: &AgentPreferences{Mode: "advisory", Preferred: []AgentPreference{{
+		Agent: "claude-code", Model: "claude-sonnet-4", Effort: "max", Default: true,
+	}}}}
+	report := CheckLaunchRecipes(profile)
+	if !report.Compatible || len(report.Checks) != 1 || !report.Checks[0].Compatible {
+		t.Fatalf("Claude Code effort rejected by static recipe check: %#v", report)
+	}
+}
+
 func TestLaunchRecipesDoNotInventPermissionSupport(t *testing.T) {
 	profile := Profile{Delegation: &DelegationPolicy{UnattendedCodingPermissions: true}, AgentPreferences: &AgentPreferences{Mode: "advisory", Preferred: []AgentPreference{{Agent: "omp", Model: "zai/glm-5.3"}, {Agent: "codex", Model: "exact-model"}, {Agent: "devin", Model: "exact-model"}}}}
 	report := CheckLaunchRecipes(profile)
