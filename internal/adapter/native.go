@@ -163,7 +163,16 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 	if stderr {
 		p.mu.Lock()
 		if p.parser != nil && p.parser.Name() == "zcode-json" {
-			if diagnostic := zcodeStderrFailure(string(line)); diagnostic != nil {
+			diagnostic := zcodeStderrFailure(string(line))
+			if diagnostic == nil {
+				// Keep the first safe stderr cause for shared classification. The
+				// final outcome is still allowlisted before it is persisted.
+				message := boundedUTF8(safeFailureDiagnostic(string(line)), 200)
+				if message != "" {
+					diagnostic = &zcodeFailureDiagnostic{Message: message}
+				}
+			}
+			if diagnostic != nil {
 				p.zcodeFailure = mergeZCodeFailure(p.zcodeFailure, diagnostic)
 			}
 		} else {

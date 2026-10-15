@@ -190,7 +190,8 @@ type zcodeFailureDiagnostic struct {
 
 var (
 	zcodeProviderCodePattern = regexp.MustCompile(`(?i)\bproviderCode\s*:\s*['\"]?([0-9]{1,32})`)
-	zcodeHTTPStatusPattern   = regexp.MustCompile(`(?i)\bresponseStatus\s*:\s*([0-9]{3})`)
+	zcodeBracketCodePattern  = regexp.MustCompile(`^\s*(?:ProviderBusinessError\s*:\s*)?\[([0-9]{1,32})\]`)
+	zcodeHTTPStatusPattern   = regexp.MustCompile(`(?i)\b(?:responseStatus|HTTP(?:\s+status)?)\s*[:=]?\s*([0-9]{3})`)
 	zcodeResetTimePattern    = regexp.MustCompile(`(?i)\breset(?:s)?\s+(?:at\s+)?([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})`)
 )
 
@@ -205,17 +206,24 @@ func zcodeStderrFailure(raw string) *zcodeFailureDiagnostic {
 }
 
 func parseZCodeFailure(raw string) *zcodeFailureDiagnostic {
-	diagnostic := &zcodeFailureDiagnostic{Message: "ZCode provider execution failed"}
+	message := boundedUTF8(safeFailureDiagnostic(raw), 200)
+	if message == "" {
+		message = "ZCode provider execution failed"
+	}
+	diagnostic := &zcodeFailureDiagnostic{Message: message}
 	if match := zcodeProviderCodePattern.FindStringSubmatch(raw); len(match) == 2 {
+		diagnostic.NativeCode = match[1]
+	} else if match := zcodeBracketCodePattern.FindStringSubmatch(raw); len(match) == 2 {
 		diagnostic.NativeCode = match[1]
 	}
 	status := ""
 	if match := zcodeHTTPStatusPattern.FindStringSubmatch(raw); len(match) == 2 {
 		status = match[1]
 	}
-	lower := strings.ToLower(raw)
-	quota := diagnostic.NativeCode == "1308" || status == "429" || strings.Contains(lower, "usage limit reached") || strings.Contains(lower, "quota") || strings.Contains(lower, "rate limit")
-	if quota {
+	// Only an explicit ZCode provider code or HTTP status promotes the signal
+	// to capacity here. Generic quota/rate-limit wording stays available to the
+	// shared classifier, which distinguishes quota_exceeded from capacity.
+	if diagnostic.NativeCode == "1308" || status == "429" {
 		diagnostic.Category = "capacity"
 		diagnostic.Message = "ZCode provider usage limit reached"
 		if match := zcodeResetTimePattern.FindStringSubmatch(raw); len(match) == 2 {

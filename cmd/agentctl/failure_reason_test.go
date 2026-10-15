@@ -35,6 +35,10 @@ func TestClassifyCapacityIsRetryableAndGenericProviderIsNot(t *testing.T) {
 	if code != "provider_capacity" || kind != "capacity" || category != "capacity" || !retryable || !model.ValidNativeFailureCode("1308") {
 		t.Fatalf("ZCode usage limit=%s %s %s %v", code, kind, category, retryable)
 	}
+	code, kind, category, retryable = classifyOutcomeFailure("provider returned a rate limit response", "", "")
+	if code != "quota_exceeded" || kind != "quota" || category != "" || !retryable {
+		t.Fatalf("generic ZCode rate limit=%s %s %s %v", code, kind, category, retryable)
+	}
 }
 
 func TestCodexFailureReasonSurfacesWithoutAnswerOrSecret(t *testing.T) {
@@ -123,14 +127,24 @@ printf '%s\n' '{"type":"turn.failed","thread_id":"thread-1","error":{"message":"
 
 func TestZCodeFailureReasonSurfacesAcrossDelegateStatusAndResult(t *testing.T) {
 	for _, tc := range []struct {
-		name, stderrShape, category, nativeCode, message string
-		retryable                                        bool
+		name, stdoutShape, stderrShape, category, nativeCode, message string
+		retryable                                                     bool
 	}{
 		{
 			name: "quota",
 			stderrShape: `ProviderBusinessError: [1308][Usage limit reached for 5 hour. Your limit will reset at 2026-10-15 19:38:47]
   code: 'PROVIDER_BUSINESS_ERROR', providerCode: '1308', responseStatus: 429, 'retry-after': '1266'`,
 			category: "capacity", nativeCode: "1308", message: "ZCode provider usage limit reached; resets 2026-10-15 19:38:47", retryable: true,
+		},
+		{
+			name:        "authentication JSON",
+			stdoutShape: `{"error":{"message":"Authentication required; please login to continue (requestId: fixture-only traceId: fixture-only)"}}`,
+			message:     failureMessageAuth, retryable: true,
+		},
+		{
+			name:        "workspace trust stderr",
+			stderrShape: "Workspace trust required before running the task (requestId: fixture-only traceId: fixture-only)",
+			message:     failureMessageTrust, retryable: true,
 		},
 		{
 			name: "unknown provider",
@@ -142,7 +156,14 @@ func TestZCodeFailureReasonSurfacesAcrossDelegateStatusAndResult(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			bin := filepath.Join(root, "zcode")
-			script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 0.16.9; exit 0; fi\ncat >&2 <<'DIAGNOSTIC'\n" + tc.stderrShape + "\nError: Turn execution failed\nDIAGNOSTIC\nexit 1\n"
+			script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 0.16.9; exit 0; fi\n"
+			if tc.stdoutShape != "" {
+				script += "cat <<'RESULT'\n" + tc.stdoutShape + "\nRESULT\n"
+			}
+			if tc.stderrShape != "" {
+				script += "cat >&2 <<'DIAGNOSTIC'\n" + tc.stderrShape + "\nError: Turn execution failed (traceId: fixture-only)\nDIAGNOSTIC\n"
+			}
+			script += "exit 1\n"
 			if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -177,23 +198,30 @@ func TestZCodeFailureReasonSurfacesAcrossDelegateStatusAndResult(t *testing.T) {
 				t.Fatalf("delegate --wait exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 			}
 			executionID := failureExecutionIDFromOutput(t, stdout.String())
-			surfaces := []string{"delegate --wait: " + stdout.String()}
+			surfaces := []struct{ name, text string }{{name: "delegate --wait", text: stdout.String()}}
 			for _, command := range []string{"status", "result"} {
 				stdout.Reset()
 				if code := a.run(ctx, []string{"--output", "json", "--journal", journalPath, command, executionID}); code != 0 {
 					t.Fatalf("%s exit=%d stdout=%s stderr=%s", command, code, stdout.String(), stderr.String())
 				}
-				surfaces = append(surfaces, command+": "+stdout.String())
+				surfaces = append(surfaces, struct{ name, text string }{name: command, text: stdout.String()})
 			}
 			for _, surface := range surfaces {
-				for _, want := range []string{`"category":"` + tc.category + `"`, `"native_code":"` + tc.nativeCode + `"`, `"retryable":` + jsonBool(tc.retryable), tc.message} {
-					if !strings.Contains(surface, want) {
-						t.Fatalf("surface missing %s: %s", want, surface)
+				wants := []string{`"retryable":` + jsonBool(tc.retryable), tc.message}
+				if tc.category != "" {
+					wants = append(wants, `"category":"`+tc.category+`"`)
+				}
+				if tc.nativeCode != "" {
+					wants = append(wants, `"native_code":"`+tc.nativeCode+`"`)
+				}
+				for _, want := range wants {
+					if !strings.Contains(surface.text, want) {
+						t.Fatalf("%s surface missing %s: %s", surface.name, want, surface.text)
 					}
 				}
-				for _, forbidden := range []string{"ProviderBusinessError", "providerCode", "responseStatus", "retry-after", "request id", "requestId", "trace id", "traceId"} {
-					if strings.Contains(surface, forbidden) {
-						t.Fatalf("surface leaked %q: %s", forbidden, surface)
+				for _, forbidden := range []string{"ProviderBusinessError", "providerCode", "responseStatus", "retry-after", "request id", "requestId", "trace id", "traceId", "fixture-only"} {
+					if strings.Contains(surface.text, forbidden) {
+						t.Fatalf("%s surface leaked %q: %s", surface.name, forbidden, surface.text)
 					}
 				}
 			}
@@ -201,7 +229,7 @@ func TestZCodeFailureReasonSurfacesAcrossDelegateStatusAndResult(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, forbidden := range []string{"ProviderBusinessError", "providerCode", "responseStatus", "retry-after"} {
+			for _, forbidden := range []string{"ProviderBusinessError", "providerCode", "responseStatus", "retry-after", "fixture-only"} {
 				if bytes.Contains(journalBytes, []byte(forbidden)) {
 					t.Fatalf("journal retained raw stderr marker %q", forbidden)
 				}

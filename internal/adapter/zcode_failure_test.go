@@ -13,7 +13,9 @@ const zcodeUnknownProviderStderrFixture = `ProviderBusinessError: provider reque
 
 func TestZCodeStderrQuotaFailureIsBoundedAndRetryableCandidate(t *testing.T) {
 	record := &processRecord{parser: zcodeParser{}, maxOutput: 1 << 20, done: make(chan struct{}), ref: SourceRef{Kind: "zcode_session"}}
-	record.ingest([]byte(zcodeQuotaStderrFixture), true)
+	for _, line := range strings.Split(zcodeQuotaStderrFixture, "\n") {
+		record.ingest([]byte(line), true)
+	}
 	record.ingest([]byte("Error: Turn execution failed"), true)
 	exitCode := 1
 	record.exitCode = &exitCode
@@ -37,21 +39,40 @@ func TestZCodeStderrQuotaFailureIsBoundedAndRetryableCandidate(t *testing.T) {
 
 func TestZCodeUnknownProviderFailureGetsGenericBoundedCandidate(t *testing.T) {
 	record := &processRecord{parser: zcodeParser{}, maxOutput: 1 << 20, done: make(chan struct{}), ref: SourceRef{Kind: "zcode_session"}}
-	record.ingest([]byte(zcodeUnknownProviderStderrFixture), true)
+	for _, line := range strings.Split(zcodeUnknownProviderStderrFixture, "\n") {
+		record.ingest([]byte(line), true)
+	}
 	exitCode := 1
 	record.exitCode = &exitCode
 	record.finish(nil)
 
-	if record.result == nil || record.result.State != StateFailed || record.result.Error != "ZCode provider execution failed" || record.result.Data["native_code"] != "7314" {
+	if record.result == nil || record.result.State != StateFailed || !strings.Contains(record.result.Error, "provider request failed") || record.result.Data["native_code"] != "7314" {
 		t.Fatalf("result=%#v", record.result)
 	}
 	if len(record.result.Error) > 200 {
 		t.Fatalf("failure message exceeds 200 bytes: %d", len(record.result.Error))
 	}
-	for _, leaked := range []string{"ProviderBusinessError", "providerCode", "responseStatus", "request id", "requestId", "trace id", "traceId"} {
+	for _, leaked := range []string{"providerCode", "responseStatus", "request id", "requestId", "trace id", "traceId"} {
 		if strings.Contains(record.result.Error, leaked) {
 			t.Fatalf("failure message leaked %q: %s", leaked, record.result.Error)
 		}
+	}
+}
+
+func TestZCodeJSONFailureRetainsBoundedClassificationCause(t *testing.T) {
+	obs := (zcodeParser{}).Parse([]byte(`{"error":{"message":"Authentication required; please login to continue (requestId: fixture-only traceId: fixture-only)"}}`), false)
+	if !obs.Terminal || obs.State != StateFailed || !strings.Contains(strings.ToLower(obs.Error), "authentication") || !strings.Contains(strings.ToLower(obs.Error), "login") {
+		t.Fatalf("observation=%#v", obs)
+	}
+	if len(obs.Error) > 200 {
+		t.Fatalf("failure message exceeds 200 bytes: %d", len(obs.Error))
+	}
+}
+
+func TestZCodeGenericRateLimitRemainsForSharedClassification(t *testing.T) {
+	diagnostic := parseZCodeFailure("provider returned a rate limit response")
+	if diagnostic.Category != "" || !strings.Contains(diagnostic.Message, "rate limit") {
+		t.Fatalf("diagnostic=%#v", diagnostic)
 	}
 }
 

@@ -1528,7 +1528,7 @@ func buildOutcome(execution model.Execution, result adapter.Result, now time.Tim
 			raw := firstNonEmptyString(result.Error, failureMessageGeneric)
 			code, kind, category, retryable := classifyOutcomeFailure(raw, diagnosticCode, nativeCode)
 			structured, _ := result.Data["failure_structured"].(bool)
-			if execution.Adapter == "zcode" && structured && category == "" {
+			if execution.Adapter == "zcode" && structured && category == "" && kind == "unknown" {
 				// A structured provider error with no recognized classifier still
 				// gets a visible, bounded generic provider reason.
 				kind, category, retryable = "provider", "provider", false
