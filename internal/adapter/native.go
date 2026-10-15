@@ -105,6 +105,7 @@ type processRecord struct {
 	contentTruncated bool
 	lastError        string
 	stderrDiagnostic string
+	zcodeFailure     *zcodeFailureDiagnostic
 	parseWarnings    []string
 	metadataSeen     map[string]bool
 	metadataState    State
@@ -161,11 +162,17 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 	}
 	if stderr {
 		p.mu.Lock()
-		diagnostic := safeFailureDiagnostic(string(line))
-		// Keep the first useful cause instead of replacing it with a trailing
-		// usage/help footer (or an empty line). Structured errors still win.
-		if p.stderrDiagnostic == "" && diagnostic != "" {
-			p.stderrDiagnostic = diagnostic
+		if p.parser != nil && p.parser.Name() == "zcode-json" {
+			if diagnostic := zcodeStderrFailure(string(line)); diagnostic != nil {
+				p.zcodeFailure = mergeZCodeFailure(p.zcodeFailure, diagnostic)
+			}
+		} else {
+			diagnostic := safeFailureDiagnostic(string(line))
+			// Keep the first useful cause instead of replacing it with a trailing
+			// usage/help footer (or an empty line). Structured errors still win.
+			if p.stderrDiagnostic == "" && diagnostic != "" {
+				p.stderrDiagnostic = diagnostic
+			}
 		}
 		p.mu.Unlock()
 	}
@@ -182,6 +189,28 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 		return
 	}
 	p.ingestObservation(obs)
+}
+
+func mergeZCodeFailure(current, next *zcodeFailureDiagnostic) *zcodeFailureDiagnostic {
+	if current == nil || next.Category == "capacity" && current.Category != "capacity" {
+		return next
+	}
+	if next.Category != "capacity" {
+		if current.Category != "capacity" && current.NativeCode == "" && next.NativeCode != "" {
+			merged := *current
+			merged.NativeCode = next.NativeCode
+			return &merged
+		}
+		return current
+	}
+	merged := *next
+	if merged.NativeCode == "" {
+		merged.NativeCode = current.NativeCode
+	}
+	if !strings.Contains(merged.Message, "; resets ") && strings.Contains(current.Message, "; resets ") {
+		merged.Message = current.Message
+	}
+	return &merged
 }
 
 func (p *processRecord) nextAcknowledgement() int {
@@ -407,6 +436,17 @@ func (p *processRecord) finish(err error) {
 			p.addParseWarningLocked(diagnosticResultFileUnreadable)
 		}
 	}
+	if p.parser != nil && p.parser.Name() == "zcode-json" && !p.cancelled && (p.result != nil && p.result.State == StateFailed || p.result == nil && p.exitCode != nil && *p.exitCode != 0) {
+		// ZCode stderr may include request or trace identifiers. Store a
+		// bounded generic reason when no safe classifier matched.
+		if p.zcodeFailure != nil {
+			p.result = p.zcodeFailureResultLocked()
+		} else if p.result == nil || p.result.Error == "" {
+			p.result = p.zcodeFailureResultLocked()
+		} else if structured, _ := p.result.Data["failure_structured"].(bool); !structured {
+			p.result = p.zcodeFailureResultLocked()
+		}
+	}
 	if p.result == nil {
 		if p.cancelled {
 			p.result = &Result{Success: false, State: StateCancelled, Error: "native process cancelled", ExitCode: p.exitCode, SessionRef: p.ref}
@@ -430,6 +470,18 @@ func (p *processRecord) finish(err error) {
 	default:
 		close(p.done)
 	}
+}
+
+func (p *processRecord) zcodeFailureResultLocked() *Result {
+	message := "ZCode execution failed"
+	data := map[string]any{"family": "zcode", "failure_structured": true}
+	if p.zcodeFailure != nil {
+		message = p.zcodeFailure.Message
+		if p.zcodeFailure.NativeCode != "" {
+			data["native_code"] = p.zcodeFailure.NativeCode
+		}
+	}
+	return &Result{Success: false, State: StateFailed, Error: message, ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
 }
 
 type nativeConfig struct {

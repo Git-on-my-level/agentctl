@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
+	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
@@ -29,6 +30,10 @@ func TestClassifyCapacityIsRetryableAndGenericProviderIsNot(t *testing.T) {
 	code, _, category, retryable = classifyOutcomeFailure("native process exited unsuccessfully", "", "")
 	if code != "native_execution_failed" || category != "" || retryable {
 		t.Fatalf("unstructured=%s %s %v", code, category, retryable)
+	}
+	code, kind, category, retryable = classifyOutcomeFailure("ZCode provider usage limit reached", "", "1308")
+	if code != "provider_capacity" || kind != "capacity" || category != "capacity" || !retryable || !model.ValidNativeFailureCode("1308") {
+		t.Fatalf("ZCode usage limit=%s %s %s %v", code, kind, category, retryable)
 	}
 }
 
@@ -114,6 +119,117 @@ printf '%s\n' '{"type":"turn.failed","thread_id":"thread-1","error":{"message":"
 	if bytes.Contains(raw, []byte("private-value")) || bytes.Contains(raw, []byte("confidential task")) || bytes.Contains(raw, []byte("do-not-store-this-answer")) {
 		t.Fatal("failure payload entered the journal")
 	}
+}
+
+func TestZCodeFailureReasonSurfacesAcrossDelegateStatusAndResult(t *testing.T) {
+	for _, tc := range []struct {
+		name, stderrShape, category, nativeCode, message string
+		retryable                                        bool
+	}{
+		{
+			name: "quota",
+			stderrShape: `ProviderBusinessError: [1308][Usage limit reached for 5 hour. Your limit will reset at 2026-10-15 19:38:47]
+  code: 'PROVIDER_BUSINESS_ERROR', providerCode: '1308', responseStatus: 429, 'retry-after': '1266'`,
+			category: "capacity", nativeCode: "1308", message: "ZCode provider usage limit reached; resets 2026-10-15 19:38:47", retryable: true,
+		},
+		{
+			name: "unknown provider",
+			stderrShape: `ProviderBusinessError: provider request failed
+  code: 'PROVIDER_BUSINESS_ERROR', providerCode: '7314', responseStatus: 500`,
+			category: "provider", nativeCode: "7314", message: failureMessageGeneric, retryable: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			bin := filepath.Join(root, "zcode")
+			script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 0.16.9; exit 0; fi\ncat >&2 <<'DIAGNOSTIC'\n" + tc.stderrShape + "\nError: Turn execution failed\nDIAGNOSTIC\nexit 1\n"
+			if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			configPath := filepath.Join(root, "config.json")
+			cfg := config.Config{
+				SchemaVersion:  1,
+				DefaultProfile: "test",
+				Profiles: map[string]config.Profile{"test": {
+					Adapters: map[string]config.Adapter{"zcode": {Executable: bin}},
+					AgentPreferences: &config.AgentPreferences{Mode: "advisory", Preferred: []config.AgentPreference{{
+						Agent: "zcode", Family: "glm", Model: "zai/glm-5.3", Effort: "high", Default: true,
+					}}},
+				}},
+			}
+			if err := config.Save(configPath, cfg, false); err != nil {
+				t.Fatal(err)
+			}
+			requestPath := filepath.Join(root, "request.json")
+			request := `{"schema_version":1,"request_key":"zcode-failure","selector":{"family":"glm"}}`
+			if err := os.WriteFile(requestPath, []byte(request), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			journalPath := filepath.Join(root, "state", "journal.db")
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			a.stdin = strings.NewReader("synthetic task")
+			code := a.run(ctx, []string{"--output", "json", "--config", configPath, "--journal", journalPath, "delegate", "--cwd", root, "--request-file", requestPath, "--prompt-stdin", "--wait"})
+			if code != output.ExitCodeFor(output.CodeExecutionFailed) {
+				t.Fatalf("delegate --wait exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+			}
+			executionID := failureExecutionIDFromOutput(t, stdout.String())
+			surfaces := []string{"delegate --wait: " + stdout.String()}
+			for _, command := range []string{"status", "result"} {
+				stdout.Reset()
+				if code := a.run(ctx, []string{"--output", "json", "--journal", journalPath, command, executionID}); code != 0 {
+					t.Fatalf("%s exit=%d stdout=%s stderr=%s", command, code, stdout.String(), stderr.String())
+				}
+				surfaces = append(surfaces, command+": "+stdout.String())
+			}
+			for _, surface := range surfaces {
+				for _, want := range []string{`"category":"` + tc.category + `"`, `"native_code":"` + tc.nativeCode + `"`, `"retryable":` + jsonBool(tc.retryable), tc.message} {
+					if !strings.Contains(surface, want) {
+						t.Fatalf("surface missing %s: %s", want, surface)
+					}
+				}
+				for _, forbidden := range []string{"ProviderBusinessError", "providerCode", "responseStatus", "retry-after", "request id", "requestId", "trace id", "traceId"} {
+					if strings.Contains(surface, forbidden) {
+						t.Fatalf("surface leaked %q: %s", forbidden, surface)
+					}
+				}
+			}
+			journalBytes, err := os.ReadFile(journalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{"ProviderBusinessError", "providerCode", "responseStatus", "retry-after"} {
+				if bytes.Contains(journalBytes, []byte(forbidden)) {
+					t.Fatalf("journal retained raw stderr marker %q", forbidden)
+				}
+			}
+		})
+	}
+}
+
+func failureExecutionIDFromOutput(t *testing.T, document string) string {
+	t.Helper()
+	const marker = `"execution_id":"exec-`
+	start := strings.Index(document, marker)
+	if start < 0 {
+		t.Fatalf("no execution id in failure output: %s", document)
+	}
+	rest := document[start+len(`"execution_id":"`):]
+	end := strings.IndexByte(rest, '"')
+	if end < 0 {
+		t.Fatalf("malformed execution id in failure output: %s", document)
+	}
+	return rest[:end]
+}
+
+func jsonBool(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
 }
 
 func TestBuildOutcomeBoundsStructuredFailure(t *testing.T) {
