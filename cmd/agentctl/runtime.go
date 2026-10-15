@@ -1575,7 +1575,7 @@ const (
 // shown. Classification may read the provider string; the string itself is not
 // persisted, so a quoted credential or an echoed prompt cannot reach the journal.
 func allowlistedFailureMessage(failure model.OutcomeFailure) string {
-	if failure.Source == "zcode" && failure.Code == "provider_capacity" && failure.Category == "capacity" {
+	if failure.Source == "zcode" && failure.Code == "provider_capacity" && failure.Category == "capacity" && zcodeUsageLimitFailure(failure) {
 		return zcodeCapacityFailureMessage(failure.Message)
 	}
 	switch failure.Code {
@@ -1614,6 +1614,14 @@ func allowlistedFailureMessage(failure model.OutcomeFailure) string {
 	default:
 		return failureMessageGeneric
 	}
+}
+
+// zcodeUsageLimitFailure reports whether a ZCode capacity outcome is proven to
+// be the provider's usage limit (code 1308 or the normalized usage-limit
+// message). Other capacity outcomes, such as provider overload or outcomes
+// stored by earlier versions, keep the generic capacity wording.
+func zcodeUsageLimitFailure(failure model.OutcomeFailure) bool {
+	return failure.NativeCode == "1308" || strings.HasPrefix(failure.Message, "ZCode provider usage limit reached")
 }
 
 func zcodeCapacityFailureMessage(raw string) string {

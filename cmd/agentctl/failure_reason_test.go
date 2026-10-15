@@ -335,3 +335,14 @@ func executionIDFromOutput(t *testing.T, document string) string {
 	}
 	return rest[:end]
 }
+
+func TestZCodeCapacityWordingRequiresUsageLimitProof(t *testing.T) {
+	overload := model.OutcomeFailure{Source: "zcode", Code: "provider_capacity", Category: "capacity", NativeCode: "server_overloaded", Message: failureMessageCapacity}
+	if got := allowlistedFailureMessage(overload); got != failureMessageCapacity {
+		t.Fatalf("zcode overload must keep generic capacity wording, got %q", got)
+	}
+	limit := model.OutcomeFailure{Source: "zcode", Code: "provider_capacity", Category: "capacity", NativeCode: "1308", Message: "ZCode provider usage limit reached; resets 2026-10-15 19:38:47"}
+	if got := allowlistedFailureMessage(limit); got != "ZCode provider usage limit reached; resets 2026-10-15 19:38:47" {
+		t.Fatalf("zcode 1308 must keep usage-limit wording with reset, got %q", got)
+	}
+}
