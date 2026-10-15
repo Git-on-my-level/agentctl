@@ -219,9 +219,10 @@ meaning.
 ### ZCode
 
 - Consume the final `--json` result document when present.
-- On terminal failure, classify provider code `1308`, HTTP `429`, or an explicit
-  usage/quota-limit message as retryable capacity. Preserve a valid provider
-  reset time in the bounded reason when present.
+- On terminal failure, classify provider code `1308` or HTTP `429` as retryable
+  capacity and preserve a valid reset time when present. Other diagnostic text
+  stays available to the shared classifier: `usage limit reached` is capacity,
+  while generic quota/rate-limit wording is `quota_exceeded`.
 - Replace unknown provider stderr with a bounded generic failure reason. Raw
   stderr, request identifiers, and trace identifiers are not stored.
 

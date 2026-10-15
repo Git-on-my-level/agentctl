@@ -455,6 +455,9 @@ UUIDs, or local paths. Status, events, and callbacks remain metadata-only.
 A failed native turn adds a bounded failure reason (category, message of at
 most 200 characters, native code) to status, result, and a failed
 `delegate --wait`. Capacity and overload are retryable. That reason is not
-prompt or answer text. ZCode usage-limit failures are retryable capacity and
-may include the provider reset time; raw stderr and request/trace identifiers
-are not stored. Explicit `result` is the supported final-answer read path.
+prompt or answer text. ZCode provider code `1308` and HTTP `429` are retryable
+capacity failures and may include the provider reset time. Other diagnostic
+words use the shared classifier: `usage limit reached` is capacity, while
+generic quota/rate-limit wording is `quota_exceeded`. Raw stderr and
+request/trace identifiers are not stored. Explicit `result` is the supported
+final-answer read path.

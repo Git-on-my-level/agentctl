@@ -190,10 +190,12 @@ accepts both Cursor assistant sources. A failed native turn records one
 secret-redacted diagnostic: `category`, a message of at most 200 characters,
 and `native_code` when the stream provides a structured code. Capacity and
 overload (`server_overloaded`, or a message that says the provider is at
-capacity) are retryable. ZCode provider usage limits (code `1308`, HTTP `429`,
-or an explicit usage-limit message) are capacity failures; a valid reset time
-may be included in the bounded message. `status`, `result`, and a failed
-`delegate --wait` include that reason. Terminal events expose only the
+capacity) are retryable. ZCode provider code `1308` and HTTP `429` are retryable
+capacity failures; a valid reset time may be included in the bounded message.
+Other ZCode diagnostic words go through the shared classifier: `usage limit
+reached` is capacity, while generic quota/rate-limit wording is
+`quota_exceeded`. `status`, `result`, and a failed `delegate --wait` include that
+reason. Terminal events expose only the
 normalized failure code.
 
 ## Workspace provenance and active owners
