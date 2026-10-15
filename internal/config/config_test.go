@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -73,6 +74,48 @@ func TestLoadDoesNotCreateMissingConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("load created or changed missing path: %v", err)
+	}
+}
+
+func TestLoadReportsValidationFailuresSeparatelyFromFileSecurity(t *testing.T) {
+	root := t.TempDir()
+	oversized := filepath.Join(root, "oversized.json")
+	if err := os.WriteFile(oversized, []byte(`{"schema_version":1,"profiles":{"local":{"agent_preferences":{"mode":"advisory","preferred":[{"agent":"cursor","model":"example"}],"notes":["first","second","`+strings.Repeat("x", 1025)+`"]}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(oversized); err == nil || !strings.Contains(err.Error(), "config invalid:") || !strings.Contains(err.Error(), "notes[2] exceeds 1024-byte limit") {
+		t.Fatalf("oversized note error=%v", err)
+	}
+	if err := Save(oversized, testBootstrapConfig(), false); !errors.Is(err, ErrUnmanaged) {
+		t.Fatalf("write replaced invalid config without explicit overwrite: %v", err)
+	}
+
+	malformed := filepath.Join(root, "malformed.json")
+	if err := os.WriteFile(malformed, []byte(`{"schema_version":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(malformed); err == nil || !strings.Contains(err.Error(), "config invalid: parse config:") {
+		t.Fatalf("malformed JSON error=%v", err)
+	}
+
+	insecure := filepath.Join(root, "insecure.json")
+	if err := os.WriteFile(insecure, []byte(`{"schema_version":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(insecure); !errors.Is(err, ErrUnmanaged) || !strings.Contains(err.Error(), "regular owner-only 0600") || strings.Contains(err.Error(), "config invalid") {
+		t.Fatalf("0644 error=%v", err)
+	}
+
+	target := filepath.Join(root, "symlink-target.json")
+	if err := os.WriteFile(target, []byte(`{"schema_version":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "symlink.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := Load(link); !errors.Is(err, ErrUnsafePath) {
+		t.Fatalf("symlink error=%v", err)
 	}
 }
 

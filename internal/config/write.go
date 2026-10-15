@@ -59,11 +59,14 @@ func Save(path string, cfg Config, overwrite bool) error {
 		return err
 	}
 
-	managed, exists, existing, err := existingConfigState(path)
+	managed, exists, existing, validationErr, err := existingConfigState(path)
 	if err != nil {
 		return err
 	}
 	if exists && !managed && !overwrite {
+		if validationErr != nil {
+			return fmt.Errorf("%w: %s has invalid content: %v (pass overwrite=true to replace)", ErrUnmanaged, path, validationErr)
+		}
 		return fmt.Errorf("%w: %s (pass overwrite=true to replace)", ErrUnmanaged, path)
 	}
 	if exists && managed && !overwrite {
@@ -190,32 +193,32 @@ func ensureOwnerPath(path string) error {
 	return nil
 }
 
-func existingConfigState(path string) (managed, exists bool, existing Config, err error) {
+func existingConfigState(path string) (managed, exists bool, existing Config, validationErr error, err error) {
 	info, statErr := os.Lstat(path)
 	if errors.Is(statErr, fs.ErrNotExist) {
-		return false, false, Config{}, nil
+		return false, false, Config{}, nil, nil
 	}
 	if statErr != nil {
-		return false, false, Config{}, fmt.Errorf("inspect config destination: %w", statErr)
+		return false, false, Config{}, nil, fmt.Errorf("inspect config destination: %w", statErr)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return false, true, Config{}, ErrUnsafePath
+		return false, true, Config{}, nil, ErrUnsafePath
 	}
 	if !info.Mode().IsRegular() {
-		return false, true, Config{}, fmt.Errorf("%w: destination is not a regular file", ErrUnmanaged)
+		return false, true, Config{}, nil, fmt.Errorf("%w: destination is not a regular file", ErrUnmanaged)
 	}
 	if info.Mode().Perm()&0o077 != 0 {
-		return false, true, Config{}, nil
+		return false, true, Config{}, nil, nil
 	}
 	data, readErr := os.ReadFile(path)
 	if readErr != nil {
-		return false, true, Config{}, nil
+		return false, true, Config{}, nil, fmt.Errorf("read config: %w", readErr)
 	}
 	existing, parseErr := decodeConfig(data)
 	if parseErr != nil {
-		return false, true, Config{}, nil
+		return false, true, Config{}, parseErr, nil
 	}
-	return true, true, existing, nil
+	return true, true, existing, nil, nil
 }
 
 func marshalConfig(cfg Config) ([]byte, error) {

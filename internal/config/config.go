@@ -133,12 +133,15 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	managed, exists, cfg, err := existingConfigState(clean)
+	managed, exists, cfg, validationErr, err := existingConfigState(clean)
 	if err != nil {
 		return Config{}, err
 	}
 	if !exists {
 		return Config{}, ErrNotFound
+	}
+	if validationErr != nil {
+		return Config{}, fmt.Errorf("config invalid: %w", validationErr)
 	}
 	if !managed {
 		return Config{}, fmt.Errorf("%w: config must be a regular owner-only 0600 file", ErrUnmanaged)
