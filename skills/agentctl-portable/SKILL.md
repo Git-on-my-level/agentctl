@@ -185,6 +185,9 @@ launcher needs its config from `zcode-cli-provision`. GLM-5.3 keeps the configur
 default by clearing inherited selectors with `ZCODE_MODEL=`. Launch values
 replace inherited entries. Missing variants fail before a prompt runs. Requested model/settings
 are not proof of provider-side model identity or task correctness.
+Claude Code supports explicit `settings.effort` through native `--effort` for
+`low`, `medium`, `high`, `xhigh`, and `max`; `ultra` is Codex-only. Claude Code
+service speed remains unsupported.
 
 ## Expert native path
 
@@ -452,4 +455,9 @@ UUIDs, or local paths. Status, events, and callbacks remain metadata-only.
 A failed native turn adds a bounded failure reason (category, message of at
 most 200 characters, native code) to status, result, and a failed
 `delegate --wait`. Capacity and overload are retryable. That reason is not
-prompt or answer text. Explicit `result` is the supported final-answer read path.
+prompt or answer text. ZCode provider code `1308` and HTTP `429` are retryable
+capacity failures and may include the provider reset time. Other diagnostic
+words use the shared classifier: `usage limit reached` is capacity, while
+generic quota/rate-limit wording is `quota_exceeded`. Raw stderr and
+request/trace identifiers are not stored. Explicit `result` is the supported
+final-answer read path.

@@ -22,7 +22,7 @@ const (
 
 // nativeFailureCodePattern accepts a provider diagnostic code. Free text stays
 // out of native_code so a message cannot be copied into the code field.
-var nativeFailureCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+var nativeFailureCodePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_]{0,63}$`)
 
 // ValidNativeFailureCode reports whether value is a bounded provider code.
 func ValidNativeFailureCode(value string) bool {

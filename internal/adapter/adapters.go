@@ -708,9 +708,11 @@ func zcodeManifest() Manifest {
 	resultContent := resultContentDecl(CapabilitySupported, "response")
 	resultContent.Constraints["required_output_mode"] = "json"
 	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--json", "kind": "presence"}
-	return baseManifest("zcode", "0.1.0", "zcode_session", "zcode-json", []CapabilityDeclaration{
+	m := baseManifest("zcode", "0.1.0", "zcode_session", "zcode-json", []CapabilityDeclaration{
 		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
+	m.KnownFailures = []KnownFailure{{Classifier: "provider_usage_limit", ErrorCode: "provider_capacity"}}
+	return m
 }
 
 func ompManifest() Manifest {

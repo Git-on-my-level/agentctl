@@ -182,11 +182,50 @@ func TestClaudeCodeUsesSteerableStreamingInput(t *testing.T) {
 	}
 }
 
-func TestClaudeCodeRejectsEffort(t *testing.T) {
-	_, err := Build(Input{Harness: "claude-code", Model: "claude-sonnet-4", Effort: "high"})
+func TestClaudeCodeMapsSupportedEffortValues(t *testing.T) {
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
+		t.Run(effort, func(t *testing.T) {
+			got, err := Build(Input{Harness: "claude-code", Model: "claude-sonnet-4", Effort: effort})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--input-format", "stream-json", "--replay-user-messages", "--model", "claude-sonnet-4", "--effort", effort}
+			if strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") {
+				t.Fatalf("argv=%v want=%v", got.Argv, want)
+			}
+		})
+	}
+}
+
+func TestClaudeCodeOmitsEffortWhenUnspecified(t *testing.T) {
+	got, err := Build(Input{Harness: "claude-code", Model: "claude-sonnet-4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(got.Argv, "--effort") {
+		t.Fatalf("unspecified effort injected: %v", got.Argv)
+	}
+}
+
+func TestClaudeCodeRejectsCodexOnlyEffort(t *testing.T) {
+	for _, effort := range []string{"ultra", "super"} {
+		_, err := Build(Input{Harness: "claude-code", Model: "claude-sonnet-4", Effort: effort})
+		var buildErr *Error
+		if !errors.As(err, &buildErr) || buildErr.Code != "effort_unavailable" {
+			t.Fatalf("effort=%q err=%v want effort_unavailable", effort, err)
+		}
+	}
+}
+
+func TestClaudeCodeSpeedAndFastVariantRejectionsRemain(t *testing.T) {
+	_, err := Build(Input{Harness: "claude-code", Model: "claude-sonnet-4", Speed: "regular"})
 	var buildErr *Error
-	if !errors.As(err, &buildErr) || buildErr.Code != "effort_unavailable" {
-		t.Fatalf("err=%v want effort_unavailable", err)
+	if !errors.As(err, &buildErr) || buildErr.Code != "speed_unavailable" {
+		t.Fatalf("speed error=%v want speed_unavailable", err)
+	}
+	_, err = Build(Input{Harness: "claude-code", Model: "claude-sonnet-4-fast"})
+	if !errors.As(err, &buildErr) || buildErr.Code != "speed_model_mismatch" {
+		t.Fatalf("fast variant error=%v want speed_model_mismatch", err)
 	}
 }
 

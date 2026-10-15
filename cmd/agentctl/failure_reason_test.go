@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
+	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
@@ -29,6 +30,14 @@ func TestClassifyCapacityIsRetryableAndGenericProviderIsNot(t *testing.T) {
 	code, _, category, retryable = classifyOutcomeFailure("native process exited unsuccessfully", "", "")
 	if code != "native_execution_failed" || category != "" || retryable {
 		t.Fatalf("unstructured=%s %s %v", code, category, retryable)
+	}
+	code, kind, category, retryable = classifyOutcomeFailure("ZCode provider usage limit reached", "", "1308")
+	if code != "provider_capacity" || kind != "capacity" || category != "capacity" || !retryable || !model.ValidNativeFailureCode("1308") {
+		t.Fatalf("ZCode usage limit=%s %s %s %v", code, kind, category, retryable)
+	}
+	code, kind, category, retryable = classifyOutcomeFailure("provider returned a rate limit response", "", "")
+	if code != "quota_exceeded" || kind != "quota" || category != "" || !retryable {
+		t.Fatalf("generic ZCode rate limit=%s %s %s %v", code, kind, category, retryable)
 	}
 }
 
@@ -116,6 +125,141 @@ printf '%s\n' '{"type":"turn.failed","thread_id":"thread-1","error":{"message":"
 	}
 }
 
+func TestZCodeFailureReasonSurfacesAcrossDelegateStatusAndResult(t *testing.T) {
+	for _, tc := range []struct {
+		name, stdoutShape, stderrShape, category, nativeCode, message string
+		retryable                                                     bool
+	}{
+		{
+			name: "quota",
+			stderrShape: `ProviderBusinessError: [1308][Usage limit reached for 5 hour. Your limit will reset at 2026-10-15 19:38:47]
+  code: 'PROVIDER_BUSINESS_ERROR', providerCode: '1308', responseStatus: 429, 'retry-after': '1266'`,
+			category: "capacity", nativeCode: "1308", message: "ZCode provider usage limit reached; resets 2026-10-15 19:38:47", retryable: true,
+		},
+		{
+			name:        "authentication JSON",
+			stdoutShape: `{"error":{"message":"Authentication required; please login to continue (requestId: fixture-only traceId: fixture-only)"}}`,
+			message:     failureMessageAuth, retryable: true,
+		},
+		{
+			name:        "workspace trust stderr",
+			stderrShape: "Workspace trust required before running the task (requestId: fixture-only traceId: fixture-only)",
+			message:     failureMessageTrust, retryable: true,
+		},
+		{
+			name: "unknown provider",
+			stderrShape: `ProviderBusinessError: provider request failed
+  code: 'PROVIDER_BUSINESS_ERROR', providerCode: '7314', responseStatus: 500`,
+			category: "provider", nativeCode: "7314", message: failureMessageGeneric, retryable: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			bin := filepath.Join(root, "zcode")
+			script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 0.16.9; exit 0; fi\n"
+			if tc.stdoutShape != "" {
+				script += "cat <<'RESULT'\n" + tc.stdoutShape + "\nRESULT\n"
+			}
+			if tc.stderrShape != "" {
+				script += "cat >&2 <<'DIAGNOSTIC'\n" + tc.stderrShape + "\nError: Turn execution failed (traceId: fixture-only)\nDIAGNOSTIC\n"
+			}
+			script += "exit 1\n"
+			if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			configPath := filepath.Join(root, "config.json")
+			cfg := config.Config{
+				SchemaVersion:  1,
+				DefaultProfile: "test",
+				Profiles: map[string]config.Profile{"test": {
+					Adapters: map[string]config.Adapter{"zcode": {Executable: bin}},
+					AgentPreferences: &config.AgentPreferences{Mode: "advisory", Preferred: []config.AgentPreference{{
+						Agent: "zcode", Family: "glm", Model: "zai/glm-5.3", Effort: "high", Default: true,
+					}}},
+				}},
+			}
+			if err := config.Save(configPath, cfg, false); err != nil {
+				t.Fatal(err)
+			}
+			requestPath := filepath.Join(root, "request.json")
+			request := `{"schema_version":1,"request_key":"zcode-failure","selector":{"family":"glm"}}`
+			if err := os.WriteFile(requestPath, []byte(request), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			journalPath := filepath.Join(root, "state", "journal.db")
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			a.stdin = strings.NewReader("synthetic task")
+			code := a.run(ctx, []string{"--output", "json", "--config", configPath, "--journal", journalPath, "delegate", "--cwd", root, "--request-file", requestPath, "--prompt-stdin", "--wait"})
+			if code != output.ExitCodeFor(output.CodeExecutionFailed) {
+				t.Fatalf("delegate --wait exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+			}
+			executionID := failureExecutionIDFromOutput(t, stdout.String())
+			surfaces := []struct{ name, text string }{{name: "delegate --wait", text: stdout.String()}}
+			for _, command := range []string{"status", "result"} {
+				stdout.Reset()
+				if code := a.run(ctx, []string{"--output", "json", "--journal", journalPath, command, executionID}); code != 0 {
+					t.Fatalf("%s exit=%d stdout=%s stderr=%s", command, code, stdout.String(), stderr.String())
+				}
+				surfaces = append(surfaces, struct{ name, text string }{name: command, text: stdout.String()})
+			}
+			for _, surface := range surfaces {
+				wants := []string{`"retryable":` + jsonBool(tc.retryable), tc.message}
+				if tc.category != "" {
+					wants = append(wants, `"category":"`+tc.category+`"`)
+				}
+				if tc.nativeCode != "" {
+					wants = append(wants, `"native_code":"`+tc.nativeCode+`"`)
+				}
+				for _, want := range wants {
+					if !strings.Contains(surface.text, want) {
+						t.Fatalf("%s surface missing %s: %s", surface.name, want, surface.text)
+					}
+				}
+				for _, forbidden := range []string{"ProviderBusinessError", "providerCode", "responseStatus", "retry-after", "request id", "requestId", "trace id", "traceId", "fixture-only"} {
+					if strings.Contains(surface.text, forbidden) {
+						t.Fatalf("%s surface leaked %q: %s", surface.name, forbidden, surface.text)
+					}
+				}
+			}
+			journalBytes, err := os.ReadFile(journalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{"ProviderBusinessError", "providerCode", "responseStatus", "retry-after", "fixture-only"} {
+				if bytes.Contains(journalBytes, []byte(forbidden)) {
+					t.Fatalf("journal retained raw stderr marker %q", forbidden)
+				}
+			}
+		})
+	}
+}
+
+func failureExecutionIDFromOutput(t *testing.T, document string) string {
+	t.Helper()
+	const marker = `"execution_id":"exec-`
+	start := strings.Index(document, marker)
+	if start < 0 {
+		t.Fatalf("no execution id in failure output: %s", document)
+	}
+	rest := document[start+len(`"execution_id":"`):]
+	end := strings.IndexByte(rest, '"')
+	if end < 0 {
+		t.Fatalf("malformed execution id in failure output: %s", document)
+	}
+	return rest[:end]
+}
+
+func jsonBool(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
+}
+
 func TestBuildOutcomeBoundsStructuredFailure(t *testing.T) {
 	now := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
 	journal, err := store.Open(filepath.Join(t.TempDir(), "state", "journal.db"), store.Options{Clock: func() time.Time { return now }})
@@ -190,4 +334,15 @@ func executionIDFromOutput(t *testing.T, document string) string {
 		t.Fatal(document)
 	}
 	return rest[:end]
+}
+
+func TestZCodeCapacityWordingRequiresUsageLimitProof(t *testing.T) {
+	overload := model.OutcomeFailure{Source: "zcode", Code: "provider_capacity", Category: "capacity", NativeCode: "server_overloaded", Message: failureMessageCapacity}
+	if got := allowlistedFailureMessage(overload); got != failureMessageCapacity {
+		t.Fatalf("zcode overload must keep generic capacity wording, got %q", got)
+	}
+	limit := model.OutcomeFailure{Source: "zcode", Code: "provider_capacity", Category: "capacity", NativeCode: "1308", Message: "ZCode provider usage limit reached; resets 2026-10-15 19:38:47"}
+	if got := allowlistedFailureMessage(limit); got != "ZCode provider usage limit reached; resets 2026-10-15 19:38:47" {
+		t.Fatalf("zcode 1308 must keep usage-limit wording with reset, got %q", got)
+	}
 }

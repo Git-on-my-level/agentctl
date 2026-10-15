@@ -154,8 +154,11 @@ do not automatically weaken a failed structured request into an expert launch.
 
 ## Native and Multica boundaries
 
-Cursor and Codex have recipes for exact requested models and supported settings;
-OMP has a structured recipe with explicit thinking but no service-speed guarantee.
+Cursor, Codex, and Claude Code have recipes for exact requested models and
+supported settings. Claude Code passes effort through `--effort` for `low`,
+`medium`, `high`, `xhigh`, and `max`; it still has no reviewed service-speed
+flag. OMP has a structured recipe with explicit thinking but no service-speed
+guarantee.
 An unsupported setting fails before launch. The resolved tuple describes what
 agentctl requested. Native providers can still report opaque or substituted model
 identity; this release does not claim model attestation.
@@ -230,4 +233,5 @@ Flash; GLM-5.3 needs no per-model variant.
 Plans expose these reviewed, non-secret values in `native.env`; the immutable
 admission retains them for retries and follow-up turns. Arbitrary caller env
 and credentials are not accepted through this recipe mechanism. Effort remains
-the configured high default; `fast` service speed is still unsupported.
+the configured high default; `fast` service speed is still unsupported. Claude
+Code effort is explicit and does not change that ZCode default.

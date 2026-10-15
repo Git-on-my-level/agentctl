@@ -182,6 +182,57 @@ func cursorAssistantText(value any) string {
 
 type zcodeParser struct{}
 
+type zcodeFailureDiagnostic struct {
+	Message    string
+	Category   string
+	NativeCode string
+}
+
+var (
+	zcodeProviderCodePattern = regexp.MustCompile(`(?i)\bproviderCode\s*:\s*['\"]?([0-9]{1,32})`)
+	zcodeBracketCodePattern  = regexp.MustCompile(`^\s*(?:ProviderBusinessError\s*:\s*)?\[([0-9]{1,32})\]`)
+	zcodeHTTPStatusPattern   = regexp.MustCompile(`(?i)\b(?:responseStatus|HTTP(?:\s+status)?)\s*[:=]?\s*([0-9]{3})`)
+	zcodeResetTimePattern    = regexp.MustCompile(`(?i)\breset(?:s)?\s+(?:at\s+)?([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})`)
+)
+
+func zcodeStderrFailure(raw string) *zcodeFailureDiagnostic {
+	lower := strings.ToLower(raw)
+	providerCode := zcodeProviderCodePattern.FindStringSubmatch(raw)
+	httpStatus := zcodeHTTPStatusPattern.FindStringSubmatch(raw)
+	if !strings.Contains(lower, "providerbusinesserror") && len(providerCode) != 2 && len(httpStatus) != 2 && !strings.Contains(lower, "usage limit reached") && !strings.Contains(lower, "quota") && !strings.Contains(lower, "rate limit") {
+		return nil
+	}
+	return parseZCodeFailure(raw)
+}
+
+func parseZCodeFailure(raw string) *zcodeFailureDiagnostic {
+	message := boundedUTF8(safeFailureDiagnostic(raw), 200)
+	if message == "" {
+		message = "ZCode provider execution failed"
+	}
+	diagnostic := &zcodeFailureDiagnostic{Message: message}
+	if match := zcodeProviderCodePattern.FindStringSubmatch(raw); len(match) == 2 {
+		diagnostic.NativeCode = match[1]
+	} else if match := zcodeBracketCodePattern.FindStringSubmatch(raw); len(match) == 2 {
+		diagnostic.NativeCode = match[1]
+	}
+	status := ""
+	if match := zcodeHTTPStatusPattern.FindStringSubmatch(raw); len(match) == 2 {
+		status = match[1]
+	}
+	// Only an explicit ZCode provider code or HTTP status promotes the signal
+	// to capacity here. Generic quota/rate-limit wording stays available to the
+	// shared classifier, which distinguishes quota_exceeded from capacity.
+	if diagnostic.NativeCode == "1308" || status == "429" {
+		diagnostic.Category = "capacity"
+		diagnostic.Message = "ZCode provider usage limit reached"
+		if match := zcodeResetTimePattern.FindStringSubmatch(raw); len(match) == 2 {
+			diagnostic.Message += "; resets " + match[1]
+		}
+	}
+	return diagnostic
+}
+
 func (zcodeParser) Name() string { return "zcode-json" }
 func (zcodeParser) Parse(line []byte, stderr bool) parsedObservation {
 	if stderr {
@@ -194,7 +245,12 @@ func (zcodeParser) Parse(line []byte, stderr bool) parsedObservation {
 	obs := parsedObservation{State: StateRunning, Liveness: LivenessAlive, Data: map[string]any{"family": "zcode"}, SourceState: "zcode.response"}
 	obs.SessionID = firstString(value, "sessionId", "session_id")
 	if errText := errorText(value); errText != "" {
-		obs.Error = boundedString(errText, 1024)
+		diagnostic := parseZCodeFailure(errText)
+		obs.Error = diagnostic.Message
+		obs.Data["failure_structured"] = true
+		if diagnostic.NativeCode != "" {
+			obs.Data["native_code"] = diagnostic.NativeCode
+		}
 		obs.Terminal = true
 		obs.Success = false
 		obs.State = StateFailed
