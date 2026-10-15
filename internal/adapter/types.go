@@ -99,6 +99,24 @@ type ProbeAction struct {
 	TimeoutSeconds  int      `json:"timeout_seconds,omitempty"`
 }
 
+const defaultVersionProbeTimeout = 5 * time.Second
+
+// VersionProbeTimeout returns the timeout declared for the manifest's
+// read-only version action. Manifests that omit a positive timeout retain the
+// historical five-second default; adapters without a version action return 0.
+func (m Manifest) VersionProbeTimeout() time.Duration {
+	for _, action := range m.ProbeActions {
+		if action.ID != "version" {
+			continue
+		}
+		if action.TimeoutSeconds <= 0 {
+			return defaultVersionProbeTimeout
+		}
+		return time.Duration(action.TimeoutSeconds) * time.Second
+	}
+	return 0
+}
+
 type ContextMechanism string
 
 const (

@@ -84,6 +84,12 @@ each probe action was read-only. A change to any of those inputs invalidates the
 cached result. Critical dispatch and promotion require a fresh probe; ordinary
 status may show a stale snapshot explicitly.
 
+The manifest's version action declares its timeout. Version-probing adapters
+use five seconds by default; ZCode gets 30 seconds because its Electron CLI can
+be delayed by host load. A timeout reports the adapter, configured timeout,
+elapsed time, and that the host may be overloaded; it does not classify the
+executable as missing.
+
 ## Capability order
 
 Observation uses the strongest available source in this order:

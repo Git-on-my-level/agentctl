@@ -190,7 +190,7 @@ func (a *app) doctorReadiness(ctx context.Context, renderer output.Renderer, c c
 				report.Problems = append(report.Problems, name+"_delegation_unavailable")
 			}
 		} else {
-			probe, probeErr := value.Probe(ctx, adapter.ProbeRequest{Executable: configuredExecutables[name], Profile: c.profile, Timeout: 5 * time.Second, Fresh: true})
+			probe, probeErr := probeVersion(ctx, value, adapter.ProbeRequest{Executable: configuredExecutables[name], Profile: c.profile})
 			if probeErr != nil {
 				mapped := mapAdapterError("adapter probe failed", probeErr)
 				check.Status = "unavailable"

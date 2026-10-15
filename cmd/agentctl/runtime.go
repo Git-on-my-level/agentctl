@@ -151,7 +151,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		operationCtx, operationCancel = context.WithTimeout(ctx, opts.timeout)
 		defer operationCancel()
 	}
-	probe, err := runtime.Probe(operationCtx, adapter.ProbeRequest{Executable: opts.argv[0], Argv: opts.argv, PromptDelivery: promptDelivery, PromptArgs: promptArgs, Profile: profileName, Timeout: 5 * time.Second, Fresh: true})
+	probe, err := probeVersion(operationCtx, runtime, adapter.ProbeRequest{Executable: opts.argv[0], Argv: opts.argv, PromptDelivery: promptDelivery, PromptArgs: promptArgs, Profile: profileName})
 	if err != nil {
 		return mapAdapterError("adapter probe failed", err)
 	}
@@ -1200,6 +1200,16 @@ func commitCancellation(ctx context.Context, journal *store.Journal, execution m
 		return stored, err
 	}
 	return model.Execution{}, fmt.Errorf("%w: cancellation could not converge", store.ErrConflict)
+}
+
+func probeVersion(ctx context.Context, runtime adapter.Adapter, request adapter.ProbeRequest) (adapter.ProbeResult, error) {
+	return probeVersionWithTimeout(ctx, runtime, request, runtime.Manifest().VersionProbeTimeout())
+}
+
+func probeVersionWithTimeout(ctx context.Context, runtime adapter.Adapter, request adapter.ProbeRequest, timeout time.Duration) (adapter.ProbeResult, error) {
+	request.Timeout = timeout
+	request.Fresh = true
+	return runtime.Probe(ctx, request)
 }
 
 func (a *app) runtimeAdapter(c common, name, issue, run string) (adapter.Adapter, string, *output.Error) {
