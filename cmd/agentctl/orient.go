@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Git-on-my-level/agentctl/internal/adapter"
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
@@ -60,10 +61,11 @@ type orientDependencies struct {
 	git      orientGitRunner
 	lookPath func(string) (string, error)
 	stat     func(string) (fs.FileInfo, error)
+	homeDir  func() (string, error)
 }
 
 func defaultOrientDependencies() orientDependencies {
-	return orientDependencies{getwd: os.Getwd, git: nativeOrientGit{}, lookPath: exec.LookPath, stat: os.Stat}
+	return orientDependencies{getwd: os.Getwd, git: nativeOrientGit{}, lookPath: exec.LookPath, stat: os.Stat, homeDir: os.UserHomeDir}
 }
 
 type orientUpstream struct {
@@ -385,6 +387,9 @@ func discoveredOrientAdapters(deps orientDependencies) []orientAdapter {
 	values := make([]orientAdapter, 0, len(known))
 	for _, item := range known {
 		path, err := deps.lookPath(item.executable)
+		if err != nil && item.name == "zcode" {
+			path, err = discoverZCodeLegacyLauncher(deps)
+		}
 		if err != nil {
 			values = append(values, orientAdapter{Name: item.name, Authority: "native", ConfigurationStatus: "unconfigured", Health: "unconfigured", HealthBasis: "not_configured", Reason: "executable_not_discovered"})
 			continue
@@ -392,6 +397,27 @@ func discoveredOrientAdapters(deps orientDependencies) []orientAdapter {
 		values = append(values, orientAdapter{Name: item.name, Authority: "native", ConfigurationStatus: "discovered", Executable: path, Health: "healthy", HealthBasis: "executable_present"})
 	}
 	return values
+}
+
+// discoverZCodeLegacyLauncher mirrors the ZCode adapter's fallback so orient
+// does not report an executable the adapter can launch as undiscovered.
+func discoverZCodeLegacyLauncher(deps orientDependencies) (string, error) {
+	if deps.homeDir == nil || deps.stat == nil {
+		return "", errors.New("home directory unavailable")
+	}
+	home, err := deps.homeDir()
+	if err != nil {
+		return "", err
+	}
+	candidate := adapter.ZCodeLegacyLauncher(home)
+	info, err := deps.stat(candidate)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", errors.New("zcode launcher is a directory")
+	}
+	return candidate, nil
 }
 
 func inspectOrientAdapter(name, authority, configurationStatus, executable string, deps orientDependencies) orientAdapter {

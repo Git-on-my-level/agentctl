@@ -158,6 +158,12 @@ func zcodeLauncherMissing(cause error) error {
 	return &AdapterError{Code: ErrDependencyUnavailable, Message: "zcode launcher is not on PATH", Retryable: true, Details: details, Cause: cause}
 }
 
+// ZCodeLegacyLauncher is the launcher path resolveZCodeBinary falls back to
+// when zcode is not on PATH. Discovery uses it so orient and launch agree.
+func ZCodeLegacyLauncher(home string) string {
+	return filepath.Join(home, ".zcode", "server", "agents", "glm", "zcode-agent")
+}
+
 func resolveZCodeBinary() string {
 	if path, err := exec.LookPath("zcode"); err == nil {
 		return path
@@ -166,7 +172,7 @@ func resolveZCodeBinary() string {
 	if err != nil {
 		return "zcode"
 	}
-	candidate := filepath.Join(home, ".zcode", "server", "agents", "glm", "zcode-agent")
+	candidate := ZCodeLegacyLauncher(home)
 	if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
 		return candidate
 	}

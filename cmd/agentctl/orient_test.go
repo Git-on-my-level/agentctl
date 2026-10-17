@@ -186,6 +186,42 @@ func TestDiscoveredOrientAdaptersCoverEveryKnownNativeAdapter(t *testing.T) {
 	}
 }
 
+func TestDiscoveredOrientAdaptersFindZCodeLegacyLauncher(t *testing.T) {
+	home := t.TempDir()
+	launcher := filepath.Join(home, ".zcode", "server", "agents", "glm", "zcode-agent")
+	if err := os.MkdirAll(filepath.Dir(launcher), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(launcher, []byte("fixture"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	deps := orientDependencies{
+		lookPath: func(string) (string, error) { return "", errors.New("executable not found") },
+		stat:     os.Stat,
+		homeDir:  func() (string, error) { return home, nil },
+	}
+	var zcode orientAdapter
+	for _, value := range discoveredOrientAdapters(deps) {
+		if value.Name == "zcode" {
+			zcode = value
+		}
+	}
+	if zcode.ConfigurationStatus != "discovered" || zcode.Health != "healthy" || zcode.Executable != launcher {
+		t.Fatalf("legacy launcher not discovered: %+v", zcode)
+	}
+	if err := os.Remove(launcher); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(launcher, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range discoveredOrientAdapters(deps) {
+		if value.Name == "zcode" && value.Reason != "executable_not_discovered" {
+			t.Fatalf("directory at launcher path was discovered: %+v", value)
+		}
+	}
+}
+
 func TestInspectOrientConfigurationConfiguredAdaptersOverrideDiscovery(t *testing.T) {
 	root := t.TempDir()
 	executable := filepath.Join(root, "zcode")
