@@ -383,7 +383,7 @@ func unconfiguredAuthorities() []orientAuthority {
 }
 
 func discoveredOrientAdapters(deps orientDependencies) []orientAdapter {
-	known := []struct{ name, executable string }{{"claude", "claude"}, {"codex", "codex"}, {"cursor", "cursor-agent"}, {"devin", "devin"}, {"omp", "omp"}, {"opencode", "opencode"}, {"zcode", "zcode"}}
+	known := []struct{ name, executable string }{{"claude", "claude"}, {"codex", "codex"}, {"cursor", "cursor-agent"}, {"devin", "devin"}, {"omp", "omp"}, {"openclaw", "openclaw"}, {"opencode", "opencode"}, {"zcode", "zcode"}}
 	values := make([]orientAdapter, 0, len(known))
 	for _, item := range known {
 		path, err := deps.lookPath(item.executable)
