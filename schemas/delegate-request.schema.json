@@ -37,6 +37,7 @@
       ],
       "properties": {
         "harness": {
+          "description": "Native harness constraint, including opencode. OpenCode recipes require an exact provider/model ID; explicit speed, effort, and read_only access are unsupported.",
           "type": "string",
           "minLength": 1,
           "maxLength": 256,

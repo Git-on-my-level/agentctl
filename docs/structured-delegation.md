@@ -236,3 +236,12 @@ admission retains them for retries and follow-up turns. Arbitrary caller env
 and credentials are not accepted through this recipe mechanism. Effort remains
 the configured high default; `fast` service speed is still unsupported. Claude
 Code effort is explicit and does not change that ZCode default.
+
+OpenCode recipes pass `opencode run --format json --model provider/model --`
+with the exact configured model ID and positional prompt delivery. Explicit
+service speed, effort, and read-only access are refused because no reviewed
+recipe guarantees those settings. No auto-approval flags are added. A native
+answer requires completed text from the final step, a final `step_finish` with
+`part.reason: "stop"`, and exit 0. Missing/non-stop finishes fail rather than
+returning partial text. Continue and steer remain unavailable; Multica
+structured delegation remains rejected under the existing authority contract.

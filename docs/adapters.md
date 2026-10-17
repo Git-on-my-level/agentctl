@@ -117,7 +117,7 @@ agentctl run -- codex exec --json -m gpt-5.6-sol "task"
 ```
 
 For known executable names, `run` infers the adapter (`codex`, `cursor-agent`,
-`claude`, `omp`, `zcode`, and `devin`). `--adapter <name>` remains an explicit override when an
+`claude`, `omp`, `opencode`, `zcode`, and `devin`). `--adapter <name>` remains an explicit override when an
 executable is ambiguous or the caller has a reviewed authority mapping. The
 argv after `--` is passed unchanged in either case.
 
@@ -140,7 +140,7 @@ Capability negotiation is invocation-scoped. Backend probing establishes what
 an installed adapter can support; the exact argv establishes what this launch
 actually supports. When stored result content is required, Codex and ZCode require
 `--json`, Cursor and Claude require `--output-format stream-json`, OMP
-requires `--mode json`, and Devin accepts ACP (`devin acp`) or expert print mode (`-p`). A missing or conflicting mode fails before dependency
+requires `--mode json`, OpenCode requires `run --format json`, and Devin accepts ACP (`devin acp`) or expert print mode (`-p`). A missing or conflicting mode fails before dependency
 probing, journal creation, or child launch. agentctl reports the required mode
 but never silently rewrites the caller's argv.
 
@@ -221,6 +221,27 @@ meaning.
 - Reject explicit service speed and fast model variants as before.
 - Preserve native permission mode and hooks.
 - Do not read unrelated Claude project/session history during attachment.
+
+### OpenCode
+
+- Launch `opencode run --format json`; `--model` takes an exact `provider/model`
+  ID. Prompt delivery is one positional argument (use `--` before the prompt).
+- Capture only completed `text` parts (`part.type: "text"` with `part.time.end`)
+  from the final step. Require exit 0, nonempty text, and that step's
+  `step_finish` event (`part.type: "step-finish"`, `part.reason: "stop"`).
+  Missing or non-stop finishes fail with `incomplete_terminal_result`; a
+  stopped step without text fails with `empty_terminal_result`. Neither stores
+  partial answer content. Error events and nonzero exits remain failures.
+- Bound cumulative answer buffering to a 1 MiB UTF-8 prefix (including part
+  separators) and mark truncated results. Discard excess text while retaining
+  final step controls; observations retain metadata rather than another text copy.
+- Reset answer and completion evidence at each `step_start`; non-stop finishes
+  discard earlier narration. Tool payloads and reasoning never enter results
+  or metadata-only events.
+- Cancellation and observation are limited to the owned local process. Resume
+  and live steering are unavailable. No permission auto-approval flag is added.
+  Multica retains its own issue/run and result authority; this native parser
+  does not establish Multica OpenCode runtime support.
 
 ### ZCode
 

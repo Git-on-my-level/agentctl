@@ -999,6 +999,8 @@ func inferAdapter(executable string) string {
 		return "claude"
 	case "omp":
 		return "omp"
+	case "opencode":
+		return "opencode"
 	case "zcode":
 		return "zcode"
 	case "devin":
@@ -1229,6 +1231,8 @@ func (a *app) runtimeAdapter(c common, name, issue, run string) (adapter.Adapter
 		return adapter.NewClaudeCode(), "", nil
 	case "omp":
 		return adapter.NewOMP(), "", nil
+	case "opencode":
+		return adapter.NewOpenCode(), "", nil
 	case "zcode":
 		return adapter.NewZCode(), "", nil
 	case "devin":

@@ -55,6 +55,7 @@ sessions.
 | Devin | `devin` |
 | ZCode | `zcode` |
 | OMP | `omp` |
+| OpenCode | `opencode` |
 | Any CLI with structured output | configured |
 
 Follow-up turns and steering depend on what each CLI supports;
