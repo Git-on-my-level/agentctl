@@ -1185,3 +1185,24 @@ func TestNumericSessionIDDoesNotReplaceLaunchPID(t *testing.T) {
 		t.Fatalf("launch identity was overwritten: %#v", session.Launch)
 	}
 }
+
+func TestProbeCapturesConcurrentStdoutAndStderr(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "probe")
+	script := `#!/bin/sh
+printf 'fixture version\n'
+(i=0; while [ "$i" -lt 128 ]; do printf 'stdout probe diagnostic\n'; i=$((i+1)); done) &
+(i=0; while [ "$i" -lt 128 ]; do printf 'stderr probe diagnostic\n' >&2; i=$((i+1)); done) &
+wait
+`
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	a := NewDevin()
+	probe, err := a.Probe(context.Background(), ProbeRequest{Executable: path, Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !probe.ReadOnly || probe.BackendVersion == "" || len(probe.BackendVersion) > 8192 {
+		t.Fatalf("probe=%+v", probe)
+	}
+}

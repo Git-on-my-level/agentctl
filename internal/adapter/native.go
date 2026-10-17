@@ -606,8 +606,10 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 		cmd := exec.CommandContext(probeCtx, probeArgs[0], probeArgs[1:]...)
 		cmd.Env = WithoutCallerDeclaration(os.Environ())
 		var out bytes.Buffer
+		// os/exec serializes capture when both streams share the same writer.
+		// Separate wrappers around out would race on the buffer and its limit.
 		cmd.Stdout = &limitedWriter{w: &out, n: 8192}
-		cmd.Stderr = &limitedWriter{w: &out, n: 8192}
+		cmd.Stderr = cmd.Stdout
 		probeStarted := time.Now()
 		cmdErr := cmd.Run()
 		if cmdErr != nil {
