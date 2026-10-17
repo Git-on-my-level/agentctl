@@ -797,10 +797,17 @@ func resultContentDecl(status CapabilityStatus, source string) CapabilityDeclara
 	return decl
 }
 
+// InvocationPrompt is content-free evidence for exact prompt negotiation.
+// Omitted evidence must never advertise an ACP invocation as launchable.
+type InvocationPrompt struct {
+	Delivery string
+	Bytes    int
+}
+
 // NegotiateInvocation resolves one static adapter declaration against the
 // exact native argv. It performs no filesystem or network access and is safe
 // to use before dependency probing or journal creation.
-func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName) Capability {
+func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName, prompts ...InvocationPrompt) Capability {
 	if manifest.Adapter == "devin" && isDevinACP(argv) {
 		manifest = devinACPManifest()
 	}
@@ -817,6 +824,14 @@ func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName) 
 		}
 		constraints := cloneMap(declaration.Constraints)
 		reason := ""
+		if manifest.Adapter == "devin" && isDevinACP(argv) && (name == CapabilityLaunch || name == CapabilityResultContent) {
+			constraints["required_prompt_delivery"] = PromptDeliveryStdin
+			constraints["requires_nonempty_prompt"] = true
+			if len(prompts) != 1 || prompts[0].Delivery != PromptDeliveryStdin || prompts[0].Bytes <= 0 {
+				constraints["invocation_satisfied"] = false
+				return Capability{Name: name, Status: CapabilityUnavailable, Source: "manifest", SemanticsVersion: declaration.SemanticsVersion, Constraints: constraints, Reason: "Devin ACP requires a nonempty agentctl-managed stdin prompt"}
+			}
+		}
 		if len(argv) != 0 && name == CapabilityResultContent && !invocationRequirementSatisfied(argv, constraints) {
 			status = CapabilityUnavailable
 			constraints["invocation_satisfied"] = false

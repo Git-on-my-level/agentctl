@@ -252,7 +252,7 @@
             "stdin",
             "stream"
           ],
-          "description": "Devin ACP takes prompt bytes via the adapter-managed stdin channel and encodes session/prompt."
+          "description": "Devin ACP requires a nonempty valid UTF-8 prompt through managed stdin, validated before probing, admission, or launch. Plans reject missing prompt evidence or argv/stream delivery. The adapter encodes the unchanged text in session/prompt."
         },
         "permissions": {
           "enum": [

@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -203,5 +204,78 @@ func TestDevinACPFinalMessageAfterToolActivity(t *testing.T) {
 	}
 	if got.Result.Data["result_content_source"] != "assistant_terminal_result" {
 		t.Fatalf("source=%v", got.Result.Data)
+	}
+}
+
+func TestDevinACPPromptNegotiation(t *testing.T) {
+	argv := []string{"devin", "acp"}
+	for _, name := range []CapabilityName{CapabilityLaunch, CapabilityResultContent} {
+		for _, tc := range []struct {
+			prompt []InvocationPrompt
+			want   CapabilityStatus
+		}{
+			{nil, CapabilityUnavailable},
+			{[]InvocationPrompt{{Delivery: PromptDeliveryArgv, Bytes: 4}}, CapabilityUnavailable},
+			{[]InvocationPrompt{{Delivery: PromptDeliveryStream, Bytes: 4}}, CapabilityUnavailable},
+			{[]InvocationPrompt{{Delivery: PromptDeliveryStdin}}, CapabilityUnavailable},
+			{[]InvocationPrompt{{Delivery: PromptDeliveryStdin, Bytes: 4}}, CapabilitySupported},
+		} {
+			got := NegotiateInvocation(devinManifest(), argv, name, tc.prompt...)
+			if got.Status != tc.want {
+				t.Fatalf("capability=%s prompt=%+v got=%+v", name, tc.prompt, got)
+			}
+		}
+	}
+}
+
+func TestDevinACPLaunchValidatesPromptBeforeStartingProcess(t *testing.T) {
+	for _, tc := range []struct {
+		name, delivery string
+		prompt         []byte
+		diagnostic     string
+	}{
+		{"argv", PromptDeliveryArgv, []byte("task"), "acp_prompt_delivery_required"},
+		{"missing", "", nil, "acp_prompt_delivery_required"},
+		{"empty", PromptDeliveryStdin, nil, "acp_prompt_required"},
+		{"invalid-utf8", PromptDeliveryStdin, []byte{0xff}, "acp_prompt_invalid_utf8"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A nonexistent executable proves validation happens before exec.Start.
+			a := NewDevin()
+			_, err := a.Launch(context.Background(), LaunchRequest{Argv: []string{filepath.Join(t.TempDir(), "missing-devin"), "acp"}, PromptDelivery: tc.delivery, Stdin: tc.prompt})
+			var issue *AdapterError
+			if !errors.As(err, &issue) || issue.Details["diagnostic_code"] != tc.diagnostic {
+				t.Fatalf("err=%+v", err)
+			}
+		})
+	}
+}
+
+func TestDevinACPProbeRequiresPromptEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devin")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho fixture-version\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	var fingerprints []string
+	for _, size := range []int{0, 4} {
+		probe, err := NewDevin().Probe(context.Background(), ProbeRequest{Executable: path, Argv: []string{path, "acp"}, PromptDelivery: PromptDeliveryStdin, PromptBytes: size})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fingerprints = append(fingerprints, probe.ScopeFingerprint)
+		for _, cap := range probe.Capabilities {
+			if cap.Name == CapabilityLaunch || cap.Name == CapabilityResultContent {
+				want := CapabilitySupported
+				if size == 0 {
+					want = CapabilityUnavailable
+				}
+				if cap.Status != want {
+					t.Fatalf("prompt bytes=%d capability=%+v", size, cap)
+				}
+			}
+		}
+	}
+	if fingerprints[0] == fingerprints[1] {
+		t.Fatal("probe scope must distinguish prompt evidence")
 	}
 }

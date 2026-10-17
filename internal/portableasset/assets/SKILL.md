@@ -153,7 +153,9 @@ launches (omitted `settings.access`, or `"coding"`) include Cursor `--force`,
 Codex `--dangerously-bypass-approvals-and-sandbox`, and Devin ACP permission approval. Set `settings.access` to `read_only` for
 Cursor `--mode ask` and Codex `--sandbox read-only`; that access never
 receives the bypass flags. Devin refuses `read_only`: ACP read-only enforcement is unverified.
-Devin delegation uses `devin acp`; its frozen `AGENTCTL_DEVIN_ACP_APPROVE`
+Devin ACP requires a nonempty UTF-8 prompt via agentctl-managed stdin; invalid
+text or delivery is refused before launch, including read-only plans. Expert
+ACP runs require `--prompt-delivery stdin` with a prompt source. Its frozen `AGENTCTL_DEVIN_ACP_APPROVE`
 entry controls one-operation approvals. Denials select an offered `reject_once`
 option and surface attention; `cancelled` is reserved for client cancellation
 or a denial with no reject option. The stored answer keeps the final assistant

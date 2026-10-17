@@ -96,7 +96,7 @@ Codex `--dangerously-bypass-approvals-and-sandbox`, and grants Devin ACP one-ope
 and Codex `--sandbox read-only` and never adds those bypass flags. Devin
 refuses `read_only` with `access_unavailable`: ACP read-only enforcement is
 unverified. Devin uses `devin acp --model <configured-model>` with stdin prompt
-delivery. Its plan records `AGENTCTL_DEVIN_ACP_APPROVE=1` with the grant and `0`
+delivery. ACP rejects invalid UTF-8 before admission; it never substitutes JSON replacement characters for task bytes. Its plan records `AGENTCTL_DEVIN_ACP_APPROVE=1` with the grant and `0`
 without it. Permission denials emit attention and prevent successful completion.
 Harnesses without a reviewed bypass flag are labeled
 `permissions: unsupported` and are not given an inferred flag. Expert `run`

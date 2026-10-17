@@ -174,11 +174,13 @@ type ProbeRequest struct {
 	// a message through a channel agentctl itself controls.
 	PromptDelivery string
 	PromptArgs     int
-	Profile        string
-	Endpoint       string
-	Workspace      string
-	Timeout        time.Duration
-	Fresh          bool
+	// PromptBytes records prompt presence without disclosing prompt content.
+	PromptBytes int
+	Profile     string
+	Endpoint    string
+	Workspace   string
+	Timeout     time.Duration
+	Fresh       bool
 }
 
 type ProbeResult struct {

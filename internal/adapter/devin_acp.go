@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // devinACP owns a single prompt turn on the child's newline-delimited ACP v1
@@ -327,4 +328,22 @@ func (c *devinACP) serve(p *processRecord, stdout io.Reader) {
 		}
 	}
 	fail("acp_transport_closed_before_result", 0)
+}
+
+// ValidateInvocationPrompt runs before native probing, journaling, or exec.
+// ACP text must retain exactly the bytes admitted by the caller's digest.
+func ValidateInvocationPrompt(adapterName string, argv []string, delivery string, prompt []byte) error {
+	if adapterName != "devin" || !isDevinACP(argv) {
+		return nil
+	}
+	if delivery != PromptDeliveryStdin {
+		return &AdapterError{Code: ErrCapabilityUnavailable, Message: "Devin ACP requires agentctl-managed stdin prompt delivery", Details: map[string]any{"diagnostic_code": "acp_prompt_delivery_required"}}
+	}
+	if len(prompt) == 0 {
+		return &AdapterError{Code: ErrUsage, Message: "Devin ACP requires a nonempty prompt", Details: map[string]any{"diagnostic_code": "acp_prompt_required"}}
+	}
+	if !utf8.Valid(prompt) {
+		return &AdapterError{Code: ErrUsage, Message: "Devin ACP prompt must be valid UTF-8", Details: map[string]any{"diagnostic_code": "acp_prompt_invalid_utf8"}}
+	}
+	return nil
 }

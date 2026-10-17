@@ -235,7 +235,17 @@ meaning.
 ### Devin
 
 Delegation launches `devin acp --model <configured-model>` as an ACP v1 client
-over newline-delimited JSON-RPC 2.0 stdio. The flow is `initialize` (version 1,
+over newline-delimited JSON-RPC 2.0 stdio. ACP requires a nonempty, valid UTF-8
+prompt delivered through agentctl-managed stdin. Both plans and launches reject
+argv/stream delivery or missing prompt evidence before any ACP server starts;
+`--no-store-result` and `--allow-missing-result` do not bypass this validation.
+Invalid UTF-8 fails with usage diagnostic `acp_prompt_invalid_utf8` before
+probing, execution admission, or JSON encoding, preserving the admitted bytes.
+Wrong delivery reports `acp_prompt_delivery_required`; an empty prompt reports
+`acp_prompt_required` (the CLI prompt loader can reject empty input earlier).
+Capability negotiation requires content-free delivery and byte-count evidence.
+The adapter also validates direct launches before exec. These checks do not
+change Multica dispatch or expert print-mode prompt handling. The flow is `initialize` (version 1,
 empty `clientCapabilities`) → `session/new` (`cwd`, `mcpServers: []`) →
 `session/prompt` (`sessionId`, `prompt: [{type: "text", text: ...}]`). The returned
 `sessionId` binds the execution's native session. `agent_message_chunk` text

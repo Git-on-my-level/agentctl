@@ -131,6 +131,13 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	if problem != nil {
 		return problem
 	}
+	var promptBytes []byte
+	if prompt != nil {
+		promptBytes = prompt.Bytes
+	}
+	if err := adapter.ValidateInvocationPrompt(runtime.Name(), opts.argv, promptDelivery, promptBytes); err != nil {
+		return mapAdapterError("invalid native prompt", err)
+	}
 	if runtime.Name() == "cursor" && cursorPlanMode(opts.argv) && !opts.allowUnreliableResult {
 		return output.NewError(output.CodeCapabilityUnavailable, "Cursor plan mode does not provide reliable one-shot terminal result semantics", false).
 			WithDetail("adapter", "cursor").
@@ -139,7 +146,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			WithActions(output.NextAction{Label: "Use default Cursor agent mode", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"omit Cursor --plan and --mode plan"}})
 	}
 	if !opts.allowMissingResult && !opts.noStoreResult {
-		invocation := adapter.NegotiateInvocation(runtime.Manifest(), opts.argv, adapter.CapabilityResultContent)
+		invocation := adapter.NegotiateInvocation(runtime.Manifest(), opts.argv, adapter.CapabilityResultContent, adapter.InvocationPrompt{Delivery: promptDelivery, Bytes: len(promptBytes)})
 		if problem := requireRunCapability(adapter.ProbeResult{Capabilities: []adapter.Capability{invocation}}, adapter.CapabilityResultContent); problem != nil {
 			problem.Message = "exact invocation cannot reliably return result content"
 			return problem.WithDetail("adapter", runtime.Name())
@@ -151,7 +158,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		operationCtx, operationCancel = context.WithTimeout(ctx, opts.timeout)
 		defer operationCancel()
 	}
-	probe, err := probeVersion(operationCtx, runtime, adapter.ProbeRequest{Executable: opts.argv[0], Argv: opts.argv, PromptDelivery: promptDelivery, PromptArgs: promptArgs, Profile: profileName})
+	probe, err := probeVersion(operationCtx, runtime, adapter.ProbeRequest{Executable: opts.argv[0], Argv: opts.argv, PromptDelivery: promptDelivery, PromptArgs: promptArgs, PromptBytes: len(promptBytes), Profile: profileName})
 	if err != nil {
 		return mapAdapterError("adapter probe failed", err)
 	}

@@ -639,11 +639,11 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 			capabilities = append(capabilities, NegotiateResume(a.config.Manifest, req.Argv, req.PromptDelivery, req.PromptArgs))
 			continue
 		}
-		capabilities = append(capabilities, NegotiateInvocation(a.config.Manifest, req.Argv, declaration.Name))
+		capabilities = append(capabilities, NegotiateInvocation(a.config.Manifest, req.Argv, declaration.Name, InvocationPrompt{Delivery: req.PromptDelivery, Bytes: req.PromptBytes}))
 	}
 	invocationFingerprint := ""
 	if len(req.Argv) != 0 {
-		invocationFingerprint = Fingerprint(req.Argv...)
+		invocationFingerprint = Fingerprint(append(append([]string(nil), req.Argv...), req.PromptDelivery, strconv.Itoa(req.PromptBytes))...)
 	}
 	scope := Fingerprint(a.Name(), backendVersion, digest, req.Profile, req.Endpoint, req.Workspace, invocationFingerprint)
 	return ProbeResult{AdapterVersion: a.config.Manifest.AdapterVersion, BackendVersion: backendVersion, Executable: resolved, ExecutableDigest: digest, ScopeFingerprint: scope, ProbedAt: started, FreshFor: time.Minute, ReadOnly: true, Capabilities: capabilities}, nil
@@ -745,6 +745,9 @@ func executableDigest(path string) (string, error) {
 func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, error) {
 	if len(req.Argv) == 0 || req.Argv[0] == "" {
 		return LaunchResult{}, invalidRequest("launch requires a non-empty argv")
+	}
+	if err := ValidateInvocationPrompt(a.Name(), req.Argv, req.PromptDelivery, req.Stdin); err != nil {
+		return LaunchResult{}, err
 	}
 	if req.Context != nil && req.Context.Required && !a.config.Manifest.ContextInjection.Guaranteed {
 		return LaunchResult{}, capabilityError(CapabilityContextInjection, "required context cannot be guaranteed by this native adapter")
