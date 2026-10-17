@@ -37,7 +37,8 @@
       ],
       "properties": {
         "harness": {
-          "description": "Native harness constraint, including opencode. OpenCode recipes require an exact provider/model ID; explicit speed, effort, and read_only access are unsupported.",
+          "description": "Native harness constraint, including openclaw for embedded local agent turns and opencode. OpenClaw and OpenCode recipes resolve the exact configured model; OpenCode requires an exact provider/model ID, and explicit speed, effort, and read_only access are unsupported for it.",
+          "examples": ["openclaw"],
           "type": "string",
           "minLength": 1,
           "maxLength": 256,

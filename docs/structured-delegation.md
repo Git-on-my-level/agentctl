@@ -245,3 +245,17 @@ answer requires completed text from the final step, a final `step_finish` with
 `part.reason: "stop"`, and exit 0. Missing/non-stop finishes fail rather than
 returning partial text. Continue and steer remain unavailable; Multica
 structured delegation remains rejected under the existing authority contract.
+
+### OpenClaw local delegation
+
+A configured `openclaw` preference resolves to
+`openclaw agent --local --agent main --model provider/model --json -m <prompt>`.
+The native adapter supplies a fresh session key unless one is explicit. Only
+nonempty `payloads[].text` from a successful process is result content; nonzero
+exits, error envelopes, and empty answers fail. Fast service speed and read-only
+access are refused; reviewed thinking levels are low, medium, and high. Coding
+permission handling uses the common recipe contract with no inferred bypass flag.
+A plan and version probe do not verify provider authentication. Attach, resume,
+and steering have no verified route. Multica delegation remains unsupported;
+explicit dispatch still requires an independently advertised Multica runtime and
+retains its lifecycle-only contract. No local adapter proves remote availability.

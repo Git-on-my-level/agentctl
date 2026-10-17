@@ -117,9 +117,10 @@ agentctl run -- codex exec --json -m gpt-5.6-sol "task"
 ```
 
 For known executable names, `run` infers the adapter (`codex`, `cursor-agent`,
-`claude`, `omp`, `opencode`, `zcode`, and `devin`). `--adapter <name>` remains an explicit override when an
+`claude`, `devin`, `omp`, `openclaw`, `opencode`, and `zcode`). `--adapter <name>` remains an explicit override when an
 executable is ambiguous or the caller has a reviewed authority mapping. The
-argv after `--` is passed unchanged in either case.
+argv after `--` is preserved through admission; OpenClaw adds an isolated
+local session key at launch.
 
 When the caller explicitly selects `run --prompt-file` or `--prompt-stdin`,
 prompt transport is a separate reviewed operation. `--prompt-delivery argv`
@@ -140,7 +141,8 @@ Capability negotiation is invocation-scoped. Backend probing establishes what
 an installed adapter can support; the exact argv establishes what this launch
 actually supports. When stored result content is required, Codex and ZCode require
 `--json`, Cursor and Claude require `--output-format stream-json`, OMP
-requires `--mode json`, OpenCode requires `run --format json`, and Devin accepts ACP (`devin acp`) or expert print mode (`-p`). A missing or conflicting mode fails before dependency
+requires `--mode json`, OpenCode requires `run --format json`, OpenClaw requires
+`agent --local --json -m <nonempty prompt>`, and Devin accepts ACP (`devin acp`) or expert print mode (`-p`). A missing or conflicting mode fails before dependency
 probing, journal creation, or child launch. agentctl reports the required mode
 but never silently rewrites the caller's argv.
 
@@ -341,6 +343,30 @@ Protocol references: [initialization](https://agentclientprotocol.com/protocol/v
 - Keep provider/model routing in OMP.
 - Treat OMP statistics commands as potentially mutating local caches and do not
   use them for a read-only probe unless explicitly documented.
+
+### OpenClaw
+
+OpenClaw 2026.6.10 exposes a gateway-free one-shot command:
+`openclaw agent --local --agent main --model provider/model --json -m <prompt>`.
+Admission consumes option values and requires a nonblank `-m`/`--message`.
+Unknown options, duplicate value options, and positional or delimited prompt
+forms are refused before launch. Flag-looking option values cannot supply
+`--local` or `--json`.
+
+The CLI requires a session selector; agentctl adds a unique
+`--session-key agent:main:agentctl-…` per local process so independent runs do
+not share the default transcript. The response is one JSON object with
+`payloads[].text`. A nonzero process exit, an error envelope, or an empty text
+payload fails the run. The CLI's `--deliver` flag is omitted, so no channel
+delivery occurs. `openclaw acp` requires a gateway and is not used.
+
+Launch, same-process result and result content, and cancellation of the owned
+process are supported. Snapshot and events expose only process-local
+observations. Attach and resume are unavailable because agentctl has no
+verified continuation binding to a prior local run. Context injection remains
+degraded because OpenClaw does not guarantee delivery of agentctl's environment
+handle to the model. A version probe establishes CLI presence, not provider
+authentication; a local run can fail with an OAuth refresh error.
 
 ### Multica (optional)
 

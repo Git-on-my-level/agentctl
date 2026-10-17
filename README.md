@@ -55,6 +55,7 @@ sessions.
 | Devin | `devin` |
 | ZCode | `zcode` |
 | OMP | `omp` |
+| OpenClaw | `openclaw` |
 | OpenCode | `opencode` |
 | Any CLI with structured output | configured |
 

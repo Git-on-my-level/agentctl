@@ -44,6 +44,7 @@ func TestMatchModelSelectorsDoNotConsumeOrdinaryProse(t *testing.T) {
 		want          []string
 		wantUnmatched []string
 	}{
+		{name: "openclaw", query: "openclaw", want: []string{"openclaw/"}},
 		{name: "claude code", query: "claude code on m5", want: []string{"claude/"}, wantUnmatched: []string{"code"}},
 		{name: "open a PR", query: "open a PR", want: nil, wantUnmatched: []string{"open", "pr"}},
 		{name: "cursor refines to grok", query: "cursor grok", want: []string{"cursor/cursor-grok-4.6-high"}},
