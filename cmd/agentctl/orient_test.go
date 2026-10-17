@@ -110,6 +110,104 @@ func TestInspectOrientConfigurationUsesStaticExecutableHealth(t *testing.T) {
 	}
 }
 
+func TestDiscoveredOrientAdaptersCoverEveryKnownNativeAdapter(t *testing.T) {
+	installed := map[string]string{
+		"claude":       "/fake/bin/claude",
+		"codex":        "/fake/bin/codex",
+		"cursor-agent": "/fake/bin/cursor-agent",
+		"devin":        "/fake/bin/devin",
+		"omp":          "/fake/bin/omp",
+		"zcode":        "/fake/bin/zcode",
+	}
+	deps := orientDependencies{lookPath: func(name string) (string, error) {
+		if path, ok := installed[name]; ok {
+			return path, nil
+		}
+		return "", errors.New("executable not found")
+	}}
+	want := []struct{ name, executable string }{
+		{"claude", "claude"}, {"codex", "codex"}, {"cursor", "cursor-agent"}, {"devin", "devin"}, {"omp", "omp"}, {"zcode", "zcode"},
+	}
+	adapters := discoveredOrientAdapters(deps)
+	if len(adapters) != len(want) {
+		t.Fatalf("adapters=%+v", adapters)
+	}
+	for i, item := range want {
+		got := adapters[i]
+		if got.Name != item.name || got.Authority != "native" || got.ConfigurationStatus != "discovered" || got.Health != "healthy" || got.HealthBasis != "executable_present" || got.Executable != installed[item.executable] {
+			t.Fatalf("adapter %d = %+v", i, got)
+		}
+	}
+
+	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
+	_, problem := a.adapterForIntrospection("agentctl-test-unknown-adapter", common{})
+	if problem == nil {
+		t.Fatal("adapterForIntrospection resolved an unknown adapter")
+	}
+	knownAdapters, ok := problem.Details["known_adapters"].([]string)
+	if !ok {
+		t.Fatalf("known_adapters detail missing or not []string: %#v", problem.Details["known_adapters"])
+	}
+	discovered := make(map[string]orientAdapter, len(adapters))
+	for _, value := range adapters {
+		discovered[value.Name] = value
+	}
+	for _, name := range knownAdapters {
+		if name == "generic-process" || name == "multica" {
+			continue
+		}
+		got, found := discovered[name]
+		if !found || got.Health != "healthy" || got.HealthBasis != "executable_present" {
+			t.Fatalf("capabilities-known native adapter %q missing from healthy orient discovery: %+v", name, got)
+		}
+	}
+
+	delete(installed, "devin")
+	delete(installed, "zcode")
+	adapters = discoveredOrientAdapters(deps)
+	for i, item := range want {
+		got := adapters[i]
+		if item.name == "devin" || item.name == "zcode" {
+			if got.Name != item.name || got.ConfigurationStatus != "unconfigured" || got.Health != "unconfigured" || got.Reason != "executable_not_discovered" || got.Executable != "" {
+				t.Fatalf("missing executable did not stay unconfigured: %+v", got)
+			}
+			continue
+		}
+		if got.Health != "healthy" {
+			t.Fatalf("installed executable lost health: %+v", got)
+		}
+	}
+
+	for _, item := range want {
+		value, problem := a.adapterForIntrospection(item.name, common{})
+		if problem != nil || value == nil {
+			t.Fatalf("adapterForIntrospection(%q) = %v, %v", item.name, value, problem)
+		}
+	}
+}
+
+func TestInspectOrientConfigurationConfiguredAdaptersOverrideDiscovery(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "zcode")
+	if err := os.WriteFile(executable, []byte("fixture"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "config.json")
+	cfg := `{"schema_version":1,"default_profile":"fleet","profiles":{"fleet":{"adapters":{"zcode":{"executable":` + strconvQuote(executable) + `}}}}}`
+	if err := os.WriteFile(configPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deps := defaultOrientDependencies()
+	deps.lookPath = func(string) (string, error) { return "", errors.New("no executables on PATH") }
+	_, authorities, adapters := inspectOrientConfiguration(common{configPath: configPath}, deps)
+	if len(adapters) != 1 || adapters[0].Name != "zcode" || adapters[0].ConfigurationStatus != "configured" || adapters[0].Health != "healthy" {
+		t.Fatalf("configured adapters did not override discovery: %+v", adapters)
+	}
+	if len(authorities) != 2 || authorities[0].Kind != "native" || authorities[0].Health != "healthy" {
+		t.Fatalf("authorities=%+v", authorities)
+	}
+}
+
 func strconvQuote(value string) string {
 	data, _ := json.Marshal(value)
 	return string(data)
