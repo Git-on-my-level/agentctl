@@ -351,7 +351,10 @@ OpenClaw 2026.6.10 exposes a gateway-free one-shot command:
 Admission consumes option values and requires a nonblank `-m`/`--message`.
 Unknown options, duplicate value options, and positional or delimited prompt
 forms are refused before launch. Flag-looking option values cannot supply
-`--local` or `--json`.
+`--local` or `--json`. Prompts beginning with `-` remain message option
+values; agentctl does not insert a positional delimiter before them. Nonblank
+payload text retains its original whitespace; multiple text payloads are joined
+with two newlines, and whitespace-only payloads are skipped.
 
 The CLI requires a session selector; agentctl adds a unique
 `--session-key agent:main:agentctl-…` per local process so independent runs do

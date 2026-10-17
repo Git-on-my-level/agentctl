@@ -198,7 +198,9 @@ service speed remains unsupported.
 For an explicit OpenClaw preference, use the `openclaw` adapter with a
 `provider/model` id. Its reviewed recipe runs `agent --local --json`, uses
 `--agent main` as the required session selector, and supplies the prompt with
-`-m`. The local process gets a fresh session key at launch. A successful
+`-m`, including prompts beginning with `-` without an inserted `--`. Nonblank
+answer payloads preserve whitespace and are joined with two newlines; blank
+payloads are skipped. The local process gets a fresh session key at launch. A successful
 version probe does not prove provider authentication; inspect the run result
 for CLI errors. Gateway-backed `acp` is outside this adapter.
 

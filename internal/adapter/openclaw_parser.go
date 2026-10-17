@@ -51,7 +51,7 @@ func (openclawParser) Parse(raw []byte, stderr bool) parsedObservation {
 				obs.Error = safeFailureDiagnostic(firstNonEmpty(firstString(payload, "text"), "OpenClaw agent returned an error payload"))
 				return obs
 			}
-			if part := strings.TrimSpace(firstString(payload, "text")); part != "" {
+			if part := firstString(payload, "text"); strings.TrimSpace(part) != "" {
 				parts = append(parts, part)
 			}
 		}
@@ -64,7 +64,7 @@ func (openclawParser) Parse(raw []byte, stderr bool) parsedObservation {
 		return obs
 	}
 	delete(obs.Data, "failure_structured")
-	obs.Content = boundedUTF8(answer, 1<<20)
+	obs.Content = boundedUTF8Exact(answer, 1<<20)
 	obs.ContentType = "text/plain"
 	obs.ContentSource = "assistant_terminal_result"
 	obs.ContentTruncated = len(answer) > len(obs.Content)

@@ -250,6 +250,9 @@ structured delegation remains rejected under the existing authority contract.
 
 A configured `openclaw` preference resolves to
 `openclaw agent --local --agent main --model provider/model --json -m <prompt>`.
+Dash-leading prompts remain the exact `-m` value without an inserted `--`.
+Nonblank answer payloads retain their whitespace and are joined with two newlines;
+whitespace-only payloads are skipped.
 The native adapter supplies a fresh session key unless one is explicit. Only
 nonempty `payloads[].text` from a successful process is result content; nonzero
 exits, error envelopes, and empty answers fail. Fast service speed and read-only

@@ -12,6 +12,8 @@ func TestOpenClawParser(t *testing.T) {
 		name, raw, want, state string
 	}{
 		{"answer", `{"payloads":[{"text":"First"},{"text":"Second"}],"meta":{"sessionId":"session-1"}}`, "First\n\nSecond", "completed"},
+		{"whitespace preserved", `{"payloads":[{"text":"  first\n"},{"text":" \t "},{"text":"\tsecond  \n"}]}`, "  first\n\n\n\tsecond  \n", "completed"},
+		{"whitespace only", `{"payloads":[{"text":" \n\t "}]}`, "", "failed"},
 		{"empty", `{"payloads":[]}`, "", "failed"},
 		{"error", `{"payloads":[{"text":"bad token","isError":true}]}`, "", "failed"},
 		{"in_flight", `{"status":"in_flight","payloads":[]}`, "", "failed"},
