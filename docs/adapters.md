@@ -239,7 +239,11 @@ over newline-delimited JSON-RPC 2.0 stdio. The flow is `initialize` (version 1,
 empty `clientCapabilities`) → `session/new` (`cwd`, `mcpServers: []`) →
 `session/prompt` (`sessionId`, `prompt: [{type: "text", text: ...}]`). The returned
 `sessionId` binds the execution's native session. `agent_message_chunk` text
-forms the result; message and tool updates emit only bounded phase metadata.
+forms the result. A `tool_call` or `tool_call_update` marks a boundary: the
+next assistant message chunk discards earlier narration, and subsequent chunks
+of that message are joined. A trailing tool update alone does not erase the
+buffer. This uses tool activity as the message boundary, without assuming
+provider-specific message IDs. Message and tool updates emit only bounded phase metadata.
 Prompts, replayed history, tool input/output, and raw RPC errors never enter the
 journal. The native session store remains Devin's authority.
 
@@ -256,8 +260,11 @@ shutdown bound prevents unreaped children.
 `AGENTCTL_DEVIN_ACP_APPROVE=1` environment entry (`0` without the grant).
 Only an explicit launch environment entry counts; ambient values do not grant
 permissions. Permission requests for the current session select the first
-`allow_once` option only with that grant. Otherwise the response is the ACP
-`cancelled` outcome, an attention event is emitted, and the turn cannot succeed.
+`allow_once` option only with that grant. Otherwise the client selects the first
+offered `reject_once` option, emits attention, and fails the turn with
+`acp_permission_denied`. If no reject option is offered, it falls back to the
+ACP `cancelled` outcome. An actually client-cancelled turn always receives the
+`cancelled` outcome, even when reject options exist.
 No persistent `allow_always` grant is inferred. File-system and terminal client
 services are not advertised; all unsupported client requests receive JSON-RPC
 `-32601`, without accessing files. Read-only access remains refused because ACP

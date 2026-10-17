@@ -7,9 +7,26 @@ def send(v):
     print(json.dumps(dict(jsonrpc='2.0', **v)), flush=True)
 def result(i,v): send(dict(id=i,result=v))
 def update(text): send(dict(method='session/update',params=dict(sessionId=sid,update=dict(sessionUpdate='agent_message_chunk',content=dict(type='text',text=text)))))
+def tool(kind='tool_call'):
+    send(dict(method='session/update',params=dict(sessionId=sid,update=dict(sessionUpdate=kind,toolCallId='private-call-id',title='private tool text',rawInput={'private':'input'},content=[dict(type='content',content=dict(type='text',text='PRIVATE TOOL OUTPUT'))]))))
+def permission():
+    options=[dict(optionId='yes',kind='allow_once',name='Allow once')]
+    if mode!='permission-no-reject': options.append(dict(optionId='no',kind='reject_once',name='Reject once'))
+    if mode=='permission-no-allow': options=options[1:]
+    send(dict(id='permission-1',method='session/request_permission',params=dict(sessionId='wrong-session' if mode=='permission-wrong-session' else sid,toolCall=dict(toolCallId='tool-1'),options=options)))
 def finish():
+    if mode=='interleaved':
+        update('Checking '); update('now.')
+        tool()
+        update('Still checking.')
+        tool('tool_call_update')
+        update('FILES='); update('4')
+        # A trailing tool update without a subsequent message must not erase it.
+        tool('tool_call_update')
+        result(prompt_id,dict(stopReason='end_turn'))
+        return
     update('Hello '); update('world')
-    send(dict(method='session/update',params=dict(sessionId=sid,update=dict(sessionUpdate='tool_call',toolCallId='private-call-id',title='private tool text',rawInput={'private':'input'},content=[dict(type='content',content=dict(type='text',text='PRIVATE TOOL OUTPUT'))]))))
+    tool()
     if mode == 'rpc-error': send(dict(id=prompt_id,error=dict(code=-32000,message='PRIVATE RPC ERROR')))
     else: result(prompt_id,dict(stopReason=mode if mode in ['refusal','max_tokens','max_turn_requests','cancelled','future_reason'] else 'end_turn'))
 for line in sys.stdin:
@@ -30,21 +47,24 @@ for line in sys.stdin:
         prompt_id=i
         assert v['params']['sessionId']==sid
         assert v['params']['prompt'][0]['type']=='text'
-        if mode in ['cancel','cancel-hang']: continue
-        if mode in ['permission','fs']:
-            if mode=='permission': send(dict(id='permission-1',method='session/request_permission',params=dict(sessionId=sid,toolCall=dict(toolCallId='tool-1'),options=[dict(optionId='yes',kind='allow_once',name='Allow once')])) )
-            else: send(dict(id='fs-1',method='fs/read_text_file',params=dict(sessionId=sid,path='/secret')))
+        if mode in ['cancel','cancel-hang','cancel-permission']: continue
+        if mode.startswith('permission'): permission()
+        elif mode=='fs': send(dict(id='fs-1',method='fs/read_text_file',params=dict(sessionId=sid,path='/secret')))
         else: finish()
     elif method=='session/cancel':
         if mode=='cancel-hang': continue
         assert 'id' not in v
+        if mode=='cancel-permission':
+            permission()
+            continue
         result(prompt_id,dict(stopReason='cancelled'))
     elif i=='permission-1':
         outcome=v['result']['outcome']
-        expected=os.environ.get('ACP_EXPECT_PERMISSION','cancelled')
+        expected='cancelled' if mode in ['permission-no-reject','cancel-permission'] else os.environ.get('ACP_EXPECT_PERMISSION','selected')
         assert outcome['outcome']==expected, outcome
-        if expected=='selected': assert outcome['optionId']=='yes'
-        finish()
+        if expected=='selected': assert outcome['optionId']==os.environ.get('ACP_EXPECT_OPTION','no'), outcome
+        if mode=='cancel-permission': result(prompt_id,dict(stopReason='cancelled'))
+        else: finish()
     elif i=='fs-1':
         assert v['error']['code']==-32601
         finish()

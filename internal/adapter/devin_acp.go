@@ -111,6 +111,7 @@ func (c *devinACP) serve(p *processRecord, stdout io.Reader) {
 	loading := c.session != ""
 	denied := false
 	var answer strings.Builder
+	toolActivitySinceMessage := false
 	total := 0
 	for scanner.Scan() {
 		total += len(scanner.Bytes())
@@ -154,6 +155,16 @@ func (c *devinACP) serve(p *processRecord, stdout io.Reader) {
 						outcome = map[string]any{"outcome": "selected", "optionId": option}
 					} else {
 						denied = true
+						// An ordinary denial selects reject_once. Only actual
+						// cancellation or an absent reject option uses cancelled.
+						if !cancelled {
+							for _, o := range params.Options {
+								if o.Kind == "reject_once" && o.ID != "" {
+									outcome = map[string]any{"outcome": "selected", "optionId": o.ID}
+									break
+								}
+							}
+						}
 						p.ingestObservation(parsedObservation{Kind: "attention", SourceState: "acp.permission_denied", State: StateAttention, Data: map[string]any{"attention_kind": "permission", "diagnostic_code": "acp_permission_denied"}})
 					}
 					if err := c.send(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": map[string]any{"outcome": outcome}}); err != nil {
@@ -195,11 +206,19 @@ func (c *devinACP) serve(p *processRecord, stdout io.Reader) {
 						fail("acp_invalid_message_chunk", 0)
 						return
 					}
+					// Tool activity separates interim narration from the next
+					// assistant message. Keep split chunks of that message,
+					// resetting only when a later message actually starts.
+					if toolActivitySinceMessage {
+						answer.Reset()
+						toolActivitySinceMessage = false
+					}
 					if content.Type == "text" {
 						answer.WriteString(content.Text)
 					}
 					p.ingestObservation(parsedObservation{Kind: "progress", SourceState: "acp.agent_message", State: StateRunning, Data: map[string]any{"phase": "assistant"}})
 				case "tool_call", "tool_call_update":
+					toolActivitySinceMessage = true
 					p.ingestObservation(parsedObservation{Kind: "progress", SourceState: "acp.tool_call", State: StateRunning, Data: map[string]any{"phase": "tool"}})
 				}
 			}

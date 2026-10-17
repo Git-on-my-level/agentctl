@@ -29,7 +29,10 @@ func acpFixture(t *testing.T, mode string, grant bool) (Adapter, LaunchRequest) 
 	}
 	env := []string{"ACP_FIXTURE_MODE=" + mode, "AGENTCTL_DEVIN_ACP_APPROVE=0"}
 	if grant {
-		env = append(env, "AGENTCTL_DEVIN_ACP_APPROVE=1", "ACP_EXPECT_PERMISSION=selected")
+		env = append(env, "AGENTCTL_DEVIN_ACP_APPROVE=1", "ACP_EXPECT_PERMISSION=selected", "ACP_EXPECT_OPTION=yes")
+	}
+	if mode == "permission-wrong-session" || mode == "permission-no-allow" {
+		env = append(env, "ACP_EXPECT_OPTION=no")
 	}
 	return NewDevin(), LaunchRequest{Argv: []string{wrapper, "acp"}, Stdin: []byte("PRIVATE PROMPT"), PromptDelivery: PromptDeliveryStdin, Env: env, Timeout: 5 * time.Second}
 }
@@ -44,6 +47,9 @@ func TestDevinACP(t *testing.T) {
 		{"eof", false, StateFailed, "acp_transport_closed_before_result"},
 		{"malformed", false, StateFailed, "acp_invalid_message"},
 		{"normal", false, StateCompleted, ""}, {"permission", true, StateCompleted, ""}, {"permission", false, StateFailed, "acp_permission_denied"},
+		{"permission-no-reject", false, StateFailed, "acp_permission_denied"},
+		{"permission-wrong-session", true, StateFailed, "acp_permission_denied"},
+		{"permission-no-allow", true, StateFailed, "acp_permission_denied"},
 		{"fs", false, StateCompleted, ""}, {"refusal", false, StateFailed, "acp_refusal"}, {"max_tokens", false, StateFailed, "acp_max_tokens"},
 		{"max_turn_requests", false, StateFailed, "acp_max_turn_requests"}, {"cancelled", false, StateCancelled, "acp_cancelled"},
 		{"future_reason", false, StateFailed, "acp_unknown_stop_reason"}, {"rpc-error", false, StateFailed, "acp_rpc_error"},
@@ -71,6 +77,9 @@ func TestDevinACP(t *testing.T) {
 				t.Fatal(err)
 			}
 			data, _ := json.Marshal(events)
+			if tc.diagnostic == "acp_permission_denied" && !strings.Contains(string(data), `"kind":"attention"`) {
+				t.Fatalf("permission denial missing attention: %s", data)
+			}
 			for _, private := range []string{"PRIVATE", "Hello", "world", "private tool text", "private-call-id"} {
 				if strings.Contains(string(data), private) {
 					t.Fatalf("event leaked %s", private)
@@ -99,21 +108,25 @@ func TestDevinACPLoad(t *testing.T) {
 	}
 }
 func TestDevinACPCancel(t *testing.T) {
-	a, req := acpFixture(t, "cancel", false)
-	req.StartOnly = true
-	got, err := a.Launch(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := a.Cancel(context.Background(), CancelRequest{Ref: got.Session.Ref, Grace: time.Second}); err != nil {
-		t.Fatal(err)
-	}
-	result, err := a.Result(context.Background(), ResultRequest{Ref: got.Session.Ref})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.State != StateCancelled || result.Data["diagnostic_code"] != "acp_cancelled" {
-		t.Fatalf("result=%+v", result)
+	for _, mode := range []string{"cancel", "cancel-permission"} {
+		t.Run(mode, func(t *testing.T) {
+			a, req := acpFixture(t, mode, false)
+			req.StartOnly = true
+			got, err := a.Launch(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Cancel(context.Background(), CancelRequest{Ref: got.Session.Ref, Grace: time.Second}); err != nil {
+				t.Fatal(err)
+			}
+			result, err := a.Result(context.Background(), ResultRequest{Ref: got.Session.Ref})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.State != StateCancelled || result.Data["diagnostic_code"] != "acp_cancelled" {
+				t.Fatalf("result=%+v", result)
+			}
+		})
 	}
 }
 
@@ -176,5 +189,19 @@ func TestDevinACPCancelEscalation(t *testing.T) {
 	}
 	if result.State != StateCancelled || result.Success {
 		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestDevinACPFinalMessageAfterToolActivity(t *testing.T) {
+	a, req := acpFixture(t, "interleaved", false)
+	got, err := a.Launch(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || !got.Result.Success || got.Result.Content != "FILES=4" || got.Result.Summary != "FILES=4" {
+		t.Fatalf("result=%+v", got.Result)
+	}
+	if got.Result.Data["result_content_source"] != "assistant_terminal_result" {
+		t.Fatalf("source=%v", got.Result.Data)
 	}
 }

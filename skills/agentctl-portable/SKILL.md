@@ -154,8 +154,10 @@ Codex `--dangerously-bypass-approvals-and-sandbox`, and Devin ACP permission app
 Cursor `--mode ask` and Codex `--sandbox read-only`; that access never
 receives the bypass flags. Devin refuses `read_only`: ACP read-only enforcement is unverified.
 Devin delegation uses `devin acp`; its frozen `AGENTCTL_DEVIN_ACP_APPROVE`
-entry controls one-operation approvals. Missing grants reject permission
-requests and surface attention. Completed Devin ACP turns can continue only
+entry controls one-operation approvals. Denials select an offered `reject_once`
+option and surface attention; `cancelled` is reserved for client cancellation
+or a denial with no reject option. The stored answer keeps the final assistant
+message: the next message after tool activity replaces earlier narration. Completed Devin ACP turns can continue only
 when the server advertises `loadSession`; print mode cannot continue. Devin
 steering remains unavailable until a real cancel plus reprompt route is verified.
 Harnesses without a reviewed bypass flag report `permissions: unsupported`

@@ -36,6 +36,7 @@ func TestDevinACPDelegateContinueAndReplay(t *testing.T) {
 	f.selectRequest(t, `{"family":"fixture"}`)
 	t.Setenv("ACP_FIXTURE_MODE", "permission")
 	t.Setenv("ACP_EXPECT_PERMISSION", "selected")
+	t.Setenv("ACP_EXPECT_OPTION", "yes")
 	code, out := f.invoke("PRIVATE PROMPT", "--wait")
 	if code != 0 || !strings.Contains(out, "Hello world") {
 		t.Fatalf("delegate exit=%d %s", code, out)
