@@ -226,7 +226,43 @@
       "type": "object"
     },
     "native": {
-      "type": "object"
+      "type": "object",
+      "description": "Native launch plan. Devin uses ACP stdio; permission handling is controlled by the explicit AGENTCTL_DEVIN_ACP_APPROVE environment entry, never ambient values.",
+      "properties": {
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Prompt-free argv; Devin starts acp --model <configured-model>."
+        },
+        "env": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Reviewed non-secret launch environment. Devin ACP uses AGENTCTL_DEVIN_ACP_APPROVE=0 or =1 from the coding grant."
+        },
+        "prompt_delivery": {
+          "enum": [
+            "argv",
+            "stdin",
+            "stream"
+          ],
+          "description": "Devin ACP requires a nonempty valid UTF-8 prompt through managed stdin, validated before probing, admission, or launch. Plans reject missing prompt evidence or argv/stream delivery. The adapter encodes the unchanged text in session/prompt."
+        },
+        "permissions": {
+          "enum": [
+            "full",
+            "constrained",
+            "read_only",
+            "unsupported"
+          ]
+        }
+      }
     },
     "outcome": {
       "$ref": "outcome.schema.json"

@@ -2,21 +2,7 @@ package launchrecipe
 
 import "strings"
 
-// Devin print mode takes --model and -p. The reviewed preferred table owns
-// exact model selection; native --model accepts a model argument without a
-// source-code version allowlist. Fast and priority variants are refused.
-// This does not attest account availability or native model identity.
-// Print mode fails in an untrusted directory unless workspace trust
-// is disabled, so the recipe passes that flag. The prompt is a positional
-// argument after --.
-//
-// Print mode cannot answer an approval prompt: a tool call
-// the mode does not auto-approve is rejected, its sibling calls are canceled,
-// and devin exits 0 with only the text emitted so far. Unattended coding
-// therefore needs --permission-mode dangerous. Read-only access is refused
-// before this point: auto blocks writes but ends the run at the first
-// rejected call, so a truncated answer would be recorded as success. "smart"
-// is not offered by every model (Fusion rejects it), so it is never selected.
+// Devin delegates through ACP. Model selection remains configuration-owned.
 func buildDevin(executable, model, speed, effort, access string, grant bool) (Recipe, error) {
 	exe, err := resolveExecutable("devin", executable)
 	if err != nil {
@@ -31,12 +17,12 @@ func buildDevin(executable, model, speed, effort, access string, grant bool) (Re
 	if err := devinModel(model); err != nil {
 		return Recipe{}, err
 	}
-	argv := []string{exe, "--model", model, "-p", "--respect-workspace-trust", "false"}
+	argv := []string{exe, "acp", "--model", model}
+	env := []string{"AGENTCTL_DEVIN_ACP_APPROVE=0"}
 	if applyCodingPermissions(access, grant) {
-		argv = append(argv, "--permission-mode", "dangerous")
+		env[0] = "AGENTCTL_DEVIN_ACP_APPROVE=1"
 	}
-	argv = append(argv, "--")
-	return Recipe{Argv: argv, PromptDelivery: PromptDeliveryArgv}, nil
+	return Recipe{Argv: argv, Env: env, PromptDelivery: PromptDeliveryStdin}, nil
 }
 
 func devinModel(model string) error {

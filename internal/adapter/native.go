@@ -98,6 +98,7 @@ type processRecord struct {
 	events           []Event
 	result           *Result
 	finalContent     string
+	acp              *devinACP
 	sawDevinPrint    bool
 	devinPrintAnswer string
 	contentType      string
@@ -605,8 +606,10 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 		cmd := exec.CommandContext(probeCtx, probeArgs[0], probeArgs[1:]...)
 		cmd.Env = WithoutCallerDeclaration(os.Environ())
 		var out bytes.Buffer
+		// os/exec serializes capture when both streams share the same writer.
+		// Separate wrappers around out would race on the buffer and its limit.
 		cmd.Stdout = &limitedWriter{w: &out, n: 8192}
-		cmd.Stderr = &limitedWriter{w: &out, n: 8192}
+		cmd.Stderr = cmd.Stdout
 		probeStarted := time.Now()
 		cmdErr := cmd.Run()
 		if cmdErr != nil {
@@ -638,11 +641,11 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 			capabilities = append(capabilities, NegotiateResume(a.config.Manifest, req.Argv, req.PromptDelivery, req.PromptArgs))
 			continue
 		}
-		capabilities = append(capabilities, NegotiateInvocation(a.config.Manifest, req.Argv, declaration.Name))
+		capabilities = append(capabilities, NegotiateInvocation(a.config.Manifest, req.Argv, declaration.Name, InvocationPrompt{Delivery: req.PromptDelivery, Bytes: req.PromptBytes}))
 	}
 	invocationFingerprint := ""
 	if len(req.Argv) != 0 {
-		invocationFingerprint = Fingerprint(req.Argv...)
+		invocationFingerprint = Fingerprint(append(append([]string(nil), req.Argv...), req.PromptDelivery, strconv.Itoa(req.PromptBytes))...)
 	}
 	scope := Fingerprint(a.Name(), backendVersion, digest, req.Profile, req.Endpoint, req.Workspace, invocationFingerprint)
 	return ProbeResult{AdapterVersion: a.config.Manifest.AdapterVersion, BackendVersion: backendVersion, Executable: resolved, ExecutableDigest: digest, ScopeFingerprint: scope, ProbedAt: started, FreshFor: time.Minute, ReadOnly: true, Capabilities: capabilities}, nil
@@ -745,6 +748,9 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	if len(req.Argv) == 0 || req.Argv[0] == "" {
 		return LaunchResult{}, invalidRequest("launch requires a non-empty argv")
 	}
+	if err := ValidateInvocationPrompt(a.Name(), req.Argv, req.PromptDelivery, req.Stdin); err != nil {
+		return LaunchResult{}, err
+	}
 	if req.Context != nil && req.Context.Required && !a.config.Manifest.ContextInjection.Guaranteed {
 		return LaunchResult{}, capabilityError(CapabilityContextInjection, "required context cannot be guaranteed by this native adapter")
 	}
@@ -772,6 +778,11 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	if err := runCtx.Err(); err != nil {
 		return LaunchResult{}, nativeContextError(runCtx, "native process launch")
 	}
+	var acp *devinACP
+	if a.Name() == "devin" && isDevinACP(argv) {
+		acp = newDevinACP(req, argv)
+		argv = withoutSessionSelection(argv, devinACPSessionFlag)
+	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	if req.Cwd != "" {
 		cmd.Dir = req.Cwd
@@ -787,7 +798,13 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		})
 	}
 	var live *liveSession
-	if req.PromptDelivery == PromptDeliveryStream {
+	if acp != nil {
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return LaunchResult{}, dependencyError("cannot open ACP stdin", err)
+		}
+		acp.stdin = stdin
+	} else if req.PromptDelivery == PromptDeliveryStream {
 		route := steerRoutes[a.Name()]
 		var protocol liveProtocol
 		if route.live != nil {
@@ -859,6 +876,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	startedAt := time.Now().UTC()
 	ref := SourceRef{Adapter: a.Name(), Kind: a.config.LaunchKind, OpaqueID: strconv.Itoa(cmd.Process.Pid), PID: cmd.Process.Pid}
 	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: startedAt, updatedAt: startedAt, done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, wholeStdout: a.config.WholeStdout, live: live, launchIdentity: captureProcessLaunch(cmd.Process.Pid, startedAt)}
+	record.acp = acp
 	record.launch = req
 	record.launch.Stdin = nil
 	record.launch.Argv = argv
@@ -894,7 +912,11 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		activity = nil
 	}
 	record.pipes.Add(2)
-	go a.readPipe(record, stdout, false)
+	if acp != nil {
+		go acp.serve(record, stdout)
+	} else {
+		go a.readPipe(record, stdout, false)
+	}
 	go a.readPipe(record, stderr, true)
 	if live != nil {
 		// Readers are already draining stdout, so a large prompt cannot wedge
@@ -1134,6 +1156,18 @@ func (a *NativeAdapter) cancelRecord(record *processRecord, signal string, grace
 	record.cancelled = true
 	cmd := record.cmd
 	record.mu.Unlock()
+	if record.acp != nil && grace > 0 && signal != "kill" {
+		go record.acp.cancel(record)
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case <-record.done:
+			return
+		case <-timer.C:
+		}
+		_ = killProcess(cmd)
+		return
+	}
 	if cmd != nil && cmd.Process != nil {
 		if signal == "kill" || grace <= 0 {
 			_ = killProcess(cmd)

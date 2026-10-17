@@ -140,7 +140,7 @@ Capability negotiation is invocation-scoped. Backend probing establishes what
 an installed adapter can support; the exact argv establishes what this launch
 actually supports. When stored result content is required, Codex and ZCode require
 `--json`, Cursor and Claude require `--output-format stream-json`, OMP
-requires `--mode json`, and Devin requires `-p`. A missing or conflicting mode fails before dependency
+requires `--mode json`, and Devin accepts ACP (`devin acp`) or expert print mode (`-p`). A missing or conflicting mode fails before dependency
 probing, journal creation, or child launch. agentctl reports the required mode
 but never silently rewrites the caller's argv.
 
@@ -234,20 +234,76 @@ meaning.
 
 ### Devin
 
-Print mode (`-p`) writes plain text, not JSON. A one-time welcome banner may
-precede the answer; the answer is the text after that banner. Launch recipes
-pass `--model` with an accepted account id (`swe-2-high` or
-`fusion-gpt-6-sol-high-sidekick-swe-2-high`) and `-p`, and disable workspace
-trust so print mode can run in an untrusted directory. Fast and priority model
-ids are refused. Print mode cannot answer an approval prompt: a tool call the
-permission mode does not auto-approve is rejected, the calls issued alongside
-it are canceled, and devin exits 0 with only the text emitted so far. The
-default `auto` mode rejects any command it does not judge read-only, so coding
-launches add `--permission-mode dangerous` when
-`delegation.unattended_coding_permissions` is true; `smart` is not offered by
-every model and is never selected. Read-only access is refused for the same
-reason. `devin acp` is a separate JSON-RPC server and is not the print
-payload.
+Delegation launches `devin acp --model <configured-model>` as an ACP v1 client
+over newline-delimited JSON-RPC 2.0 stdio. ACP requires a nonempty, valid UTF-8
+prompt delivered through agentctl-managed stdin. Both plans and launches reject
+argv/stream delivery or missing prompt evidence before any ACP server starts;
+`--no-store-result` and `--allow-missing-result` do not bypass this validation.
+Invalid UTF-8 fails with usage diagnostic `acp_prompt_invalid_utf8` before
+probing, execution admission, or JSON encoding, preserving the admitted bytes.
+Wrong delivery reports `acp_prompt_delivery_required`; an empty prompt reports
+`acp_prompt_required` (the CLI prompt loader can reject empty input earlier).
+Capability negotiation requires content-free delivery and byte-count evidence.
+The adapter also validates direct launches before exec. These checks do not
+change Multica dispatch or expert print-mode prompt handling. The flow is `initialize` (version 1,
+empty `clientCapabilities`) → `session/new` (`cwd`, `mcpServers: []`) →
+`session/prompt` (`sessionId`, `prompt: [{type: "text", text: ...}]`). The returned
+`sessionId` binds the execution's native session. `agent_message_chunk` text
+forms the result. A `tool_call` or `tool_call_update` marks a boundary: the
+next assistant message chunk discards earlier narration, and subsequent chunks
+of that message are joined. A trailing tool update alone does not erase the
+buffer. This uses tool activity as the message boundary, without assuming
+provider-specific message IDs. Message and tool updates emit only bounded phase metadata.
+Prompts, replayed history, tool input/output, and raw RPC errors never enter the
+journal. The native session store remains Devin's authority.
+
+Only `stopReason: "end_turn"` succeeds. `cancelled` cancels; `refusal`,
+`max_tokens`, `max_turn_requests`, and unknown reasons fail. JSON-RPC errors
+fail with `acp_rpc_error` and their numeric code, without their message/data.
+Invalid messages, oversized streams, missing session IDs, and premature EOF
+fail with explicit `acp_*` diagnostics. Cancel sends the `session/cancel`
+notification, waits for the prompt result, then escalates to process termination
+within the caller's grace period. EOF closes a finished server; a two-second
+shutdown bound prevents unreaped children.
+
+`delegation.unattended_coding_permissions` maps to the frozen native plan's
+`AGENTCTL_DEVIN_ACP_APPROVE=1` environment entry (`0` without the grant).
+Only an explicit launch environment entry counts; ambient values do not grant
+permissions. Permission requests for the current session select the first
+`allow_once` option only with that grant. Otherwise the client selects the first
+offered `reject_once` option, emits attention, and fails the turn with
+`acp_permission_denied`. If no reject option is offered, it falls back to the
+ACP `cancelled` outcome. An actually client-cancelled turn always receives the
+`cancelled` outcome, even when reject options exist.
+No persistent `allow_always` grant is inferred. File-system and terminal client
+services are not advertised; all unsupported client requests receive JSON-RPC
+`-32601`, without accessing files. Read-only access remains refused because ACP
+read-only enforcement has not been verified.
+
+Follow-up turns require `agentCapabilities.loadSession: true`, checked at each
+initialization, before sending `session/load` with the recorded ID, cwd, and
+empty MCP list. Missing support fails with `acp_load_session_not_advertised`;
+there is no fallback to a new session. Load replay is excluded from the answer.
+The internal argv descriptor `--agentctl-acp-session <id>` is removed before
+exec and converted into `session/load`; it is not a Devin flag. Public continue
+plans redact its ID. Existing request-key admission and replay semantics apply;
+transport errors never trigger an automatic new session or prompt retry.
+
+Real Devin verification covered initialization, a tool-free prompt, and loading
+the same session to recover a marker from the prior turn. Permission, tool,
+error, and cancellation cases are covered by the fixture. Steering remains
+unavailable because real cancel plus reprompt was not verified for this adapter.
+Multica continues to own its issue/run lifecycle; this transport changes only
+direct native execution, not Multica dispatch or continuation guarantees.
+
+Expert `run -- devin -p ...` retains the plain-text parser and process-exit
+result behavior. A welcome banner is stripped. Print mode still cannot report
+a session ID or continue. Delegation no longer selects print-mode flags.
+
+Protocol references: [initialization](https://agentclientprotocol.com/protocol/v1/initialization),
+[session setup](https://agentclientprotocol.com/protocol/v1/session-setup),
+[prompt turns](https://agentclientprotocol.com/protocol/v1/prompt-turn), and
+[permissions](https://agentclientprotocol.com/protocol/v1/tool-calls).
 
 ### OMP
 

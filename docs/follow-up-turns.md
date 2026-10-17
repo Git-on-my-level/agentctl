@@ -74,7 +74,7 @@ build their argv from the same verified route, so an adapter that reports
 | Codex | yes | `codex exec resume <thread>`; same three-turn check, and a follow-up turn accepted interrupt-and-resume steering twice |
 | Cursor | yes | `--resume <chat>` after a completed turn kept context across three turns. (An interrupted Cursor turn does not, which is why Cursor cannot be steered.) |
 | OMP | yes, for expert launches only in practice | `--resume <session>` after a completed turn kept context when run by hand. It has no delegate recipe on a host that does not list it as preferred. |
-| Devin | no | Print mode does not report its session id, so the exact session cannot be named. |
+| Devin ACP | conditional | Loads the recorded session only when initialize advertises loadSession; print-mode runs cannot continue. |
 | ZCode | no | No verified resume route. Not installed on the verification host. |
 | Generic process, Multica | no | No native session to resume; Multica owns its own continuation. |
 
@@ -96,4 +96,11 @@ the native CLI, never journaled, identified only by its digest.
 
 - Executions launched with expert `run`. They record no launch recipe.
 - A follow-up on another host. The native session lives where it ran.
-- Devin and ZCode, until they expose an exact session id or a resume route.
+- Devin print-mode runs, and ZCode without a verified resume route.
+
+Devin continuation starts a fresh ACP server and checks `loadSession` before
+`session/load`. A missing capability produces `acp_load_session_not_advertised`
+and sends no follow-up prompt. Replayed history never becomes the new result.
+A plan is read-only and does not initialize an ACP server, so support remains
+conditional until execution. The permission grant and configured model are
+preserved from the original frozen recipe.

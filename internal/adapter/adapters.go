@@ -61,9 +61,8 @@ func NewZCode() Adapter {
 	return &zcodeAdapter{NativeAdapter: base}
 }
 
-// NewDevin launches the Devin CLI. Print mode (`-p`) writes one plain-text
-// answer, optionally after a welcome banner. It is not JSON. `devin acp` is a
-// separate newline JSON-RPC server and is not the print payload.
+// NewDevin drives delegated ACP sessions and preserves expert print-mode runs.
+// The exact invocation selects the transport; native session authority stays Devin.
 func NewDevin() Adapter {
 	bin := resolveDevinBinary()
 	base := newNativeAdapter(nativeConfig{
@@ -798,10 +797,20 @@ func resultContentDecl(status CapabilityStatus, source string) CapabilityDeclara
 	return decl
 }
 
+// InvocationPrompt is content-free evidence for exact prompt negotiation.
+// Omitted evidence must never advertise an ACP invocation as launchable.
+type InvocationPrompt struct {
+	Delivery string
+	Bytes    int
+}
+
 // NegotiateInvocation resolves one static adapter declaration against the
 // exact native argv. It performs no filesystem or network access and is safe
 // to use before dependency probing or journal creation.
-func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName) Capability {
+func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName, prompts ...InvocationPrompt) Capability {
+	if manifest.Adapter == "devin" && isDevinACP(argv) {
+		manifest = devinACPManifest()
+	}
 	for _, declaration := range manifest.Capabilities {
 		if declaration.Name != name {
 			continue
@@ -815,6 +824,14 @@ func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName) 
 		}
 		constraints := cloneMap(declaration.Constraints)
 		reason := ""
+		if manifest.Adapter == "devin" && isDevinACP(argv) && (name == CapabilityLaunch || name == CapabilityResultContent) {
+			constraints["required_prompt_delivery"] = PromptDeliveryStdin
+			constraints["requires_nonempty_prompt"] = true
+			if len(prompts) != 1 || prompts[0].Delivery != PromptDeliveryStdin || prompts[0].Bytes <= 0 {
+				constraints["invocation_satisfied"] = false
+				return Capability{Name: name, Status: CapabilityUnavailable, Source: "manifest", SemanticsVersion: declaration.SemanticsVersion, Constraints: constraints, Reason: "Devin ACP requires a nonempty agentctl-managed stdin prompt"}
+			}
+		}
 		if len(argv) != 0 && name == CapabilityResultContent && !invocationRequirementSatisfied(argv, constraints) {
 			status = CapabilityUnavailable
 			constraints["invocation_satisfied"] = false
@@ -825,4 +842,18 @@ func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName) 
 		return Capability{Name: name, Status: status, Source: "manifest", SemanticsVersion: declaration.SemanticsVersion, Constraints: constraints, Reason: reason}
 	}
 	return Capability{Name: name, Status: CapabilityUnavailable, Source: "manifest", SemanticsVersion: SemanticsVersion, Constraints: map[string]any{}, Reason: "capability is not declared"}
+}
+
+func devinACPManifest() Manifest {
+	m := devinManifest()
+	m.StructuredOutput = StructuredOutputSpec{Format: "acp-jsonrpc", Required: true}
+	for i := range m.Capabilities {
+		if m.Capabilities[i].Name == CapabilityResultContent {
+			m.Capabilities[i] = resultContentDecl(CapabilitySupported, "assistant_terminal_result")
+		}
+		if m.Capabilities[i].Name == CapabilityEvents {
+			m.Capabilities[i].Implementation = CapabilitySupported
+		}
+	}
+	return m
 }

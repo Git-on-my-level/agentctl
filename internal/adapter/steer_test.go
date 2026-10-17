@@ -391,7 +391,7 @@ func TestContinuationArgv(t *testing.T) {
 			t.Fatalf("%s: argv=%q err=%v", test.adapter, got, err)
 		}
 	}
-	for _, adapterName := range []string{"devin", "zcode", "generic-process", "multica"} {
+	for _, adapterName := range []string{"zcode", "generic-process", "multica"} {
 		_, err := ContinuationArgv(adapterName, []string{adapterName, "-p"}, PromptDeliveryArgv, "s-1")
 		var adapterErr *AdapterError
 		if !errors.As(err, &adapterErr) || adapterErr.Code != ErrCapabilityUnavailable {
