@@ -61,9 +61,8 @@ func NewZCode() Adapter {
 	return &zcodeAdapter{NativeAdapter: base}
 }
 
-// NewDevin launches the Devin CLI. Print mode (`-p`) writes one plain-text
-// answer, optionally after a welcome banner. It is not JSON. `devin acp` is a
-// separate newline JSON-RPC server and is not the print payload.
+// NewDevin drives delegated ACP sessions and preserves expert print-mode runs.
+// The exact invocation selects the transport; native session authority stays Devin.
 func NewDevin() Adapter {
 	bin := resolveDevinBinary()
 	base := newNativeAdapter(nativeConfig{
@@ -802,6 +801,9 @@ func resultContentDecl(status CapabilityStatus, source string) CapabilityDeclara
 // exact native argv. It performs no filesystem or network access and is safe
 // to use before dependency probing or journal creation.
 func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName) Capability {
+	if manifest.Adapter == "devin" && isDevinACP(argv) {
+		manifest = devinACPManifest()
+	}
 	for _, declaration := range manifest.Capabilities {
 		if declaration.Name != name {
 			continue
@@ -825,4 +827,18 @@ func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName) 
 		return Capability{Name: name, Status: status, Source: "manifest", SemanticsVersion: declaration.SemanticsVersion, Constraints: constraints, Reason: reason}
 	}
 	return Capability{Name: name, Status: CapabilityUnavailable, Source: "manifest", SemanticsVersion: SemanticsVersion, Constraints: map[string]any{}, Reason: "capability is not declared"}
+}
+
+func devinACPManifest() Manifest {
+	m := devinManifest()
+	m.StructuredOutput = StructuredOutputSpec{Format: "acp-jsonrpc", Required: true}
+	for i := range m.Capabilities {
+		if m.Capabilities[i].Name == CapabilityResultContent {
+			m.Capabilities[i] = resultContentDecl(CapabilitySupported, "assistant_terminal_result")
+		}
+		if m.Capabilities[i].Name == CapabilityEvents {
+			m.Capabilities[i].Implementation = CapabilitySupported
+		}
+	}
+	return m
 }

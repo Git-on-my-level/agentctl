@@ -264,14 +264,14 @@ func TestZCodeRecipeUsesProvisionedModel(t *testing.T) {
 	}
 }
 
-func TestDevinRecipePassesModelAndPrint(t *testing.T) {
+func TestDevinRecipePassesModelAndACP(t *testing.T) {
 	for _, model := range []string{"swe-2-high", "fusion-gpt-6-sol-high-sidekick-swe-2-high", "fusion-next-model", "claude-sonnet-4"} {
 		got, err := Build(Input{Harness: "devin", Model: model})
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []string{"devin", "--model", model, "-p", "--respect-workspace-trust", "false", "--"}
-		if strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") || got.PromptDelivery != PromptDeliveryArgv {
+		want := []string{"devin", "acp", "--model", model}
+		if strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") || got.PromptDelivery != PromptDeliveryStdin {
 			t.Fatalf("argv=%v delivery=%s", got.Argv, got.PromptDelivery)
 		}
 	}
@@ -408,13 +408,13 @@ func TestCodexReadOnlyUsesSandbox(t *testing.T) {
 	}
 }
 
-func TestDevinFullPermissionsUsesDangerousMode(t *testing.T) {
+func TestDevinFullPermissionsUsesACPGrant(t *testing.T) {
 	got, err := Build(Input{Harness: "devin", Model: "fusion-gpt-6.1-sol-high-sidekick-swe-2-high", UnattendedCodingPermissions: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"devin", "--model", "fusion-gpt-6.1-sol-high-sidekick-swe-2-high", "-p", "--respect-workspace-trust", "false", "--permission-mode", "dangerous", "--"}
-	if got.Permissions != PermissionsFull || strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") {
+	want := []string{"devin", "acp", "--model", "fusion-gpt-6.1-sol-high-sidekick-swe-2-high"}
+	if !contains(got.Env, "AGENTCTL_DEVIN_ACP_APPROVE=1") || got.Permissions != PermissionsFull || strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("argv=%v permissions=%s", got.Argv, got.Permissions)
 	}
 }

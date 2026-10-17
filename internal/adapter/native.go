@@ -98,6 +98,7 @@ type processRecord struct {
 	events           []Event
 	result           *Result
 	finalContent     string
+	acp              *devinACP
 	sawDevinPrint    bool
 	devinPrintAnswer string
 	contentType      string
@@ -772,6 +773,11 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	if err := runCtx.Err(); err != nil {
 		return LaunchResult{}, nativeContextError(runCtx, "native process launch")
 	}
+	var acp *devinACP
+	if a.Name() == "devin" && isDevinACP(argv) {
+		acp = newDevinACP(req, argv)
+		argv = withoutSessionSelection(argv, devinACPSessionFlag)
+	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	if req.Cwd != "" {
 		cmd.Dir = req.Cwd
@@ -787,7 +793,13 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		})
 	}
 	var live *liveSession
-	if req.PromptDelivery == PromptDeliveryStream {
+	if acp != nil {
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return LaunchResult{}, dependencyError("cannot open ACP stdin", err)
+		}
+		acp.stdin = stdin
+	} else if req.PromptDelivery == PromptDeliveryStream {
 		route := steerRoutes[a.Name()]
 		var protocol liveProtocol
 		if route.live != nil {
@@ -859,6 +871,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	startedAt := time.Now().UTC()
 	ref := SourceRef{Adapter: a.Name(), Kind: a.config.LaunchKind, OpaqueID: strconv.Itoa(cmd.Process.Pid), PID: cmd.Process.Pid}
 	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: startedAt, updatedAt: startedAt, done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, wholeStdout: a.config.WholeStdout, live: live, launchIdentity: captureProcessLaunch(cmd.Process.Pid, startedAt)}
+	record.acp = acp
 	record.launch = req
 	record.launch.Stdin = nil
 	record.launch.Argv = argv
@@ -894,7 +907,11 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		activity = nil
 	}
 	record.pipes.Add(2)
-	go a.readPipe(record, stdout, false)
+	if acp != nil {
+		go acp.serve(record, stdout)
+	} else {
+		go a.readPipe(record, stdout, false)
+	}
 	go a.readPipe(record, stderr, true)
 	if live != nil {
 		// Readers are already draining stdout, so a large prompt cannot wedge
@@ -1134,6 +1151,18 @@ func (a *NativeAdapter) cancelRecord(record *processRecord, signal string, grace
 	record.cancelled = true
 	cmd := record.cmd
 	record.mu.Unlock()
+	if record.acp != nil && grace > 0 && signal != "kill" {
+		go record.acp.cancel(record)
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case <-record.done:
+			return
+		case <-timer.C:
+		}
+		_ = killProcess(cmd)
+		return
+	}
 	if cmd != nil && cmd.Process != nil {
 		if signal == "kill" || grace <= 0 {
 			_ = killProcess(cmd)

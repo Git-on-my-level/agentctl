@@ -103,7 +103,7 @@ Verified against the installed CLIs on 2026-10-01.
 | Codex 0.159.0 | `interrupt_resume` through `codex exec resume <thread>` | The resumed thread kept the earlier context. `--sandbox` is carried as `-c sandbox_mode=...` because `resume` has no such flag. An argv with a flag `resume` does not accept is not steerable. |
 | Cursor 2026.09.23 | none | `--resume <chat>` after an interrupt answers without the interrupted turn's prompt, so the task would be lost. `cursor-agent acp` behaves the same after `session/cancel` and is not mapped. |
 | OMP 17.0.6 | none | A session interrupted during its first turn cannot be resumed. `--mode rpc` has a working `steer` command, and `omp acp` kept context across cancel and re-prompt; this adapter maps neither. |
-| Devin 3000.11.x | none | Print mode does not report its session id. `devin acp` kept context across cancel and re-prompt but is not mapped. |
+| Devin ACP | none | Session loading after completed turns is implemented. Cancel plus reprompt steering has not been verified by this adapter against real Devin; no steering route is advertised. |
 | ZCode | none | One JSON document per run and no verified resume route. Not installed on the verification host. |
 | Generic process, Multica | none | No native steering route. Multica owns run input. |
 

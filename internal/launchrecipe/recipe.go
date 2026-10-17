@@ -154,7 +154,7 @@ func requireReviewedAccess(harness, access string) error {
 	case "cursor", "codex":
 		return nil
 	case "devin":
-		return fail("access_unavailable", "devin print mode ends the run with exit 0 and a partial answer when its read-only permission mode rejects a tool call; omit access or choose another harness")
+		return fail("access_unavailable", "devin ACP has no verified read-only enforcement mode; omit access or choose another harness")
 	default:
 		return fail("access_unavailable", fmt.Sprintf("%s cannot guarantee read-only access; omit access or choose another harness", harness))
 	}
