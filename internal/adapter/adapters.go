@@ -744,7 +744,7 @@ func opencodeManifest() Manifest {
 	events := sameProcessDecl(CapabilityEvents, CapabilityDegraded)
 	events.Constraints["content"] = "metadata_only"
 	return baseManifest("opencode", "0.1.0", "opencode_session", "opencode-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), events, sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, capDecl(CapabilityResume, CapabilityUnavailable), sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), events, sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 }
 

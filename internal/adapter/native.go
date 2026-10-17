@@ -120,7 +120,7 @@ type processRecord struct {
 	wholeStdout      bool
 
 	sawOpenCode          bool
-	opencodeParts        []string
+	opencodeText         strings.Builder
 	opencodeTruncated    bool
 	opencodeFinishReason string
 
@@ -292,20 +292,29 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 		p.sawOpenCode = true
 		switch obs.SourceState {
 		case "opencode.step_start":
-			p.opencodeParts = nil
+			p.opencodeText.Reset()
 			p.opencodeTruncated = false
 			p.opencodeFinishReason = ""
 		case "opencode.text":
 			// Text alone (even a completed part) is not a completed turn.
 			p.opencodeFinishReason = ""
-			if obs.Content != "" {
-				p.opencodeParts = append(p.opencodeParts, obs.Content)
-				p.opencodeTruncated = p.opencodeTruncated || obs.ContentTruncated
+			if obs.Content != "" && !p.opencodeTruncated {
+				part := obs.Content
+				if p.opencodeText.Len() != 0 {
+					part = "\n" + part
+				}
+				prefix := opencodeAnswerPrefix(part, opencodeAnswerLimit-p.opencodeText.Len())
+				p.opencodeText.WriteString(prefix)
+				p.opencodeTruncated = obs.ContentTruncated || len(prefix) < len(part)
 			}
+			// The bounded accumulator owns answer text. Retaining it again in
+			// observations/finalContent would bypass the cumulative limit and
+			// prevent metadata coalescing after the stream budget is exhausted.
+			obs.Content = ""
 		case "opencode.step_finish":
 			p.opencodeFinishReason, _ = obs.Data["reason"].(string)
 			if p.opencodeFinishReason != "stop" {
-				p.opencodeParts = nil
+				p.opencodeText.Reset()
 				p.opencodeTruncated = false
 			}
 		}
@@ -464,8 +473,7 @@ func (p *processRecord) finish(err error) {
 		}
 	}
 	if p.result == nil && p.sawOpenCode && !p.cancelled && p.exitCode != nil && *p.exitCode == 0 {
-		joined := strings.Join(p.opencodeParts, "\n")
-		content := boundedUTF8(joined, 1<<20)
+		content := p.opencodeText.String()
 		data := map[string]any{"terminal_source_state": "opencode.run"}
 		switch {
 		case p.lastError != "":
@@ -478,7 +486,7 @@ func (p *processRecord) finish(err error) {
 			p.result = &Result{Success: false, State: StateFailed, Error: "opencode run exited without an assistant answer", ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
 		default:
 			data["result_content_source"] = "assistant_terminal_result"
-			p.result = &Result{Success: true, State: StateCompleted, Summary: boundedString(content, 2048), Content: content, ContentType: "text/plain", ContentTruncated: p.opencodeTruncated || len(joined) > len(content), ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
+			p.result = &Result{Success: true, State: StateCompleted, Summary: boundedString(content, 2048), Content: content, ContentType: "text/plain", ContentTruncated: p.opencodeTruncated, ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
 		}
 	}
 	if p.result == nil && p.resultPath != "" {

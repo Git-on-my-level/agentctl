@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestOpenCodeParserReadsCompletedTextPart(t *testing.T) {
@@ -168,7 +169,7 @@ func TestOpenCodeStepFinishResetsPartsAfterStreamLimit(t *testing.T) {
 	record.ingest([]byte(`{"type":"tool_use","sessionID":"s","part":{"type":"tool","tool":"bash","input":{"command":"`+strings.Repeat("x", 80)+`"},"output":"huge"}}`), false)
 	record.ingest([]byte(`{"type":"step_finish","sessionID":"s","part":{"type":"step-finish","reason":"tool-calls"}}`), false)
 	record.ingest([]byte(`{"type":"text","sessionID":"s","part":{"type":"text","text":"final answer","time":{"end":2}}}`), false)
-	if got := strings.Join(record.opencodeParts, "\n"); got != "final answer" {
+	if got := record.opencodeText.String(); got != "final answer" {
 		t.Fatalf("assembled parts after stream-limit step reset = %q", got)
 	}
 	if len(record.parseWarnings) == 0 || record.parseWarnings[0] != diagnosticStreamLimitExceeded {
@@ -307,6 +308,9 @@ func TestOpenCodeManifestDeclaresBoundedSameProcessContract(t *testing.T) {
 	}
 	status := map[CapabilityName]CapabilityDeclaration{}
 	for _, decl := range m.Capabilities {
+		if _, duplicate := status[decl.Name]; duplicate {
+			t.Fatalf("duplicate manifest capability %s", decl.Name)
+		}
 		status[decl.Name] = decl
 	}
 	if status[CapabilityLaunch].Implementation != CapabilitySupported || status[CapabilityResult].Implementation != CapabilitySupported || status[CapabilityResultContent].Implementation != CapabilitySupported {
@@ -329,6 +333,9 @@ func TestOpenCodeManifestDeclaresBoundedSameProcessContract(t *testing.T) {
 		t.Fatalf("resume = %#v", status[CapabilityResume])
 	}
 	content := status[CapabilityResultContent]
+	if content.Constraints["max_bytes"] != opencodeAnswerLimit {
+		t.Fatalf("manifest answer limit differs from buffer limit: %#v", content.Constraints)
+	}
 	if content.Constraints["required_output_mode"] != "json" || content.Constraints["required_subcommand"] != "run" || content.Constraints["required_terminal_event"] != "step_finish" || content.Constraints["required_finish_reason"] != "stop" {
 		t.Fatalf("result_content constraints = %#v", content.Constraints)
 	}
@@ -357,7 +364,12 @@ func TestOpenCodeProbeUsesVersionFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := false
+	seen := map[CapabilityName]bool{}
 	for _, capability := range got.Capabilities {
+		if seen[capability.Name] {
+			t.Fatalf("duplicate probe capability %s", capability.Name)
+		}
+		seen[capability.Name] = true
 		if capability.Name == CapabilityResultContent && capability.Status == CapabilitySupported {
 			found = true
 		}
@@ -408,5 +420,71 @@ func TestOpenCodeStepStartResetsStopAfterStreamLimit(t *testing.T) {
 	record.finish(nil)
 	if record.result.Success || record.result.Content != "" || record.result.Data["diagnostic_code"] != "incomplete_terminal_result" {
 		t.Fatalf("result = %#v", record.result)
+	}
+}
+
+func TestOpenCodeCumulativeAnswerBufferIsBounded(t *testing.T) {
+	for _, first := range []string{
+		strings.Repeat("a", opencodeAnswerLimit),   // exact limit before another part
+		strings.Repeat("a", opencodeAnswerLimit-3), // split a multibyte rune after the separator
+	} {
+		record := &processRecord{parser: opencodeJSONParser{}, maxOutput: 1, done: make(chan struct{})}
+		text := func(value string) {
+			t.Helper()
+			line, err := json.Marshal(map[string]any{"type": "text", "part": map[string]any{"type": "text", "text": value, "time": map[string]int{"end": 1}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			record.ingest(line, false)
+			if record.opencodeText.Len() > opencodeAnswerLimit || record.opencodeText.Cap() > 2*opencodeAnswerLimit {
+				t.Fatalf("unbounded buffer: len=%d cap=%d", record.opencodeText.Len(), record.opencodeText.Cap())
+			}
+		}
+		text(first)
+		for i := 0; i < 128; i++ {
+			text(strings.Repeat("🌍", 8192))
+		}
+		want := first
+		if len(first) < opencodeAnswerLimit {
+			want += "\n"
+		}
+		if got := record.opencodeText.String(); got != want || !utf8.ValidString(got) || !record.opencodeTruncated {
+			t.Fatalf("prefix/truncation lost: len=%d want=%d truncated=%v", len(got), len(want), record.opencodeTruncated)
+		}
+		if len(record.observations) != 1 || record.observations[0].Content != "" || record.finalContent != "" {
+			t.Fatalf("answer retained outside bounded buffer: observations=%d final=%d", len(record.observations), len(record.finalContent))
+		}
+		// Later parts cannot fill a UTF-8 boundary gap: retain a contiguous prefix.
+		text("x")
+		record.ingest([]byte(`{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}`), false)
+		record.finish(nil)
+		if !record.result.Success || record.result.Content != want || !record.result.ContentTruncated {
+			t.Fatalf("final stop lost after stream limit: %#v", record.result)
+		}
+	}
+}
+
+func TestOpenCodeFullBufferStillProcessesStepControls(t *testing.T) {
+	for _, reason := range []string{"stop", "unknown", "tool-calls"} {
+		t.Run(reason, func(t *testing.T) {
+			record := &processRecord{parser: opencodeJSONParser{}, maxOutput: 1, done: make(chan struct{})}
+			record.ingestObservation(parsedObservation{SourceState: "opencode.text", Content: strings.Repeat("a", opencodeAnswerLimit), Data: map[string]any{}})
+			record.ingestObservation(parsedObservation{SourceState: "opencode.text", Content: "excess", Data: map[string]any{}})
+			record.ingest([]byte(`{"type":"step_finish","part":{"type":"step-finish","reason":"tool-calls"}}`), false)
+			if record.opencodeText.Len() != 0 || record.opencodeTruncated {
+				t.Fatal("non-stop step did not clear the buffer")
+			}
+			record.ingest([]byte(`{"type":"step_start","part":{"type":"step-start"}}`), false)
+			record.ingest([]byte(`{"type":"text","part":{"type":"text","text":"new answer","time":{"end":1}}}`), false)
+			record.ingest([]byte(`{"type":"step_finish","part":{"type":"step-finish","reason":"`+reason+`"}}`), false)
+			record.finish(nil)
+			if reason == "stop" {
+				if !record.result.Success || record.result.Content != "new answer" || record.result.ContentTruncated {
+					t.Fatalf("new step did not recover: %#v", record.result)
+				}
+			} else if record.result.Success || record.result.Content != "" || record.result.Data["diagnostic_code"] != "incomplete_terminal_result" {
+				t.Fatalf("non-stop final step succeeded: %#v", record.result)
+			}
+		})
 	}
 }

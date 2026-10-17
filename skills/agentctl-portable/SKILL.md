@@ -222,7 +222,9 @@ agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- opencode run
 
 OpenCode answer extraction requires the noninteractive `run --format json`
 form, completed final-step text, and a final `step_finish` with
-`part.reason: "stop"` plus exit 0. Missing/non-stop finishes fail without
+`part.reason: "stop"` plus exit 0. Answer buffering is capped at a 1 MiB UTF-8
+prefix; excess text is discarded and the result is marked truncated.
+Missing/non-stop finishes fail without
 returning partial text; other invocations are not result-capable. Cancellation is process-scoped
 and resume is unavailable; no permission auto-approval flags are used.
 

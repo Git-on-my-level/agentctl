@@ -232,6 +232,9 @@ meaning.
   Missing or non-stop finishes fail with `incomplete_terminal_result`; a
   stopped step without text fails with `empty_terminal_result`. Neither stores
   partial answer content. Error events and nonzero exits remain failures.
+- Bound cumulative answer buffering to a 1 MiB UTF-8 prefix (including part
+  separators) and mark truncated results. Discard excess text while retaining
+  final step controls; observations retain metadata rather than another text copy.
 - Reset answer and completion evidence at each `step_start`; non-stop finishes
   discard earlier narration. Tool payloads and reasoning never enter results
   or metadata-only events.

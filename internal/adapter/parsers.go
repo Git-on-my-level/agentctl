@@ -871,6 +871,23 @@ func errorText(value map[string]any) string {
 	return ""
 }
 
+const opencodeAnswerLimit = 1 << 20
+
+// Unlike boundedUTF8, this preserves separators and treats zero as no space.
+func opencodeAnswerPrefix(value string, remaining int) string {
+	if remaining <= 0 {
+		return ""
+	}
+	if len(value) <= remaining {
+		return value
+	}
+	value = value[:remaining]
+	for len(value) > 0 && !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
+}
+
 type opencodeJSONParser struct{}
 
 func (opencodeJSONParser) Name() string { return "opencode-json" }
@@ -910,7 +927,7 @@ func (opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 		if trimmed == "" {
 			break
 		}
-		obs.Content = boundedUTF8(trimmed, 1<<20)
+		obs.Content = boundedUTF8(trimmed, opencodeAnswerLimit)
 		obs.ContentType = "text/plain"
 		obs.ContentSource = "assistant"
 		obs.ContentTruncated = len(trimmed) > len(obs.Content)
