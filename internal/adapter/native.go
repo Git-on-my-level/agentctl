@@ -118,6 +118,12 @@ type processRecord struct {
 	resultPath       string
 	page             *parsedPage
 	wholeStdout      bool
+
+	sawOpenCode          bool
+	opencodeParts        []string
+	opencodeTruncated    bool
+	opencodeFinishReason string
+
 	// launch is retained without prompt bytes to rebuild a resume invocation.
 	launch LaunchRequest
 	// launchIdentity is captured once at Start and is never replaced when a
@@ -231,7 +237,7 @@ func (p *processRecord) nextAcknowledgement() int {
 }
 
 func retainObservationAfterLimit(obs parsedObservation) bool {
-	return obs.Terminal || obs.Content != "" || obs.Error != "" || obs.State == StateAttention || obs.State == StateWaiting || obs.Kind == "attention" || obs.SourceState == "input_acknowledged"
+	return obs.Terminal || obs.Content != "" || obs.Error != "" || obs.State == StateAttention || obs.State == StateWaiting || obs.Kind == "attention" || obs.SourceState == "input_acknowledged" || strings.HasPrefix(obs.SourceState, "opencode.")
 }
 
 func (p *processRecord) addParseWarningLocked(code string) {
@@ -281,6 +287,28 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 	}
 	if obs.BackendVersion != "" {
 		p.ref.Endpoint = obs.BackendVersion
+	}
+	if strings.HasPrefix(obs.SourceState, "opencode.") {
+		p.sawOpenCode = true
+		switch obs.SourceState {
+		case "opencode.step_start":
+			p.opencodeParts = nil
+			p.opencodeTruncated = false
+			p.opencodeFinishReason = ""
+		case "opencode.text":
+			// Text alone (even a completed part) is not a completed turn.
+			p.opencodeFinishReason = ""
+			if obs.Content != "" {
+				p.opencodeParts = append(p.opencodeParts, obs.Content)
+				p.opencodeTruncated = p.opencodeTruncated || obs.ContentTruncated
+			}
+		case "opencode.step_finish":
+			p.opencodeFinishReason, _ = obs.Data["reason"].(string)
+			if p.opencodeFinishReason != "stop" {
+				p.opencodeParts = nil
+				p.opencodeTruncated = false
+			}
+		}
 	}
 	if obs.Content != "" {
 		p.finalContent = obs.Content
@@ -433,6 +461,24 @@ func (p *processRecord) finish(err error) {
 		} else {
 			content := p.devinPrintAnswer
 			p.result = &Result{Success: true, State: StateCompleted, Summary: boundedString(content, 2048), Content: content, ContentType: "text/plain", ExitCode: p.exitCode, SessionRef: p.ref, Data: map[string]any{"result_content_source": "assistant_terminal_result", "terminal_source_state": "devin.print"}}
+		}
+	}
+	if p.result == nil && p.sawOpenCode && !p.cancelled && p.exitCode != nil && *p.exitCode == 0 {
+		joined := strings.Join(p.opencodeParts, "\n")
+		content := boundedUTF8(joined, 1<<20)
+		data := map[string]any{"terminal_source_state": "opencode.run"}
+		switch {
+		case p.lastError != "":
+			p.result = &Result{Success: false, State: StateFailed, Error: p.lastError, ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
+		case p.opencodeFinishReason != "stop":
+			data["diagnostic_code"] = "incomplete_terminal_result"
+			p.result = &Result{Success: false, State: StateFailed, Error: "opencode run exited without a final step_finish with reason stop", ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
+		case strings.TrimSpace(content) == "":
+			data["diagnostic_code"] = "empty_terminal_result"
+			p.result = &Result{Success: false, State: StateFailed, Error: "opencode run exited without an assistant answer", ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
+		default:
+			data["result_content_source"] = "assistant_terminal_result"
+			p.result = &Result{Success: true, State: StateCompleted, Summary: boundedString(content, 2048), Content: content, ContentType: "text/plain", ContentTruncated: p.opencodeTruncated || len(joined) > len(content), ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
 		}
 	}
 	if p.result == nil && p.resultPath != "" {
@@ -649,6 +695,13 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 	}
 	scope := Fingerprint(a.Name(), backendVersion, digest, req.Profile, req.Endpoint, req.Workspace, invocationFingerprint)
 	return ProbeResult{AdapterVersion: a.config.Manifest.AdapterVersion, BackendVersion: backendVersion, Executable: resolved, ExecutableDigest: digest, ScopeFingerprint: scope, ProbedAt: started, FreshFor: time.Minute, ReadOnly: true, Capabilities: capabilities}, nil
+}
+
+func invocationSatisfied(argv []string, constraints map[string]any) bool {
+	if subcommand, _ := constraints["required_subcommand"].(string); subcommand != "" && (len(argv) < 2 || argv[1] != subcommand) {
+		return false
+	}
+	return invocationRequirementSatisfied(argv, constraints)
 }
 
 func invocationRequirementSatisfied(argv []string, constraints map[string]any) bool {

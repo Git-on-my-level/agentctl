@@ -44,7 +44,7 @@ func InPreferredTable(records []ModelRecord, adapter, model string) bool {
 // NativeArgvModel extracts an explicit native model flag from argv. It does
 // not invent a default or remap aliases onto a different slug.
 func NativeArgvModel(adapter string, argv []string) string {
-	allowShort := strings.EqualFold(strings.TrimSpace(adapter), "codex")
+	allowShort := strings.EqualFold(strings.TrimSpace(adapter), "codex") || strings.EqualFold(strings.TrimSpace(adapter), "opencode")
 	for i := 1; i < len(argv); i++ {
 		arg := argv[i]
 		if arg == "--" {

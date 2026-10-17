@@ -4,16 +4,17 @@ import "testing"
 
 func TestAdapterForModelFamily(t *testing.T) {
 	cases := map[string]string{
-		"":       "",
-		"auto":   "",
-		"zcode":  "zcode",
-		"devin":  "devin",
-		"swe":    "devin",
-		"fusion": "devin",
-		"glm":    "omp",
-		"gpt":    "codex",
-		"grok":   "cursor",
-		"claude": "claude",
+		"":         "",
+		"auto":     "",
+		"zcode":    "zcode",
+		"devin":    "devin",
+		"swe":      "devin",
+		"fusion":   "devin",
+		"glm":      "omp",
+		"opencode": "opencode",
+		"gpt":      "codex",
+		"grok":     "cursor",
+		"claude":   "claude",
 	}
 	for in, want := range cases {
 		got, err := AdapterForModelFamily(in)

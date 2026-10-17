@@ -115,7 +115,14 @@
         "name": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,63}$"},
         "semantics_version": {"type": "integer", "minimum": 1},
         "implementation": {"enum": ["supported", "conditional", "unavailable"]},
-        "constraints": {"type": "object"}
+        "constraints": {
+          "type": "object",
+          "properties": {
+            "required_subcommand": {"type": "string"},
+            "required_terminal_event": {"type": "string"},
+            "required_finish_reason": {"type": "string"}
+          }
+        }
       }
     },
     "probe_action": {
