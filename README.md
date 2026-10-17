@@ -1,661 +1,152 @@
 # agentctl
 
-`agentctl` is a local, agent-oriented control layer for native coding-agent
-CLIs. It launches an existing CLI, records normalized lifecycle metadata,
-delivers bounded events and callbacks, and stores a retrievable final result.
-The native CLI keeps ownership of model selection, authentication, permissions,
-and session behavior.
+Let your coding agent delegate to other coding agents.
 
-The standalone path needs no control-plane service, private network, fleet
-manager, or private configuration repository. Optional integrations add durable
-coordination and operator-specific topology without changing the core execution
-contract.
+Ask Claude Code to get a review from Codex, or have Codex hand a bug to Grok
+in Cursor. agentctl launches the other agent's CLI, tracks the run, and brings
+the answer back, even if the agent that asked has moved on or lost its context.
 
-> **Public preview:** agentctl is pre-1.0. Command, JSON, configuration, and
-> journal formats may evolve with documented migrations. Review the
-> [known constraints](docs/implementation-audit.md#intentional-preview-constraints)
-> before relying on it for unattended or durable work.
+```text
+You, in Claude Code:
 
-## Delegate by model name
+  > Have Codex review this branch, then send its findings back and ask it to fix them.
 
-The parent agent interprets wording such as “cursor grok 4.6” into explicit
-constraints; agentctl fills compatible configured defaults and builds native
-flags. No roles or fuzzy launch matching are needed. With a reviewed profile:
+What Claude runs:
 
-```json
-{"schema_version":1,"request_key":"review-01","selector":{"harness":"cursor","family":"grok","version":"4.6"}}
+  $ agentctl delegate --request-file review.json --prompt-file review.md --wait --content
+  exec-snack-need-scrap-group-correct-marriage state=completed harness=codex
+  <Codex's review>
+
+  $ agentctl continue exec-snack-need-scrap-group-correct-marriage \
+      --request-key fix-01 --prompt-file fix.md --wait --content
+  <the same Codex session, now applying its fixes>
 ```
 
-```sh
-agentctl delegate --request-file request.json --prompt-file task.md --plan
-agentctl delegate --request-file request.json --prompt-file task.md --wait
-```
+You talk to your agent in plain language. agentctl ships a skill that teaches
+the agent these commands, so you never write the JSON yourself.
 
-Same key and inputs recover the original execution. `--wait` requires a successful,
-nonempty answer. See [configuration, guarantees, and limits](docs/structured-delegation.md)
-and `agentctl help delegate`. This release supports local native delegation;
-Multica remains available through explicit `dispatch`.
+> **Pre-1.0:** commands, JSON output, and config formats may still change.
 
-## What it does
+## Why use it
 
-- launches Codex, Cursor, Claude Code, OMP, or a structured generic process;
-- returns JSON by default and exposes progressive `agentctl help <topic>`
-  discovery;
-- allocates typed, checksum-validated word IDs and portable result references;
-- persists normalized state and bounded final results in an owner-only local
-  journal;
-- orients an agent in the current repository/worktree, configured authority,
-  static adapter availability, and workspace-scoped execution state with one
-  read-only command;
-- discovers recent host-local work by state, adapter, exact metadata label, or unreconciled terminal collection;
-- explains an actionable host-local inbox while keeping work outcome separate
-  from tool liveness;
-- optionally leaves a detached host-local worker owning a long-running native
-  process after the launching shell exits;
-- supports pre-launch subscriptions and at-least-once file, Unix-socket,
-  command, and signed-webhook delivery;
-- installs one allowlisted portable skill into detected supported harnesses;
-- reconciles reviewed personal skill packs from a pinned Git config source;
-- optionally validates, compiles, and renders context from independently owned
-  Git knowledge sources; and
-- optionally dispatches routed work to a verified Multica agent and promotes
-  direct work into a configured Multica authority.
+- **Ask for a model by name.** "codex", "grok", or "claude" resolves to the
+  right CLI, model, and flags from your config. Your agent doesn't need to
+  know any other CLI's flags.
+- **Set it up once, use it on every machine.** Keep your agent and model
+  choices in one Git repository. Each machine pulls the same config, and the
+  installer adds the agentctl skill to every agent CLI it finds.
+- **Answers don't get lost.** Every run gets an ID and a stored result. If the
+  asking agent times out, crashes, or starts a new session, `agentctl inbox`
+  shows what finished and `agentctl result` returns the answer. Retrying with
+  the same request key returns the original run instead of starting a second
+  one.
 
-It is not a model gateway, transcript database, issue tracker, credential
-manager, or replacement for the agent CLI being supervised.
+agentctl doesn't replace your agent CLIs, proxy model APIs, or store your
+credentials or transcripts. Each CLI keeps its own login, permissions, and
+sessions.
 
-## Install a release
+## Supported agents
 
-Release archives contain the binary, installer, schemas, documentation, and
-portable skill. Download both the archive for your platform and
-`SHA256SUMS` from the [latest release](https://github.com/Git-on-my-level/agentctl/releases/latest),
-then verify the archive before installing it. For example, on Apple silicon:
+| Agent | Executable |
+| --- | --- |
+| Claude Code | `claude` |
+| Codex | `codex` |
+| Cursor | `cursor-agent` |
+| Devin | `devin` |
+| ZCode | `zcode` |
+| OMP | `omp` |
+| Any CLI with structured output | configured |
+
+Follow-up turns and steering depend on what each CLI supports;
+`agentctl capabilities <agent>` reports the current answer. agentctl can also
+dispatch work to [Multica](docs/optional-integrations.md) agents on other
+machines.
+
+## Install
+
+Download the archive for your platform and `SHA256SUMS` from the
+[latest release](https://github.com/Git-on-my-level/agentctl/releases/latest),
+verify it, and run the bundled installer:
 
 ```bash
-VERSION=$(gh release view --repo Git-on-my-level/agentctl --json tagName --jq .tagName)
-ARCHIVE="agentctl_${VERSION}_darwin_arm64.tar.gz"
-
-gh release download "$VERSION" \
-  --repo Git-on-my-level/agentctl \
-  --pattern "$ARCHIVE" \
-  --pattern SHA256SUMS
-grep " $ARCHIVE\$" SHA256SUMS | shasum -a 256 -c -
-tar -xzf "$ARCHIVE"
-cd "agentctl_${VERSION}_darwin_arm64"
-
-scripts/install.sh --binary "$PWD/agentctl" --dry-run
+grep " agentctl_<version>_darwin_arm64.tar.gz\$" SHA256SUMS | shasum -a 256 -c -
+tar -xzf agentctl_<version>_darwin_arm64.tar.gz
+cd agentctl_<version>_darwin_arm64
 scripts/install.sh --binary "$PWD/agentctl"
 agentctl doctor
 ```
 
-Use `darwin_amd64`, `linux_amd64`, or `linux_arm64` for another supported
-platform. On Linux, replace `shasum -a 256` with `sha256sum`. The default
-install prefix is `~/.local`; ensure `~/.local/bin` is on `PATH`. The installer
-does not download code and previews its changes with `--dry-run`.
+Releases are built for macOS and Linux on arm64 and amd64. The binary goes in
+`~/.local/bin`, and the installer adds the agentctl skill to each agent CLI it
+detects. agentctl updates itself once a day; `agentctl update policy notify`
+or `off` changes that.
 
-Exact release builds default to automatic updates. On the first work-creating
-CLI use that is due each UTC day, agentctl reads its binary-global owner-only state and, when
-needed, starts one detached short-lived worker. The foreground command does not
-wait for release discovery or installation. The worker downloads the matching
-release archive, verifies it against the published `SHA256SUMS`, and runs its
-packaged installer only when the current executable is owned by an agentctl
-install manifest. It then exits; no updater service or persistent daemon is
-created.
-Commands advertised as read-only never trigger update discovery or managed-skill
-maintenance as a hidden side effect.
-
-Use `agentctl update status`, `agentctl update now`, or `agentctl update policy
-auto|notify|off` to inspect or control this behavior. `notify` retains the
-once-per-UTC-day `agentctl_update_available` warning without installing, while
-`off` performs no check. `AGENTCTL_UPDATE_MODE` overrides the stored policy and
-the legacy `AGENTCTL_UPDATE_CHECK=off` remains a hard-off override.
-
-Binary maintenance does not require a Skill Hub configuration. When the default
-config is absent, `update now` and automatic maintenance skip the optional skill
-phase without creating config or selecting a pack. The existing empty skill
-report is returned; it does not claim healthy or installed skills. A missing
-explicit config selection, malformed config, or unsafe config permissions still
-fail visibly. Explicit `--config` selections are preserved by update status,
-manual updates, and the detached maintenance worker.
-
-`update now` bypasses the daily release-check cache. If GitHub's release API
-returns HTTP 403 or 429, the updater checks GitHub's public latest-release
-redirect and accepts only a version tag on the same repository and origin.
-The default packaged installer records the installed version after a successful
-manual install; a later `update now` also reconciles stale version bookkeeping before
-checking for a release. When the binary is current, it returns `updated=false`
-with the current installed version. Release-check failures expose an allowlisted
-`update_error_code` and `safe_cause` without raw network or installer output.
-
-## Build from source
-
-Requirements: a supported platform, the Go version declared in `go.mod` or
-newer, and at least one native agent CLI. Building and the read-only discovery
-commands do not require private configuration.
+To build from source instead, you need Go:
 
 ```bash
 git clone https://github.com/Git-on-my-level/agentctl.git
 cd agentctl
 make ci
 go build -o build/agentctl ./cmd/agentctl
-
-build/agentctl help
-build/agentctl orient
-build/agentctl doctor
-build/agentctl capabilities codex --require launch,result_content
 ```
 
-`orient` is the compact first call in an unfamiliar checkout. It reports the
-current Git worktree/branch/HEAD/dirty/upstream state, selected profile and
-authority, static executable availability, and active/recent journal records
-whose stored workspace path is inside this checkout. It never fetches Git,
-launches an adapter, probes remote authentication, or creates a missing journal.
-Executions without stored workspace metadata are counted as `unscoped` instead
-of being guessed into the current checkout. Static `healthy` adapter status
-means only that its executable is locally runnable; configured Multica authority
-health remains `unknown` because `orient` does not probe its remote service or
-authentication.
+## Configure your agents
 
-`--limit` is one total execution-record budget, not a separate cap per list.
-Newest active records are returned first because they are actionable; newest
-terminal records fill any remaining slots. `matched` still reports the full
-workspace-matched count, while `returned` proves the bounded projection size.
-
-`doctor` performs the broader readiness inspection and can live-probe adapters;
-use `doctor --static` when launches are not appropriate. Use `--output text`
-when a compact human projection is preferable to the default JSON.
-
-Launch a native CLI by placing its exact argv after `--`:
-
-```bash
-agentctl run -- codex exec --json "review the current change"
-agentctl run -- cursor-agent --print --output-format stream-json --trust "scope this bug"
-agentctl run -- cursor-agent --print --output-format stream-json --mode ask --trust "explain this code"
-agentctl run -- claude --output-format stream-json "review this patch"
-```
-
-Dispatch durable cross-host work without weakening `run`'s exact-native-argv
-contract:
-
-```bash
-agentctl dispatch --route "m5 sol" --title "Review this release" \
-  --prompt-file task.md --idempotency-key release-review-v1 --plan
-agentctl dispatch --route "m5 sol" --title "Review this release" \
-  --prompt-file task.md --idempotency-key release-review-v1
-```
-
-Dispatch performs live read-only agent/runtime resolution, requires one
-unarchived idle or working agent on an online host/adapter/model runtime,
-creates the issue with Multica's exact assignee ID, and returns a tracked
-Multica-authority `exec-*` handle. It never dispatches by display name or falls
-back locally. Replay safety uses an assigned backlog creation, a persisted issue
-binding, and an exact-status activation only after the exact issue still reads
-as backlog. If replay observes Multica already advanced the issue, it skips
-activation. Concurrent external status changes remain Multica-owned and may race
-the CLI update. Before the remote mutation, agentctl reserves a `starting`
-execution with the exact resolved assignee/runtime bindings, so a lost-response
-retry does not depend on the fleet still having the same online or unique match.
-
-Known executable names select their built-in adapter. Use `--adapter` for an
-ambiguous executable or a deliberate override. `run` waits for a terminal
-result, has no default wall-clock timeout, and requires result-content support
-by default. Use `--timeout 2h` when the caller needs a bound. Cancellation sends
-the native process group `TERM`, waits five seconds, and then escalates to
-`KILL`. The native CLI's arguments, permissions, and provider authentication
-remain unchanged.
-
-For work whose outcome is easy to confuse with native-process completion, pass
-a bounded task contract separately from the prompt:
-
-```json
-{
-  "objective_summary": "Diagnose the failing service",
-  "side_effect_boundary": "read_only",
-  "expected_artifact_kinds": ["root_cause_report"],
-  "continuation": {"same_session_required": true}
-}
-```
-
-```bash
-agentctl run --task-contract task-contract.json -- \
-  codex exec --json "perform the bounded diagnosis"
-```
-
-The file is strict UTF-8 JSON with no null typed fields, a regular non-symlink
-file, and at most 64 KiB.
-`status` and `result` retain the typed contract and report acceptance as
-external-required: native completion does not prove that an expected artifact
-exists or that its actual authority accepted it. Contract files never become
-prompts, transcripts, or event payloads. Multica issues remain authoritative
-for Multica contracts, so `run --adapter multica --task-contract ...` fails
-closed; use the promotion flow instead.
-
-For long-running work, label a foreground `run` and parent-background that
-process. `run --background` is rejected: agents treat its journaled exit 0 as
-task completion. Work that must outlive this process belongs on Multica
-`dispatch`, not a detached agentctl worker.
-
-After a delegated execution completes, send review feedback or the next step
-to the same native session with `agentctl continue <execution-id>
---request-key <key> --prompt-file feedback.md --wait --content`. The agent
-keeps its conversation, and each turn is its own execution with its own
-result. See [Follow-up turns](docs/follow-up-turns.md).
-
-A running native execution can be redirected from another invocation with
-`agentctl steer <execution-id> --prompt-file steer.md`. Whether it can be
-steered, and whether that interrupts the agent, depends on the route the launch
-negotiated; `steer --plan` reports it. See [Steering](docs/steering.md).
-
-```bash
-agentctl run --label review --label retrieval -- \
-  cursor-agent --print --output-format stream-json --trust "review this change"
-agentctl recent --state nonterminal --liveness alive --label review
-agentctl await exec-... --no-timeout
-agentctl result exec-...
-agentctl result exec-... --content
-agentctl workspace owners --path "$PWD"
-```
-
-Labels are exact lowercase metadata names, may be repeated up to 16 times, and
-never contain or derive from prompt text.
-
-Direct launches also record a local Git worktree identity when `--cwd` (or the
-current directory) is inside a repository. `agentctl workspace owners` is the
-explicit path-bearing query for those records. With `--path`, it reports only
-nonterminal executions launched from that exact linked worktree. This is
-cleanup evidence, not an exclusive lock: `exclusive` is always false, and old
-nonterminal journal rows without workspace metadata are counted separately so
-absence is never silently presented as proof that a worktree is unused.
-
-For a reusable multi-line prompt, select exactly one source and an explicit
-delivery mechanism:
-
-```bash
-agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- \
-  cursor-agent --print --output-format stream-json --trust
-
-agentctl run --prompt-stdin --prompt-delivery argv -- \
-  cursor-agent --print --output-format stream-json --trust < "/absolute/path/task.md"
-
-agentctl run --prompt-stdin --prompt-delivery stdin -- \
-  codex exec --json - < "$PWD/task.md"
-```
-
-Prompt files must be regular non-symlink files within the selected `--cwd`
-(the current directory by default) and are bounded to 8 MiB. Prompt bytes are
-read once, delivered without content rewriting, and never written to status,
-events, plan output, or the journal; plan and idempotency metadata use only a
-SHA-256 digest, byte count, source, and delivery mode. `argv` delivery appends
-one positional argument. `stdin` delivery attaches only the selected prompt
-bytes to the native child. agentctl never guesses delivery from an adapter
-name.
-
-To run one prompt through several explicit native commands, use a foreground
-fan-out manifest:
+List the agents and models you want to delegate to in
+`~/.config/agentctl/config.json`. Only listed entries can be launched by name,
+and `default` breaks ties when a name matches more than one entry:
 
 ```json
 {
   "schema_version": 1,
-  "prompt_file": "task.md",
-  "prompt_delivery": "argv",
-  "concurrency": 2,
-  "children": [
-    {
-      "argv": ["cursor-agent", "--print", "--output-format", "stream-json", "--trust"]
-    },
-    {
-      "argv": ["codex", "exec", "--json"]
+  "default_profile": "local",
+  "profiles": {
+    "local": {
+      "agent_preferences": {
+        "mode": "advisory",
+        "preferred": [
+          {"agent": "codex", "family": "gpt", "model": "<codex model>", "speed": "regular", "default": true},
+          {"agent": "cursor", "family": "grok", "model": "<cursor model>", "speed": "regular"},
+          {"agent": "claude-code", "family": "claude", "model": "<claude model>"}
+        ]
+      }
     }
-  ]
+  }
 }
 ```
 
 ```bash
-agentctl fanout --plan --manifest "$PWD/fanout.json"
-agentctl fanout --manifest "$PWD/fanout.json"
-```
-
-`fanout` validates every child before launching any task, reads each distinct
-prompt file once, preallocates one `exec-*` ID per child, and admits up to two
-children concurrently by default. The manifest requires `schema_version` and
-`children[].argv`, plus a shared `prompt_file` or a `prompt_file` on every child.
-A child prompt overrides the shared prompt; `prompt_delivery` can also be set
-globally or per child. Optional unique child `name` values correlate responses,
-while manifest and child `labels` persist on executions for `recent` and `inbox`.
-
-Prompt files and relative child `cwd` values resolve from the manifest directory.
-A child with no `cwd` inherits the invoking directory. Preflight may execute
-native read-only version probes; it is not an atomic batch reservation. Existing
-execution IDs fail preflight rather than replaying or resuming work. Use separate
-worktrees for parallel writers; fan-out neither isolates nor merges changes.
-
-Responses retain manifest order and report each child's `launch_attempted`,
-`recorded`, actual journal `state`, and any error, including on batch failure.
-`--fail-fast` cancels admitted siblings and skips queued children; skipped work
-has no fabricated journal state. Results remain independently retrievable with
-`agentctl result <exec-id>`, and `--content` writes exact stored UTF-8 text.
-agentctl does not concatenate or synthesize answers, create a group authority,
-or acknowledge collection during batch observation. Foreground ownership does
-not provide crash or host-restart durability. Put explicit execution IDs in the
-manifest when subscriptions must be created before launch.
-
-See the [delegation-batch contract](docs/fanout.md) for limits and failure
-semantics, and the [distinct-task example](examples/fanout/fanout.json) for
-cross-harness review delegation. `agentctl schema list` locates the normative
-manifest schema.
-
-For Cursor, omitting `--mode` selects its normal Agent behavior; `--mode ask`
-is the read-only Q&A path. Cursor plan mode is rejected by default because its
-one-shot terminal result is not yet reliable. `--allow-unreliable-result` is an
-explicit escape hatch. Workspace trust remains visible in native argv; an
-operator can authorize agents to pass `--trust` through advisory config.
-
-For live observation, allocate the execution ID and subscription before launch:
-
-```bash
-EXEC_ID=$(agentctl id generate exec --output text | cut -d' ' -f1)
-agentctl subscribe create \
-  --execution "$EXEC_ID" \
-  --destination file \
-  --target "$PWD/agentctl-events.ndjson"
-agentctl run --execution-id "$EXEC_ID" -- codex exec --json "review this change"
-
-agentctl status "$EXEC_ID"
-agentctl events "$EXEC_ID" --after-sequence 0
-agentctl await "$EXEC_ID"
-agentctl result "$EXEC_ID"
-```
-
-If an execution ID was not retained, discover it from the host-local journal:
-
-```bash
-agentctl recent
-agentctl recent --state nonterminal --adapter cursor
-agentctl recent --state nonterminal --liveness alive
-agentctl recent --liveness unreachable
-agentctl recent --label review --limit 50
-agentctl recent --unreconciled
-agentctl inbox --stale-after 2h
-```
-
-`recent` returns newest-first bounded metadata only. It performs no native
-refresh, reads no prompt or result records, and does not merge other hosts.
-Repeating `--label` requires every selected label (AND semantics).
-`--unreconciled` is the start-of-turn recovery query: terminal executions whose
-result has never been acknowledged by `result` or a terminal `await`. Terminals
-that already existed when acknowledgement tracking first write-opened the
-journal are treated as reconciled so an upgrade does not flood the query with
-history.
-
-`inbox` is the read-only start-of-turn summary over the same journal. It names
-terminal results that still need collection, current attention states, and
-running or unreachable executions whose last observation exceeds an explicit
-age bound (one hour by default, configurable from one minute through thirty
-days). Each row includes stable reason codes and separate `work_health` and
-`tool_health` fields: an unreachable tool is review-worthy but is not evidence
-that the work failed. Terminal failures leave the inbox after `result` or a
-terminal `await` acknowledges collection. `inbox` performs no native refresh,
-result read, acknowledgement write, or cross-host merge. Conflicted normalized
-evidence remains actionable even after collection, because acknowledging a
-result does not reconcile contradictory authority observations.
-
-`reconcile` is the explicit repair for a journal that has kept those rows.
-`--plan` prints the executions it would change and a `plan_digest`. `--apply`
-requires that digest, recomputes the candidate set, and writes nothing if it
-differs. A nonterminal native execution becomes `orphaned` when the PID
-recorded by the launcher is provably gone and its last observation is older
-than `--stale-after` (24h by default). A numeric session id is not that PID.
-`journal_host_match` compares the journal's stored host id, not a machine
-fingerprint. That orphaned state means the owner was lost and the outcome was
-not recovered; it is not success or failure. Rows with no launch record stay
-unchanged unless `--include-legacy-unproven` is set. Those rows must be native,
-match the journal host, and be older than `--legacy-stale-after` (default 168h,
-minimum 72h). The plan lists them under `legacy_orphan` with evidence
-`heartbeat_absent` and outcome `owner_unproven_legacy`. A legacy numeric PID
-that currently exists is reported `legacy_pid_present` and left unchanged.
-Completed and cancelled terminals
-older than `--collect-older-than` (168h by default) receive a `bulk_reconciled`
-collection stamp without anyone reading the result. `recent` and `status` show
-that source, and the stamp makes the result eligible for `data cleanup`.
-Failures, orphans, and integrity conflicts stay visible unless
-`--include-failures` is set. Multica issue state is not changed; local
-collection stamps are written.
-
-If a command reports `diagnostic_code=journal_busy`, retry the same agentctl
-invocation with bounded backoff. Do not silently switch to a raw native CLI;
-that drops agentctl's supervision, journal, callbacks, and result recovery.
-
-`status`, events, subscriptions, and callbacks contain metadata and references,
-not the final answer. `result` is the explicit content-retrieval path.
-A successful `result` or terminal `await` records a small local acknowledgement
-stamp, so those commands are `local_operational_write` rather than read-only.
-Callers can require provenance or a task-specific minimum size with
-`result --require-result-source assistant --min-result-bytes N`.
-Use `await --no-timeout` for an intentionally unbounded observer. Await still
-stops on actionable attention unless `--ignore-attention` is explicit.
-Executions launched with `run --timeout` record an absolute deadline;
-`await --through-execution-deadline` waits through that deadline plus bounded
-terminalization grace. Generated await next actions use this form and
-also point nonblocking callers to durable subscription setup.
-
-JSON callers must inspect the envelope's `.ok` field. In shell pipelines,
-`$?` normally belongs to the final pipeline stage; use `set -o pipefail` or
-capture the agentctl status explicitly rather than treating a downstream
-formatter's zero exit as agentctl success.
-
-## Data-storage disclosure
-
-By default, agentctl stores the final UTF-8 result body in its local journal,
-bounded to **1 MiB per execution**. This makes delegated output retrievable
-without scraping a native harness's session files. `--no-store-result` records
-an omission tombstone instead; `result --allow-empty` permits a metadata-only
-read.
-
-**Automatic journal retention is not implemented in this preview.** Inspect
-owner-only local usage with `agentctl data inventory`. Cleanup is operator
-initiated: `agentctl data cleanup --before <RFC3339> --plan` reports exact
-eligible graphs, protected references, logical bytes, and a plan digest. Apply
-requires that digest with `--apply --plan-digest ...` and rejects a changed
-plan. Promotion-linked executions remain conservatively protected. Do not run
-agentctl with sensitive prompts or results unless this local persistence is
-acceptable. See [State, security, privacy, and retention](docs/state-security-and-privacy.md).
-
-## Configuration
-
-Configuration is optional for the standalone native-agent path. When used, it
-is a versioned, owner-only JSON document with named profiles. It records exact
-native executable expectations for `doctor`, optional advisory
-agent/model/speed preferences, and an optional runtime-effective Multica
-authority. Preferences are discoverable guidance only: config does not contain
-credentials, enforce a model choice, or alter the exact argv supplied to
-`run --`.
-
-The default path is `$XDG_CONFIG_HOME/agentctl/config.json`, falling back to
-`~/.config/agentctl/config.json`. `AGENTCTL_CONFIG` or the global `--config`
-flag selects an explicit path.
-
-Operator-specific executable and optional authority profiles can live in a
-separately reviewed repository as a narrow config bundle. Use it for one
-invocation, or explicitly materialize it as the owner-only live config:
-
-```bash
-agentctl --config-bundle /absolute/path/to/config-bundle.json \
-  config bundle validate
-agentctl --config-bundle /absolute/path/to/config-bundle.json \
-  config bundle plan
-agentctl --config-bundle /absolute/path/to/config-bundle.json \
-  --profile coordinated doctor
-agentctl config source init \
-  --remote git@github.com:owner/agentctl-config.git \
-  --ref main \
-  --plan
-agentctl config source init \
-  --remote git@github.com:owner/agentctl-config.git \
-  --ref main
-agentctl config source update
-agentctl config source status
-agentctl config source restore --plan  # only for live-config drift
-```
-
-The invocation-scoped bundle composes additively. It can state advisory agent
-preferences, but cannot enforce them or rewrite native argv. It cannot replace
-a different user profile/default, provide adapter arguments, configure callbacks
-or install roots, or contain secrets. The plan reports its SHA-256 provenance
-and does not mutate local config. A configured Git source updates only on the
-explicit `source update` command, accepts fast-forwards only, and fails closed
-on checkout or live-config drift. Git/SSH continues to own credentials. See
-[Configuration](docs/configuration.md).
-First-time source setup may safely add missing bundle fields to an existing
-valid live config, but never replaces or removes an existing value implicitly.
-
-Choose one setup path:
-
-- durable team or personal Git config: run `config source init` before any
-  `set-profile` command;
-- one-off bundle inspection: pass `--config-bundle` for that invocation; or
-- manual host-local config: use `config set-profile` and do not initialize a
-  Git source for the same file.
-
-For a private SSH remote on a new Mac, first verify `git --version` and normal
-Git-host SSH access. agentctl runs Git noninteractively and never owns SSH keys
-or tokens. Release installs use `~/.local/bin` by default; ensure that directory
-is on `PATH`. macOS intentionally uses the same XDG-style config and data paths
-as Linux.
-
-Manual host-local setup remains available:
-
-```bash
-agentctl config set-profile \
-  --name local \
-  --default \
-  --adapter codex=/absolute/path/to/codex \
-  --adapter cursor=/absolute/path/to/cursor-agent
-agentctl config validate
 agentctl config doctor
 ```
 
-## Portable skill reconciliation
-
-`agentctl bootstrap update` detects supported harnesses, installs or upgrades
-agentctl's embedded portable skill in canonical locations, and reconciles a
-short marked delegation pointer in documented user-global instruction files:
-`~/.hermes/SOUL.md`, `~/.codex/AGENTS.md`, `~/.cursor/AGENTS.md`, and
-`~/.claude/CLAUDE.md`. It appends the pointer to existing unmarked files,
-creates a missing file that contains only the marked block, repairs a truncated
-agentctl marker, and adopts digest-matching unmarked skill copies. Exact pointers
-from shipped releases are upgraded; duplicate or user-edited blocks conflict.
-It does not rewrite user prose outside the marked block, does not overwrite a
-user-edited pointer body, and does not create `~/.omp/agent/AGENTS.md`. A skill
-root conflict no longer skips independent pointer writes. Opt out with
-`bootstrap.instruction_pointers` set to `off` in the live config, or pass
-`--no-instruction-pointers` for one invocation. An existing agentctl-managed
-supervisor may be reconciled; a new service is never created merely because a
-harness was detected.
+To share this across machines, commit the same JSON as `config-bundle.json` in
+a Git repository and point each machine at it:
 
 ```bash
-agentctl bootstrap update --dry-run
-agentctl bootstrap update
-agentctl bootstrap status
+agentctl config source init --remote git@github.com:you/agentctl-config.git
+agentctl config source update   # pull later changes
 ```
 
-The release installer performs the same detected-harness reconciliation by
-default. Use `--binary-only` only when a binary-only installation is
-intentional.
+agentctl adds flags that skip an agent's approvals or sandbox only when your
+config grants it. See [Structured delegation](docs/structured-delegation.md)
+for permissions, workspace trust, and matching rules, and
+[Configuration](docs/configuration.md) for everything else.
 
-## Managed personal skills
+## Learn more
 
-A configured bundle may select a separate Git-backed Skill Hub manifest. The
-config repository owns the source selection and update policy; the Skill Hub
-owns manifests and skill bodies. Agentctl pins the Hub independently.
+`agentctl help` lists every command; `agentctl help <command>` explains one.
 
-```bash
-agentctl skills update --plan
-agentctl skills update
-agentctl skills status
-agentctl skills diff <name>
-```
-
-Auto-clean upgrades unchanged marker-owned copies while preserving unmanaged
-collisions and local drift for explicit review. `agentctl-portable` remains
-bootstrap-owned and is rejected from Hub packs. Omitted skills are not deleted,
-and Multica remains unsupported until its adapter advertises a reviewed remote
-runtime-bundle installer. See [Managed Skill Hub packs](docs/managed-skills.md).
-
-## Support matrix
-
-| Area | Preview support | Boundary |
-| --- | --- | --- |
-| macOS | amd64 and arm64 release targets | launchd supervisor reconciliation is implemented for an already-managed service |
-| Linux | amd64 and arm64 release targets | explicit systemd-user installer consumes the reviewed plan; rerun it after binary updates because binary install does not create or restart the service |
-| Codex | built-in structured-output adapter | attach, observation, result, and cancel beyond the launching process depend on native CLI support |
-| Cursor | built-in `stream-json` adapter | workspace trust and approval behavior remain Cursor-owned |
-| Claude Code | built-in structured-output adapter | permissions and hooks remain Claude-owned |
-| OMP | built-in structured-output adapter | some event and result-content semantics are reported as degraded |
-| Generic process | explicit structured-result adapter | a zero exit code alone is not treated as task success |
-| Multica | optional configured integration | promotion and durable workspace events require a compatible Multica deployment |
-
-The exact live answer for an installed backend comes from
-`agentctl capabilities <adapter>` or `agentctl doctor`, not from this table.
-See [Adapters](docs/adapters.md) for capability semantics.
-
-## Optional integrations
-
-The following are not required for local use:
-
-- Multica for durable issue/run/review coordination and explicit promotion;
-- Tailscale or another network layer for operator-managed reachability;
-- `tailnetctl`, `macctl`, or another fleet tool for resource and host desired
-  state; and
-- independently owned Git repositories for shared knowledge or private policy.
-
-These systems retain their own authority. agentctl consumes explicit references
-or configuration and does not centralize their credentials or databases. See
-[Optional integrations](docs/optional-integrations.md).
-
-## Project status and contributing
-
-The implementation and its limits are tracked in the
-[implementation audit](docs/implementation-audit.md) and [roadmap](docs/roadmap.md).
-For changes, read [Contributing](CONTRIBUTING.md), the
-[Code of Conduct](CODE_OF_CONDUCT.md), and [Support](SUPPORT.md). Report
-vulnerabilities through the process in [Security](SECURITY.md).
-
-## Documentation
-
-- [Architecture](docs/architecture.md)
-- [Configuration](docs/configuration.md)
-- [Adapters](docs/adapters.md)
-- [Execution envelope](docs/execution-envelope.md)
-- [Events, subscriptions, and callbacks](docs/events-and-subscriptions.md)
-- [Identifiers](docs/identifiers.md)
-- [Context and knowledge](docs/context-and-knowledge.md)
-- [State, security, privacy, and retention](docs/state-security-and-privacy.md)
-- [Optional integrations](docs/optional-integrations.md)
-- [Agent ergonomics](docs/agent-ergonomics.md)
-- [Implementation status](docs/implementation-audit.md)
-- [Roadmap](docs/roadmap.md)
 - [Structured delegation](docs/structured-delegation.md)
-- [Follow-up turns](docs/follow-up-turns.md)
-- [Steering](docs/steering.md)
+- [Follow-up turns](docs/follow-up-turns.md) and [steering](docs/steering.md)
+- [Running several agents at once](docs/fanout.md)
+- [Adapters](docs/adapters.md)
+- [Architecture](docs/architecture.md)
+- [State, security, and privacy](docs/state-security-and-privacy.md)
+- [Roadmap](docs/roadmap.md)
 
-Machine-readable contracts live under [`schemas/`](schemas/).
+To contribute, see [Contributing](CONTRIBUTING.md). Report vulnerabilities as
+described in [Security](SECURITY.md).
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE). Third-party notices, including
-the vendored BIP-39 English word list, are recorded in [NOTICE](NOTICE).
-
-### Optional identity composition
-
-Use `agentctl identity --json` for a read-only, versioned provider/native-session
-correlation report with explicit unknowns. It keeps calling-agent identity,
-per-turn executions, and installed harness inventory separate. See the
-[identity contract](docs/identity.md) for privacy, confidence, and capability
-boundaries; it does not register agents or enable native resume.
-
-Usage audits can use `agentctl recent --summary` with `--since`, `--until`, and
-`--caller`, or follow bounded `--cursor` pages without reading answers or
-acknowledging work. See [Usage export](docs/agent-ergonomics.md#usage-export)
-for caller attribution and live-state limits. Delegation validation now provides
-field-specific repair details and config diagnostics separately report static
-recipe compatibility.
+[Apache License 2.0](LICENSE). Third-party notices are in [NOTICE](NOTICE).
