@@ -22,6 +22,8 @@ func AdapterForModelFamily(family string) (string, error) {
 		return "cursor", nil
 	case "glm", "open-weight", "open_weight", "openweight", "omp":
 		return "omp", nil
+	case "openclaw":
+		return "openclaw", nil
 	case "opencode":
 		return "opencode", nil
 	case "zcode":

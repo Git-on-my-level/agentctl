@@ -1015,7 +1015,11 @@ func boundedString(value string, max int) string {
 }
 
 func boundedUTF8(value string, max int) string {
-	value = strings.TrimSpace(value)
+	return boundedUTF8Exact(strings.TrimSpace(value), max)
+}
+
+// boundedUTF8Exact bounds answer bytes without changing whitespace.
+func boundedUTF8Exact(value string, max int) string {
 	if max <= 0 || len(value) <= max {
 		return value
 	}

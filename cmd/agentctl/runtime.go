@@ -120,7 +120,9 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 				return output.NewError(output.CodeUsage, "argv prompt must be valid UTF-8 without NUL bytes", false)
 			}
 			promptArgs = 1
-			if len(prompt.Bytes) != 0 && prompt.Bytes[0] == '-' && !containsArg(opts.argv, "--") {
+			// OpenClaw requires the appended prompt as an -m/--message value.
+			// Inserting a positional delimiter would consume that value slot.
+			if len(prompt.Bytes) != 0 && prompt.Bytes[0] == '-' && !strings.EqualFold(opts.adapter, "openclaw") && !containsArg(opts.argv, "--") {
 				opts.argv = append(opts.argv, "--")
 				promptArgs = 2
 			}
@@ -999,6 +1001,8 @@ func inferAdapter(executable string) string {
 		return "claude"
 	case "omp":
 		return "omp"
+	case "openclaw":
+		return "openclaw"
 	case "opencode":
 		return "opencode"
 	case "zcode":
@@ -1231,6 +1235,8 @@ func (a *app) runtimeAdapter(c common, name, issue, run string) (adapter.Adapter
 		return adapter.NewClaudeCode(), "", nil
 	case "omp":
 		return adapter.NewOMP(), "", nil
+	case "openclaw":
+		return adapter.NewOpenClaw(), "", nil
 	case "opencode":
 		return adapter.NewOpenCode(), "", nil
 	case "zcode":
@@ -1528,8 +1534,8 @@ func buildOutcome(execution model.Execution, result adapter.Result, now time.Tim
 	if noStoreResult {
 		outcome.Availability = model.OutcomeOmittedByPolicy
 	} else {
-		content := strings.TrimSpace(result.Content)
-		if content != "" {
+		content := result.Content
+		if strings.TrimSpace(content) != "" {
 			bounded, truncated := boundedOutcomeText(content, model.OutcomeInlineLimit)
 			preview, _ := boundedOutcomeText(bounded, model.OutcomePreviewLimit)
 			contentSource, _ := result.Data["result_content_source"].(string)

@@ -3,6 +3,7 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,6 +74,108 @@ func NewDevin() Adapter {
 		LaunchKind: "devin_session", WholeStdout: true, TransformArgv: rewriteDevinArgv,
 	})
 	return &devinAdapter{NativeAdapter: base}
+}
+
+// NewOpenClaw runs an embedded local agent turn. The gateway-backed ACP bridge
+// is deliberately outside this adapter's authority.
+func NewOpenClaw() Adapter {
+	base := newNativeAdapter(nativeConfig{
+		Manifest: openclawManifest(), Binary: resolveOpenClawBinary(), Parser: openclawParser{},
+		LaunchKind: "openclaw_session", WholeStdout: true, TransformArgv: rewriteOpenClawArgv,
+	})
+	return &openclawAdapter{NativeAdapter: base}
+}
+
+type openclawAdapter struct{ *NativeAdapter }
+
+func (o *openclawAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, error) {
+	if !openclawInvocationSatisfied(req.Argv) {
+		return LaunchResult{}, invalidRequest("openclaw adapter requires agent --local --json -m <nonempty prompt>")
+	}
+	return o.NativeAdapter.Launch(ctx, req)
+}
+
+// parseOpenClawOptions consumes values according to the reviewed agent CLI
+// grammar. Unknown options fail closed rather than letting their values count
+// as output/local flags. The same parse governs session isolation.
+func parseOpenClawOptions(argv []string) (map[string]string, bool) {
+	if len(argv) < 2 || argv[1] != "agent" {
+		return nil, false
+	}
+	options := map[string]string{}
+	for i := 2; i < len(argv); i++ {
+		option, value, inline := strings.Cut(argv[i], "=")
+		switch option {
+		case "--local", "--json", "--deliver":
+			if inline {
+				return nil, false
+			}
+			options[option] = "true"
+		case "-m", "--message", "--agent", "--channel", "--model", "--reply-account", "--reply-channel", "--reply-to", "--session-id", "--session-key", "-t", "--to", "--thinking", "--timeout", "--verbose":
+			if !inline {
+				i++
+				if i >= len(argv) {
+					return nil, false
+				}
+				value = argv[i]
+			}
+			if strings.TrimSpace(value) == "" {
+				return nil, false
+			}
+			if option == "-m" {
+				option = "--message"
+			}
+			if option == "-t" {
+				option = "--to"
+			}
+			if _, exists := options[option]; exists {
+				return nil, false
+			}
+			options[option] = value
+		default:
+			// Positional arguments and the end-of-options delimiter cannot supply
+			// the required message or flags for this command.
+			return nil, false
+		}
+	}
+	return options, true
+}
+
+func openclawInvocationSatisfied(argv []string) bool {
+	options, ok := parseOpenClawOptions(argv)
+	return ok && options["--local"] == "true" && options["--json"] == "true" && strings.TrimSpace(options["--message"]) != ""
+}
+
+func (o *openclawAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, error) {
+	if req.Executable == "" || req.Executable == "openclaw" {
+		req.Executable = resolveOpenClawBinary()
+	}
+	return o.NativeAdapter.Probe(ctx, req)
+}
+
+func resolveOpenClawBinary() string {
+	if path, err := exec.LookPath("openclaw"); err == nil {
+		return path
+	}
+	return "openclaw"
+}
+
+func rewriteOpenClawArgv(argv []string) []string {
+	if len(argv) == 0 {
+		return argv
+	}
+	out := append([]string(nil), argv...)
+	if out[0] == "openclaw" {
+		out[0] = resolveOpenClawBinary()
+	}
+	options, valid := parseOpenClawOptions(out)
+	if valid && options["--session-key"] == "" && options["--session-id"] == "" && options["--to"] == "" {
+		agentID := firstNonEmpty(options["--agent"], "main")
+		key := "agent:" + agentID + ":agentctl-" + rand.Text()
+		out = append([]string{out[0], out[1], "--session-key", key}, out[2:]...)
+	}
+
+	return out
 }
 
 type devinAdapter struct{ *NativeAdapter }
@@ -712,6 +815,29 @@ func devinManifest() Manifest {
 	})
 }
 
+func openclawManifest() Manifest {
+	resultContent := resultContentDecl(CapabilitySupported, "payloads[].text")
+	resultContent.Constraints["required_output_mode"] = "json"
+	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--json", "kind": "presence"}
+	resultContent.Constraints["transport"] = "embedded_local"
+	capabilities := []CapabilityDeclaration{
+		capDecl(CapabilityLaunch, CapabilitySupported),
+		sameProcessDecl(CapabilityAttach, CapabilityUnavailable),
+		sameProcessDecl(CapabilitySnapshot, CapabilityDegraded),
+		sameProcessDecl(CapabilityEvents, CapabilityDegraded),
+		sameProcessDecl(CapabilityResult, CapabilitySupported),
+		resultContent,
+		sameProcessDecl(CapabilityCancel, CapabilitySupported),
+		capDecl(CapabilityContextInjection, CapabilityDegraded),
+	}
+	capabilities[0].Constraints = map[string]any{"transport": "embedded_local", "required_flags": []string{"agent", "--local", "--json", "-m"}, "session_selector": "--agent, --session-key, --session-id, or --to"}
+	capabilities[1].Constraints["reason"] = "no verified attach to a running local CLI process"
+	capabilities[2].Constraints["reason"] = "only the agentctl-owned process can be observed"
+	capabilities[3].Constraints["reason"] = "only local process observations; no durable native event stream"
+	capabilities[7].Constraints = map[string]any{"reason": "environment context handle is not guaranteed to reach the model"}
+	return baseManifest("openclaw", "0.1.0", "openclaw_session", "openclaw-json", capabilities)
+}
+
 func zcodeManifest() Manifest {
 	resultContent := resultContentDecl(CapabilitySupported, "response")
 	resultContent.Constraints["required_output_mode"] = "json"
@@ -777,6 +903,8 @@ func baseManifest(name, version, kind, format string, capabilities []CapabilityD
 		executable = "zcode"
 	case "devin":
 		executable = "devin"
+	case "openclaw":
+		executable = "openclaw"
 	case "multica":
 		executable = "multica"
 	case "generic-process":
@@ -857,7 +985,10 @@ func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName, 
 				return Capability{Name: name, Status: CapabilityUnavailable, Source: "manifest", SemanticsVersion: declaration.SemanticsVersion, Constraints: constraints, Reason: "Devin ACP requires a nonempty agentctl-managed stdin prompt"}
 			}
 		}
-		if len(argv) != 0 && name == CapabilityResultContent && !invocationSatisfied(argv, constraints) {
+		if declaredReason, ok := constraints["reason"].(string); ok {
+			reason = declaredReason
+		}
+		if len(argv) != 0 && name == CapabilityResultContent && (!invocationSatisfied(argv, constraints) || manifest.Adapter == "openclaw" && !openclawInvocationSatisfied(argv)) {
 			status = CapabilityUnavailable
 			constraints["invocation_satisfied"] = false
 			reason = "exact invocation does not satisfy the structured-output requirement"

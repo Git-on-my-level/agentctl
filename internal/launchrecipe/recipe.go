@@ -109,6 +109,8 @@ func Build(in Input) (Recipe, error) {
 		recipe, err = buildCodex(in.Executable, model, speed, effort, access, in.UnattendedCodingPermissions)
 	case "omp":
 		recipe, err = buildOMP(in.Executable, model, speed, effort)
+	case "openclaw":
+		recipe, err = buildOpenClaw(in.Executable, model, speed, effort)
 	case "opencode":
 		recipe, err = buildOpenCode(in.Executable, model, speed, effort)
 	case "zcode":
@@ -194,6 +196,8 @@ func CanonicalHarness(raw string) (string, error) {
 		return "codex", nil
 	case "omp", "oh-my-pi":
 		return "omp", nil
+	case "openclaw":
+		return "openclaw", nil
 	case "opencode":
 		return "opencode", nil
 	case "zcode":
@@ -249,6 +253,8 @@ func defaultExecutable(harness string) string {
 		return "codex"
 	case "omp":
 		return "omp"
+	case "openclaw":
+		return "openclaw"
 	case "opencode":
 		return "opencode"
 	case "zcode":
