@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +50,8 @@ type inboxExecution struct {
 	UpdatedAt             time.Time       `json:"updated_at"`
 	ObservationAgeSeconds float64         `json:"observation_age_seconds"`
 	Unreconciled          bool            `json:"unreconciled"`
+	RenotifyAgeTier       string          `json:"renotify_age_tier,omitempty"`
+	RenotifyAgeSeconds    *float64        `json:"renotify_age_seconds,omitempty"`
 	Reasons               []inboxReason   `json:"reasons"`
 	// NextActions is per item because inbox reports many executions at once and
 	// a document-level action cannot name which one it applies to.
@@ -65,6 +68,20 @@ type inboxRecovery struct {
 	Summary          string          `json:"summary"`
 	Limitations      []string        `json:"limitations"`
 	AuthorityAliases []ids.ID        `json:"authority_aliases"`
+}
+
+var renotifyTiers = []struct {
+	name string
+	age  time.Duration
+}{{"fresh", 24 * time.Hour}, {"aging", 72 * time.Hour}}
+
+func renotifyTierFor(age time.Duration) string {
+	for _, tier := range renotifyTiers {
+		if age < tier.age {
+			return tier.name
+		}
+	}
+	return "persistent"
 }
 
 func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
@@ -91,6 +108,7 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 	}
 	now := a.now().UTC()
 	items := make([]inboxExecution, 0, opts.limit)
+	unacked, ordered := make([]inboxExecution, 0, opts.limit), make([]inboxExecution, 0, opts.limit)
 	matched := 0
 	for i := len(executions) - 1; i >= 0; i-- {
 		execution := executions[i]
@@ -105,9 +123,19 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 			item.NextActions[j] = scopeInboxAction(item.NextActions[j], c)
 		}
 		matched++
-		if len(items) < opts.limit {
-			items = append(items, item)
+		if item.Unreconciled && item.RenotifyAgeSeconds != nil {
+			unacked = append(unacked, item)
+		} else {
+			ordered = append(ordered, item)
 		}
+	}
+	// Prioritize unacknowledged terminals by age before applying the page cap.
+	sort.SliceStable(unacked, func(i, j int) bool { return *unacked[i].RenotifyAgeSeconds > *unacked[j].RenotifyAgeSeconds })
+	for _, item := range append(unacked, ordered...) {
+		if len(items) == opts.limit {
+			break
+		}
+		items = append(items, item)
 	}
 	lines := make([]output.Line, 0, len(items))
 	for _, item := range items {
@@ -222,6 +250,15 @@ func inboxObservationAge(execution model.Execution, contact, now time.Time) time
 func projectInboxAt(execution model.Execution, contact, now time.Time, staleAfter time.Duration, acks store.AcknowledgementIndex, mode output.Mode) (inboxExecution, bool) {
 	observationAge := inboxObservationAge(execution, contact, now)
 	unreconciled := acks.Unreconciled(execution)
+	var renotifyAgeSeconds *float64
+	if unreconciled && execution.TerminalAt != nil {
+		age := now.Sub(*execution.TerminalAt)
+		if age < 0 {
+			age = 0
+		}
+		seconds := age.Seconds()
+		renotifyAgeSeconds = &seconds
+	}
 	reasons := make([]inboxReason, 0, 4)
 	workHealth := "active"
 	integrityConflicted := execution.Observation.Integrity == model.IntegrityConflicted
@@ -249,7 +286,7 @@ func projectInboxAt(execution model.Execution, contact, now time.Time, staleAfte
 		if workHealth == "active" {
 			workHealth = "result_ready"
 		}
-		reasons = append(reasons, inboxReason{Code: "result_unreconciled", Domain: "collection", Summary: "the terminal result has not been collected with result or await"})
+		reasons = append(reasons, inboxReason{Code: "result_unreconciled", Domain: "collection", Summary: "the terminal result has not been collected with result or await", AgeSeconds: renotifyAgeSeconds})
 	}
 	if execution.State == model.StateRunning && observationAge >= staleAfter {
 		age := observationAge.Seconds()
@@ -281,7 +318,10 @@ func projectInboxAt(execution model.Execution, contact, now time.Time, staleAfte
 		ID: execution.ID, Labels: labels, Authority: execution.Authority, Adapter: execution.Adapter, Mode: execution.Mode,
 		State: execution.State, Liveness: execution.Liveness, WorkHealth: workHealth, ToolHealth: string(execution.Liveness),
 		CreatedAt: execution.CreatedAt, UpdatedAt: execution.UpdatedAt, ObservationAgeSeconds: observationAge.Seconds(),
-		Unreconciled: unreconciled, Reasons: reasons, NextActions: actions, Recovery: recovery,
+		Unreconciled: unreconciled, RenotifyAgeSeconds: renotifyAgeSeconds, Reasons: reasons, NextActions: actions, Recovery: recovery,
+	}
+	if unreconciled {
+		item.RenotifyAgeTier = renotifyTierFor(now.Sub(*execution.TerminalAt))
 	}
 	return item, len(reasons) != 0
 }

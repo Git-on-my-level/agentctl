@@ -211,6 +211,12 @@ turns provably lost native owners into `orphaned` and stamps old uncollected
 terminals. It does not invent a successful outcome and it does not mutate
 Multica.
 
+Unacknowledged terminals re-notify as a pure function of terminal age. They
+lead the page oldest-first and carry `fresh`, `aging`, or `persistent` tiers,
+so finished work is not silently buried. Only a deliberate `result` or
+terminal `await` acknowledgement removes an item, and that stamp is final;
+this requires no daemon, timer, or second store.
+
 A short selector such as `studio omp` is ranked against optional config
 keywords (`route.hosts`, `agent_preferences.preferred`, plus built-in adapter
 family aliases when `preferred[]` is empty). When `preferred[]` is present, it
