@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
+	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
@@ -347,21 +349,23 @@ func TestZCodeCapacityWordingRequiresUsageLimitProof(t *testing.T) {
 	}
 }
 
-func TestStderrFallbackSurvivesOutcomeAndStatusProjection(t *testing.T) {
+func TestStderrMetadataSurvivesOutcomeAndStatusWithoutSourceText(t *testing.T) {
 	execution := model.Execution{Adapter: "codex", State: model.StateFailed}
-	result := adapter.Result{State: adapter.StateFailed, Error: "could not load settings", Data: map[string]any{"stderr_message": "could not load settings token=private-value requestId=fixture-only"}}
-	outcome := buildOutcome(execution, result, time.Now(), false)
-	if outcome.Failure == nil || outcome.Failure.MessageSource != "stderr" {
+	line := []byte("fatal: unable to process confidential user prompt opaque-token-Xb7sQ9")
+	metadata := diagnostic.FromStderrLine(line)
+	outcome := buildOutcome(execution, adapter.Result{State: adapter.StateFailed, Error: string(line), Data: map[string]any{"stderr_diagnostic": metadata, "stderr_message": string(line)}}, time.Now(), false)
+	if outcome.Failure == nil || outcome.Failure.MessageSource != "" || outcome.Failure.Stderr == nil || *outcome.Failure.Stderr != *metadata {
 		t.Fatalf("outcome=%#v", outcome)
 	}
 	for _, failure := range []*model.OutcomeFailure{outcome.Failure, withAllowlistedFailure(outcome).Failure} {
 		view := projectNativeFailure(failure)
-		if view == nil || !strings.Contains(view.Message, "could not load settings") || strings.Contains(view.Message, "private-value") || strings.Contains(view.Message, "fixture-only") || len(view.Message) > 200 {
+		if view == nil || view.Message != failureMessageGeneric || view.Stderr == nil || *view.Stderr != *metadata {
 			t.Fatalf("view=%#v", view)
 		}
 	}
-	if projectNativeFailure(&model.OutcomeFailure{Code: "native_execution_failed", Source: "codex"}) == nil {
-		t.Fatal("generic failure hidden from status")
+	legacy := withAllowlistedFailure(model.Outcome{Failure: &model.OutcomeFailure{Code: "native_execution_failed", Source: "codex", MessageSource: "stderr", Message: string(line)}})
+	if legacy.Failure.Message != failureMessageGeneric || legacy.Failure.MessageSource != "" {
+		t.Fatal("legacy marker authorized arbitrary text")
 	}
 }
 func TestUnavailableOutcomeRecordsReason(t *testing.T) {
@@ -383,7 +387,11 @@ func TestStderrCauseAtExitPersistsWithoutSecrets(t *testing.T) {
 		name, line, want string
 		retryable        bool
 	}{
-		{"unknown", "could not load settings token=private-value requestId=fixture-only", "could not load settings", false},
+		{"unknown", "fatal: unable to process confidential user prompt opaque-token-Xb7sQ9", failureMessageGeneric, false},
+		{"token-like", "fatal: opaque-token-Xb7sQ9", failureMessageGeneric, false},
+		{"classified-with-prompt", "model not found: confidential user prompt opaque-token-Xb7sQ9", "model not found", false},
+		{"JSON stderr", `{"type":"result","is_error":true,"result":"confidential user prompt opaque-token-Xb7sQ9"}`, failureMessageGeneric, false},
+		{"JSON native code", `{"type":"turn.failed","error":{"message":"confidential user prompt","codex_error_info":"opaque_token_secret"}}`, failureMessageGeneric, false},
 		{"capacity", "Selected model is at capacity. Please try a different model.", failureMessageCapacity, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -408,14 +416,18 @@ func TestStderrCauseAtExitPersistsWithoutSecrets(t *testing.T) {
 				if !strings.Contains(stdout.String(), tc.want) || !strings.Contains(stdout.String(), `"retryable":`+jsonBool(tc.retryable)) {
 					t.Fatalf("%s dropped reason: %s", command, stdout.String())
 				}
-				for _, secret := range []string{"private-value", "fixture-only", "Usage:"} {
+				metadata := diagnostic.FromStderrLine([]byte(tc.line))
+				if !strings.Contains(stdout.String(), metadata.Hash) || !strings.Contains(stdout.String(), `"bytes":`+strconv.Itoa(metadata.Bytes)) {
+					t.Fatalf("%s lost correlation: %s", command, stdout.String())
+				}
+				for _, secret := range []string{"confidential user prompt", "opaque-token-Xb7sQ9", "opaque_token_secret", "Usage:"} {
 					if strings.Contains(stdout.String(), secret) {
 						t.Fatalf("%s leaked %s", command, secret)
 					}
 				}
 			}
 			raw, err := os.ReadFile(journalPath)
-			if err != nil || bytes.Contains(raw, []byte("private-value")) || bytes.Contains(raw, []byte("fixture-only")) {
+			if err != nil || bytes.Contains(raw, []byte("confidential user prompt")) || bytes.Contains(raw, []byte("opaque-token-Xb7sQ9")) || bytes.Contains(raw, []byte("opaque_token_secret")) {
 				t.Fatalf("journal retained secret: %v", err)
 			}
 		})

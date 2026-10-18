@@ -499,11 +499,16 @@ generic quota/rate-limit wording is `quota_exceeded`. Raw stderr transcripts and
 request/trace identifiers are not stored. Explicit `result` is the supported
 final-answer read path.
 
-For new generic native failures, the first nonempty stderr cause is a fallback
-`failure.message_source: stderr`, redacted and bounded to 200 UTF-8 bytes.
-Known provider errors retain normalized messages. Codex "Selected model is at
-capacity" is retryable even without a native code. Generic failures remain
-visible on status. Missing answers record `unavailable_reason` as
+Native failures expose only content-free `failure.stderr`: an allow-listed
+`code`, a `hash` containing the first 96 bits of SHA-256 (`sha256:` plus 24 hex
+characters), and `bytes` for the first nonempty scanner line without its newline.
+Only the first 4096 bytes are classified against fixed patterns; unknown lines
+are `unclassified`. Failure messages are fixed templates, never arbitrary or
+pattern-redacted stderr. Stderr is not an answer source. Legacy
+`message_source: stderr` markers do not authorize text and are omitted on reads;
+new writes omit them. Existing private diagnostic files are unchanged; no new
+raw-stderr storage is introduced. Codex "Selected model is at capacity" remains
+retryable without a native code. Missing answers record `unavailable_reason` as
 `native_answer_missing` or `multica_result_route_unavailable`.
 
 New generic-process clean exits without a structured result are failed with

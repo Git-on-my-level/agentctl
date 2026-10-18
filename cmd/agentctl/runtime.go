@@ -21,6 +21,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/callback"
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
+	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/launchrecipe"
 	"github.com/Git-on-my-level/agentctl/internal/model"
@@ -1661,13 +1662,16 @@ func buildOutcome(execution model.Execution, result adapter.Result, now time.Tim
 				// gets a visible, bounded generic provider reason.
 				kind, category, retryable = "provider", "provider", false
 			}
-			message := allowlistedFailureMessage(model.OutcomeFailure{Code: code, Category: category, Source: execution.Adapter, NativeCode: nativeCode, Message: raw})
-			messageSource := ""
-			if stderrMessage, _ := result.Data["stderr_message"].(string); code == "native_execution_failed" && category == "" && nativeCode == "" && strings.TrimSpace(stderrMessage) != "" {
-				message, messageSource = adapter.RedactFailureLine(stderrMessage), "stderr"
+			stderrDiagnostic, _ := result.Data["stderr_diagnostic"].(*diagnostic.Stderr)
+			if stderrDiagnostic != nil && stderrDiagnostic.Validate() != nil {
+				stderrDiagnostic = nil
 			}
+			if stderrDiagnostic != nil && code == "native_execution_failed" && category == "" && nativeCode == "" {
+				code, kind, category, retryable = classifyOutcomeFailure(stderrDiagnostic.Message(), "", "")
+			}
+			message := allowlistedFailureMessage(model.OutcomeFailure{Code: code, Category: category, Source: execution.Adapter, NativeCode: nativeCode, Message: raw})
 			message, _ = boundedOutcomeText(message, model.NativeFailureMessageLimit)
-			outcome.Failure = &model.OutcomeFailure{Code: code, Kind: kind, Source: execution.Adapter, Retryable: retryable, Message: message, Category: category, NativeCode: nativeCode, MessageSource: messageSource}
+			outcome.Failure = &model.OutcomeFailure{Code: code, Kind: kind, Source: execution.Adapter, Retryable: retryable, Message: message, Category: category, NativeCode: nativeCode, Stderr: stderrDiagnostic}
 		}
 		if outcome.Content != nil || outcome.Failure != nil {
 			outcome.Availability = model.OutcomeStored
@@ -1708,12 +1712,9 @@ const (
 	failureMessageGeneric     = "native execution failed"
 )
 
-// allowlistedFailureMessage normalizes provider failures. Explicit stderr
-// fallbacks preserve only one redacted, bounded diagnostic line.
+// allowlistedFailureMessage returns constant diagnostic templates. Legacy
+// message_source=stderr never authorizes persisting or showing arbitrary text.
 func allowlistedFailureMessage(failure model.OutcomeFailure) string {
-	if failure.MessageSource == "stderr" {
-		return adapter.RedactFailureLine(failure.Message)
-	}
 	if failure.Source == "zcode" && failure.Code == "provider_capacity" && failure.Category == "capacity" && zcodeUsageLimitFailure(failure) {
 		return zcodeCapacityFailureMessage(failure.Message)
 	}
@@ -1728,6 +1729,8 @@ func allowlistedFailureMessage(failure model.OutcomeFailure) string {
 		return failureMessageApproval
 	case "quota_exceeded":
 		return failureMessageQuota
+	case "model_not_found", "executable_not_found", "permission_denied", "network", "invalid_arguments":
+		return (&diagnostic.Stderr{Code: failure.Code}).Message()
 	case "result_extraction_failed":
 		return failureMessageUnextracted
 	}
@@ -1783,6 +1786,7 @@ func withAllowlistedFailure(outcome model.Outcome) model.Outcome {
 		return outcome
 	}
 	failure := *outcome.Failure
+	failure.MessageSource = ""
 	failure.Message = allowlistedFailureMessage(failure)
 	if failure.Category != "" || failure.NativeCode != "" {
 		failure.Message, _ = boundedOutcomeText(failure.Message, model.NativeFailureMessageLimit)
@@ -1801,6 +1805,16 @@ func classifyOutcomeFailure(message, diagnosticCode, nativeCode string) (string,
 		return "provider_capacity", "capacity", "capacity", true
 	case strings.Contains(lower, "workspace") && strings.Contains(lower, "trust"):
 		return "workspace_trust_required", "permission", "", true
+	case strings.Contains(lower, "model not found"):
+		return "model_not_found", "configuration", "", false
+	case strings.Contains(lower, "executable not found"):
+		return "executable_not_found", "configuration", "", false
+	case strings.Contains(lower, "permission denied"):
+		return "permission_denied", "permission", "", false
+	case strings.Contains(lower, "network connection failed"):
+		return "network", "network", "", true
+	case strings.Contains(lower, "invalid native command arguments"):
+		return "invalid_arguments", "configuration", "", false
 	case strings.Contains(lower, "auth") || strings.Contains(lower, "login") || strings.Contains(lower, "sign in"):
 		return "authentication_required", "authentication", "", true
 	case strings.Contains(lower, "approval") || strings.Contains(lower, "permission"):

@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
 )
 
 const (
@@ -105,7 +107,7 @@ type processRecord struct {
 	contentSource    string
 	contentTruncated bool
 	lastError        string
-	stderrDiagnostic string
+	stderrDiagnostic *diagnostic.Stderr
 	zcodeFailure     *zcodeFailureDiagnostic
 	parseWarnings    []string
 	metadataSeen     map[string]bool
@@ -172,7 +174,17 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 	}
 	live := p.live
 	p.mu.Unlock()
-	obs := p.parser.Parse(line, stderr)
+	var obs parsedObservation
+	if stderr {
+		// Stderr is diagnostic input, never a structured answer/code authority.
+		// Only fixed attention classifications may cross the event boundary.
+		obs = classifyUnstructured(line, firstNonEmpty(p.ref.Adapter, "process"))
+		if obs.Kind == "" {
+			obs = parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "stderr", Data: map[string]any{"stream": "stderr", "structured": false}}
+		}
+	} else {
+		obs = p.parser.Parse(line, false)
+	}
 	if live != nil && !stderr && live.acknowledge(line) {
 		// The native CLI took a user message into the session: sequence 1 is
 		// the launch prompt, later ones are steering messages. Only this
@@ -181,8 +193,8 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 	}
 	if stderr {
 		p.mu.Lock()
-		if p.stderrDiagnostic == "" {
-			p.stderrDiagnostic = RedactFailureLine(string(line))
+		if p.stderrDiagnostic == nil {
+			p.stderrDiagnostic = diagnostic.FromStderrLine(line)
 		}
 		if p.parser != nil && p.parser.Name() == "zcode-json" {
 			diagnostic := zcodeStderrFailure(string(line))
@@ -488,7 +500,7 @@ func (p *processRecord) finish(err error) {
 				p.result.Error = "native process cancelled"
 			} else {
 				p.result.State = StateFailed
-				p.result.Error = firstNonEmpty(p.stderrDiagnostic, p.result.Error, "OpenClaw agent exited unsuccessfully")
+				p.result.Error = firstNonEmpty(p.stderrDiagnostic.Message(), p.result.Error, "OpenClaw agent exited unsuccessfully")
 			}
 		}
 	}
@@ -543,7 +555,7 @@ func (p *processRecord) finish(err error) {
 		if p.cancelled {
 			p.result = &Result{Success: false, State: StateCancelled, Error: "native process cancelled", ExitCode: p.exitCode, SessionRef: p.ref}
 		} else if p.exitCode != nil && *p.exitCode != 0 {
-			p.result = &Result{Success: false, State: StateFailed, Error: firstNonEmpty(p.lastError, p.stderrDiagnostic, "native process exited unsuccessfully"), ExitCode: p.exitCode, SessionRef: p.ref}
+			p.result = &Result{Success: false, State: StateFailed, Error: firstNonEmpty(p.lastError, p.stderrDiagnostic.Message(), "native process exited unsuccessfully"), ExitCode: p.exitCode, SessionRef: p.ref}
 		} else if p.lastTurn != nil {
 			result := *p.lastTurn
 			result.ExitCode = p.exitCode
@@ -562,13 +574,13 @@ func (p *processRecord) finish(err error) {
 			}
 		}
 	}
-	if p.result.State == StateFailed && p.stderrDiagnostic != "" {
+	if p.result.State == StateFailed && p.stderrDiagnostic != nil {
 		if p.result.Data == nil {
 			p.result.Data = map[string]any{}
 		}
-		p.result.Data["stderr_message"] = p.stderrDiagnostic
+		p.result.Data["stderr_diagnostic"] = p.stderrDiagnostic
 		if p.result.Error == "" {
-			p.result.Error = p.stderrDiagnostic
+			p.result.Error = p.stderrDiagnostic.Message()
 		}
 	}
 	applyParseWarning(p.result, p.parseWarnings)

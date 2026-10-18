@@ -96,13 +96,13 @@ func TestCursorFailureUsesStructuredErrorEvenWithZeroExit(t *testing.T) {
 	}
 }
 
-func TestCursorFailureRetainsBoundedRedactedStderrDiagnostic(t *testing.T) {
+func TestCursorFailureRetainsClassifiedStderrDiagnostic(t *testing.T) {
 	path := fixtureExecutable(t, `printf '%s\n' 'Model grok-4.6 is temporarily unavailable: workspace trust required token=top-secret' >&2; exit 17`)
 	got, err := NewCursor().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Result == nil || got.Result.State != StateFailed || !strings.Contains(got.Result.Error, "Model grok-4.6 is temporarily unavailable") {
+	if got.Result == nil || got.Result.State != StateFailed || got.Result.Error != "workspace trust required" {
 		t.Fatalf("stderr diagnostic not retained: %#v", got.Result)
 	}
 	if strings.Contains(got.Result.Error, "top-secret") {
@@ -952,8 +952,8 @@ func TestNativeFailurePreservesCauseBeforeUsageFooter(t *testing.T) {
 	record := &processRecord{parser: codexParser{}, maxOutput: 1 << 20}
 	record.ingest([]byte("error: unexpected argument '--bad-flag' found"), true)
 	record.ingest([]byte("For more information, try '--help'."), true)
-	if !strings.Contains(record.stderrDiagnostic, "--bad-flag") {
-		t.Fatalf("lost cause: %s", record.stderrDiagnostic)
+	if record.stderrDiagnostic == nil || record.stderrDiagnostic.Code != "invalid_arguments" {
+		t.Fatalf("lost cause: %#v", record.stderrDiagnostic)
 	}
 }
 

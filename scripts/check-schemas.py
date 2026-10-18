@@ -13,6 +13,19 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_DIR = ROOT / "schemas"
 
 
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key!r}")
+        result[key] = value
+    return result
+
+
+def load_json(text: str):
+    return json.loads(text, object_pairs_hook=unique_object)
+
+
 def pointer_get(document: Any, pointer: str) -> Any:
     if pointer == "":
         return document
@@ -56,8 +69,8 @@ def main() -> int:
     failures: list[str] = []
     for path in files:
         try:
-            document = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            document = load_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
             failures.append(f"{path.relative_to(ROOT)}: invalid JSON ({exc})")
             continue
         if not isinstance(document, dict):

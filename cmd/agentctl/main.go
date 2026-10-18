@@ -14,6 +14,7 @@ import (
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
+	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/knowledgecmd"
 	"github.com/Git-on-my-level/agentctl/internal/model"
@@ -1417,10 +1418,11 @@ func writeExecutionReported(renderer output.Renderer, e model.Execution, operati
 }
 
 type nativeFailureView struct {
-	Category   string `json:"category,omitempty"`
-	Message    string `json:"message"`
-	NativeCode string `json:"native_code,omitempty"`
-	Retryable  bool   `json:"retryable"`
+	Stderr     *diagnostic.Stderr `json:"stderr,omitempty"`
+	Category   string             `json:"category,omitempty"`
+	Message    string             `json:"message"`
+	NativeCode string             `json:"native_code,omitempty"`
+	Retryable  bool               `json:"retryable"`
 }
 
 func projectNativeFailure(failure *model.OutcomeFailure) *nativeFailureView {
@@ -1434,7 +1436,7 @@ func projectNativeFailure(failure *model.OutcomeFailure) *nativeFailureView {
 	if message == "" {
 		return nil
 	}
-	return &nativeFailureView{Category: failure.Category, Message: message, NativeCode: failure.NativeCode, Retryable: failure.Retryable}
+	return &nativeFailureView{Stderr: failure.Stderr, Category: failure.Category, Message: message, NativeCode: failure.NativeCode, Retryable: failure.Retryable}
 }
 
 type reportedExecution struct {

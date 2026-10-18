@@ -2,51 +2,33 @@ package adapter
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
 	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestRedactFailureLine(t *testing.T) {
-	raw := "\n\x1b[31mload failed api_key=private-value authorization='Bearer private-bearer' requestId=req-private trace_id=trace-private https://user:password@example.test/?token=private-url {\"prompt\":\"confidential task\",\"token\":\"private-json\"}\x1b[0m\nsecond line"
-	got := RedactFailureLine(raw)
-	for _, secret := range []string{"private-", "confidential", "second line", "\x1b"} {
-		if strings.Contains(got, secret) {
-			t.Fatalf("leaked %q in %q", secret, got)
-		}
-	}
-	if !strings.HasPrefix(got, "load failed") || !strings.Contains(got, "REDACTED") || len(got) > 200 {
-		t.Fatalf("diagnostic=%q", got)
-	}
-	for _, raw := range []string{
-		"load failed access_token=private-access refresh_token=private-refresh client_secret=private-client cookie=private-cookie",
-		"load failed request id: private-request trace-id=private-trace",
-		"load failed prompt=confidential task with multiple words",
-		`load failed {"access_token":"private-json","prompt":"confidential task"}`,
-	} {
-		got := RedactFailureLine(raw)
-		if strings.Contains(got, "private-") || strings.Contains(got, "confidential") || strings.Contains(got, "multiple words") {
-			t.Fatalf("leaked diagnostic: %q", got)
-		}
-	}
-	got = RedactFailureLine(strings.Repeat("界", 200))
-	if len(got) > 200 || strings.Contains(got, "�") {
-		t.Fatalf("invalid bound: %q", got)
-	}
-}
-
-func TestFailedProcessCapturesFirstNonemptyStderr(t *testing.T) {
+func TestFailedProcessCapturesFirstNonemptyStderrMetadata(t *testing.T) {
 	for _, parser := range []outputParser{codexParser{}, cursorParser{}, genericParser{}} {
 		record := &processRecord{parser: parser, done: make(chan struct{})}
+		line := []byte("fatal: unable to process private prompt and opaque-token-Xb7sQ9")
 		record.ingest([]byte("  "), true)
-		record.ingest([]byte("could not load settings token=private-value"), true)
+		record.ingest(line, true)
 		record.ingest([]byte("Usage: native-command"), true)
 		record.finish(errors.New("exit status 1"))
-		got, _ := record.result.Data["stderr_message"].(string)
-		if !strings.HasPrefix(got, "could not load settings") || strings.Contains(got, "private-value") || strings.Contains(got, "Usage:") {
-			t.Fatalf("%s result=%#v", parser.Name(), record.result)
+		got, _ := record.result.Data["stderr_diagnostic"].(*diagnostic.Stderr)
+		want := diagnostic.FromStderrLine(line)
+		if got == nil || *got != *want || record.result.Error != "native execution failed" {
+			t.Fatalf("metadata/result=%#v %#v", got, record.result)
+		}
+		encoded, _ := json.Marshal(record.result)
+		for _, secret := range []string{"private prompt", "opaque-token-Xb7sQ9", "Usage:", "stderr_message"} {
+			if strings.Contains(string(encoded), secret) {
+				t.Fatal("stderr escaped adapter metadata boundary")
+			}
 		}
 	}
 }

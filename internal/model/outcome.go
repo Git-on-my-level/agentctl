@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 )
 
@@ -49,14 +50,16 @@ type OutcomeContent struct {
 }
 
 type OutcomeFailure struct {
-	Code          string `json:"code"`
-	Kind          string `json:"kind"`
-	Source        string `json:"source"`
-	Retryable     bool   `json:"retryable"`
-	Message       string `json:"message"`
-	Category      string `json:"category,omitempty"`
-	NativeCode    string `json:"native_code,omitempty"`
-	MessageSource string `json:"message_source,omitempty"`
+	Code       string `json:"code"`
+	Kind       string `json:"kind"`
+	Source     string `json:"source"`
+	Retryable  bool   `json:"retryable"`
+	Message    string `json:"message"`
+	Category   string `json:"category,omitempty"`
+	NativeCode string `json:"native_code,omitempty"`
+	// MessageSource is accepted only for reading older outcomes; new writes omit it.
+	MessageSource string             `json:"message_source,omitempty"`
+	Stderr        *diagnostic.Stderr `json:"stderr,omitempty"`
 }
 
 type Outcome struct {
@@ -135,6 +138,9 @@ func (o Outcome) Validate() error {
 		}
 	}
 	if o.Failure != nil {
+		if err := o.Failure.Stderr.Validate(); err != nil {
+			return err
+		}
 		if o.Failure.MessageSource != "" && o.Failure.MessageSource != "stderr" {
 			return errors.New("invalid failure message source")
 		}

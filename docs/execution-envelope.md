@@ -187,7 +187,7 @@ Stored text content may include a bounded `source` label such as
 `terminal_result`. `agentctl result` can assert that provenance and a
 caller-selected minimum byte count; the semantic `assistant` requirement
 accepts both Cursor assistant sources. A failed native turn records one
-secret-redacted diagnostic: `category`, a message of at most 200 characters,
+allow-listed diagnostic: `category`, a fixed message of at most 200 characters,
 and `native_code` when the stream provides a structured code. Capacity and
 overload (`server_overloaded`, or a message that says the provider is at
 capacity) are retryable. ZCode provider code `1308` and HTTP `429` are retryable
@@ -371,13 +371,19 @@ if the reviewed plan digest changes. Promotion-linked executions remain
 protected in the preview. Retention remains an operator decision, not a
 compatibility guarantee.
 
-New generic native failures use the first nonempty stderr line as a fallback
-when no structured provider failure supplies a cause. `failure.message_source`
-is `stderr`; the diagnostic is redacted for common credentials, input fields,
-URLs and request/trace identifiers, stripped of control sequences, and bounded
-to 200 UTF-8 bytes. Status exposes even a generic failure reason. Classification
-still normalizes known causes, including Codex "Selected model is at capacity"
-without a native code, as retryable capacity. Events contain no diagnostic text.
+Native failures record content-free `failure.stderr` correlation metadata for
+the first nonempty stderr scanner line: an allow-listed `code`, `hash` (the
+first 96 bits of SHA-256, prefixed `sha256:`), and full `bytes` length excluding
+the newline. Classification examines at most 4096 bytes against fixed patterns
+for capacity, authentication, workspace trust, approval, quota, missing model,
+missing executable, permission denial, network and invalid arguments; other
+lines are `unclassified`. `failure.message` is always a fixed diagnostic template.
+Arbitrary stderr, even pattern-redacted text, is never journaled or used as an
+answer. The legacy `message_source: stderr` marker is ignored when projecting
+older outcomes and omitted from new writes; no historical journal rewrite runs.
+Existing private mode-0600 diagnostic files are unchanged; no new raw-stderr
+storage is introduced. Events contain no stderr text or correlation metadata.
+Codex "Selected model is at capacity" remains retryable without a native code.
 
 A missing answer records `unavailable_reason: native_answer_missing`;
 Multica's absent result route records `multica_result_route_unavailable`.

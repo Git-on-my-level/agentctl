@@ -77,6 +77,7 @@ build:
 	GOFLAGS='$(GOFLAGS)' $(GO) build -trimpath -buildvcs=false -ldflags '$(LDFLAGS)' -o '$(BIN)' '$(MAIN_PKG)'
 
 check-schemas:
+	$(PYTHON) tests/validators/test_schema_json.py
 	$(PYTHON) $(SCRIPTS_DIR)/check-schemas.py
 
 check-links:
