@@ -11,11 +11,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
 	"go.etcd.io/bbolt"
 
+	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/subscription"
 )
@@ -66,10 +68,11 @@ func (c CleanupRecordCounts) Total() int {
 }
 
 type CleanupExecution struct {
-	ExecutionID  string              `json:"execution_id"`
-	TerminalAt   time.Time           `json:"terminal_at"`
-	Records      CleanupRecordCounts `json:"records"`
-	LogicalBytes int64               `json:"logical_bytes"`
+	DiagnosticFile *diagnostic.OutputFile `json:"diagnostic_file,omitempty"`
+	ExecutionID    string                 `json:"execution_id"`
+	TerminalAt     time.Time              `json:"terminal_at"`
+	Records        CleanupRecordCounts    `json:"records"`
+	LogicalBytes   int64                  `json:"logical_bytes"`
 }
 
 type ProtectedExecution struct {
@@ -79,15 +82,17 @@ type ProtectedExecution struct {
 }
 
 type CleanupPlan struct {
-	SchemaVersion int                  `json:"schema_version"`
-	Before        time.Time            `json:"before"`
-	GeneratedAt   time.Time            `json:"generated_at"`
-	Applied       bool                 `json:"applied"`
-	PlanDigest    string               `json:"plan_digest"`
-	Eligible      []CleanupExecution   `json:"eligible"`
-	Protected     []ProtectedExecution `json:"protected"`
-	Records       CleanupRecordCounts  `json:"records"`
-	LogicalBytes  int64                `json:"logical_bytes"`
+	DiagnosticFiles int                  `json:"diagnostic_files"`
+	DiagnosticBytes int64                `json:"diagnostic_bytes"`
+	SchemaVersion   int                  `json:"schema_version"`
+	Before          time.Time            `json:"before"`
+	GeneratedAt     time.Time            `json:"generated_at"`
+	Applied         bool                 `json:"applied"`
+	PlanDigest      string               `json:"plan_digest"`
+	Eligible        []CleanupExecution   `json:"eligible"`
+	Protected       []ProtectedExecution `json:"protected"`
+	Records         CleanupRecordCounts  `json:"records"`
+	LogicalBytes    int64                `json:"logical_bytes"`
 	// IncludeUnreconciled reports whether the caller explicitly opted out of
 	// uncollected-result protection. ProtectedUnreconciled counts the terminal
 	// executions retained solely because nobody has collected their result.
@@ -218,7 +223,8 @@ func (j *Journal) PlanCleanup(ctx context.Context, before time.Time, options Cle
 	return plan, err
 }
 
-// ApplyCleanup atomically recomputes and deletes the eligible graph. Repeating
+// ApplyCleanup recomputes the plan, removes its diagnostic cache siblings, then
+// atomically deletes the eligible journal graph. Repeating
 // it is safe: already-deleted records simply produce an empty applied plan.
 func (j *Journal) ApplyCleanup(ctx context.Context, before time.Time, expectedPlanDigest string, options CleanupOptions) (CleanupPlan, error) {
 	if j.readOnly {
@@ -233,8 +239,13 @@ func (j *Journal) ApplyCleanup(ctx context.Context, before time.Time, expectedPl
 	if expectedPlanDigest == "" {
 		return CleanupPlan{}, fmt.Errorf("%w: cleanup plan digest is required", ErrConflict)
 	}
+	outputs, err := diagnostic.OpenOutputs(filepath.Dir(j.path), true)
+	if err != nil {
+		return CleanupPlan{}, err
+	}
+	defer outputs.Close()
 	var plan CleanupPlan
-	err := j.db.Update(func(tx *bbolt.Tx) error {
+	err = j.db.Update(func(tx *bbolt.Tx) error {
 		var targets []cleanupTarget
 		var err error
 		plan, targets, err = j.cleanupPlanTx(tx, before.UTC(), options)
@@ -243,6 +254,16 @@ func (j *Journal) ApplyCleanup(ctx context.Context, before time.Time, expectedPl
 		}
 		if plan.PlanDigest != expectedPlanDigest {
 			return fmt.Errorf("%w: cleanup plan changed; reviewed %s, current %s", ErrConflict, expectedPlanDigest, plan.PlanDigest)
+		}
+		// Files are a diagnostic cache: remove them before dropping their owning
+		// records. A filesystem failure aborts the transaction; a later DB rollback
+		// can leave a missing cache file, never retained output without its record.
+		for _, target := range targets {
+			if target.DiagnosticFile != nil {
+				if err := outputs.Remove(*target.DiagnosticFile); err != nil {
+					return err
+				}
+			}
 		}
 		for _, target := range targets {
 			for _, event := range target.events {
@@ -539,7 +560,7 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 			plan.Protected = append(plan.Protected, ProtectedExecution{ExecutionID: id, TerminalAt: *value.TerminalAt, Reasons: list})
 			continue
 		}
-		target, err := buildCleanupTarget(tx, value)
+		target, err := j.buildCleanupTarget(tx, value)
 		if err != nil {
 			return CleanupPlan{}, nil, err
 		}
@@ -547,6 +568,10 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 		plan.Eligible = append(plan.Eligible, target.CleanupExecution)
 		addCleanupCounts(&plan.Records, target.Records)
 		plan.LogicalBytes += target.LogicalBytes
+		if target.DiagnosticFile != nil {
+			plan.DiagnosticFiles++
+			plan.DiagnosticBytes += target.DiagnosticFile.Bytes
+		}
 	}
 	digestInput := struct {
 		SchemaVersion       int                `json:"schema_version"`
@@ -563,16 +588,31 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 	return plan, targets, nil
 }
 
-func buildCleanupTarget(tx *bbolt.Tx, execution model.Execution) (cleanupTarget, error) {
+func (j *Journal) buildCleanupTarget(tx *bbolt.Tx, execution model.Execution) (cleanupTarget, error) {
 	id := execution.ID.String()
 	target := cleanupTarget{CleanupExecution: CleanupExecution{ExecutionID: id, TerminalAt: *execution.TerminalAt}, events: []cleanupEvent{}, idempotencyKeys: [][]byte{}}
 	add := func(key, value []byte) { target.LogicalBytes += int64(len(key) + len(value)) }
 	execRaw := tx.Bucket(bExecutions).Get([]byte(id))
 	target.Records.Executions = 1
 	add([]byte(id), execRaw)
+	outputRef := ""
 	if outcome := tx.Bucket(bOutcomes).Get([]byte(id)); outcome != nil {
+		var value model.Outcome
+		if err := json.Unmarshal(outcome, &value); err != nil {
+			return cleanupTarget{}, corrupt(err)
+		}
+		outputRef = value.OutputRef
 		target.Records.Outcomes++
 		add([]byte(id), outcome)
+	}
+	outputs, err := diagnostic.OpenOutputs(filepath.Dir(j.path), false)
+	if err != nil {
+		return cleanupTarget{}, err
+	}
+	target.DiagnosticFile, err = outputs.Inspect(id, outputRef)
+	outputs.Close()
+	if err != nil {
+		return cleanupTarget{}, err
 	}
 	if acks := tx.Bucket(bAcknowledgements); acks != nil {
 		if raw := acks.Get([]byte(id)); raw != nil {

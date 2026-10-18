@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	diag "github.com/Git-on-my-level/agentctl/internal/diagnostic"
 )
 
 type codexParser struct{}
@@ -211,6 +213,9 @@ func parseZCodeFailure(raw string) *zcodeFailureDiagnostic {
 		message = "ZCode provider execution failed"
 	}
 	diagnostic := &zcodeFailureDiagnostic{Message: message}
+	if diag.AuthenticationRequired(raw) {
+		diagnostic.Message = "authentication required"
+	}
 	if match := zcodeProviderCodePattern.FindStringSubmatch(raw); len(match) == 2 {
 		diagnostic.NativeCode = match[1]
 	} else if match := zcodeBracketCodePattern.FindStringSubmatch(raw); len(match) == 2 {
@@ -223,7 +228,7 @@ func parseZCodeFailure(raw string) *zcodeFailureDiagnostic {
 	// Only an explicit ZCode provider code or HTTP status promotes the signal
 	// to capacity here. Generic quota/rate-limit wording stays available to the
 	// shared classifier, which distinguishes quota_exceeded from capacity.
-	if diagnostic.NativeCode == "1308" || status == "429" {
+	if !diag.AuthenticationRequired(raw) && (diagnostic.NativeCode == "1308" || status == "429") {
 		diagnostic.Category = "capacity"
 		diagnostic.Message = "ZCode provider usage limit reached"
 		if match := zcodeResetTimePattern.FindStringSubmatch(raw); len(match) == 2 {
@@ -248,6 +253,9 @@ func (zcodeParser) Parse(line []byte, stderr bool) parsedObservation {
 		diagnostic := parseZCodeFailure(errText)
 		obs.Error = diagnostic.Message
 		obs.Data["failure_structured"] = true
+		if diagnostic.Category != "" {
+			obs.Data["failure_category"] = diagnostic.Category
+		}
 		if diagnostic.NativeCode != "" {
 			obs.Data["native_code"] = diagnostic.NativeCode
 		}

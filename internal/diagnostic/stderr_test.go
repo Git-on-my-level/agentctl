@@ -34,8 +34,12 @@ func TestStderrMetadataNeverRetainsSourceText(t *testing.T) {
 
 func TestStderrClassifierIsBoundedAndAllowlisted(t *testing.T) {
 	for _, tc := range []struct{ line, code string }{
-		{"Selected model is at capacity", "provider_capacity"},
-		{"HTTP 429", "provider_capacity"},
+		{CodexCapacityMessage, "provider_capacity"},
+		{"HTTP 429", "unclassified"},
+		{"not at capacity; authentication required", "authentication_required"},
+		{"not at capacity", "unclassified"},
+		{"earlier request was at capacity", "unclassified"},
+		{CodexCapacityMessage + " private task", "unclassified"},
 		{"workspace trust required", "workspace_trust_required"},
 		{"Authentication required", "authentication_required"},
 		{"OAuthRefreshFailureError: invalid refresh token private-value", "authentication_required"},
@@ -46,7 +50,7 @@ func TestStderrClassifierIsBoundedAndAllowlisted(t *testing.T) {
 		{"unexpected argument '--private-flag'", "invalid_arguments"},
 		{strings.Repeat("x", 4096) + " at capacity", "unclassified"},
 	} {
-		got := FromStderrLine([]byte(tc.line))
+		got := FromStderrLine([]byte(tc.line), "codex")
 		if got.Code != tc.code {
 			t.Fatalf("code=%s want=%s", got.Code, tc.code)
 		}

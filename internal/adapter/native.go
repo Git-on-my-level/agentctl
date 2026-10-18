@@ -119,6 +119,7 @@ type processRecord struct {
 	pipes            sync.WaitGroup
 	resultPath       string
 	outputDir        string
+	executionID      string
 	outputPrefix     []byte
 	outputTruncated  bool
 	page             *parsedPage
@@ -194,7 +195,13 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 	if stderr {
 		p.mu.Lock()
 		if p.stderrDiagnostic == nil {
-			p.stderrDiagnostic = diagnostic.FromStderrLine(line)
+			harness := firstNonEmpty(p.ref.Adapter, strings.TrimSuffix(p.parser.Name(), "-json"))
+			p.stderrDiagnostic = diagnostic.FromStderrLine(line, harness)
+			if harness == "zcode" {
+				if parsed := zcodeStderrFailure(string(line)); parsed != nil && parsed.Category == "capacity" {
+					p.stderrDiagnostic.Code = "provider_capacity"
+				}
+			}
 		}
 		if p.parser != nil && p.parser.Name() == "zcode-json" {
 			diagnostic := zcodeStderrFailure(string(line))
@@ -228,6 +235,12 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 }
 
 func mergeZCodeFailure(current, next *zcodeFailureDiagnostic) *zcodeFailureDiagnostic {
+	if current != nil && diagnostic.AuthenticationRequired(current.Message) {
+		return current
+	}
+	if diagnostic.AuthenticationRequired(next.Message) {
+		return next
+	}
 	if current == nil || next.Category == "capacity" && current.Category != "capacity" {
 		return next
 	}
@@ -596,19 +609,15 @@ func (p *processRecord) captureFailedOutputLocked() {
 	if p.outputDir == "" {
 		return
 	}
-	file, err := os.CreateTemp(p.outputDir, "failed-output-*.txt")
+	outputs, err := diagnostic.OpenOutputs(p.outputDir, true)
 	if err == nil {
-		_, err = file.Write(p.outputPrefix)
-		closeErr := file.Close()
-		if err == nil {
-			err = closeErr
-		}
-		if err == nil && len(file.Name()) <= 1024 {
-			p.result.Data["output_ref"] = file.Name()
+		defer outputs.Close()
+		path, writeErr := outputs.Write(p.executionID, p.outputPrefix)
+		if writeErr == nil {
+			p.result.Data["output_ref"] = path
 			p.result.Data["output_truncated"] = p.outputTruncated
 			return
 		}
-		_ = os.Remove(file.Name())
 	}
 	p.result.Data["output_capture_error"] = "output_capture_failed"
 }
@@ -618,6 +627,9 @@ func (p *processRecord) zcodeFailureResultLocked() *Result {
 	data := map[string]any{"family": "zcode", "failure_structured": true}
 	if p.zcodeFailure != nil {
 		message = p.zcodeFailure.Message
+		if p.zcodeFailure.Category != "" {
+			data["failure_category"] = p.zcodeFailure.Category
+		}
 		if p.zcodeFailure.NativeCode != "" {
 			data["native_code"] = p.zcodeFailure.NativeCode
 		}
@@ -1014,6 +1026,9 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	startedAt := time.Now().UTC()
 	ref := SourceRef{Adapter: a.Name(), Kind: a.config.LaunchKind, OpaqueID: strconv.Itoa(cmd.Process.Pid), PID: cmd.Process.Pid}
 	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: startedAt, updatedAt: startedAt, done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, outputDir: req.OutputDir, wholeStdout: a.config.WholeStdout, live: live, launchIdentity: captureProcessLaunch(cmd.Process.Pid, startedAt)}
+	if req.ExecutionContext != nil {
+		record.executionID = req.ExecutionContext.ExecutionID
+	}
 	record.acp = acp
 	record.launch = req
 	record.launch.Stdin = nil

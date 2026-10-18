@@ -383,7 +383,10 @@ answer. The legacy `message_source: stderr` marker is ignored when projecting
 older outcomes and omitted from new writes; no historical journal rewrite runs.
 Existing private mode-0600 diagnostic files are unchanged; no new raw-stderr
 storage is introduced. Events contain no stderr text or correlation metadata.
-Codex "Selected model is at capacity" remains retryable without a native code.
+Authentication is classified before capacity. Only Codex `server_overloaded`
+or the exact sentence "Selected model is at capacity. Please try a different model."
+and ZCode provider `1308` or parsed HTTP `responseStatus: 429` prove capacity.
+A bare native/provider `429`, negated or incidental capacity wording does not.
 
 A missing answer records `unavailable_reason: native_answer_missing`;
 Multica's absent result route records `multica_result_route_unavailable`.
@@ -391,11 +394,13 @@ These reasons explain availability without treating a completed source as failed
 
 New generic-process clean exits without a structured terminal result are
 `failed` with code `result_extraction_failed`. When result storage is enabled,
-up to 64 KiB of stdout is retained in a mode-0600 `failed-output-*.txt` file
+up to 64 KiB of stdout is retained in a mode-0600 `failed-output-<execution-id>.txt` file
 beside the private journal. Explicit result metadata includes a local
 `output_ref` (at most 1024 bytes) and `output_truncated` when applicable;
 `output_capture_error: output_capture_failed` explains a failed capture.
 This diagnostic file can contain native output and is not a verified answer.
-It remains for operator inspection and manual removal; journal retention does
-not delete it. `--no-store-result` disables this capture. Historical journal
+The per-journal cache holds at most 128 files (8 MiB), evicting oldest
+modification times first, including uncollected diagnostics. An `output_ref`
+may subsequently be missing. Cleanup plans include sibling filename, size and
+SHA-256 in their digest; cleanup apply removes files before their records. `--no-store-result` disables this capture. Historical journal
 records are not rewritten or reconciled by these changes.

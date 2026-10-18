@@ -61,7 +61,7 @@ func TestZCodeUnknownProviderFailureGetsGenericBoundedCandidate(t *testing.T) {
 
 func TestZCodeJSONFailureRetainsBoundedClassificationCause(t *testing.T) {
 	obs := (zcodeParser{}).Parse([]byte(`{"error":{"message":"Authentication required; please login to continue (requestId: fixture-only traceId: fixture-only)"}}`), false)
-	if !obs.Terminal || obs.State != StateFailed || !strings.Contains(strings.ToLower(obs.Error), "authentication") || !strings.Contains(strings.ToLower(obs.Error), "login") {
+	if !obs.Terminal || obs.State != StateFailed || obs.Error != "authentication required" {
 		t.Fatalf("observation=%#v", obs)
 	}
 	if len(obs.Error) > 200 {

@@ -18,6 +18,13 @@ type Stderr struct {
 	Bytes int    `json:"bytes"`
 }
 
+const CodexCapacityMessage = "Selected model is at capacity. Please try a different model."
+
+func IsCodexCapacity(message string) bool { return strings.TrimSpace(message) == CodexCapacityMessage }
+func AuthenticationRequired(message string) bool {
+	return containsAny(strings.ToLower(message), "authentication required", "authentication failed", "auth required", "auth failed", "not authenticated", "unauthorized", "login required", "please login", "please log in", "sign in", "invalid refresh token", "oauthrefreshfailureerror")
+}
+
 var hashPattern = regexp.MustCompile(`^sha256:[a-f0-9]{24}$`)
 
 var messages = map[string]string{
@@ -36,7 +43,11 @@ var messages = map[string]string{
 
 // FromStderrLine examines at most 4096 bytes for a fixed allow-listed pattern
 // set. It hashes the full bounded scanner line, never retaining its text.
-func FromStderrLine(line []byte) *Stderr {
+func FromStderrLine(line []byte, harnesses ...string) *Stderr {
+	harness := ""
+	if len(harnesses) > 0 {
+		harness = harnesses[0]
+	}
 	if len(bytes.TrimSpace(line)) == 0 {
 		return nil
 	}
@@ -48,12 +59,12 @@ func FromStderrLine(line []byte) *Stderr {
 	text := strings.ToLower(string(prefix))
 	code := "unclassified"
 	switch {
-	case containsAny(text, "at capacity", "server overloaded", "server_overloaded", "usage limit reached", "http 429"):
+	case AuthenticationRequired(text):
+		code = "authentication_required"
+	case harness == "codex" && len(line) <= 4096 && IsCodexCapacity(string(line)):
 		code = "provider_capacity"
 	case strings.Contains(text, "workspace") && strings.Contains(text, "trust"):
 		code = "workspace_trust_required"
-	case containsAny(text, "authentication required", "not authenticated", "unauthorized", "login required", "please log in", "sign in", "invalid refresh token", "oauthrefreshfailureerror"):
-		code = "authentication_required"
 	case containsAny(text, "permission denied", "operation not permitted", "access is denied"):
 		code = "permission_denied"
 	case containsAny(text, "model not found", "unknown model", "model does not exist"):

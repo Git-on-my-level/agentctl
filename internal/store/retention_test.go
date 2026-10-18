@@ -4,13 +4,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"go.etcd.io/bbolt"
+
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
+	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 )
@@ -450,5 +454,135 @@ func TestCleanupIncludeUnreconciledIsAnExplicitOptOutWithADistinctDigest(t *test
 	}
 	if _, err := journal.GetExecution(ctx, uncollected.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("explicit opt-out did not delete the uncollected terminal: %v", err)
+	}
+}
+
+func TestCleanupPlansAndRemovesDiagnosticSibling(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	execution := seedTerminalForRetention(t, j, now.Add(-48*time.Hour), contracts.MutationKey{})
+	dir := filepath.Dir(j.path)
+	o, err := diagnostic.OpenOutputs(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := o.Write(execution.ID.String(), []byte("private native output"))
+	o.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Attach a pointer without changing any result bytes or journal history.
+	err = j.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bOutcomes)
+		var outcome model.Outcome
+		if err := json.Unmarshal(b.Get([]byte(execution.ID.String())), &outcome); err != nil {
+			return err
+		}
+		outcome.OutputRef = path
+		raw, err := json.Marshal(outcome)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(execution.ID.String()), raw)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cutoff := now.Add(-24 * time.Hour)
+	plan, err := j.PlanCleanup(ctx, cutoff, CleanupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.DiagnosticFiles != 1 || plan.DiagnosticBytes != int64(len("private native output")) || len(plan.Eligible) != 1 || plan.Eligible[0].DiagnosticFile == nil {
+		t.Fatalf("plan=%#v", plan)
+	}
+	os.WriteFile(path, []byte("replacement output"), 0600)
+	if _, err := j.ApplyCleanup(ctx, cutoff, plan.PlanDigest, CleanupOptions{}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("changed file accepted: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("stale plan deleted file", err)
+	}
+	plan, err = j.PlanCleanup(ctx, cutoff, CleanupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied, err := j.ApplyCleanup(ctx, cutoff, plan.PlanDigest, CleanupOptions{})
+	if err != nil || !applied.Applied || applied.DiagnosticFiles != 1 {
+		t.Fatal(applied, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("diagnostic retained", err)
+	}
+	inventory, err := j.Inventory(ctx)
+	if err != nil || inventory.Executions.Total != 0 {
+		t.Fatal(inventory, err)
+	}
+}
+func TestCleanupIncludesLegacyDiagnosticPointer(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	execution := seedTerminalForRetention(t, j, now.Add(-48*time.Hour), contracts.MutationKey{})
+	path := filepath.Join(filepath.Dir(j.path), "failed-output-12345.txt")
+	if err := os.WriteFile(path, []byte("legacy output"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err := j.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bOutcomes)
+		var outcome model.Outcome
+		json.Unmarshal(b.Get([]byte(execution.ID.String())), &outcome)
+		outcome.OutputRef = path
+		raw, _ := json.Marshal(outcome)
+		return b.Put([]byte(execution.ID.String()), raw)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := j.PlanCleanup(ctx, now, CleanupOptions{})
+	if err != nil || plan.DiagnosticFiles != 1 {
+		t.Fatal(plan, err)
+	}
+	if _, err := j.ApplyCleanup(ctx, now, plan.PlanDigest, CleanupOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("legacy sibling retained", err)
+	}
+}
+
+func TestCleanupHandlesEvictedDiagnosticWithoutDroppingRecordOnBusyCache(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	execution := seedTerminalForRetention(t, j, now.Add(-48*time.Hour), contracts.MutationKey{})
+	outputs, err := diagnostic.OpenOutputs(filepath.Dir(j.path), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := outputs.Write(execution.ID.String(), []byte("private diagnostic"))
+	outputs.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Eviction may remove a diagnostic while its owning execution remains.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := j.PlanCleanup(ctx, now, CleanupOptions{})
+	if err != nil || plan.DiagnosticFiles != 0 || len(plan.Eligible) != 1 {
+		t.Fatal(plan, err)
+	}
+	outputs, err = diagnostic.OpenOutputs(filepath.Dir(j.path), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.ApplyCleanup(ctx, now, plan.PlanDigest, CleanupOptions{}); err == nil {
+		t.Fatal("cleanup ignored busy cache")
+	}
+	outputs.Close()
+	if _, err := j.GetExecution(ctx, execution.ID); err != nil {
+		t.Fatal("busy cleanup dropped record", err)
+	}
+	if _, err := j.ApplyCleanup(ctx, now, plan.PlanDigest, CleanupOptions{}); err != nil {
+		t.Fatal("missing diagnostic blocked cleanup", err)
 	}
 }

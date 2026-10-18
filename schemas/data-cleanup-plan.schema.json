@@ -5,7 +5,7 @@
   "title": "agentctl journal cleanup plan v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "before", "generated_at", "applied", "plan_digest", "eligible", "protected", "records", "logical_bytes", "include_unreconciled", "protected_unreconciled"],
+  "required": ["schema_version", "before", "generated_at", "applied", "plan_digest", "eligible", "protected", "records", "logical_bytes", "include_unreconciled", "protected_unreconciled", "diagnostic_files", "diagnostic_bytes"],
   "properties": {
     "schema_version": {"const": 1},
     "before": {"type": "string", "format": "date-time"},
@@ -13,6 +13,8 @@
     "applied": {"type": "boolean"},
     "plan_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
     "logical_bytes": {"type": "integer", "minimum": 0},
+    "diagnostic_files": {"type": "integer", "minimum": 0},
+    "diagnostic_bytes": {"type": "integer", "minimum": 0},
     "include_unreconciled": {"type": "boolean"},
     "protected_unreconciled": {"type": "integer", "minimum": 0},
     "eligible": {
@@ -25,7 +27,8 @@
           "execution_id": {"type": "string", "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"},
           "terminal_at": {"type": "string", "format": "date-time"},
           "logical_bytes": {"type": "integer", "minimum": 0},
-          "records": {"$ref": "#/$defs/recordCounts"}
+          "records": {"$ref": "#/$defs/recordCounts"},
+          "diagnostic_file": {"$ref": "#/$defs/diagnosticFile"}
         }
       }
     },
@@ -45,6 +48,7 @@
     "records": {"$ref": "#/$defs/recordCounts"}
   },
   "$defs": {
+    "diagnosticFile": {"type": "object", "additionalProperties": false, "required": ["name", "bytes", "sha256"], "properties": {"name": {"type": "string", "maxLength": 128, "pattern": "^failed-output-(?:exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}|[0-9]+)\\.txt$"}, "bytes": {"type": "integer", "minimum": 0, "maximum": 65536}, "sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}}},
     "recordCounts": {
       "type": "object",
       "additionalProperties": false,

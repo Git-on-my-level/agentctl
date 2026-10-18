@@ -133,7 +133,7 @@ func (a *app) dataCleanup(ctx context.Context, renderer output.Renderer, c commo
 		return mapStoreError("cleanup journal data", err)
 	}
 	lines := []output.Line{
-		{Lead: "data.cleanup", Fields: []output.Field{{Name: "mode", Value: cleanupMode(planOnly)}, {Name: "before", Value: before}, {Name: "eligible_executions", Value: len(plan.Eligible)}, {Name: "protected_executions", Value: len(plan.Protected)}, {Name: "protected_unreconciled", Value: plan.ProtectedUnreconciled}, {Name: "include_unreconciled", Value: plan.IncludeUnreconciled}, {Name: "records", Value: plan.Records.Total()}, {Name: "logical_bytes", Value: plan.LogicalBytes}, {Name: "plan_digest", Value: plan.PlanDigest}}},
+		{Lead: "data.cleanup", Fields: []output.Field{{Name: "mode", Value: cleanupMode(planOnly)}, {Name: "before", Value: before}, {Name: "eligible_executions", Value: len(plan.Eligible)}, {Name: "protected_executions", Value: len(plan.Protected)}, {Name: "protected_unreconciled", Value: plan.ProtectedUnreconciled}, {Name: "include_unreconciled", Value: plan.IncludeUnreconciled}, {Name: "records", Value: plan.Records.Total()}, {Name: "logical_bytes", Value: plan.LogicalBytes}, {Name: "diagnostic_files", Value: plan.DiagnosticFiles}, {Name: "diagnostic_bytes", Value: plan.DiagnosticBytes}, {Name: "plan_digest", Value: plan.PlanDigest}}},
 	}
 	warnings := []output.Warning{{Code: "journal_not_compacted", Message: "logical bytes describe selected records; the journal file is not compacted automatically"}}
 	if plan.IncludeUnreconciled {

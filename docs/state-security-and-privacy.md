@@ -144,7 +144,7 @@ retrieval reference without copying content.
 
 ### Retention and cleanup
 
-Automatic retention is not implemented in the preview. Operators must include
+Automatic journal retention is not implemented in the preview. Operators must include
 the journal in their local data-handling and backup policy and should not run
 sensitive work unless this persistence is acceptable.
 
@@ -153,13 +153,21 @@ logical bucket bytes, record counts, terminal/nonterminal executions, outcomes,
 and stored result bytes. `agentctl data cleanup --before <RFC3339> --plan` is
 also read-only. It selects only complete terminal execution graphs strictly
 before the cutoff and reports every eligible execution, record category,
-logical byte count, protected execution and protection reason.
+logical byte count, protected execution and protection reason. Diagnostic
+siblings appear as `diagnostic_file` (name, bytes, SHA-256) per execution, with
+`diagnostic_files` and `diagnostic_bytes` totals. Those proofs participate in the
+plan digest. Planning creates no files, including cache locks.
 
 Deletion requires `--apply --plan-digest <sha256:...>`. Apply recomputes the
 plan in one journal write transaction and rejects it if the reviewed digest no
 longer matches. The mutation deletes the execution, outcome, events, event
 indexes/dedupe records, terminal index, execution idempotency keys, and any
-result-collection acknowledgement together.
+result-collection acknowledgement together. Before dropping records, apply
+removes their private diagnostic siblings, including legacy random filenames
+explicitly referenced by an outcome. Arbitrary paths and symlinks fail closed.
+Capture, oldest-first eviction and cleanup apply share a nonblocking cache lock.
+A removal failure preserves the journal records; a later database rollback can
+leave a missing cache file, never untracked output left by cleanup.
 It is idempotent when the caller reviews the resulting empty plan before a
 repeat apply. The logical byte estimate does not promise immediate shrinkage of
 the bbolt file; no physical compaction is performed.
@@ -197,6 +205,13 @@ this preview because those records can encode authority handoff and recovery
 state. Stopped subscriptions alone do not protect a graph, but their retained
 deliveries and receipts do. Cleanup never removes subscription, outbox,
 receipt, or promotion records themselves.
+
+Generic extraction diagnostics are a separate cache: mode-0600 files named
+`failed-output-<execution-id>.txt`, each at most 64 KiB, at most 128 files
+(8 MiB) per journal directory. Capture evicts oldest modification times first
+(name breaks ties), including uncollected diagnostics; a retained pointer may
+therefore be missing. `--no-store-result` disables capture. No journal records
+are automatically reconciled or mutated by eviction.
 
 Debug logs are never required for normal correctness and have a separate
 retention switch. Secret scanning fixtures cover errors and malformed native

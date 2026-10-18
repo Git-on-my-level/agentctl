@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 )
 
 func TestFailedProcessCapturesFirstNonemptyStderrMetadata(t *testing.T) {
@@ -35,7 +37,11 @@ func TestFailedProcessCapturesFirstNonemptyStderrMetadata(t *testing.T) {
 
 func TestGenericExtractionOutputIsBoundedAndPrivate(t *testing.T) {
 	dir := t.TempDir()
-	record := &processRecord{parser: genericParser{}, done: make(chan struct{}), outputDir: dir}
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := ids.FromPayload(ids.TypeExecution, 1)
+	record := &processRecord{parser: genericParser{}, done: make(chan struct{}), outputDir: dir, executionID: id.String()}
 	record.ingest([]byte(strings.Repeat("x", 100000)), false)
 	record.finish(nil)
 	path, _ := record.result.Data["output_ref"].(string)
@@ -66,5 +72,36 @@ exit 1`)
 	got, err := NewCodex().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
 	if err != nil || got.Result == nil || !strings.Contains(got.Result.Error, "at capacity") {
 		t.Fatalf("result=%#v err=%v", got.Result, err)
+	}
+}
+
+func TestZCodeCapacityNeedsProvider1308OrHTTP429(t *testing.T) {
+	for _, tt := range []struct{ line, native, category string }{
+		{"ProviderBusinessError providerCode: 429 provider request failed", "429", ""},
+		{"ProviderBusinessError: [429] provider request failed", "429", ""},
+		{"ProviderBusinessError providerCode: 7314 provider request failed", "7314", ""},
+		{"ProviderBusinessError providerCode: 7314 responseStatus: 429 provider request failed", "7314", "capacity"},
+		{"ProviderBusinessError providerCode: 1308 provider request failed", "1308", "capacity"},
+		{"ProviderBusinessError providerCode: 1308 responseStatus: 429 authentication required", "1308", ""},
+		{"ProviderBusinessError providerCode: 429 authentication required", "429", ""},
+	} {
+		t.Run(tt.line, func(t *testing.T) {
+			parsed := parseZCodeFailure(tt.line)
+			if parsed.NativeCode != tt.native || parsed.Category != tt.category {
+				t.Fatalf("parsed=%#v", parsed)
+			}
+			record := &processRecord{parser: zcodeParser{}, done: make(chan struct{})}
+			record.ingest([]byte(tt.line), true)
+			record.finish(errors.New("exit status 1"))
+			if record.result.Data["native_code"] != tt.native {
+				t.Fatalf("lost provider code: %#v", record.result)
+			}
+			if tt.category == "capacity" && record.result.Data["failure_category"] != "capacity" {
+				t.Fatalf("lost HTTP category %#v", record.result)
+			}
+			if strings.Contains(tt.line, "authentication required") && !strings.Contains(record.result.Error, "authentication required") {
+				t.Fatalf("auth lost: %#v", record.result)
+			}
+		})
 	}
 }

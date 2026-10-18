@@ -1655,7 +1655,7 @@ func buildOutcome(execution model.Execution, result adapter.Result, now time.Tim
 			}
 			diagnosticCode, _ := result.Data["diagnostic_code"].(string)
 			raw := firstNonEmptyString(result.Error, failureMessageGeneric)
-			code, kind, category, retryable := classifyOutcomeFailure(raw, diagnosticCode, nativeCode)
+			code, kind, category, retryable := classifyOutcomeFailure(raw, diagnosticCode, nativeCode, execution.Adapter, stringData(result.Data, "failure_category"))
 			structured, _ := result.Data["failure_structured"].(bool)
 			if execution.Adapter == "zcode" && structured && category == "" && kind == "unknown" {
 				// A structured provider error with no recognized classifier still
@@ -1667,7 +1667,7 @@ func buildOutcome(execution model.Execution, result adapter.Result, now time.Tim
 				stderrDiagnostic = nil
 			}
 			if stderrDiagnostic != nil && code == "native_execution_failed" && category == "" && nativeCode == "" {
-				code, kind, category, retryable = classifyOutcomeFailure(stderrDiagnostic.Message(), "", "")
+				code, kind, category, retryable = classifyOutcomeFailure(stderrDiagnostic.Message(), "", "", execution.Adapter, "")
 			}
 			message := allowlistedFailureMessage(model.OutcomeFailure{Code: code, Category: category, Source: execution.Adapter, NativeCode: nativeCode, Message: raw})
 			message, _ = boundedOutcomeText(message, model.NativeFailureMessageLimit)
@@ -1738,7 +1738,7 @@ func allowlistedFailureMessage(failure model.OutcomeFailure) string {
 	if !model.ValidNativeFailureCode(nativeCode) {
 		nativeCode = ""
 	}
-	code, _, category, _ := classifyOutcomeFailure(failure.Message, "", nativeCode)
+	code, _, category, _ := classifyOutcomeFailure(failure.Message, "", nativeCode, failure.Source, "")
 	if failure.Category == "capacity" || category == "capacity" {
 		return failureMessageCapacity
 	}
@@ -1795,13 +1795,17 @@ func withAllowlistedFailure(outcome model.Outcome) model.Outcome {
 	return outcome
 }
 
-func classifyOutcomeFailure(message, diagnosticCode, nativeCode string) (string, string, string, bool) {
+func stringData(data map[string]any, key string) string { value, _ := data[key].(string); return value }
+
+func classifyOutcomeFailure(message, diagnosticCode, nativeCode, harness, providerCategory string) (string, string, string, bool) {
 	if diagnosticCode == "result_extraction_failed" {
 		return "result_extraction_failed", "observation", "", false
 	}
 	lower := strings.ToLower(message)
 	switch {
-	case nativeCode == "1308" || nativeCode == "429" || nativeCode == "server_overloaded" || strings.Contains(lower, "usage limit reached") || strings.Contains(lower, "http 429") || strings.Contains(lower, "at capacity") || strings.Contains(lower, "server overloaded") || strings.Contains(lower, "server_overloaded"):
+	case diagnostic.AuthenticationRequired(message):
+		return "authentication_required", "authentication", "", true
+	case harness == "codex" && (nativeCode == "server_overloaded" || diagnostic.IsCodexCapacity(message)) || harness == "zcode" && (nativeCode == "1308" || providerCategory == "capacity"):
 		return "provider_capacity", "capacity", "capacity", true
 	case strings.Contains(lower, "workspace") && strings.Contains(lower, "trust"):
 		return "workspace_trust_required", "permission", "", true
@@ -1815,11 +1819,9 @@ func classifyOutcomeFailure(message, diagnosticCode, nativeCode string) (string,
 		return "network", "network", "", true
 	case strings.Contains(lower, "invalid native command arguments"):
 		return "invalid_arguments", "configuration", "", false
-	case strings.Contains(lower, "auth") || strings.Contains(lower, "login") || strings.Contains(lower, "sign in"):
-		return "authentication_required", "authentication", "", true
 	case strings.Contains(lower, "approval") || strings.Contains(lower, "permission"):
 		return "approval_required", "approval", "", true
-	case strings.Contains(lower, "quota") || strings.Contains(lower, "rate limit"):
+	case strings.Contains(lower, "quota") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "usage limit reached"):
 		return "quota_exceeded", "quota", "", true
 	}
 	if nativeCode != "" {
