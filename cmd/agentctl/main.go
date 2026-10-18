@@ -719,7 +719,7 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 	_ = journal.Close()
 	if opts.contentOnly {
 		if outcome.Content == nil {
-			return output.NewError(output.CodeNotFound, "execution has no stored text content", false).WithDetail("execution_id", id.String()).WithDetail("availability", outcome.Availability)
+			return output.NewError(output.CodeNotFound, "execution has no stored text content", false).WithDetail("execution_id", id.String()).WithDetail("availability", outcome.Availability).WithDetail("unavailable_reason", outcome.UnavailableReason)
 		}
 		if _, err := io.WriteString(a.stdout, outcome.Content.Text); err != nil {
 			return output.Wrap(output.CodeInternal, "write result content", false, err)
@@ -775,8 +775,14 @@ func dereferenceResult(ctx context.Context, journal *store.Journal, id ids.Execu
 	} else if err != nil {
 		return execution, model.Outcome{}, mapStoreError("read execution outcome", err)
 	}
+	if outcome.Availability == model.OutcomeUnavailableAtSource && outcome.UnavailableReason == "" {
+		outcome.UnavailableReason = "native_answer_missing"
+		if execution.Authority == model.AuthorityMultica {
+			outcome.UnavailableReason = "multica_result_route_unavailable"
+		}
+	}
 	if opts.requireContent && outcome.Content == nil && outcome.Failure == nil {
-		return execution, outcome, output.NewError(output.CodeNotFound, "execution has no stored result content", false).WithDetail("execution_id", id.String()).WithDetail("availability", outcome.Availability)
+		return execution, outcome, output.NewError(output.CodeNotFound, "execution has no stored result content", false).WithDetail("execution_id", id.String()).WithDetail("availability", outcome.Availability).WithDetail("unavailable_reason", outcome.UnavailableReason)
 	}
 	if opts.requireSource != "" {
 		if outcome.Content == nil || !resultSourceSatisfies(outcome.Content.Source, opts.requireSource) {
@@ -1425,7 +1431,7 @@ func projectNativeFailure(failure *model.OutcomeFailure) *nativeFailureView {
 	if failure.Category != "" || failure.NativeCode != "" {
 		message, _ = boundedOutcomeText(message, model.NativeFailureMessageLimit)
 	}
-	if message == "" || (message == failureMessageGeneric && failure.Category == "" && failure.NativeCode == "") {
+	if message == "" {
 		return nil
 	}
 	return &nativeFailureView{Category: failure.Category, Message: message, NativeCode: failure.NativeCode, Retryable: failure.Retryable}

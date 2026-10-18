@@ -1,6 +1,9 @@
 package launchrecipe
 
 func buildCursor(executable, model, speed, effort string, trust bool, access string, grant bool) (Recipe, error) {
+	if access == AccessReadOnly && !trust {
+		return Recipe{}, fail("workspace_trust_required", "Cursor read_only delegation requires delegation.cursor_workspace_trust=true; review and grant workspace trust before launching")
+	}
 	exe, err := resolveExecutable("cursor", executable)
 	if err != nil {
 		return Recipe{}, err

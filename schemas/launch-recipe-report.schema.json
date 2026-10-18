@@ -26,7 +26,7 @@
         "speed": {"type": "string"},
         "effort": {"type": "string"},
         "compatible": {"type": "boolean"},
-        "permissions": {"description": "Reviewed permission recipe. Claude Code coding reports constrained: the unattended grant adds classifier-checked auto mode; read_only is unavailable.", "enum": ["full", "constrained", "read_only", "unsupported"]},
+        "permissions": {"description": "Reviewed native permission posture; ZCode yolo is constrained because native always-ask checks remain.","description": "Reviewed permission recipe. Claude Code coding reports constrained: the unattended grant adds classifier-checked auto mode; read_only is unavailable.", "enum": ["full", "constrained", "read_only", "unsupported"]},
         "diagnostic_code": {"type": "string"},
         "diagnostic": {"type": "string"}
       },

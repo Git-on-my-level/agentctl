@@ -49,27 +49,32 @@ type OutcomeContent struct {
 }
 
 type OutcomeFailure struct {
-	Code       string `json:"code"`
-	Kind       string `json:"kind"`
-	Source     string `json:"source"`
-	Retryable  bool   `json:"retryable"`
-	Message    string `json:"message"`
-	Category   string `json:"category,omitempty"`
-	NativeCode string `json:"native_code,omitempty"`
+	Code          string `json:"code"`
+	Kind          string `json:"kind"`
+	Source        string `json:"source"`
+	Retryable     bool   `json:"retryable"`
+	Message       string `json:"message"`
+	Category      string `json:"category,omitempty"`
+	NativeCode    string `json:"native_code,omitempty"`
+	MessageSource string `json:"message_source,omitempty"`
 }
 
 type Outcome struct {
-	SchemaVersion  int                 `json:"schema_version"`
-	ExecutionID    ids.ExecutionID     `json:"execution_id"`
-	Revision       uint64              `json:"revision"`
-	State          State               `json:"state"`
-	Availability   OutcomeAvailability `json:"availability"`
-	RecordedAt     time.Time           `json:"recorded_at"`
-	Source         string              `json:"source"`
-	ResultRef      string              `json:"result_ref"`
-	Content        *OutcomeContent     `json:"content,omitempty"`
-	Failure        *OutcomeFailure     `json:"failure,omitempty"`
-	NativeExitCode *int                `json:"native_exit_code,omitempty"`
+	SchemaVersion      int                 `json:"schema_version"`
+	ExecutionID        ids.ExecutionID     `json:"execution_id"`
+	Revision           uint64              `json:"revision"`
+	State              State               `json:"state"`
+	Availability       OutcomeAvailability `json:"availability"`
+	RecordedAt         time.Time           `json:"recorded_at"`
+	Source             string              `json:"source"`
+	ResultRef          string              `json:"result_ref"`
+	Content            *OutcomeContent     `json:"content,omitempty"`
+	Failure            *OutcomeFailure     `json:"failure,omitempty"`
+	UnavailableReason  string              `json:"unavailable_reason,omitempty"`
+	OutputRef          string              `json:"output_ref,omitempty"`
+	OutputTruncated    bool                `json:"output_truncated,omitempty"`
+	OutputCaptureError string              `json:"output_capture_error,omitempty"`
+	NativeExitCode     *int                `json:"native_exit_code,omitempty"`
 }
 
 func (o Outcome) Validate() error {
@@ -93,6 +98,15 @@ func (o Outcome) Validate() error {
 		}
 	default:
 		return fmt.Errorf("invalid outcome availability %q", o.Availability)
+	}
+	if len(o.OutputRef) > 1024 || !utf8.ValidString(o.OutputRef) || strings.IndexFunc(o.OutputRef, func(r rune) bool { return r < 32 }) >= 0 {
+		return errors.New("invalid outcome output reference")
+	}
+	if o.UnavailableReason != "" && o.UnavailableReason != "native_answer_missing" && o.UnavailableReason != "multica_result_route_unavailable" {
+		return errors.New("invalid outcome unavailable reason")
+	}
+	if o.OutputCaptureError != "" && o.OutputCaptureError != "output_capture_failed" {
+		return errors.New("invalid output capture error")
 	}
 	if o.Content != nil {
 		if o.Content.MediaType != "text/plain" || !utf8.ValidString(o.Content.Text) || !utf8.ValidString(o.Content.Preview) {
@@ -121,8 +135,11 @@ func (o Outcome) Validate() error {
 		}
 	}
 	if o.Failure != nil {
+		if o.Failure.MessageSource != "" && o.Failure.MessageSource != "stderr" {
+			return errors.New("invalid failure message source")
+		}
 		limit := OutcomeFailureLimit
-		if o.Failure.Category != "" || o.Failure.NativeCode != "" {
+		if o.Failure.Category != "" || o.Failure.NativeCode != "" || o.Failure.MessageSource != "" {
 			limit = NativeFailureMessageLimit
 		}
 		if strings.TrimSpace(o.Failure.Code) == "" || strings.TrimSpace(o.Failure.Kind) == "" || strings.TrimSpace(o.Failure.Source) == "" || len(o.Failure.Message) > limit {

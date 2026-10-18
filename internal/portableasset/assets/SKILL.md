@@ -147,7 +147,9 @@ builds native flags. Inspect `requested`, `resolved`, and `provenance`. Conflict
 or ambiguity launch nothing; use returned candidates to resolve only the missing
 choice. Config needs explicit family/version metadata. Omitted host or `local` selects
 this machine; `route.this_host` optionally supplies its configured name.
-Workspace trust is a separate `delegation.cursor_workspace_trust` grant, never
+Workspace trust is a separate `delegation.cursor_workspace_trust` grant. With it,
+both coding and read-only Cursor recipes add `--trust`; read-only delegation
+refuses before launch without it (`workspace_trust_required`). Trust is never
 implied by a model preference. Unattended coding permissions are a separate
 `delegation.unattended_coding_permissions` grant. When it is true, coding
 launches (omitted `settings.access`, or `"coding"`) include Cursor `--force`,
@@ -493,6 +495,27 @@ most 200 characters, native code) to status, result, and a failed
 prompt or answer text. ZCode provider code `1308` and HTTP `429` are retryable
 capacity failures and may include the provider reset time. Other diagnostic
 words use the shared classifier: `usage limit reached` is capacity, while
-generic quota/rate-limit wording is `quota_exceeded`. Raw stderr and
+generic quota/rate-limit wording is `quota_exceeded`. Raw stderr transcripts and
 request/trace identifiers are not stored. Explicit `result` is the supported
 final-answer read path.
+
+For new generic native failures, the first nonempty stderr cause is a fallback
+`failure.message_source: stderr`, redacted and bounded to 200 UTF-8 bytes.
+Known provider errors retain normalized messages. Codex "Selected model is at
+capacity" is retryable even without a native code. Generic failures remain
+visible on status. Missing answers record `unavailable_reason` as
+`native_answer_missing` or `multica_result_route_unavailable`.
+
+New generic-process clean exits without a structured result are failed with
+`result_extraction_failed`. Explicit result metadata points to a private,
+mode-0600 `failed-output-*.txt` file beside the journal, containing at most
+64 KiB of stdout, with `output_truncated` when needed. A capture failure reports
+`output_capture_error: output_capture_failed`. Inspect and remove these diagnostic
+files manually; they are not verified answers or journal-retention artifacts.
+`--no-store-result` disables capture. Existing records are not reconciled.
+
+ZCode's existing `--mode yolo` bypasses ordinary permission prompts but retains
+native always-ask checks (verified in 0.16.9); it reports `permissions: constrained`
+regardless of the coding grant. The label does not change its argv or assert
+sandbox isolation. OMP remains an expert compatibility adapter; current host
+preferences, rather than its presence in the adapter inventory, decide routing.

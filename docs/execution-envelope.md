@@ -370,3 +370,26 @@ record categories, logical bytes, and protected references, then rejects apply
 if the reviewed plan digest changes. Promotion-linked executions remain
 protected in the preview. Retention remains an operator decision, not a
 compatibility guarantee.
+
+New generic native failures use the first nonempty stderr line as a fallback
+when no structured provider failure supplies a cause. `failure.message_source`
+is `stderr`; the diagnostic is redacted for common credentials, input fields,
+URLs and request/trace identifiers, stripped of control sequences, and bounded
+to 200 UTF-8 bytes. Status exposes even a generic failure reason. Classification
+still normalizes known causes, including Codex "Selected model is at capacity"
+without a native code, as retryable capacity. Events contain no diagnostic text.
+
+A missing answer records `unavailable_reason: native_answer_missing`;
+Multica's absent result route records `multica_result_route_unavailable`.
+These reasons explain availability without treating a completed source as failed.
+
+New generic-process clean exits without a structured terminal result are
+`failed` with code `result_extraction_failed`. When result storage is enabled,
+up to 64 KiB of stdout is retained in a mode-0600 `failed-output-*.txt` file
+beside the private journal. Explicit result metadata includes a local
+`output_ref` (at most 1024 bytes) and `output_truncated` when applicable;
+`output_capture_error: output_capture_failed` explains a failed capture.
+This diagnostic file can contain native output and is not a verified answer.
+It remains for operator inspection and manual removal; journal retention does
+not delete it. `--no-store-result` disables this capture. Historical journal
+records are not rewritten or reconciled by these changes.

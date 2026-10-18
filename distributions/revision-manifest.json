@@ -15,7 +15,7 @@
     {
       "id": "portable-skill",
       "path": "skills/agentctl-portable/SKILL.md",
-      "sha256": "9d87e3aa1dfe4bd1ad070014618297e399715c70e61cfc199e3cbd5378cfb5ee",
+      "sha256": "dfe4c76fb0d310ee2dc8bc517dee16113fb747f67dbc87f02beeb6c9b978a36a",
       "install_name": "SKILL.md",
       "kind": "skill"
     },

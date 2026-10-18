@@ -283,6 +283,9 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	launchCtx := operationCtx
 	launchRequest := adapter.LaunchRequest{Env: opts.env, Argv: opts.argv, Cwd: opts.cwd, Context: contextInput(c), DiscoveryWindow: 250 * time.Millisecond, StartOnly: true,
 		ExecutionContext: &adapter.ExecutionContext{ExecutionID: execution.ID.String(), Adapter: execution.Adapter, HostID: execution.OriginHostID.String(), Labels: append([]string(nil), execution.Labels...), Authority: string(execution.Authority)}}
+	if execution.Adapter == "generic-process" && !opts.noStoreResult {
+		launchRequest.OutputDir, _ = filepath.Abs(filepath.Dir(c.journalPath))
+	}
 	launchRequest.PromptDelivery, launchRequest.PromptArgs = promptDelivery, promptArgs
 	if prompt != nil && (prompt.Delivery == "stdin" || prompt.Delivery == adapter.PromptDeliveryStream) {
 		launchRequest.Stdin = prompt.Bytes
@@ -1644,18 +1647,27 @@ func buildOutcome(execution model.Execution, result adapter.Result, now time.Tim
 				kind, category, retryable = "provider", "provider", false
 			}
 			message := allowlistedFailureMessage(model.OutcomeFailure{Code: code, Category: category, Source: execution.Adapter, NativeCode: nativeCode, Message: raw})
-			limit := model.OutcomeFailureLimit
-			if category != "" || nativeCode != "" {
-				limit = model.NativeFailureMessageLimit
+			messageSource := ""
+			if stderrMessage, _ := result.Data["stderr_message"].(string); code == "native_execution_failed" && category == "" && nativeCode == "" && strings.TrimSpace(stderrMessage) != "" {
+				message, messageSource = adapter.RedactFailureLine(stderrMessage), "stderr"
 			}
-			message, _ = boundedOutcomeText(message, limit)
-			outcome.Failure = &model.OutcomeFailure{Code: code, Kind: kind, Source: execution.Adapter, Retryable: retryable, Message: message, Category: category, NativeCode: nativeCode}
+			message, _ = boundedOutcomeText(message, model.NativeFailureMessageLimit)
+			outcome.Failure = &model.OutcomeFailure{Code: code, Kind: kind, Source: execution.Adapter, Retryable: retryable, Message: message, Category: category, NativeCode: nativeCode, MessageSource: messageSource}
 		}
 		if outcome.Content != nil || outcome.Failure != nil {
 			outcome.Availability = model.OutcomeStored
 		} else {
 			outcome.Availability = model.OutcomeUnavailableAtSource
+			outcome.UnavailableReason = "native_answer_missing"
+			if execution.Authority == model.AuthorityMultica {
+				outcome.UnavailableReason = "multica_result_route_unavailable"
+			}
 		}
+	}
+	if !noStoreResult && execution.Adapter == "generic-process" && result.Data["diagnostic_code"] == "result_extraction_failed" {
+		outcome.OutputRef, _ = result.Data["output_ref"].(string)
+		outcome.OutputTruncated, _ = result.Data["output_truncated"].(bool)
+		outcome.OutputCaptureError, _ = result.Data["output_capture_error"].(string)
 	}
 	return outcome
 }
@@ -1681,10 +1693,12 @@ const (
 	failureMessageGeneric     = "native execution failed"
 )
 
-// allowlistedFailureMessage is the only failure text that may be stored or
-// shown. Classification may read the provider string; the string itself is not
-// persisted, so a quoted credential or an echoed prompt cannot reach the journal.
+// allowlistedFailureMessage normalizes provider failures. Explicit stderr
+// fallbacks preserve only one redacted, bounded diagnostic line.
 func allowlistedFailureMessage(failure model.OutcomeFailure) string {
+	if failure.MessageSource == "stderr" {
+		return adapter.RedactFailureLine(failure.Message)
+	}
 	if failure.Source == "zcode" && failure.Code == "provider_capacity" && failure.Category == "capacity" && zcodeUsageLimitFailure(failure) {
 		return zcodeCapacityFailureMessage(failure.Message)
 	}
@@ -1768,7 +1782,7 @@ func classifyOutcomeFailure(message, diagnosticCode, nativeCode string) (string,
 	}
 	lower := strings.ToLower(message)
 	switch {
-	case nativeCode == "1308" || strings.Contains(lower, "usage limit reached") || strings.Contains(lower, "http 429") || strings.Contains(lower, "at capacity") || strings.Contains(lower, "server overloaded") || strings.Contains(lower, "server_overloaded"):
+	case nativeCode == "1308" || nativeCode == "429" || nativeCode == "server_overloaded" || strings.Contains(lower, "usage limit reached") || strings.Contains(lower, "http 429") || strings.Contains(lower, "at capacity") || strings.Contains(lower, "server overloaded") || strings.Contains(lower, "server_overloaded"):
 		return "provider_capacity", "capacity", "capacity", true
 	case strings.Contains(lower, "workspace") && strings.Contains(lower, "trust"):
 		return "workspace_trust_required", "permission", "", true

@@ -19,7 +19,7 @@ import (
 )
 
 func TestClassifyCapacityIsRetryableAndGenericProviderIsNot(t *testing.T) {
-	code, kind, category, retryable := classifyOutcomeFailure("Selected model is at capacity. Please try a different model.", "", "server_overloaded")
+	code, kind, category, retryable := classifyOutcomeFailure("Selected model is at capacity. Please try a different model.", "", "")
 	if code != "provider_capacity" || kind != "capacity" || category != "capacity" || !retryable {
 		t.Fatalf("capacity=%s %s %s %v", code, kind, category, retryable)
 	}
@@ -344,5 +344,80 @@ func TestZCodeCapacityWordingRequiresUsageLimitProof(t *testing.T) {
 	limit := model.OutcomeFailure{Source: "zcode", Code: "provider_capacity", Category: "capacity", NativeCode: "1308", Message: "ZCode provider usage limit reached; resets 2026-10-15 19:38:47"}
 	if got := allowlistedFailureMessage(limit); got != "ZCode provider usage limit reached; resets 2026-10-15 19:38:47" {
 		t.Fatalf("zcode 1308 must keep usage-limit wording with reset, got %q", got)
+	}
+}
+
+func TestStderrFallbackSurvivesOutcomeAndStatusProjection(t *testing.T) {
+	execution := model.Execution{Adapter: "codex", State: model.StateFailed}
+	result := adapter.Result{State: adapter.StateFailed, Error: "could not load settings", Data: map[string]any{"stderr_message": "could not load settings token=private-value requestId=fixture-only"}}
+	outcome := buildOutcome(execution, result, time.Now(), false)
+	if outcome.Failure == nil || outcome.Failure.MessageSource != "stderr" {
+		t.Fatalf("outcome=%#v", outcome)
+	}
+	for _, failure := range []*model.OutcomeFailure{outcome.Failure, withAllowlistedFailure(outcome).Failure} {
+		view := projectNativeFailure(failure)
+		if view == nil || !strings.Contains(view.Message, "could not load settings") || strings.Contains(view.Message, "private-value") || strings.Contains(view.Message, "fixture-only") || len(view.Message) > 200 {
+			t.Fatalf("view=%#v", view)
+		}
+	}
+	if projectNativeFailure(&model.OutcomeFailure{Code: "native_execution_failed", Source: "codex"}) == nil {
+		t.Fatal("generic failure hidden from status")
+	}
+}
+func TestUnavailableOutcomeRecordsReason(t *testing.T) {
+	for _, authority := range []model.Authority{model.AuthorityNative, model.AuthorityMultica} {
+		execution := model.Execution{Adapter: "cursor", Authority: authority, State: model.StateCompleted}
+		outcome := buildOutcome(execution, adapter.Result{Success: true}, time.Now(), false)
+		want := "native_answer_missing"
+		if authority == model.AuthorityMultica {
+			want = "multica_result_route_unavailable"
+		}
+		if outcome.Availability != model.OutcomeUnavailableAtSource || outcome.UnavailableReason != want {
+			t.Fatalf("outcome=%#v", outcome)
+		}
+	}
+}
+
+func TestStderrCauseAtExitPersistsWithoutSecrets(t *testing.T) {
+	for _, tc := range []struct {
+		name, line, want string
+		retryable        bool
+	}{
+		{"unknown", "could not load settings token=private-value requestId=fixture-only", "could not load settings", false},
+		{"capacity", "Selected model is at capacity. Please try a different model.", failureMessageCapacity, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			bin := filepath.Join(root, "codex")
+			script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo test-version; exit 0; fi\nprintf '\\n%s\\n' '" + tc.line + "' >&2\nprintf '%s\\n' 'Usage: native-command' >&2\nexit 1\n"
+			if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			journalPath := filepath.Join(root, "state", "journal.db")
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			if code := a.run(context.Background(), []string{"--journal", journalPath, "run", "--adapter", "codex", "--", bin, "exec", "--json", "task"}); code != 0 {
+				t.Fatalf("run exit=%d %s %s", code, stdout.String(), stderr.String())
+			}
+			id := executionIDFromOutput(t, stdout.String())
+			for _, command := range []string{"status", "result"} {
+				stdout.Reset()
+				if code := a.run(context.Background(), []string{"--journal", journalPath, command, id}); code != 0 {
+					t.Fatalf("%s exit=%d %s", command, code, stdout.String())
+				}
+				if !strings.Contains(stdout.String(), tc.want) || !strings.Contains(stdout.String(), `"retryable":`+jsonBool(tc.retryable)) {
+					t.Fatalf("%s dropped reason: %s", command, stdout.String())
+				}
+				for _, secret := range []string{"private-value", "fixture-only", "Usage:"} {
+					if strings.Contains(stdout.String(), secret) {
+						t.Fatalf("%s leaked %s", command, secret)
+					}
+				}
+			}
+			raw, err := os.ReadFile(journalPath)
+			if err != nil || bytes.Contains(raw, []byte("private-value")) || bytes.Contains(raw, []byte("fixture-only")) {
+				t.Fatalf("journal retained secret: %v", err)
+			}
+		})
 	}
 }

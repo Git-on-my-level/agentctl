@@ -88,7 +88,9 @@ Catalog order never selects a winner. Alias matches cannot discard version,
 harness, model, or settings constraints.
 
 Workspace trust is a separate grant: `delegation.cursor_workspace_trust: true`
-on the profile allows the recipe to include Cursor `--trust`. A model alias or
+on the profile adds Cursor `--trust` for both coding and read-only recipes.
+Read-only Cursor delegation refuses before launch with `workspace_trust_required`
+without this grant, even if the directory was previously trusted. A model alias or
 allowlist entry never grants it. Unattended coding permissions are a second
 grant: `delegation.unattended_coding_permissions: true` adds Cursor `--force`,
 Codex `--dangerously-bypass-approvals-and-sandbox`, Claude Code
@@ -276,3 +278,8 @@ A plan and version probe do not verify provider authentication. Attach, resume,
 and steering have no verified route. Multica delegation remains unsupported;
 explicit dispatch still requires an independently advertised Multica runtime and
 retains its lifecycle-only contract. No local adapter proves remote availability.
+
+ZCode 0.16.9 documents `--mode yolo` as its prompt permission mode. Its native
+evaluator bypasses ordinary permission prompts but checks always-ask tools
+first, so this existing argv reports `permissions: constrained` with or without
+the coding grant. This label does not assert sandbox isolation or change argv.

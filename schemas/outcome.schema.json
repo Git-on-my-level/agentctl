@@ -15,6 +15,10 @@
     "recorded_at": {"type": "string", "format": "date-time"},
     "source": {"type": "string", "minLength": 1},
     "result_ref": {"type": "string", "pattern": "^agentctl://host-[a-z]{3,10}(?:-[a-z]{3,10}){5}/exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"},
+    "unavailable_reason": {"enum": ["native_answer_missing", "multica_result_route_unavailable"]},
+    "output_ref": {"type": "string", "maxLength": 1024, "description": "Private local file containing at most 64 KiB of generic-process stdout after extraction failure; never an answer contract."},
+    "output_truncated": {"type": "boolean"},
+    "output_capture_error": {"const": "output_capture_failed"},
     "content": {
       "type": "object",
       "required": ["media_type", "text", "preview", "bytes", "truncated"],
@@ -39,12 +43,13 @@
             "source": {"type": "string", "minLength": 1},
             "retryable": {"type": "boolean"},
             "message": {"type": "string", "maxLength": 4096},
+            "message_source": {"enum": ["stderr"]},
             "category": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
             "native_code": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_]{0,63}$"}
           }
         },
         {
-          "if": {"anyOf": [{"required": ["category"]}, {"required": ["native_code"]}]},
+          "if": {"anyOf": [{"required": ["category"]}, {"required": ["native_code"]}, {"required": ["message_source"]}]},
           "then": {"properties": {"message": {"maxLength": 200}}}
         }
       ]

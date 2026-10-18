@@ -116,6 +116,9 @@ type processRecord struct {
 	cancelled        bool
 	pipes            sync.WaitGroup
 	resultPath       string
+	outputDir        string
+	outputPrefix     []byte
+	outputTruncated  bool
 	page             *parsedPage
 	wholeStdout      bool
 
@@ -153,6 +156,15 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 		p.stderrBytes += len(line)
 	} else {
 		p.stdoutBytes += len(line)
+		if p.outputDir != "" && p.parser.Name() == "generic-process-json" {
+			remaining := (64 << 10) - len(p.outputPrefix)
+			part := append(append([]byte(nil), line...), '\n')
+			if len(part) > remaining {
+				part = part[:remaining]
+				p.outputTruncated = true
+			}
+			p.outputPrefix = append(p.outputPrefix, part...)
+		}
 	}
 	overLimit := p.stdoutBytes+p.stderrBytes > p.maxOutput
 	if overLimit {
@@ -169,6 +181,9 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 	}
 	if stderr {
 		p.mu.Lock()
+		if p.stderrDiagnostic == "" {
+			p.stderrDiagnostic = RedactFailureLine(string(line))
+		}
 		if p.parser != nil && p.parser.Name() == "zcode-json" {
 			diagnostic := zcodeStderrFailure(string(line))
 			if diagnostic == nil {
@@ -181,13 +196,6 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 			}
 			if diagnostic != nil {
 				p.zcodeFailure = mergeZCodeFailure(p.zcodeFailure, diagnostic)
-			}
-		} else {
-			diagnostic := safeFailureDiagnostic(string(line))
-			// Keep the first useful cause instead of replacing it with a trailing
-			// usage/help footer (or an empty line). Structured errors still win.
-			if p.stderrDiagnostic == "" && diagnostic != "" {
-				p.stderrDiagnostic = diagnostic
 			}
 		}
 		p.mu.Unlock()
@@ -544,7 +552,23 @@ func (p *processRecord) finish(err error) {
 		} else {
 			// A zero exit code does not establish domain success. Native adapters
 			// require an explicit terminal result in their structured stream.
-			p.result = &Result{Success: false, State: StateOrphaned, Error: "native process exited cleanly without an explicit structured terminal result", ExitCode: p.exitCode, SessionRef: p.ref, Data: map[string]any{"diagnostic_code": "result_extraction_failed"}}
+			state := StateOrphaned
+			if p.parser != nil && p.parser.Name() == "generic-process-json" {
+				state = StateFailed
+			}
+			p.result = &Result{Success: false, State: state, Error: "native process exited cleanly without an explicit structured terminal result", ExitCode: p.exitCode, SessionRef: p.ref, Data: map[string]any{"diagnostic_code": "result_extraction_failed"}}
+			if state == StateFailed {
+				p.captureFailedOutputLocked()
+			}
+		}
+	}
+	if p.result.State == StateFailed && p.stderrDiagnostic != "" {
+		if p.result.Data == nil {
+			p.result.Data = map[string]any{}
+		}
+		p.result.Data["stderr_message"] = p.stderrDiagnostic
+		if p.result.Error == "" {
+			p.result.Error = p.stderrDiagnostic
 		}
 	}
 	applyParseWarning(p.result, p.parseWarnings)
@@ -554,6 +578,27 @@ func (p *processRecord) finish(err error) {
 	default:
 		close(p.done)
 	}
+}
+
+func (p *processRecord) captureFailedOutputLocked() {
+	if p.outputDir == "" {
+		return
+	}
+	file, err := os.CreateTemp(p.outputDir, "failed-output-*.txt")
+	if err == nil {
+		_, err = file.Write(p.outputPrefix)
+		closeErr := file.Close()
+		if err == nil {
+			err = closeErr
+		}
+		if err == nil && len(file.Name()) <= 1024 {
+			p.result.Data["output_ref"] = file.Name()
+			p.result.Data["output_truncated"] = p.outputTruncated
+			return
+		}
+		_ = os.Remove(file.Name())
+	}
+	p.result.Data["output_capture_error"] = "output_capture_failed"
 }
 
 func (p *processRecord) zcodeFailureResultLocked() *Result {
@@ -956,7 +1001,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	started = true
 	startedAt := time.Now().UTC()
 	ref := SourceRef{Adapter: a.Name(), Kind: a.config.LaunchKind, OpaqueID: strconv.Itoa(cmd.Process.Pid), PID: cmd.Process.Pid}
-	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: startedAt, updatedAt: startedAt, done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, wholeStdout: a.config.WholeStdout, live: live, launchIdentity: captureProcessLaunch(cmd.Process.Pid, startedAt)}
+	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: startedAt, updatedAt: startedAt, done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, outputDir: req.OutputDir, wholeStdout: a.config.WholeStdout, live: live, launchIdentity: captureProcessLaunch(cmd.Process.Pid, startedAt)}
 	record.acp = acp
 	record.launch = req
 	record.launch.Stdin = nil

@@ -445,7 +445,7 @@ func TestCursorReadOnlyOmitsForce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Permissions != PermissionsReadOnly || contains(got.Argv, "--force") || !contains(got.Argv, "ask") {
+	if got.Permissions != PermissionsReadOnly || contains(got.Argv, "--force") || !contains(got.Argv, "ask") || !contains(got.Argv, "--trust") {
 		t.Fatalf("argv=%v permissions=%s", got.Argv, got.Permissions)
 	}
 }
@@ -573,5 +573,23 @@ func TestOpenCodeRecipePreservesPermissionBoundary(t *testing.T) {
 	}
 	if recipe.Permissions != PermissionsUnsupported || strings.Join(recipe.Argv, " ") != "opencode run --format json --model provider/model --" {
 		t.Fatalf("unexpected permission grant: %#v", recipe)
+	}
+}
+
+func TestCursorReadOnlyRequiresWorkspaceTrust(t *testing.T) {
+	for _, grant := range []bool{false, true} {
+		_, err := Build(Input{Harness: "cursor", Model: "grok-4.7-high", Access: AccessReadOnly, UnattendedCodingPermissions: grant})
+		var buildErr *Error
+		if !errors.As(err, &buildErr) || buildErr.Code != "workspace_trust_required" || !strings.Contains(buildErr.Diagnostic, "delegation.cursor_workspace_trust") {
+			t.Fatalf("grant=%v err=%v", grant, err)
+		}
+	}
+}
+func TestZCodeYoloLabelIsConstrainedRegardlessOfGrant(t *testing.T) {
+	for _, grant := range []bool{false, true} {
+		recipe, err := Build(Input{Harness: "zcode", Model: "zai/glm-5.3", UnattendedCodingPermissions: grant})
+		if err != nil || recipe.Permissions != PermissionsConstrained || !contains(recipe.Argv, "yolo") {
+			t.Fatalf("recipe=%#v err=%v", recipe, err)
+		}
 	}
 }

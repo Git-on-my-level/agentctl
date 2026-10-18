@@ -416,7 +416,7 @@ func TestMalformedOutputIsHealthEventAndDoesNotBecomeSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Result == nil || got.Result.Success || got.Result.State != StateOrphaned {
+	if got.Result == nil || got.Result.Success || got.Result.State != StateFailed {
 		t.Fatalf("zero-domain-result interpreted as success: %#v", got.Result)
 	}
 	events, err := a.Events(context.Background(), EventsRequest{Ref: got.Session.Ref})
@@ -1115,7 +1115,7 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Result == nil || got.Result.Success || got.Result.State != StateOrphaned {
+	if got.Result == nil || got.Result.Success || got.Result.State != StateFailed {
 		t.Fatalf("plain stdout and a successful parent were treated as an outcome: %#v", got.Result)
 	}
 	if got.Result.ExitCode == nil || *got.Result.ExitCode != 0 || got.Result.Content != "" {
