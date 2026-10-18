@@ -1032,6 +1032,11 @@ func parseRunWithConfig(args []string, c common) (runOptions, *output.Error) {
 	}
 	_, profile, err := resolution.Config.ResolveProfile(c.profile)
 	if err != nil {
+		if c.profile == "" && errors.Is(err, config.ErrProfileMissing) {
+			// Native runs do not require bootstrap/skills-only configs to
+			// select a profile. Preserve the built-in inference from parseRun.
+			return opts, nil
+		}
 		return opts, mapConfigError("resolve run adapter profile", err)
 	}
 	opts.adapter, problem = inferConfiguredAdapter(opts.argv[0], profile.Adapters)
@@ -1045,9 +1050,19 @@ func inferConfiguredAdapter(executable string, configured map[string]config.Adap
 	best := 0
 	matches := map[string]bool{}
 	for name, entry := range configured {
-		harness, err := launchrecipe.CanonicalHarness(name)
-		if err != nil || entry.Executable == "" {
+		if entry.Executable == "" {
 			continue
+		}
+		harness := strings.ToLower(strings.TrimSpace(name))
+		switch harness {
+		case "process", "generic", "generic-process":
+			harness = "generic-process"
+		default:
+			var err error
+			harness, err = launchrecipe.CanonicalHarness(name)
+			if err != nil {
+				continue
+			}
 		}
 		if harness == "claude-code" {
 			harness = "claude"

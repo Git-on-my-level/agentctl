@@ -13,6 +13,81 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/model"
 )
 
+func TestRunInferenceWithoutImplicitProfile(t *testing.T) {
+	for _, tc := range []struct{ name, config string }{
+		{"bootstrap-only", `{"schema_version":1,"bootstrap":{"instruction_pointers":"off"}}`},
+		{"skills-only", `{"schema_version":1,"skills":{"source":{"remote":"https://example.test/skills.git","manifest_path":"manifest.json"},"update_policy":"manual"}}`},
+		{"unselected-profile", `{"schema_version":1,"profiles":{"other":{"adapters":{"claude-code":{"executable":"codex"}}}}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			configPath := filepath.Join(root, "config.json")
+			if err := os.WriteFile(configPath, []byte(tc.config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			for _, executable := range []string{"codex", "/bin/echo"} {
+				opts, problem := parseRunWithConfig([]string{"--", executable, "task"}, common{configPath: configPath})
+				if problem != nil || opts.adapter != inferAdapter(executable) {
+					t.Fatalf("fallback adapter=%s problem=%v", opts.adapter, problem)
+				}
+			}
+			if _, problem := parseRunWithConfig([]string{"--", "codex", "task"}, common{configPath: configPath, profile: "missing"}); problem == nil {
+				t.Fatal("explicit missing profile silently fell back")
+			}
+			if err := os.WriteFile(filepath.Join(root, "task.md"), []byte("task"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			manifest := filepath.Join(root, "fanout.json")
+			if err := os.WriteFile(manifest, []byte(`{"schema_version":1,"prompt_file":"task.md","children":[{"argv":["/bin/echo"]}]}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range [][]string{
+				{"run", "--plan", "--", "/bin/echo", "task"},
+				{"fanout", "--manifest", manifest, "--plan"},
+			} {
+				var stdout, stderr bytes.Buffer
+				a := testApp(&stdout, &stderr)
+				prefix := []string{"--config", configPath, "--journal", filepath.Join(root, "state", "journal.db")}
+				if code := a.run(context.Background(), append(prefix, args...)); code != 0 {
+					t.Fatalf("%s plan exit=%d output=%s stderr=%s", args[0], code, stdout.String(), stderr.String())
+				}
+			}
+		})
+	}
+}
+
+func TestInferConfiguredGenericAdapters(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "codex")
+	for _, alias := range []string{"process", "generic", "generic-process"} {
+		configured := map[string]config.Adapter{alias: {Executable: path}}
+		for _, executable := range []string{path, filepath.Join(root, "other", "codex")} {
+			if got, problem := inferConfiguredAdapter(executable, configured); problem != nil || got != "generic-process" {
+				t.Fatalf("alias=%s executable=%s adapter=%s problem=%v", alias, executable, got, problem)
+			}
+		}
+	}
+	configured := map[string]config.Adapter{
+		"generic": {Executable: path}, "generic-process": {Executable: path},
+		"codex": {Executable: filepath.Join(root, "other", "codex")},
+	}
+	for i := 0; i < 50; i++ {
+		for _, tc := range []struct{ executable, want string }{{path, "generic-process"}, {configured["codex"].Executable, "codex"}} {
+			if got, problem := inferConfiguredAdapter(tc.executable, configured); problem != nil || got != tc.want {
+				t.Fatalf("exact path precedence adapter=%s want=%s problem=%v", got, tc.want, problem)
+			}
+		}
+		_, problem := inferConfiguredAdapter(filepath.Join(root, "third", "codex"), configured)
+		if problem == nil || problem.Details["diagnostic_code"] != "run_adapter_ambiguous" || !reflect.DeepEqual(problem.Details["candidates"], []string{"codex", "generic-process"}) {
+			t.Fatalf("basename ambiguity=%v", problem)
+		}
+	}
+	configured["codex"] = configured["generic"]
+	if _, problem := inferConfiguredAdapter(path, configured); problem == nil || !reflect.DeepEqual(problem.Details["candidates"], []string{"codex", "generic-process"}) {
+		t.Fatalf("exact-path ambiguity=%v", problem)
+	}
+}
+
 func TestInferConfiguredAdapter(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "claude-2")
