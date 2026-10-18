@@ -85,6 +85,7 @@
               "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
             },
             "access": {
+              "description": "Defaults to coding. The unattended coding grant enables reviewed coding permission recipes, including Claude Code --permission-mode auto. Claude Code read_only is refused: edit and shell-write enforcement in --print is unverified.",
               "enum": ["coding", "read_only"]
             }
           }

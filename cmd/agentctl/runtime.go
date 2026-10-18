@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -21,6 +22,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
+	"github.com/Git-on-my-level/agentctl/internal/launchrecipe"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
@@ -44,6 +46,7 @@ type runOptions struct {
 	executionID                              ids.ExecutionID
 	labels                                   []string
 	plan                                     bool
+	adapterExplicit                          bool
 	noStoreResult                            bool
 	allowMissingResult                       bool
 	allowUnreliableResult                    bool
@@ -74,7 +77,7 @@ const (
 )
 
 func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
-	opts, problem := parseRun(args)
+	opts, problem := parseRunWithConfig(args, c)
 	if problem != nil {
 		return problem
 	}
@@ -580,6 +583,7 @@ func parseRun(args []string) (runOptions, *output.Error) {
 			}
 			i++
 			o.adapter = args[i]
+			o.adapterExplicit = true
 		case "--cwd":
 			if i+1 >= delimiter {
 				return o, output.NewError(output.CodeUsage, "--cwd requires a value", false)
@@ -1012,6 +1016,85 @@ func inferAdapter(executable string) string {
 	default:
 		return "generic-process"
 	}
+}
+
+func parseRunWithConfig(args []string, c common) (runOptions, *output.Error) {
+	opts, problem := parseRun(args)
+	if problem != nil || opts.adapterExplicit {
+		return opts, problem
+	}
+	resolution, err := configResolution(c)
+	if err != nil {
+		if errors.Is(err, config.ErrNotFound) && c.configPath == "" && c.configBundle == "" && c.profile == "" {
+			return opts, nil
+		}
+		return opts, mapConfigError("read run adapter config", err)
+	}
+	_, profile, err := resolution.Config.ResolveProfile(c.profile)
+	if err != nil {
+		return opts, mapConfigError("resolve run adapter profile", err)
+	}
+	opts.adapter, problem = inferConfiguredAdapter(opts.argv[0], profile.Adapters)
+	return opts, problem
+}
+
+// Exact/resolved paths outrank basename matches. Equal-strength matches across
+// harnesses fail closed; aliases for the same harness are deduplicated.
+func inferConfiguredAdapter(executable string, configured map[string]config.Adapter) (string, *output.Error) {
+	resolved := resolvedRunExecutable(executable)
+	best := 0
+	matches := map[string]bool{}
+	for name, entry := range configured {
+		harness, err := launchrecipe.CanonicalHarness(name)
+		if err != nil || entry.Executable == "" {
+			continue
+		}
+		if harness == "claude-code" {
+			harness = "claude"
+		}
+		rank := 0
+		if executable == entry.Executable || resolved != "" && resolved == resolvedRunExecutable(entry.Executable) {
+			rank = 2
+		} else if filepath.Base(executable) == filepath.Base(entry.Executable) {
+			rank = 1
+		}
+		if rank == 0 || rank < best {
+			continue
+		}
+		if rank > best {
+			matches = map[string]bool{}
+			best = rank
+		}
+		matches[harness] = true
+	}
+	if len(matches) == 0 {
+		return inferAdapter(executable), nil
+	}
+	candidates := make([]string, 0, len(matches))
+	for name := range matches {
+		candidates = append(candidates, name)
+	}
+	sort.Strings(candidates)
+	if len(candidates) > 1 {
+		return "", output.NewError(output.CodeAmbiguousReference, "configured executable matches multiple adapters; pass --adapter explicitly", false).
+			WithDetail("diagnostic_code", "run_adapter_ambiguous").WithDetail("candidates", candidates)
+	}
+	return candidates[0], nil
+}
+
+func resolvedRunExecutable(executable string) string {
+	path, err := exec.LookPath(executable)
+	if err != nil {
+		return ""
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
 }
 
 func requireRunCapability(probe adapter.ProbeResult, required adapter.CapabilityName) *output.Error {

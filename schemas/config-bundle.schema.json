@@ -59,7 +59,7 @@
       "additionalProperties": false,
       "required": ["executable"],
       "properties": {
-        "executable": { "type": "string", "minLength": 1 }
+        "executable": { "type": "string", "minLength": 1, "description": "Exact native executable. Without an explicit adapter, run and fanout match configured exact/resolved paths before basenames; equal-strength cross-harness matches are ambiguous." }
       }
     },
     "agent_preferences": {
@@ -101,7 +101,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "cursor_workspace_trust": { "type": "boolean" }
+        "cursor_workspace_trust": { "type": "boolean" },
+        "unattended_coding_permissions": { "type": "boolean", "description": "Explicit grant for coding delegates: Cursor --force, Codex --dangerously-bypass-approvals-and-sandbox, Claude Code --permission-mode auto, and Devin ACP one-operation permission approvals. Never applied to read_only or expert run argv." }
       }
     },
     "route": {

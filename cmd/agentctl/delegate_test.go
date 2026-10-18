@@ -66,6 +66,46 @@ func (f delegateFixture) invoke(prompt string, extra ...string) (int, string) {
 
 const delegateSuccessScript = `printf '%s\n' '{"type":"system","subtype":"init","session_id":"delegate-test"}' '{"type":"result","subtype":"success","is_error":false,"result":"verified answer"}'`
 
+func TestClaudeCodeDelegatePermissionPlan(t *testing.T) {
+	for _, grant := range []bool{false, true} {
+		f := newDelegateFixture(t, delegateSuccessScript)
+		path := filepath.Join(f.root, "cursor-agent")
+		cfg := config.Config{SchemaVersion: 1, DefaultProfile: "test", Profiles: map[string]config.Profile{"test": {
+			Adapters:         map[string]config.Adapter{"claude-code": {Executable: path}},
+			Delegation:       &config.DelegationPolicy{UnattendedCodingPermissions: grant},
+			AgentPreferences: &config.AgentPreferences{Mode: "advisory", Preferred: []config.AgentPreference{{Agent: "claude-code", Model: "opus[1m]", Family: "opus", Effort: "high"}}},
+		}}}
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f.config, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		f.selectRequest(t, `{"family":"opus"}`)
+		code, out := f.invoke("private-task-token", "--plan")
+		wantPermissions := `"permissions":"constrained"`
+		if code != 0 || !strings.Contains(out, wantPermissions) || strings.Contains(out, `"--permission-mode","auto"`) != grant || !strings.Contains(out, `"opus[1m]"`) || !strings.Contains(out, `"prompt_delivery":"stream"`) || strings.Contains(out, "private-task-token") {
+			t.Fatalf("grant=%v exit=%d output=%s", grant, code, out)
+		}
+		if _, err := os.Stat(f.journal); !os.IsNotExist(err) {
+			t.Fatalf("plan created journal: %v", err)
+		}
+		// Refuse read_only before even probing a binary; no plan-mode claim.
+		if err := os.Remove(f.probe); err != nil {
+			t.Fatal(err)
+		}
+		f.selectRequest(t, `{"family":"opus","settings":{"access":"read_only"}}`)
+		code, out = f.invoke("private-task-token", "--plan")
+		if code != 5 || !strings.Contains(out, "access_unavailable") || !strings.Contains(out, "edits and shell writes in --print") {
+			t.Fatalf("read_only exit=%d output=%s", code, out)
+		}
+		if _, err := os.Stat(f.probe); !os.IsNotExist(err) {
+			t.Fatalf("refused read_only probed executable: %v", err)
+		}
+	}
+}
+
 func TestDelegateLabelNamesTheViolatedRule(t *testing.T) {
 	_, problem := parseDelegate([]string{"--request-file", "request.json", "--prompt-file", "prompt.md", "--label", "ecoopt-20261013", "--label", "grok-impl", "--label", "A-agentctl"})
 	if problem == nil || problem.Details["diagnostic_code"] != "delegate_invalid_label" || problem.Details["index"] != 2 || problem.Details["rule"] != "pattern" || !strings.Contains(problem.Message, "index 2") || !strings.Contains(problem.Message, runLabelPatternText) {

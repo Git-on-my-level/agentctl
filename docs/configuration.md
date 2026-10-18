@@ -111,8 +111,10 @@ harnesses retain their own recipe limits. `delegation.cursor_workspace_trust`
 is a separate boolean grant for Cursor workspace trust.
 `delegation.unattended_coding_permissions` is a separate boolean grant that
 lets `delegate` add Cursor `--force`, Codex
-`--dangerously-bypass-approvals-and-sandbox`, and Devin `--permission-mode
-dangerous` on coding launches. Neither grant
+`--dangerously-bypass-approvals-and-sandbox`, Claude Code
+`--permission-mode auto`, and Devin ACP one-operation permission
+approvals on coding launches. Claude Code refuses `read_only` because edit and
+shell-write enforcement in `--print` is unverified. Neither grant
 is implied by a model alias, and neither rewrites expert `run` argv. See [structured delegation](structured-delegation.md)
 for the request schema, deterministic defaults, and replay contract. Upgrade the
 binary before applying config fields an older version does not recognize.
