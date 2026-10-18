@@ -170,6 +170,11 @@ func permissionLabel(harness, access string, grant bool) string {
 	if access == AccessReadOnly {
 		return PermissionsReadOnly
 	}
+	// ZCode always requests yolo, which bypasses ordinary permission prompts
+	// but retains always-ask checks in the native evaluator (0.16.9).
+	if harness == "zcode" {
+		return PermissionsConstrained
+	}
 	if !grant {
 		return PermissionsConstrained
 	}

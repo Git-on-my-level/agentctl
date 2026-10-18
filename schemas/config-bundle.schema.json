@@ -101,7 +101,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "cursor_workspace_trust": { "type": "boolean" },
+        "cursor_workspace_trust": {"description": "Required grant for Cursor read_only delegation; when granted all Cursor recipes add --trust.", "type": "boolean" },
         "unattended_coding_permissions": { "type": "boolean", "description": "Explicit grant for coding delegates: Cursor --force, Codex --dangerously-bypass-approvals-and-sandbox, Claude Code --permission-mode auto, and Devin ACP one-operation permission approvals. Never applied to read_only or expert run argv." }
       }
     },

@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
 )
 
 const (
@@ -105,7 +107,7 @@ type processRecord struct {
 	contentSource    string
 	contentTruncated bool
 	lastError        string
-	stderrDiagnostic string
+	stderrDiagnostic *diagnostic.Stderr
 	zcodeFailure     *zcodeFailureDiagnostic
 	parseWarnings    []string
 	metadataSeen     map[string]bool
@@ -116,6 +118,10 @@ type processRecord struct {
 	cancelled        bool
 	pipes            sync.WaitGroup
 	resultPath       string
+	outputDir        string
+	executionID      string
+	outputPrefix     []byte
+	outputTruncated  bool
 	page             *parsedPage
 	wholeStdout      bool
 
@@ -153,6 +159,15 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 		p.stderrBytes += len(line)
 	} else {
 		p.stdoutBytes += len(line)
+		if p.outputDir != "" && p.parser.Name() == "generic-process-json" {
+			remaining := (64 << 10) - len(p.outputPrefix)
+			part := append(append([]byte(nil), line...), '\n')
+			if len(part) > remaining {
+				part = part[:remaining]
+				p.outputTruncated = true
+			}
+			p.outputPrefix = append(p.outputPrefix, part...)
+		}
 	}
 	overLimit := p.stdoutBytes+p.stderrBytes > p.maxOutput
 	if overLimit {
@@ -160,7 +175,17 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 	}
 	live := p.live
 	p.mu.Unlock()
-	obs := p.parser.Parse(line, stderr)
+	var obs parsedObservation
+	if stderr {
+		// Stderr is diagnostic input, never a structured answer/code authority.
+		// Only fixed attention classifications may cross the event boundary.
+		obs = classifyUnstructured(line, firstNonEmpty(p.ref.Adapter, "process"))
+		if obs.Kind == "" {
+			obs = parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "stderr", Data: map[string]any{"stream": "stderr", "structured": false}}
+		}
+	} else {
+		obs = p.parser.Parse(line, false)
+	}
 	if live != nil && !stderr && live.acknowledge(line) {
 		// The native CLI took a user message into the session: sequence 1 is
 		// the launch prompt, later ones are steering messages. Only this
@@ -169,6 +194,15 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 	}
 	if stderr {
 		p.mu.Lock()
+		if p.stderrDiagnostic == nil {
+			harness := firstNonEmpty(p.ref.Adapter, strings.TrimSuffix(p.parser.Name(), "-json"))
+			p.stderrDiagnostic = diagnostic.FromStderrLine(line, harness)
+			if harness == "zcode" {
+				if parsed := zcodeStderrFailure(string(line)); parsed != nil && parsed.Category == "capacity" {
+					p.stderrDiagnostic.Code = "provider_capacity"
+				}
+			}
+		}
 		if p.parser != nil && p.parser.Name() == "zcode-json" {
 			diagnostic := zcodeStderrFailure(string(line))
 			if diagnostic == nil {
@@ -181,13 +215,6 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 			}
 			if diagnostic != nil {
 				p.zcodeFailure = mergeZCodeFailure(p.zcodeFailure, diagnostic)
-			}
-		} else {
-			diagnostic := safeFailureDiagnostic(string(line))
-			// Keep the first useful cause instead of replacing it with a trailing
-			// usage/help footer (or an empty line). Structured errors still win.
-			if p.stderrDiagnostic == "" && diagnostic != "" {
-				p.stderrDiagnostic = diagnostic
 			}
 		}
 		p.mu.Unlock()
@@ -208,6 +235,12 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 }
 
 func mergeZCodeFailure(current, next *zcodeFailureDiagnostic) *zcodeFailureDiagnostic {
+	if current != nil && diagnostic.AuthenticationRequired(current.Message) {
+		return current
+	}
+	if diagnostic.AuthenticationRequired(next.Message) {
+		return next
+	}
 	if current == nil || next.Category == "capacity" && current.Category != "capacity" {
 		return next
 	}
@@ -480,7 +513,7 @@ func (p *processRecord) finish(err error) {
 				p.result.Error = "native process cancelled"
 			} else {
 				p.result.State = StateFailed
-				p.result.Error = firstNonEmpty(p.stderrDiagnostic, p.result.Error, "OpenClaw agent exited unsuccessfully")
+				p.result.Error = firstNonEmpty(p.stderrDiagnostic.Message(), p.result.Error, "OpenClaw agent exited unsuccessfully")
 			}
 		}
 	}
@@ -535,7 +568,7 @@ func (p *processRecord) finish(err error) {
 		if p.cancelled {
 			p.result = &Result{Success: false, State: StateCancelled, Error: "native process cancelled", ExitCode: p.exitCode, SessionRef: p.ref}
 		} else if p.exitCode != nil && *p.exitCode != 0 {
-			p.result = &Result{Success: false, State: StateFailed, Error: firstNonEmpty(p.lastError, p.stderrDiagnostic, "native process exited unsuccessfully"), ExitCode: p.exitCode, SessionRef: p.ref}
+			p.result = &Result{Success: false, State: StateFailed, Error: firstNonEmpty(p.lastError, p.stderrDiagnostic.Message(), "native process exited unsuccessfully"), ExitCode: p.exitCode, SessionRef: p.ref}
 		} else if p.lastTurn != nil {
 			result := *p.lastTurn
 			result.ExitCode = p.exitCode
@@ -544,7 +577,23 @@ func (p *processRecord) finish(err error) {
 		} else {
 			// A zero exit code does not establish domain success. Native adapters
 			// require an explicit terminal result in their structured stream.
-			p.result = &Result{Success: false, State: StateOrphaned, Error: "native process exited cleanly without an explicit structured terminal result", ExitCode: p.exitCode, SessionRef: p.ref, Data: map[string]any{"diagnostic_code": "result_extraction_failed"}}
+			state := StateOrphaned
+			if p.parser != nil && p.parser.Name() == "generic-process-json" {
+				state = StateFailed
+			}
+			p.result = &Result{Success: false, State: state, Error: "native process exited cleanly without an explicit structured terminal result", ExitCode: p.exitCode, SessionRef: p.ref, Data: map[string]any{"diagnostic_code": "result_extraction_failed"}}
+			if state == StateFailed {
+				p.captureFailedOutputLocked()
+			}
+		}
+	}
+	if p.result.State == StateFailed && p.stderrDiagnostic != nil {
+		if p.result.Data == nil {
+			p.result.Data = map[string]any{}
+		}
+		p.result.Data["stderr_diagnostic"] = p.stderrDiagnostic
+		if p.result.Error == "" {
+			p.result.Error = p.stderrDiagnostic.Message()
 		}
 	}
 	applyParseWarning(p.result, p.parseWarnings)
@@ -556,11 +605,31 @@ func (p *processRecord) finish(err error) {
 	}
 }
 
+func (p *processRecord) captureFailedOutputLocked() {
+	if p.outputDir == "" {
+		return
+	}
+	outputs, err := diagnostic.OpenOutputs(p.outputDir, true)
+	if err == nil {
+		defer outputs.Close()
+		path, writeErr := outputs.Write(p.executionID, p.outputPrefix)
+		if writeErr == nil {
+			p.result.Data["output_ref"] = path
+			p.result.Data["output_truncated"] = p.outputTruncated
+			return
+		}
+	}
+	p.result.Data["output_capture_error"] = "output_capture_failed"
+}
+
 func (p *processRecord) zcodeFailureResultLocked() *Result {
 	message := "ZCode execution failed"
 	data := map[string]any{"family": "zcode", "failure_structured": true}
 	if p.zcodeFailure != nil {
 		message = p.zcodeFailure.Message
+		if p.zcodeFailure.Category != "" {
+			data["failure_category"] = p.zcodeFailure.Category
+		}
 		if p.zcodeFailure.NativeCode != "" {
 			data["native_code"] = p.zcodeFailure.NativeCode
 		}
@@ -956,7 +1025,10 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	started = true
 	startedAt := time.Now().UTC()
 	ref := SourceRef{Adapter: a.Name(), Kind: a.config.LaunchKind, OpaqueID: strconv.Itoa(cmd.Process.Pid), PID: cmd.Process.Pid}
-	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: startedAt, updatedAt: startedAt, done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, wholeStdout: a.config.WholeStdout, live: live, launchIdentity: captureProcessLaunch(cmd.Process.Pid, startedAt)}
+	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: startedAt, updatedAt: startedAt, done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, outputDir: req.OutputDir, wholeStdout: a.config.WholeStdout, live: live, launchIdentity: captureProcessLaunch(cmd.Process.Pid, startedAt)}
+	if req.ExecutionContext != nil {
+		record.executionID = req.ExecutionContext.ExecutionID
+	}
 	record.acp = acp
 	record.launch = req
 	record.launch.Stdin = nil

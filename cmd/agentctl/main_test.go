@@ -1226,7 +1226,7 @@ func TestCleanExitWithoutTerminalJournalsExtractionFailure(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &runDoc); err != nil {
 		t.Fatal(err)
 	}
-	if runDoc.Result.State != model.StateOrphaned {
+	if runDoc.Result.State != model.StateFailed {
 		t.Fatalf("state=%s output=%s", runDoc.Result.State, stdout.String())
 	}
 	journal, err := store.Open(journalPath, store.Options{ReadOnly: true})
@@ -1240,6 +1240,21 @@ func TestCleanExitWithoutTerminalJournalsExtractionFailure(t *testing.T) {
 	}
 	if outcome.Failure == nil || outcome.Failure.Code != "result_extraction_failed" || outcome.Failure.Kind != "observation" {
 		t.Fatalf("outcome=%#v", outcome)
+	}
+	if outcome.OutputRef == "" {
+		t.Fatal("missing output pointer")
+	}
+	retained, err := os.ReadFile(outcome.OutputRef)
+	if err != nil || string(retained) != "plain output\n" {
+		t.Fatalf("output=%q err=%v", retained, err)
+	}
+	info, err := os.Stat(outcome.OutputRef)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("output permissions: %v %v", info, err)
+	}
+	raw, err := os.ReadFile(journalPath)
+	if err != nil || bytes.Contains(raw, []byte("plain output")) {
+		t.Fatal("raw output entered journal")
 	}
 }
 
@@ -1985,7 +2000,7 @@ func TestFailedRunResultReturnsStoredFailureWithoutAllowEmpty(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &resultDoc); err != nil {
 		t.Fatal(err)
 	}
-	if resultDoc.Result.Outcome.Failure == nil || resultDoc.Result.Outcome.Failure.Message != failureMessageApproval {
+	if resultDoc.Result.Outcome.Failure == nil || resultDoc.Result.Outcome.Failure.Message != "permission denied" || resultDoc.Result.Outcome.Failure.Code != "permission_denied" {
 		t.Fatalf("outcome=%#v", resultDoc.Result.Outcome)
 	}
 }
@@ -2513,5 +2528,19 @@ func TestPromotionSendsContentBoundProvenanceOnStdin(t *testing.T) {
 	}
 	if doc.Result.Execution.TaskContract == nil || doc.Result.Execution.TaskContract.Provenance == nil || doc.Result.Provenance.PortableSkillDigest == "" {
 		t.Fatalf("promotion omitted durable provenance: %s", stdout.String())
+	}
+}
+
+func TestGenericExtractionNoStoreDoesNotCaptureOutput(t *testing.T) {
+	root := t.TempDir()
+	journalPath := filepath.Join(root, "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--journal", journalPath, "run", "--adapter", "generic-process", "--no-store-result", "--", "/bin/echo", "private output"}); code != 0 {
+		t.Fatalf("exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	matches, err := filepath.Glob(filepath.Join(root, "state", "failed-output-*"))
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("no-store wrote output files: %v %v", matches, err)
 	}
 }

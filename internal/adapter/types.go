@@ -290,6 +290,9 @@ type LaunchRequest struct {
 	Timeout          time.Duration
 	DiscoveryWindow  time.Duration
 	ResultPath       string
+	// OutputDir is a private directory for bounded generic-process extraction diagnostics.
+	// Empty disables output retention (including --no-store-result).
+	OutputDir string
 	// StartOnly keeps the process under this adapter's same-process
 	// supervision and returns after discovery. The default is false: a
 	// daemonless caller owns the child only while it remains alive, so normal

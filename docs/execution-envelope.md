@@ -187,7 +187,7 @@ Stored text content may include a bounded `source` label such as
 `terminal_result`. `agentctl result` can assert that provenance and a
 caller-selected minimum byte count; the semantic `assistant` requirement
 accepts both Cursor assistant sources. A failed native turn records one
-secret-redacted diagnostic: `category`, a message of at most 200 characters,
+allow-listed diagnostic: `category`, a fixed message of at most 200 characters,
 and `native_code` when the stream provides a structured code. Capacity and
 overload (`server_overloaded`, or a message that says the provider is at
 capacity) are retryable. ZCode provider code `1308` and HTTP `429` are retryable
@@ -370,3 +370,37 @@ record categories, logical bytes, and protected references, then rejects apply
 if the reviewed plan digest changes. Promotion-linked executions remain
 protected in the preview. Retention remains an operator decision, not a
 compatibility guarantee.
+
+Native failures record content-free `failure.stderr` correlation metadata for
+the first nonempty stderr scanner line: an allow-listed `code`, `hash` (the
+first 96 bits of SHA-256, prefixed `sha256:`), and full `bytes` length excluding
+the newline. Classification examines at most 4096 bytes against fixed patterns
+for capacity, authentication, workspace trust, approval, quota, missing model,
+missing executable, permission denial, network and invalid arguments; other
+lines are `unclassified`. `failure.message` is always a fixed diagnostic template.
+Arbitrary stderr, even pattern-redacted text, is never journaled or used as an
+answer. The legacy `message_source: stderr` marker is ignored when projecting
+older outcomes and omitted from new writes; no historical journal rewrite runs.
+Existing private mode-0600 diagnostic files are unchanged; no new raw-stderr
+storage is introduced. Events contain no stderr text or correlation metadata.
+Authentication is classified before capacity. Only Codex `server_overloaded`
+or the exact sentence "Selected model is at capacity. Please try a different model."
+and ZCode provider `1308` or parsed HTTP `responseStatus: 429` prove capacity.
+A bare native/provider `429`, negated or incidental capacity wording does not.
+
+A missing answer records `unavailable_reason: native_answer_missing`;
+Multica's absent result route records `multica_result_route_unavailable`.
+These reasons explain availability without treating a completed source as failed.
+
+New generic-process clean exits without a structured terminal result are
+`failed` with code `result_extraction_failed`. When result storage is enabled,
+up to 64 KiB of stdout is retained in a mode-0600 `failed-output-<execution-id>.txt` file
+beside the private journal. Explicit result metadata includes a local
+`output_ref` (at most 1024 bytes) and `output_truncated` when applicable;
+`output_capture_error: output_capture_failed` explains a failed capture.
+This diagnostic file can contain native output and is not a verified answer.
+The per-journal cache holds at most 128 files (8 MiB), evicting oldest
+modification times first, including uncollected diagnostics. An `output_ref`
+may subsequently be missing. Cleanup plans include sibling filename, size and
+SHA-256 in their digest; cleanup apply removes files before their records. `--no-store-result` disables this capture. Historical journal
+records are not rewritten or reconciled by these changes.

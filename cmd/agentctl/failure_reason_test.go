@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
+	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
@@ -19,23 +21,23 @@ import (
 )
 
 func TestClassifyCapacityIsRetryableAndGenericProviderIsNot(t *testing.T) {
-	code, kind, category, retryable := classifyOutcomeFailure("Selected model is at capacity. Please try a different model.", "", "server_overloaded")
+	code, kind, category, retryable := classifyOutcomeFailure("Selected model is at capacity. Please try a different model.", "", "", "codex", "")
 	if code != "provider_capacity" || kind != "capacity" || category != "capacity" || !retryable {
 		t.Fatalf("capacity=%s %s %s %v", code, kind, category, retryable)
 	}
-	code, kind, category, retryable = classifyOutcomeFailure("the turn stopped", "", "other")
+	code, kind, category, retryable = classifyOutcomeFailure("the turn stopped", "", "other", "codex", "")
 	if code != "native_execution_failed" || kind != "provider" || category != "provider" || retryable {
 		t.Fatalf("generic=%s %s %s %v", code, kind, category, retryable)
 	}
-	code, _, category, retryable = classifyOutcomeFailure("native process exited unsuccessfully", "", "")
+	code, _, category, retryable = classifyOutcomeFailure("native process exited unsuccessfully", "", "", "codex", "")
 	if code != "native_execution_failed" || category != "" || retryable {
 		t.Fatalf("unstructured=%s %s %v", code, category, retryable)
 	}
-	code, kind, category, retryable = classifyOutcomeFailure("ZCode provider usage limit reached", "", "1308")
+	code, kind, category, retryable = classifyOutcomeFailure("ZCode provider usage limit reached", "", "1308", "zcode", "")
 	if code != "provider_capacity" || kind != "capacity" || category != "capacity" || !retryable || !model.ValidNativeFailureCode("1308") {
 		t.Fatalf("ZCode usage limit=%s %s %s %v", code, kind, category, retryable)
 	}
-	code, kind, category, retryable = classifyOutcomeFailure("provider returned a rate limit response", "", "")
+	code, kind, category, retryable = classifyOutcomeFailure("provider returned a rate limit response", "", "", "codex", "")
 	if code != "quota_exceeded" || kind != "quota" || category != "" || !retryable {
 		t.Fatalf("generic ZCode rate limit=%s %s %s %v", code, kind, category, retryable)
 	}
@@ -136,6 +138,10 @@ func TestZCodeFailureReasonSurfacesAcrossDelegateStatusAndResult(t *testing.T) {
   code: 'PROVIDER_BUSINESS_ERROR', providerCode: '1308', responseStatus: 429, 'retry-after': '1266'`,
 			category: "capacity", nativeCode: "1308", message: "ZCode provider usage limit reached; resets 2026-10-15 19:38:47", retryable: true,
 		},
+		{name: "HTTP429 with separate provider code", stderrShape: "ProviderBusinessError: providerCode: 7314 responseStatus: 429 provider request failed", category: "capacity", nativeCode: "7314", message: "ZCode provider usage limit reached", retryable: true},
+		{name: "provider429 is not HTTP", stderrShape: "ProviderBusinessError: providerCode: 429 provider request failed", category: "provider", nativeCode: "429", message: failureMessageGeneric, retryable: false},
+		{name: "bracket429 is not HTTP", stderrShape: "ProviderBusinessError: [429] provider request failed", category: "provider", nativeCode: "429", message: failureMessageGeneric, retryable: false},
+		{name: "authentication outranks HTTP429", stderrShape: "ProviderBusinessError: providerCode: 429 responseStatus: 429 authentication required", nativeCode: "429", message: failureMessageAuth, retryable: true},
 		{
 			name:        "authentication JSON",
 			stdoutShape: `{"error":{"message":"Authentication required; please login to continue (requestId: fixture-only traceId: fixture-only)"}}`,
@@ -294,7 +300,7 @@ func TestBuildOutcomeBoundsStructuredFailure(t *testing.T) {
 	}
 	long := "server overloaded: " + strings.Repeat("x", 300) + " " + secret
 	updated, err := finalizeResult(context.Background(), journal, execution, adapter.Result{
-		Success: false, State: adapter.StateFailed, Error: long,
+		Success: false, State: adapter.StateFailed, Error: long, Data: map[string]any{"native_code": "server_overloaded"},
 	}, now, false)
 	if err != nil || !updated.State.Terminal() {
 		t.Fatalf("terminal commit failed: %v %#v", err, updated.State)
@@ -313,7 +319,7 @@ func TestBuildOutcomeBoundsStructuredFailure(t *testing.T) {
 		Success: false, State: adapter.StateFailed,
 		Error: strings.Repeat("x", 500) + " at capacity",
 	}, now, false)
-	if inferred.Failure == nil || inferred.Failure.Category != "capacity" || inferred.Failure.NativeCode != "" || inferred.Failure.Message != failureMessageCapacity || len(inferred.Failure.Message) > model.NativeFailureMessageLimit || !inferred.Failure.Retryable || strings.Contains(inferred.Failure.Message, "xxxx") {
+	if inferred.Failure == nil || inferred.Failure.Category != "" || inferred.Failure.NativeCode != "" || inferred.Failure.Message != failureMessageGeneric || len(inferred.Failure.Message) > model.NativeFailureMessageLimit || inferred.Failure.Retryable || strings.Contains(inferred.Failure.Message, "xxxx") {
 		t.Fatalf("inferred=%#v", inferred.Failure)
 	}
 	if err := inferred.Validate(); err != nil {
@@ -344,5 +350,131 @@ func TestZCodeCapacityWordingRequiresUsageLimitProof(t *testing.T) {
 	limit := model.OutcomeFailure{Source: "zcode", Code: "provider_capacity", Category: "capacity", NativeCode: "1308", Message: "ZCode provider usage limit reached; resets 2026-10-15 19:38:47"}
 	if got := allowlistedFailureMessage(limit); got != "ZCode provider usage limit reached; resets 2026-10-15 19:38:47" {
 		t.Fatalf("zcode 1308 must keep usage-limit wording with reset, got %q", got)
+	}
+}
+
+func TestStderrMetadataSurvivesOutcomeAndStatusWithoutSourceText(t *testing.T) {
+	execution := model.Execution{Adapter: "codex", State: model.StateFailed}
+	line := []byte("fatal: unable to process confidential user prompt opaque-token-Xb7sQ9")
+	metadata := diagnostic.FromStderrLine(line)
+	outcome := buildOutcome(execution, adapter.Result{State: adapter.StateFailed, Error: string(line), Data: map[string]any{"stderr_diagnostic": metadata, "stderr_message": string(line)}}, time.Now(), false)
+	if outcome.Failure == nil || outcome.Failure.MessageSource != "" || outcome.Failure.Stderr == nil || *outcome.Failure.Stderr != *metadata {
+		t.Fatalf("outcome=%#v", outcome)
+	}
+	for _, failure := range []*model.OutcomeFailure{outcome.Failure, withAllowlistedFailure(outcome).Failure} {
+		view := projectNativeFailure(failure)
+		if view == nil || view.Message != failureMessageGeneric || view.Stderr == nil || *view.Stderr != *metadata {
+			t.Fatalf("view=%#v", view)
+		}
+	}
+	legacy := withAllowlistedFailure(model.Outcome{Failure: &model.OutcomeFailure{Code: "native_execution_failed", Source: "codex", MessageSource: "stderr", Message: string(line)}})
+	if legacy.Failure.Message != failureMessageGeneric || legacy.Failure.MessageSource != "" {
+		t.Fatal("legacy marker authorized arbitrary text")
+	}
+}
+func TestUnavailableOutcomeRecordsReason(t *testing.T) {
+	for _, authority := range []model.Authority{model.AuthorityNative, model.AuthorityMultica} {
+		execution := model.Execution{Adapter: "cursor", Authority: authority, State: model.StateCompleted}
+		outcome := buildOutcome(execution, adapter.Result{Success: true}, time.Now(), false)
+		want := "native_answer_missing"
+		if authority == model.AuthorityMultica {
+			want = "multica_result_route_unavailable"
+		}
+		if outcome.Availability != model.OutcomeUnavailableAtSource || outcome.UnavailableReason != want {
+			t.Fatalf("outcome=%#v", outcome)
+		}
+	}
+}
+
+func TestStderrCauseAtExitPersistsWithoutSecrets(t *testing.T) {
+	for _, tc := range []struct {
+		name, line, want string
+		retryable        bool
+	}{
+		{"unknown", "fatal: unable to process confidential user prompt opaque-token-Xb7sQ9", failureMessageGeneric, false},
+		{"token-like", "fatal: opaque-token-Xb7sQ9", failureMessageGeneric, false},
+		{"unlabeled prompt", "Please summarize the private meeting and send its transcript", failureMessageGeneric, false},
+		{"github token", "fatal ghp_PRIVATEfixtureToken12345", failureMessageGeneric, false},
+		{"aws token", "fatal AKIAFIXTUREPRIVATE1234", failureMessageGeneric, false},
+		{"slack token", "fatal xoxb-12345-PRIVATEfixture", failureMessageGeneric, false},
+		{"classified-with-prompt", "model not found: confidential user prompt opaque-token-Xb7sQ9", "model not found", false},
+		{"JSON stderr", `{"type":"result","is_error":true,"result":"confidential user prompt opaque-token-Xb7sQ9"}`, failureMessageGeneric, false},
+		{"JSON native code", `{"type":"turn.failed","error":{"message":"confidential user prompt","codex_error_info":"opaque_token_secret"}}`, failureMessageGeneric, false},
+		{"capacity", "Selected model is at capacity. Please try a different model.", failureMessageCapacity, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			bin := filepath.Join(root, "codex")
+			script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo test-version; exit 0; fi\nprintf '\\n%s\\n' '" + tc.line + "' >&2\nprintf '%s\\n' 'Usage: native-command' >&2\nexit 1\n"
+			if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			journalPath := filepath.Join(root, "state", "journal.db")
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			if code := a.run(context.Background(), []string{"--journal", journalPath, "run", "--adapter", "codex", "--", bin, "exec", "--json", "task"}); code != 0 {
+				t.Fatalf("run exit=%d %s %s", code, stdout.String(), stderr.String())
+			}
+			id := executionIDFromOutput(t, stdout.String())
+			for _, command := range []string{"status", "result"} {
+				stdout.Reset()
+				if code := a.run(context.Background(), []string{"--journal", journalPath, command, id}); code != 0 {
+					t.Fatalf("%s exit=%d %s", command, code, stdout.String())
+				}
+				if !strings.Contains(stdout.String(), tc.want) || !strings.Contains(stdout.String(), `"retryable":`+jsonBool(tc.retryable)) {
+					t.Fatalf("%s dropped reason: %s", command, stdout.String())
+				}
+				metadata := diagnostic.FromStderrLine([]byte(tc.line))
+				if !strings.Contains(stdout.String(), metadata.Hash) || !strings.Contains(stdout.String(), `"bytes":`+strconv.Itoa(metadata.Bytes)) {
+					t.Fatalf("%s lost correlation: %s", command, stdout.String())
+				}
+				for _, secret := range []string{"confidential user prompt", "opaque-token-Xb7sQ9", "opaque_token_secret", "Please summarize the private meeting", "ghp_PRIVATEfixtureToken12345", "AKIAFIXTUREPRIVATE1234", "xoxb-12345-PRIVATEfixture", "Usage:"} {
+					if strings.Contains(stdout.String(), secret) {
+						t.Fatalf("%s leaked %s", command, secret)
+					}
+				}
+			}
+			raw, err := os.ReadFile(journalPath)
+			for _, secret := range []string{"Please summarize the private meeting", "ghp_PRIVATEfixtureToken12345", "AKIAFIXTUREPRIVATE1234", "xoxb-12345-PRIVATEfixture"} {
+				if bytes.Contains(raw, []byte(secret)) {
+					t.Fatal("journal retained unlabelled prompt/token")
+				}
+			}
+			if err != nil || bytes.Contains(raw, []byte("confidential user prompt")) || bytes.Contains(raw, []byte("opaque-token-Xb7sQ9")) || bytes.Contains(raw, []byte("opaque_token_secret")) {
+				t.Fatalf("journal retained secret: %v", err)
+			}
+		})
+	}
+}
+
+func TestCapacityRequiresHarnessSignalAndAuthenticationWins(t *testing.T) {
+	for _, tt := range []struct {
+		name, message, native, harness, category, want string
+		retry                                          bool
+	}{
+		{"auth429", "authentication required", "429", "codex", "", "authentication_required", true},
+		{"provider429", "provider request failed", "429", "codex", "", "native_execution_failed", false},
+		{"zcodeProvider429", "provider request failed", "429", "zcode", "", "native_execution_failed", false},
+		{"auth7314", "authentication required", "7314", "zcode", "", "authentication_required", true},
+		{"negatedAuth", "not at capacity; authentication required", "", "codex", "", "authentication_required", true},
+		{"incidental", "earlier request was at capacity", "", "codex", "", "native_execution_failed", false},
+		{"negated", "not at capacity", "", "codex", "", "native_execution_failed", false},
+		{"sentenceSuffix", diagnostic.CodexCapacityMessage + " private task", "", "codex", "", "native_execution_failed", false},
+		{"sentenceOtherHarness", diagnostic.CodexCapacityMessage, "", "cursor", "", "native_execution_failed", false},
+		{"codexCode", "the turn stopped", "server_overloaded", "codex", "", "provider_capacity", true},
+		{"wrongCodeHarness", "the turn stopped", "server_overloaded", "cursor", "", "native_execution_failed", false},
+		{"codexSentence", diagnostic.CodexCapacityMessage, "", "codex", "", "provider_capacity", true},
+		{"zcode1308", "provider request failed", "1308", "zcode", "", "provider_capacity", true},
+		{"wrong1308Harness", "provider request failed", "1308", "codex", "", "native_execution_failed", false},
+		{"zcodeHTTP429", "ZCode provider usage limit reached", "7314", "zcode", "capacity", "provider_capacity", true},
+		{"authOverload", "authentication required", "server_overloaded", "codex", "", "authentication_required", true},
+		{"authZCode1308", "authentication required", "1308", "zcode", "capacity", "authentication_required", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			code, _, category, retry := classifyOutcomeFailure(tt.message, "", tt.native, tt.harness, tt.category)
+			if code != tt.want || retry != tt.retry || (code != "provider_capacity" && category == "capacity") {
+				t.Fatalf("got %s %s %v", code, category, retry)
+			}
+		})
 	}
 }

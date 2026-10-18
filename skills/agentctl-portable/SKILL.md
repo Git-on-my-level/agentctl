@@ -147,7 +147,9 @@ builds native flags. Inspect `requested`, `resolved`, and `provenance`. Conflict
 or ambiguity launch nothing; use returned candidates to resolve only the missing
 choice. Config needs explicit family/version metadata. Omitted host or `local` selects
 this machine; `route.this_host` optionally supplies its configured name.
-Workspace trust is a separate `delegation.cursor_workspace_trust` grant, never
+Workspace trust is a separate `delegation.cursor_workspace_trust` grant. With it,
+both coding and read-only Cursor recipes add `--trust`; read-only delegation
+refuses before launch without it (`workspace_trust_required`). Trust is never
 implied by a model preference. Unattended coding permissions are a separate
 `delegation.unattended_coding_permissions` grant. When it is true, coding
 launches (omitted `settings.access`, or `"coding"`) include Cursor `--force`,
@@ -487,12 +489,45 @@ reviewed runtime-bundle installer.
 Use full typed six-word IDs for mutations. Display labels and prefixes are not
 mutation targets. Portable URIs contain typed aliases, not credentials, native
 UUIDs, or local paths. Status, events, and callbacks remain metadata-only.
-A failed native turn adds a bounded failure reason (category, message of at
-most 200 characters, native code) to status, result, and a failed
-`delegate --wait`. Capacity and overload are retryable. That reason is not
-prompt or answer text. ZCode provider code `1308` and HTTP `429` are retryable
-capacity failures and may include the provider reset time. Other diagnostic
-words use the shared classifier: `usage limit reached` is capacity, while
-generic quota/rate-limit wording is `quota_exceeded`. Raw stderr and
+A failed native turn adds a bounded failure reason (category, fixed message of
+at most 200 characters, native code) to status, result, and a failed
+`delegate --wait`. Only explicit per-harness signals prove retryable capacity.
+ZCode provider code `1308` and parsed HTTP `responseStatus: 429` qualify and may
+include the provider reset time. A bare native/provider code `429` is not HTTP
+evidence. Authentication is classified before capacity; generic usage-limit,
+quota and rate-limit wording is `quota_exceeded`. Raw stderr transcripts and
 request/trace identifiers are not stored. Explicit `result` is the supported
 final-answer read path.
+
+Native failures expose only content-free `failure.stderr`: an allow-listed
+`code`, a `hash` containing the first 96 bits of SHA-256 (`sha256:` plus 24 hex
+characters), and `bytes` for the first nonempty scanner line without its newline.
+Only the first 4096 bytes are classified against fixed patterns; unknown lines
+are `unclassified`. Failure messages are fixed templates, never arbitrary or
+pattern-redacted stderr. Stderr is not an answer source. Legacy
+`message_source: stderr` markers do not authorize text and are omitted on reads;
+new writes omit them. Existing private diagnostic files are unchanged; no new
+raw-stderr storage is introduced. Codex `server_overloaded` or the exact sentence
+"Selected model is at capacity. Please try a different model." is retryable
+capacity; negated, incidental, or extended wording is not. Missing answers
+record `unavailable_reason` as
+`native_answer_missing` or `multica_result_route_unavailable`.
+
+New generic-process clean exits without a structured result are failed with
+`result_extraction_failed`. Explicit result metadata points to a private,
+mode-0600 `failed-output-<execution-id>.txt` file beside the journal, containing
+at most 64 KiB of stdout, with `output_truncated` when needed. A capture failure reports
+`output_capture_error: output_capture_failed`. These are diagnostic cache files,
+not verified answers. Each journal directory
+retains at most 128 files (8 MiB), evicting the oldest by modification time
+first, including uncollected diagnostics. A pointer may therefore be missing.
+`data cleanup --plan` includes sibling filename, byte count, and SHA-256 in the
+reviewed digest; apply removes those files before their records. Missing files
+need no removal. A cache lock serializes capture, eviction, and cleanup apply.
+`--no-store-result` disables capture. Existing records are not reconciled.
+
+ZCode's existing `--mode yolo` bypasses ordinary permission prompts but retains
+native always-ask checks (verified in 0.16.9); it reports `permissions: constrained`
+regardless of the coding grant. The label does not change its argv or assert
+sandbox isolation. OMP remains an expert compatibility adapter; current host
+preferences, rather than its presence in the adapter inventory, decide routing.

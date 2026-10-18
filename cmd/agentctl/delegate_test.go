@@ -455,3 +455,42 @@ printf '{"sessionId":"sess_env_test","turnId":"turn_env_test","response":"select
 		})
 	}
 }
+
+func TestCursorReadOnlyTrustGrantPreflightsBeforeLaunch(t *testing.T) {
+	for _, grant := range []bool{false, true} {
+		t.Run(jsonBool(grant), func(t *testing.T) {
+			f := newDelegateFixture(t, delegateSuccessScript)
+			cfg := config.Config{SchemaVersion: 1, DefaultProfile: "test", Profiles: map[string]config.Profile{"test": {
+				Adapters:         map[string]config.Adapter{"cursor": {Executable: filepath.Join(f.root, "cursor-agent")}},
+				Delegation:       &config.DelegationPolicy{CursorWorkspaceTrust: grant, UnattendedCodingPermissions: true},
+				AgentPreferences: &config.AgentPreferences{Mode: "advisory", Preferred: []config.AgentPreference{{Agent: "cursor", Model: "grok-4.7-high", Family: "grok"}}},
+			}}}
+			data, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(f.config, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			f.selectRequest(t, `{"family":"grok","settings":{"access":"read_only"}}`)
+			code, out := f.invoke("private-task-token", "--plan")
+			if grant {
+				if code != 0 || !strings.Contains(out, `"--trust"`) || !strings.Contains(out, `"--mode","ask"`) || strings.Contains(out, `"--force"`) {
+					t.Fatalf("exit=%d %s", code, out)
+				}
+			} else {
+				if code != 5 || !strings.Contains(out, "workspace_trust_required") || !strings.Contains(out, "delegation.cursor_workspace_trust") {
+					t.Fatalf("exit=%d %s", code, out)
+				}
+				if _, err := os.Stat(f.probe); !os.IsNotExist(err) {
+					t.Fatalf("refusal probed binary: %v", err)
+				}
+			}
+			for _, path := range []string{f.count, f.journal} {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("plan launched or created journal: %s %v", path, err)
+				}
+			}
+		})
+	}
+}

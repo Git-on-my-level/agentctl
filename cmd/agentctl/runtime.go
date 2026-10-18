@@ -21,6 +21,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/callback"
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
+	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/launchrecipe"
 	"github.com/Git-on-my-level/agentctl/internal/model"
@@ -283,6 +284,9 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	launchCtx := operationCtx
 	launchRequest := adapter.LaunchRequest{Env: opts.env, Argv: opts.argv, Cwd: opts.cwd, Context: contextInput(c), DiscoveryWindow: 250 * time.Millisecond, StartOnly: true,
 		ExecutionContext: &adapter.ExecutionContext{ExecutionID: execution.ID.String(), Adapter: execution.Adapter, HostID: execution.OriginHostID.String(), Labels: append([]string(nil), execution.Labels...), Authority: string(execution.Authority)}}
+	if execution.Adapter == "generic-process" && !opts.noStoreResult {
+		launchRequest.OutputDir, _ = filepath.Abs(filepath.Dir(c.journalPath))
+	}
 	launchRequest.PromptDelivery, launchRequest.PromptArgs = promptDelivery, promptArgs
 	if prompt != nil && (prompt.Delivery == "stdin" || prompt.Delivery == adapter.PromptDeliveryStream) {
 		launchRequest.Stdin = prompt.Bytes
@@ -1651,26 +1655,38 @@ func buildOutcome(execution model.Execution, result adapter.Result, now time.Tim
 			}
 			diagnosticCode, _ := result.Data["diagnostic_code"].(string)
 			raw := firstNonEmptyString(result.Error, failureMessageGeneric)
-			code, kind, category, retryable := classifyOutcomeFailure(raw, diagnosticCode, nativeCode)
+			code, kind, category, retryable := classifyOutcomeFailure(raw, diagnosticCode, nativeCode, execution.Adapter, stringData(result.Data, "failure_category"))
 			structured, _ := result.Data["failure_structured"].(bool)
 			if execution.Adapter == "zcode" && structured && category == "" && kind == "unknown" {
 				// A structured provider error with no recognized classifier still
 				// gets a visible, bounded generic provider reason.
 				kind, category, retryable = "provider", "provider", false
 			}
-			message := allowlistedFailureMessage(model.OutcomeFailure{Code: code, Category: category, Source: execution.Adapter, NativeCode: nativeCode, Message: raw})
-			limit := model.OutcomeFailureLimit
-			if category != "" || nativeCode != "" {
-				limit = model.NativeFailureMessageLimit
+			stderrDiagnostic, _ := result.Data["stderr_diagnostic"].(*diagnostic.Stderr)
+			if stderrDiagnostic != nil && stderrDiagnostic.Validate() != nil {
+				stderrDiagnostic = nil
 			}
-			message, _ = boundedOutcomeText(message, limit)
-			outcome.Failure = &model.OutcomeFailure{Code: code, Kind: kind, Source: execution.Adapter, Retryable: retryable, Message: message, Category: category, NativeCode: nativeCode}
+			if stderrDiagnostic != nil && code == "native_execution_failed" && category == "" && nativeCode == "" {
+				code, kind, category, retryable = classifyOutcomeFailure(stderrDiagnostic.Message(), "", "", execution.Adapter, "")
+			}
+			message := allowlistedFailureMessage(model.OutcomeFailure{Code: code, Category: category, Source: execution.Adapter, NativeCode: nativeCode, Message: raw})
+			message, _ = boundedOutcomeText(message, model.NativeFailureMessageLimit)
+			outcome.Failure = &model.OutcomeFailure{Code: code, Kind: kind, Source: execution.Adapter, Retryable: retryable, Message: message, Category: category, NativeCode: nativeCode, Stderr: stderrDiagnostic}
 		}
 		if outcome.Content != nil || outcome.Failure != nil {
 			outcome.Availability = model.OutcomeStored
 		} else {
 			outcome.Availability = model.OutcomeUnavailableAtSource
+			outcome.UnavailableReason = "native_answer_missing"
+			if execution.Authority == model.AuthorityMultica {
+				outcome.UnavailableReason = "multica_result_route_unavailable"
+			}
 		}
+	}
+	if !noStoreResult && execution.Adapter == "generic-process" && result.Data["diagnostic_code"] == "result_extraction_failed" {
+		outcome.OutputRef, _ = result.Data["output_ref"].(string)
+		outcome.OutputTruncated, _ = result.Data["output_truncated"].(bool)
+		outcome.OutputCaptureError, _ = result.Data["output_capture_error"].(string)
 	}
 	return outcome
 }
@@ -1696,9 +1712,8 @@ const (
 	failureMessageGeneric     = "native execution failed"
 )
 
-// allowlistedFailureMessage is the only failure text that may be stored or
-// shown. Classification may read the provider string; the string itself is not
-// persisted, so a quoted credential or an echoed prompt cannot reach the journal.
+// allowlistedFailureMessage returns constant diagnostic templates. Legacy
+// message_source=stderr never authorizes persisting or showing arbitrary text.
 func allowlistedFailureMessage(failure model.OutcomeFailure) string {
 	if failure.Source == "zcode" && failure.Code == "provider_capacity" && failure.Category == "capacity" && zcodeUsageLimitFailure(failure) {
 		return zcodeCapacityFailureMessage(failure.Message)
@@ -1714,6 +1729,8 @@ func allowlistedFailureMessage(failure model.OutcomeFailure) string {
 		return failureMessageApproval
 	case "quota_exceeded":
 		return failureMessageQuota
+	case "model_not_found", "executable_not_found", "permission_denied", "network", "invalid_arguments":
+		return (&diagnostic.Stderr{Code: failure.Code}).Message()
 	case "result_extraction_failed":
 		return failureMessageUnextracted
 	}
@@ -1721,7 +1738,7 @@ func allowlistedFailureMessage(failure model.OutcomeFailure) string {
 	if !model.ValidNativeFailureCode(nativeCode) {
 		nativeCode = ""
 	}
-	code, _, category, _ := classifyOutcomeFailure(failure.Message, "", nativeCode)
+	code, _, category, _ := classifyOutcomeFailure(failure.Message, "", nativeCode, failure.Source, "")
 	if failure.Category == "capacity" || category == "capacity" {
 		return failureMessageCapacity
 	}
@@ -1769,6 +1786,7 @@ func withAllowlistedFailure(outcome model.Outcome) model.Outcome {
 		return outcome
 	}
 	failure := *outcome.Failure
+	failure.MessageSource = ""
 	failure.Message = allowlistedFailureMessage(failure)
 	if failure.Category != "" || failure.NativeCode != "" {
 		failure.Message, _ = boundedOutcomeText(failure.Message, model.NativeFailureMessageLimit)
@@ -1777,21 +1795,33 @@ func withAllowlistedFailure(outcome model.Outcome) model.Outcome {
 	return outcome
 }
 
-func classifyOutcomeFailure(message, diagnosticCode, nativeCode string) (string, string, string, bool) {
+func stringData(data map[string]any, key string) string { value, _ := data[key].(string); return value }
+
+func classifyOutcomeFailure(message, diagnosticCode, nativeCode, harness, providerCategory string) (string, string, string, bool) {
 	if diagnosticCode == "result_extraction_failed" {
 		return "result_extraction_failed", "observation", "", false
 	}
 	lower := strings.ToLower(message)
 	switch {
-	case nativeCode == "1308" || strings.Contains(lower, "usage limit reached") || strings.Contains(lower, "http 429") || strings.Contains(lower, "at capacity") || strings.Contains(lower, "server overloaded") || strings.Contains(lower, "server_overloaded"):
+	case diagnostic.AuthenticationRequired(message):
+		return "authentication_required", "authentication", "", true
+	case harness == "codex" && (nativeCode == "server_overloaded" || diagnostic.IsCodexCapacity(message)) || harness == "zcode" && (nativeCode == "1308" || providerCategory == "capacity"):
 		return "provider_capacity", "capacity", "capacity", true
 	case strings.Contains(lower, "workspace") && strings.Contains(lower, "trust"):
 		return "workspace_trust_required", "permission", "", true
-	case strings.Contains(lower, "auth") || strings.Contains(lower, "login") || strings.Contains(lower, "sign in"):
-		return "authentication_required", "authentication", "", true
+	case strings.Contains(lower, "model not found"):
+		return "model_not_found", "configuration", "", false
+	case strings.Contains(lower, "executable not found"):
+		return "executable_not_found", "configuration", "", false
+	case strings.Contains(lower, "permission denied"):
+		return "permission_denied", "permission", "", false
+	case strings.Contains(lower, "network connection failed"):
+		return "network", "network", "", true
+	case strings.Contains(lower, "invalid native command arguments"):
+		return "invalid_arguments", "configuration", "", false
 	case strings.Contains(lower, "approval") || strings.Contains(lower, "permission"):
 		return "approval_required", "approval", "", true
-	case strings.Contains(lower, "quota") || strings.Contains(lower, "rate limit"):
+	case strings.Contains(lower, "quota") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "usage limit reached"):
 		return "quota_exceeded", "quota", "", true
 	}
 	if nativeCode != "" {
