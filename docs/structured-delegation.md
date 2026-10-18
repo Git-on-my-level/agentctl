@@ -111,7 +111,10 @@ without it. Permission denials emit attention and prevent successful completion.
 Harnesses without a reviewed unattended permission recipe are labeled
 `permissions: unsupported` and are not given an inferred flag. Expert `run`
 never reads either grant. Without an explicit `--adapter`, expert `run` and
-fanout infer native adapters from configured executables in the selected profile.
+fanout infer native adapters, including `generic` / `generic-process`, from
+configured executables in the selected profile. If no implicit profile resolves,
+built-in executable-name inference still applies; an explicitly requested missing
+`--profile` fails.
 Exact or resolved paths (including symlinks and PATH lookup) outrank basename
 matches; built-in executable names are the fallback. Conflicting equal-strength
 matches across harnesses return `run_adapter_ambiguous` before launch; use an
