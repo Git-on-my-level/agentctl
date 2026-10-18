@@ -22,7 +22,7 @@
     {
       "id": "multica-runtime-bundle",
       "path": "distributions/multica/agentctl-portable.bundle.json",
-      "sha256": "be77627e23fa7e0ecdd7d19a440b0305762c4ddb8b38d3b8314556c06cad7b26",
+      "sha256": "8c732b5b73fe87e07f2f12ce160256d7394d183c0ec055536778940ba46634b8",
       "install_name": "agentctl-portable.bundle.json",
       "kind": "runtime_bundle",
       "harnesses": [
