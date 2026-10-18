@@ -39,7 +39,7 @@ func TestOpenClawExitAndSessionIsolation(t *testing.T) {
 	}
 	bad := fixtureExecutable(t, `printf '%s\n' '{"payloads":[{"text":"partial"}]}'; printf '%s\n' 'OAuthRefreshFailureError: invalid refresh token' >&2; exit 1`)
 	got, err = a.Launch(context.Background(), LaunchRequest{Argv: []string{bad, "agent", "--local", "--agent", "main", "--json", "-m", "hello"}, DiscoveryWindow: time.Second})
-	if err != nil || got.Result == nil || got.Result.Success || got.Result.State != StateFailed || got.Result.Content != "" || got.Result.Summary != "" || got.Result.ContentType != "" || got.Result.ContentTruncated || !strings.Contains(got.Result.Error, "OAuthRefreshFailureError") {
+	if err != nil || got.Result == nil || got.Result.Success || got.Result.State != StateFailed || got.Result.Content != "" || got.Result.Summary != "" || got.Result.ContentType != "" || got.Result.ContentTruncated || got.Result.Error != "authentication required" {
 		t.Fatalf("failed launch = %#v err=%v", got, err)
 	}
 	if _, ok := got.Result.Data["result_content_source"]; ok {

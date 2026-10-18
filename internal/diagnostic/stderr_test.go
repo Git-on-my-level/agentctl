@@ -38,6 +38,7 @@ func TestStderrClassifierIsBoundedAndAllowlisted(t *testing.T) {
 		{"HTTP 429", "provider_capacity"},
 		{"workspace trust required", "workspace_trust_required"},
 		{"Authentication required", "authentication_required"},
+		{"OAuthRefreshFailureError: invalid refresh token private-value", "authentication_required"},
 		{"unknown model private-model-id", "model_not_found"},
 		{"command not found: private-command", "executable_not_found"},
 		{"operation not permitted private-path", "permission_denied"},

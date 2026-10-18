@@ -2000,7 +2000,7 @@ func TestFailedRunResultReturnsStoredFailureWithoutAllowEmpty(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &resultDoc); err != nil {
 		t.Fatal(err)
 	}
-	if resultDoc.Result.Outcome.Failure == nil || resultDoc.Result.Outcome.Failure.Message != failureMessageApproval {
+	if resultDoc.Result.Outcome.Failure == nil || resultDoc.Result.Outcome.Failure.Message != "permission denied" || resultDoc.Result.Outcome.Failure.Code != "permission_denied" {
 		t.Fatalf("outcome=%#v", resultDoc.Result.Outcome)
 	}
 }

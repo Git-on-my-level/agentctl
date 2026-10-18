@@ -52,7 +52,7 @@ func FromStderrLine(line []byte) *Stderr {
 		code = "provider_capacity"
 	case strings.Contains(text, "workspace") && strings.Contains(text, "trust"):
 		code = "workspace_trust_required"
-	case containsAny(text, "authentication required", "not authenticated", "unauthorized", "login required", "please log in", "sign in"):
+	case containsAny(text, "authentication required", "not authenticated", "unauthorized", "login required", "please log in", "sign in", "invalid refresh token", "oauthrefreshfailureerror"):
 		code = "authentication_required"
 	case containsAny(text, "permission denied", "operation not permitted", "access is denied"):
 		code = "permission_denied"
