@@ -2,7 +2,7 @@ package launchrecipe
 
 // Claude Code uses its native --effort flag for the reviewed reasoning-effort
 // values. Service speed remains unsupported by launch recipes.
-func buildClaudeCode(executable, model, speed, effort string) (Recipe, error) {
+func buildClaudeCode(executable, model, speed, effort, access string, codingGrant bool) (Recipe, error) {
 	exe, err := resolveExecutable("claude-code", executable)
 	if err != nil {
 		return Recipe{}, err
@@ -28,6 +28,9 @@ func buildClaudeCode(executable, model, speed, effort string) (Recipe, error) {
 		// Keep effort directly after model so the reviewed setting has a stable,
 		// documented position in the exact argv plan.
 		argv = append(argv, "--effort", effort)
+	}
+	if applyCodingPermissions(access, codingGrant) {
+		argv = append(argv, "--permission-mode", "auto")
 	}
 	return Recipe{Argv: argv, PromptDelivery: PromptDeliveryStream}, nil
 }

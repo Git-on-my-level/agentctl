@@ -102,12 +102,14 @@ func (a *app) fanout(ctx context.Context, renderer output.Renderer, c common, ar
 		if err != nil {
 			return output.Wrap(output.CodeUsage, "invalid fanout child execution ID", false, err).WithDetail("child", i)
 		}
-		adapterName := child.Adapter
-		if adapterName == "" {
-			adapterName = inferAdapter(child.Argv[0])
-		}
-		results[i] = fanoutChildResult{Name: child.Name, ExecutionID: id.String(), Adapter: adapterName, Labels: child.Labels, Prompt: promptSummary(prompts[i])}
 		childArgs[i] = fanoutRunArgs(child, id, prompts[i])
+		opts, problem := parseRunWithConfig(childArgs[i], c)
+		if problem != nil {
+			return problem.WithDetail("child", i)
+		}
+		child.Adapter = opts.adapter
+		childArgs[i] = fanoutRunArgs(child, id, prompts[i])
+		results[i] = fanoutChildResult{Name: child.Name, ExecutionID: id.String(), Adapter: opts.adapter, Labels: child.Labels, Prompt: promptSummary(prompts[i])}
 	}
 	result := fanoutResult{SchemaVersion: 1, Manifest: absoluteManifest, Concurrency: manifest.Concurrency, Planned: plan, Children: results}
 	if sharedPrompt != nil {

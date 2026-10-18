@@ -91,16 +91,33 @@ Workspace trust is a separate grant: `delegation.cursor_workspace_trust: true`
 on the profile allows the recipe to include Cursor `--trust`. A model alias or
 allowlist entry never grants it. Unattended coding permissions are a second
 grant: `delegation.unattended_coding_permissions: true` adds Cursor `--force`,
-Codex `--dangerously-bypass-approvals-and-sandbox`, and grants Devin ACP one-operation permission approvals on coding launches (the default
+Codex `--dangerously-bypass-approvals-and-sandbox`, Claude Code
+`--permission-mode auto`, and grants Devin ACP one-operation permission approvals on coding launches (the default
 `settings.access`). `settings.access: "read_only"` uses Cursor `--mode ask`
-and Codex `--sandbox read-only` and never adds those bypass flags. Devin
+and Codex `--sandbox read-only` and never adds those coding permission flags. Claude Code
+(`claude` or `claude-code`) refuses `read_only` with `access_unavailable`: no
+reviewed mode guarantees blocking edits and shell writes in `--print`. Coding
+launches report `permissions: constrained` with or without the grant: auto mode
+retains native classifier checks and can deny tool calls. Without the grant
+Claude Code adds no permission flag. The explicit native
+`--permission-mode auto` form was verified with Claude Code 2.1.300 on m5-mbp. See the native
+[permission-mode contract](https://code.claude.com/docs/en/permission-modes). Devin
 refuses `read_only` with `access_unavailable`: ACP read-only enforcement is
 unverified. Devin uses `devin acp --model <configured-model>` with stdin prompt
 delivery. ACP rejects invalid UTF-8 before admission; it never substitutes JSON replacement characters for task bytes. Its plan records `AGENTCTL_DEVIN_ACP_APPROVE=1` with the grant and `0`
 without it. Permission denials emit attention and prevent successful completion.
-Harnesses without a reviewed bypass flag are labeled
+Harnesses without a reviewed unattended permission recipe are labeled
 `permissions: unsupported` and are not given an inferred flag. Expert `run`
-never reads either grant. Review both grants before enabling them.
+never reads either grant. Without an explicit `--adapter`, expert `run` and
+fanout infer native adapters, including `generic` / `generic-process`, from
+configured executables in the selected profile. If no implicit profile resolves,
+built-in executable-name inference still applies; an explicitly requested missing
+`--profile` fails.
+Exact or resolved paths (including symlinks and PATH lookup) outrank basename
+matches; built-in executable names are the fallback. Conflicting equal-strength
+matches across harnesses return `run_adapter_ambiguous` before launch; use an
+explicit `--adapter` (fanout child `adapter`) to resolve them. Native argv remains
+unchanged. Review both grants before enabling them.
 
 ## Plans, replay, and results
 

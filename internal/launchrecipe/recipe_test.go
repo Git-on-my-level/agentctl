@@ -298,7 +298,7 @@ func TestClaudeCodePreservesNativeContextSuffix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", model, err)
 		}
-		if got.Argv[len(got.Argv)-1] != model || got.Permissions != PermissionsUnsupported || contains(got.Argv, "--dangerously-skip-permissions") {
+		if got.Argv[9] != model || got.Permissions != PermissionsConstrained || strings.Join(got.Argv[len(got.Argv)-2:], " ") != "--permission-mode auto" || contains(got.Argv, "--dangerously-skip-permissions") {
 			t.Fatalf("model or permissions changed: %#v", got)
 		}
 		if _, err := Build(Input{Harness: "cursor", Model: model}); err == nil {
@@ -308,6 +308,34 @@ func TestClaudeCodePreservesNativeContextSuffix(t *testing.T) {
 	for _, model := range []string{"[1m]", "opus[2m]", "opus[1m][1m]", "opus[[1m]", "opus[1m]suffix", "opus[1m,fast=true]"} {
 		if _, err := Build(Input{Harness: "claude-code", Model: model}); err == nil {
 			t.Fatalf("malformed suffix accepted: %s", model)
+		}
+	}
+}
+
+func TestClaudeCodeCodingPermissionGrant(t *testing.T) {
+	for _, harness := range []string{"claude", "claude-code"} {
+		for _, access := range []string{"", AccessCoding} {
+			for _, grant := range []bool{false, true} {
+				got, err := Build(Input{Harness: harness, Model: "opus[1m]", Effort: "high", Access: access, UnattendedCodingPermissions: grant})
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--input-format", "stream-json", "--replay-user-messages", "--model", "opus[1m]", "--effort", "high"}
+				permissions := PermissionsConstrained
+				if grant {
+					want = append(want, "--permission-mode", "auto")
+				}
+				if strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") || got.Permissions != permissions || got.PromptDelivery != PromptDeliveryStream {
+					t.Fatalf("harness=%s access=%q grant=%v recipe=%#v", harness, access, grant, got)
+				}
+			}
+		}
+		for _, grant := range []bool{false, true} {
+			_, err := Build(Input{Harness: harness, Model: "opus", Access: AccessReadOnly, UnattendedCodingPermissions: grant})
+			var buildErr *Error
+			if !errors.As(err, &buildErr) || buildErr.Code != "access_unavailable" || !strings.Contains(buildErr.Diagnostic, "edits and shell writes in --print") {
+				t.Fatalf("grant=%v err=%v want explicit read_only refusal", grant, err)
+			}
 		}
 	}
 }

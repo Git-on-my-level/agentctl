@@ -118,7 +118,7 @@ func Build(in Input) (Recipe, error) {
 	case "devin":
 		recipe, err = buildDevin(in.Executable, model, speed, effort, access, in.UnattendedCodingPermissions)
 	case "claude-code":
-		recipe, err = buildClaudeCode(in.Executable, model, speed, effort)
+		recipe, err = buildClaudeCode(in.Executable, model, speed, effort, access, in.UnattendedCodingPermissions)
 	default:
 		return Recipe{}, fail("unsupported_harness", fmt.Sprintf("harness %q is not supported by launch recipes", in.Harness))
 	}
@@ -159,6 +159,8 @@ func requireReviewedAccess(harness, access string) error {
 		return nil
 	case "devin":
 		return fail("access_unavailable", "devin ACP has no verified read-only enforcement mode; omit access or choose another harness")
+	case "claude-code":
+		return fail("access_unavailable", "claude-code has no verified mode that blocks edits and shell writes in --print; read_only access is unavailable")
 	default:
 		return fail("access_unavailable", fmt.Sprintf("%s cannot guarantee read-only access; omit access or choose another harness", harness))
 	}
@@ -174,6 +176,9 @@ func permissionLabel(harness, access string, grant bool) string {
 	switch harness {
 	case "cursor", "codex", "devin":
 		return PermissionsFull
+	case "claude-code":
+		// Auto mode keeps native classifier checks and may deny tool calls.
+		return PermissionsConstrained
 	default:
 		return PermissionsUnsupported
 	}
