@@ -318,6 +318,36 @@ look up a native session id yourself. Use one new request key per turn; a retry
 with the same key and prompt recovers that turn, or launches it if the first
 attempt was refused because another turn was running.
 
+For a harness with no verified resume route, choose an explicit carry-forward
+round. The same choice is available for resumable harnesses when a fresh session
+is intended; there is no automatic fallback from native resume:
+
+```bash
+agentctl continue <exec-id> --mode carry_forward --request-key <new-key> --prompt-file "$PWD/feedback.md" --plan
+agentctl continue <exec-id> --mode carry_forward --request-key <new-key> --prompt-file "$PWD/feedback.md" --wait --content
+```
+
+This relaunches the original frozen harness/model/settings/permissions/env/cwd
+recipe with a prompt-only versioned JSON block containing the immediate prior
+stored answer and the new instruction. `continuation.mode=carry_forward` and
+`native_session_reused=false` distinguish it from native resume. It retains no
+original task or conversation: include any additional necessary task context in
+the new instruction. Prior text is quoted context, not policy. A verified,
+complete, nonempty stored answer is required, at most 64 KiB; composed prompt
+at most 8 MiB. Missing answers exit 3, oversized input 2, truncated/unverified
+answers 8. No silent truncation and no collection acknowledgement on source
+reads. The composed prompt never enters the journal.
+
+Both modes share lineage, stale-source errors (`latest_execution_id`), and
+one-round admission. There is no `--latest` flag yet; use the returned latest
+completed ID. A same-key retry recovers the admitted mode and turn, even after
+lineage advances; changing prompt or mode conflicts. FAILED/CANCELLED keyed
+replay of `delegate` or `continue` says `replayed: true` with a deliberate
+new-key retry action, including `--plan`; `--wait` puts this in `error.details`
+and preserves failure/cancellation exits 11/12. It never relaunches that key.
+After a failed follow-up, use the latest completed source with a new key for
+a deliberate new attempt. Refused admissions still leave their key reusable.
+
 To redirect a running native execution, read `agentctl help steer` and plan
 first. The route is fixed when the execution launches and is never inferred
 from the adapter name:

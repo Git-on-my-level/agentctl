@@ -37,3 +37,19 @@ func TestDelegationBindingRejectsInvalidMetadata(t *testing.T) {
 		}
 	}
 }
+
+func TestContinuationMetadataRejectsFalseSessionClaims(t *testing.T) {
+	for _, continuation := range []*FollowUpContinuation{
+		{Mode: "carry_forward", NativeSessionReused: true, PriorResult: &CarryForwardResult{Source: "assistant", SHA256: "sha256:" + strings.Repeat("c", 64), Bytes: 12}},
+		{Mode: "native"},
+		{Mode: "carry_forward"},
+		{Mode: "automatic", NativeSessionReused: true},
+		{Mode: "carry_forward", PriorResult: &CarryForwardResult{Source: "assistant", SHA256: "sha256:" + strings.Repeat("c", 64), Bytes: 65537}},
+	} {
+		binding := fixtureDelegation()
+		binding.Continuation = continuation
+		if err := binding.Validate(); err == nil {
+			t.Fatalf("invalid continuation accepted: %#v", continuation)
+		}
+	}
+}

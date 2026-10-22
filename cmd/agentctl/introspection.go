@@ -157,6 +157,7 @@ func (a *app) schemaCommand(renderer output.Renderer, args []string) *output.Err
 		{"name": "callback-envelope", "version": 1, "file": "schemas/callback-envelope.schema.json"},
 		{"name": "config-bundle", "version": 1, "file": "schemas/config-bundle.schema.json"},
 		{"name": "context-result", "version": 1, "file": "schemas/context-result.schema.json"},
+		{"name": "carry-forward-prompt", "version": 1, "file": "schemas/carry-forward-prompt.schema.json"},
 		{"name": "continue-result", "version": 1, "file": "schemas/continue-result.schema.json"},
 		{"name": "data-cleanup-plan", "version": 1, "file": "schemas/data-cleanup-plan.schema.json"},
 		{"name": "data-inventory", "version": 1, "file": "schemas/data-inventory.schema.json"},

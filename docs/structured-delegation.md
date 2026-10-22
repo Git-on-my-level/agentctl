@@ -139,7 +139,9 @@ report `steer` unavailable with the reason. See [Steering](steering.md).
 
 After a delegated execution completes, `agentctl continue <id>` sends a
 follow-up turn to the same native session using this frozen recipe. The result
-of a completed, resumable delegation carries that as a `next_action`. See
+of a completed, resumable delegation carries that as a `next_action`. Explicit
+`continue --mode carry_forward` starts a fresh round with the prior stored answer
+for any eligible native delegation; it never implies native resume. See
 [Follow-up turns](follow-up-turns.md).
 
 Request keys are scoped to the selected profile in this host-local journal.
@@ -151,6 +153,8 @@ executable changes cannot redirect existing work: replay recovers its frozen
 binding before resolving the current catalog. Valid current config is still
 required. Concurrent same-key admissions launch at most once. Missing/expired
 owner evidence is reported as unknown; it never authorizes another launch.
+FAILED/CANCELLED replay reports `replayed: true` and a deliberate new-key retry
+action, including in `--plan` and `--wait` errors; it never relaunches.
 Deleting the journal also deletes replay protection. The immutable delegation
 binding and private prompt-free native recipe are retained in the existing idempotency graph so older supervisors
 rewriting execution projections cannot erase it; retention removes both copies.
@@ -267,7 +271,8 @@ service speed, effort, and read-only access are refused because no reviewed
 recipe guarantees those settings. No auto-approval flags are added. A native
 answer requires completed text from the final step, a final `step_finish` with
 `part.reason: "stop"`, and exit 0. Missing/non-stop finishes fail rather than
-returning partial text. Continue and steer remain unavailable; Multica
+returning partial text. Native resume and steer remain unavailable; explicit carry-forward rounds
+use a fresh launch. Multica
 structured delegation remains rejected under the existing authority contract.
 
 ### OpenClaw local delegation

@@ -13,11 +13,25 @@ import (
 // exposes no prompt, executable path, native argv, or credentials in JSON.
 type DelegationBinding struct {
 	NativePlan          *DelegationNativePlan `json:"-"`
+	Continuation        *FollowUpContinuation `json:"continuation,omitempty"`
 	RequestSHA256       string                `json:"request_sha256"`
 	ConfigurationSHA256 string                `json:"configuration_sha256"`
 	Requested           json.RawMessage       `json:"requested"`
 	Resolved            DelegationTarget      `json:"resolved"`
 	Defaulted           []string              `json:"defaulted"`
+}
+
+// FollowUpContinuation records provenance only, never carried text or instructions.
+type FollowUpContinuation struct {
+	Mode                string              `json:"mode"`
+	NativeSessionReused bool                `json:"native_session_reused"`
+	PriorResult         *CarryForwardResult `json:"prior_result,omitempty"`
+}
+
+type CarryForwardResult struct {
+	Source string `json:"source"`
+	SHA256 string `json:"sha256"`
+	Bytes  int    `json:"bytes"`
 }
 
 // DelegationNativePlan is private operational metadata. The store retains it
@@ -79,6 +93,22 @@ func (b DelegationBinding) Validate() error {
 	for _, v := range []string{b.Resolved.Model, b.Resolved.Family, b.Resolved.Version, b.Resolved.Host, b.Resolved.Settings.Speed, b.Resolved.Settings.Effort, b.Resolved.Settings.Access} {
 		if utf8.RuneCountInString(v) > 256 || !utf8.ValidString(v) || strings.IndexFunc(v, unicode.IsControl) >= 0 {
 			return errors.New("invalid delegation target value")
+		}
+	}
+	if c := b.Continuation; c != nil {
+		if c.Mode != "native" && c.Mode != "carry_forward" {
+			return errors.New("invalid continuation mode")
+		}
+		if c.NativeSessionReused != (c.Mode == "native") {
+			return errors.New("continuation session claim disagrees with mode")
+		}
+		if c.Mode == "native" && c.PriorResult != nil {
+			return errors.New("native continuation cannot carry a result")
+		}
+		if c.Mode == "carry_forward" {
+			if c.PriorResult == nil || c.PriorResult.Source == "" || len(c.PriorResult.Source) > 128 || !hashPattern.MatchString(c.PriorResult.SHA256) || c.PriorResult.Bytes < 1 || c.PriorResult.Bytes > 64<<10 {
+				return errors.New("invalid carry-forward provenance")
+			}
 		}
 	}
 	if b.NativePlan != nil {

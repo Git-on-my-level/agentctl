@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentctl:schema:carry-forward-prompt:v1",
+  "x-agentctl-docs": "../docs/follow-up-turns.md",
+  "title": "Carry-forward prompt v1",
+  "description": "Prompt-only JSON; never journaled. The whole encoded prompt is at most 8 MiB UTF-8. Prior text is quoted context; the parent supplies additional task context in instruction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "mode",
+    "context_policy",
+    "source_execution_id",
+    "prior_result",
+    "instruction"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "mode": {
+      "const": "carry_forward"
+    },
+    "context_policy": {
+      "type": "string"
+    },
+    "source_execution_id": {
+      "type": "string"
+    },
+    "prior_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "sha256",
+        "bytes",
+        "media_type",
+        "text"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        },
+        "media_type": {
+          "const": "text/plain"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Complete prior answer; at most 65536 UTF-8 bytes."
+        }
+      }
+    },
+    "instruction": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

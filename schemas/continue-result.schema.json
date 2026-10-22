@@ -10,12 +10,13 @@
     "continues",
     "resolved",
     "request_sha256",
-    "reused"
+    "reused",
+    "continuation"
   ],
   "properties": {
     "continues": {
       "type": "string",
-      "description": "The execution whose native session this turn continues."
+      "description": "The completed source execution, for native resume or an explicit carry-forward round."
     },
     "resolved": {
       "$ref": "delegate-result.schema.json#/properties/resolved"
@@ -63,6 +64,84 @@
     },
     "outcome": {
       "$ref": "outcome.schema.json"
+    },
+    "continuation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "native_session_reused"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "native",
+            "carry_forward"
+          ]
+        },
+        "native_session_reused": {
+          "type": "boolean"
+        },
+        "prior_result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "sha256",
+            "bytes"
+          ],
+          "properties": {
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65536
+            }
+          }
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "mode": {
+              "const": "native"
+            },
+            "native_session_reused": {
+              "const": true
+            }
+          },
+          "not": {
+            "required": [
+              "prior_result"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "mode": {
+              "const": "carry_forward"
+            },
+            "native_session_reused": {
+              "const": false
+            }
+          },
+          "required": [
+            "prior_result"
+          ]
+        }
+      ]
+    },
+    "replayed": {
+      "const": true,
+      "description": "Existing FAILED/CANCELLED work recovered by request key. No relaunch; next_actions explains a deliberate retry with a new key."
     }
   },
   "anyOf": [
