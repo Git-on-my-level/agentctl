@@ -41,6 +41,7 @@ type runOptions struct {
 	preparedPrompt                           *promptPayload
 	admissionReused                          *bool
 	admissionRecorded                        *bool
+	started                                  func(model.Execution, bool)
 	adapter, cwd, idempotencyKey, issue, run string
 	promptFile, promptDelivery               string
 	taskContractFile                         string
@@ -258,6 +259,9 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	}
 	if reused {
 		journal.Close()
+		if opts.started != nil {
+			opts.started(execution, true)
+		}
 		return writeExecution(renderer, execution, "run")
 	}
 	// bbolt takes a process-wide writer lock. Do not hold it for the lifetime of
@@ -334,6 +338,9 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		return mapStoreError("record started event", err)
 	}
 	writeJournal.Close()
+	if opts.started != nil {
+		opts.started(execution, false)
+	}
 	cursor := ""
 	nextRunnerHeartbeat := a.now().Add(nativeRunnerHeartbeatEvery)
 	ticker := time.NewTicker(50 * time.Millisecond)
@@ -658,7 +665,7 @@ func parseRun(args []string) (runOptions, *output.Error) {
 			}
 			o.labels = append(o.labels, label)
 		case "--background":
-			return o, output.NewError(output.CodeUsage, "run --background is not supported; parent-background a foreground agentctl run, or use dispatch for work that must outlive this process", false).WithDetail("flag", "--background")
+			return o, output.NewError(output.CodeUsage, "run --background is not supported; use delegate --detach for parent-independent structured native work, or dispatch for Multica-owned durable work", false).WithDetail("flag", "--background")
 		case "--plan":
 			o.plan = true
 		case "--no-store-result":

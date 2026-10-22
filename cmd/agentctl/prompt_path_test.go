@@ -7,23 +7,22 @@ import (
 	"testing"
 
 	"github.com/Git-on-my-level/agentctl/internal/output"
-	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestPromptPathsResolveRootAliasesAndRejectEscapes(t *testing.T) {
-	root := testutil.TempDir(t)
+	root := t.TempDir()
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	alias := filepath.Join(testutil.TempDir(t), "cwd-alias")
+	alias := filepath.Join(t.TempDir(), "cwd-alias")
 	if err := os.Symlink(realRoot, alias); err != nil {
 		t.Skip(err)
 	}
 	if err := os.WriteFile(filepath.Join(realRoot, "task.md"), []byte("private prompt"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	outside := testutil.TempDir(t)
+	outside := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "task.md"), []byte("outside"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -62,12 +61,12 @@ func TestPromptPathsResolveRootAliasesAndRejectEscapes(t *testing.T) {
 }
 
 func TestFanoutPromptCacheUsesCanonicalRootAliases(t *testing.T) {
-	root := testutil.TempDir(t)
+	root := t.TempDir()
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	alias := filepath.Join(testutil.TempDir(t), "cwd-alias")
+	alias := filepath.Join(t.TempDir(), "cwd-alias")
 	if err := os.Symlink(realRoot, alias); err != nil {
 		t.Skip(err)
 	}
@@ -98,7 +97,7 @@ func TestDelegateAndContinuePromptFilesUnderAliasedCWD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alias := filepath.Join(testutil.TempDir(t), "cwd-alias")
+	alias := filepath.Join(t.TempDir(), "cwd-alias")
 	if err := os.Symlink(realRoot, alias); err != nil {
 		t.Skip(err)
 	}
@@ -118,7 +117,7 @@ func TestDelegateAndContinuePromptFilesUnderAliasedCWD(t *testing.T) {
 		t.Fatalf("continue: %d %s", code, out)
 	}
 	second := resultID(t, out)
-	outside := testutil.TempDir(t)
+	outside := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "outside.md"), []byte("outside"), 0600); err != nil {
 		t.Fatal(err)
 	}

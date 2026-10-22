@@ -14,15 +14,21 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
-	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 type delegateFixture struct{ root, config, journal, request, count, probe string }
 
 func newDelegateFixture(t *testing.T, body string) delegateFixture {
 	t.Helper()
-	root := testutil.TempDir(t)
-	f := delegateFixture{root: root, config: filepath.Join(root, "config.json"), journal: filepath.Join(root, "state", "journal.db"), request: filepath.Join(root, "request.json"), count: filepath.Join(root, "launches"), probe: filepath.Join(root, "probes")}
+	root := t.TempDir()
+	// Config and journal paths intentionally reject symlinked parents. Keep
+	// only those operational paths canonical; retain the default TMPDIR
+	// spelling for cwd and prompt coverage.
+	operationalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := delegateFixture{root: root, config: filepath.Join(operationalRoot, "config.json"), journal: filepath.Join(operationalRoot, "state", "journal.db"), request: filepath.Join(root, "request.json"), count: filepath.Join(root, "launches"), probe: filepath.Join(root, "probes")}
 	// Paths are fixture-generated and shell-quoted, never caller-controlled prompts.
 	script := "#!/bin/sh\nif [ \"$1\" = '--version' ]; then\n echo probe >> '" + f.probe + "'\n echo 2026.09.10\n exit 0\nfi\necho launch >> '" + f.count + "'\n" + body + "\n"
 	if err := os.WriteFile(filepath.Join(root, "cursor-agent"), []byte(script), 0700); err != nil {
@@ -369,7 +375,7 @@ func TestDelegateConcurrentFailedProbeRecoversAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := f
-	other.config = filepath.Join(f.root, "other-config.json")
+	other.config = filepath.Join(filepath.Dir(f.config), "other-config.json")
 	raw, err := os.ReadFile(f.config)
 	if err != nil {
 		t.Fatal(err)

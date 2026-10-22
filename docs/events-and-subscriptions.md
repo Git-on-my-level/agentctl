@@ -262,7 +262,13 @@ bytes is always rejected.
 
 ## Await and daemonless limits
 
-`agentctl await` emits exactly one terminal, attention, timeout, or integrity
+`agentctl await --content` returns exact stored answer text on completed work;
+failed, cancelled, and orphaned work still exits with a structured error. Missing
+content and failed answer delivery do not acknowledge collection. Callbacks remain
+metadata-only; deduplicate terminal callbacks and dereference `result --content`.
+See [the generalized lifecycle contract](generalized-lifecycle.md).
+
+Plain `agentctl await` emits exactly one terminal, attention, timeout, or integrity
 document and follows the exit contract in
 [Agent-first CLI ergonomics](agent-ergonomics.md). Callback receipt proves only
 delivery, never task success. Await stops on actionable `attention` by default
@@ -271,7 +277,7 @@ that intentionally wants to continue waiting uses `--ignore-attention`; a
 different bounded wait uses `--timeout <duration>`.
 
 Without a managed supervisor, retry and polling continue only while the
-foreground `run` or `await` remains alive.
+owning `run`, detached delegate owner, or `await` remains alive.
 Later CLI invocations can recover durable local journal/outbox entries, but no
 component wakes itself after logout or reboot. Cross-restart automatic delivery
 therefore requires the optional supervisor; the daemonless MVP must not claim

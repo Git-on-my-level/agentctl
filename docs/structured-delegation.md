@@ -155,7 +155,12 @@ Deleting the journal also deletes replay protection. The immutable delegation
 binding and private prompt-free native recipe are retained in the existing idempotency graph so older supervisors
 rewriting execution projections cannot erase it; retention removes both copies.
 
-Native execution is foreground-owned. Even without `--wait`, the initial call
+Native execution is foreground-owned by default. Use `--detach` for a separate
+owner that survives parent exit, then `await <id> --content` to collect once.
+Detachment does not promise reboot recovery and cannot be combined with `--wait`.
+See [the generalized lifecycle contract](generalized-lifecycle.md) for admission,
+receipt-loss recovery, and native/Multica boundaries. Without `--detach`, even
+without `--wait`, the initial call
 owns the native run until exit; a concurrent replay can return a running receipt.
 `--wait` additionally enforces successful completion, retrieves content, and marks
 collection only after delivery. It fails on attention, failure, cancellation,

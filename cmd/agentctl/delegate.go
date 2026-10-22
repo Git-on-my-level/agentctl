@@ -25,8 +25,10 @@ import (
 )
 
 type delegateOptions struct {
+	detachedReceipt                         bool
 	requestFile, promptFile, cwd, authority string
 	promptStdin, plan, wait, contentOnly    bool
+	detach                                  bool
 	timeout                                 time.Duration
 	labels                                  []string
 	requireSource                           string
@@ -43,6 +45,8 @@ func parseDelegate(args []string) (delegateOptions, *output.Error) {
 		}
 		seen[flag] = true
 		switch flag {
+		case "--detach":
+			opts.detach = true
 		case "--plan":
 			opts.plan = true
 		case "--wait":
@@ -101,6 +105,9 @@ func parseDelegate(args []string) (delegateOptions, *output.Error) {
 	}
 	if opts.plan && (opts.contentOnly || opts.wait) {
 		return opts, delegateError(output.CodeUsage, "delegate_plan_content_conflict", "--plan cannot be combined with --wait or result collection options")
+	}
+	if opts.detach && opts.wait {
+		return opts, delegateError(output.CodeUsage, "delegate_detach_wait_conflict", "--detach cannot be combined with --wait; collect with await --content")
 	}
 	sort.Strings(opts.labels)
 	return opts, nil
@@ -377,6 +384,11 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	admissionRecorded := false
 	run := runOptions{env: append([]string(nil), recipe.Env...), adapter: selected.Harness, cwd: cwd, argv: append([]string(nil), recipe.Argv...), preparedPrompt: prompt,
 		plan: opts.plan, timeout: opts.timeout, labels: opts.labels, delegation: binding, mutationOverride: &mutation, admissionReused: &admissionReused, admissionRecorded: &admissionRecorded}
+	if opts.detach && !opts.plan {
+		detachedCommon := c
+		detachedCommon.profile = profileName
+		return a.startDetachedNative(ctx, renderer, detachedCommon, run)
+	}
 	var captured bytes.Buffer
 	inner := output.Renderer{Mode: output.JSON, Writer: &captured}
 	problem = a.runNativeOptions(ctx, inner, c, nil, run)
@@ -395,6 +407,9 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 		}
 		if err := json.Unmarshal(captured.Bytes(), &document); err != nil {
 			return output.Wrap(output.CodeInternal, "decode native preflight", false, err)
+		}
+		if opts.detach {
+			return writeDetachedPlan(renderer, *binding, document.Result)
 		}
 		return writeDelegatePlan(renderer, *binding, map[string]any{"env": recipe.Env, "argv": recipe.Argv, "prompt_delivery": recipe.PromptDelivery, "permissions": recipe.Permissions, "preflight": document.Result}, "")
 	}
@@ -471,7 +486,7 @@ func (a *app) findDelegation(ctx context.Context, c common, mutation contracts.M
 func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding, native any, reusedID string) *output.Error {
 	result := map[string]any{"plan": true, "requested": binding.Requested, "resolved": binding.Resolved,
 		"provenance":     map[string]any{"configuration_sha256": binding.ConfigurationSHA256, "defaulted": binding.Defaulted},
-		"lifecycle":      map[string]any{"owner": "foreground_process", "restart_durable": false, "background_flag_supported": false, "collection": "--wait --content requires completed work and stored answer", "cross_process_cancel": "only when explicitly advertised by adapter", "steering": "agentctl steer <id>; the route is the steer capability negotiated for this exact invocation", "follow_up": "agentctl continue <id> after completion; available when the resume capability is supported", "durable_authority": "Multica dispatch"},
+		"lifecycle":      map[string]any{"owner": "foreground_process", "restart_durable": false, "background_flag_supported": false, "detach_flag_supported": true, "collection": "--wait --content requires completed work and stored answer", "cross_process_cancel": "only when explicitly advertised by adapter", "steering": "agentctl steer <id>; the route is the steer capability negotiated for this exact invocation", "follow_up": "agentctl continue <id> after completion; available when the resume capability is supported", "durable_authority": "Multica dispatch"},
 		"request_sha256": binding.RequestSHA256, "side_effect_class": output.ReadOnly, "reused": reusedID != ""}
 	if native != nil {
 		result["native"] = native
@@ -558,6 +573,9 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		result := map[string]any{"id": execution.ID, "origin_host_id": execution.OriginHostID, "state": execution.State, "liveness": execution.Liveness,
 			"authority": execution.Authority, "reused": reused, "requested": binding.Requested, "resolved": binding.Resolved,
 			"provenance": map[string]any{"configuration_sha256": binding.ConfigurationSHA256, "defaulted": binding.Defaulted}, "request_sha256": binding.RequestSHA256}
+		if opts.detachedReceipt && !reused {
+			result["lifecycle"] = map[string]any{"owner": "detached_process", "parent_independent": true, "reboot_recovery": false}
+		}
 		if len(execution.Supersedes) != 0 {
 			result["continues"] = execution.Supersedes[0]
 		}
@@ -569,7 +587,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 			actions = append(actions, output.NextAction{Label: "Send a follow-up turn to the same native session", Argv: []string{"agentctl", "continue", execution.ID.String(), "--request-key", "<key>", "--prompt-file", "<path>"}, Mutates: true, SideEffectClass: output.ExternalSideEffect, Preconditions: []string{"choose a new request key for this turn"}})
 		}
 		if !execution.State.Terminal() {
-			actions = append([]output.NextAction{{Label: "Wait for execution", Argv: []string{"agentctl", "await", execution.ID.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite}}, actions...)
+			actions = append([]output.NextAction{{Label: "Wait for execution", Argv: []string{"agentctl", "await", execution.ID.String(), "--content"}, Mutates: true, SideEffectClass: output.LocalOperationalWrite}}, actions...)
 		}
 		if err := renderer.Success(output.Success{Result: result, NextActions: actions, Lines: []output.Line{{Lead: execution.ID.String(), Fields: []output.Field{{Name: "state", Value: execution.State}, {Name: "harness", Value: binding.Resolved.Harness}, {Name: "model", Value: binding.Resolved.Model}, {Name: "host", Value: binding.Resolved.Host}, {Name: "reused", Value: reused}}}}}); err != nil {
 			return output.Wrap(output.CodeInternal, "write delegated result", false, err)
