@@ -99,6 +99,9 @@ func updateCheckStatePath(_ common) (string, error) {
 }
 
 func (a *app) run(ctx context.Context, args []string) int {
+	if len(args) == 1 && args[0] == "_delegate-worker" {
+		return a.detachedNativeWorker(ctx)
+	}
 	commonArgs, rest, parseErr := a.parseCommon(args)
 	renderer := output.Renderer{Mode: commonArgs.mode, Writer: a.stdout}
 	if parseErr != nil {
@@ -1094,7 +1097,7 @@ func (a *app) events(ctx context.Context, renderer output.Renderer, c common, ar
 
 func (a *app) await(ctx context.Context, renderer output.Renderer, c common, args []string) int {
 	if len(args) < 1 {
-		return a.fail(renderer, output.NewError(output.CodeUsage, "usage: agentctl await <execution-id> [--timeout duration | --no-timeout | --through-execution-deadline] [--ignore-attention]", false))
+		return a.fail(renderer, output.NewError(output.CodeUsage, "usage: agentctl await <execution-id> [--timeout duration | --no-timeout | --through-execution-deadline] [--ignore-attention] [--content]", false))
 	}
 	id, problem := parseExecutionRef(args[0], c)
 	if problem != nil {
@@ -1105,6 +1108,7 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 	timeoutSet := false
 	throughExecutionDeadline := false
 	stopAttention := true
+	contentOnly := false
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--timeout":
@@ -1122,6 +1126,8 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 			noTimeout = true
 		case "--through-execution-deadline":
 			throughExecutionDeadline = true
+		case "--content":
+			contentOnly = true
 		case "--stop-on-attention":
 			stopAttention = true
 		case "--ignore-attention":
@@ -1165,6 +1171,12 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		}
 		switch execution.State {
 		case model.StateCompleted:
+			if contentOnly {
+				if problem := a.writeAwaitContent(ctx, renderer, c, id); problem != nil {
+					return a.fail(renderer, problem)
+				}
+				return 0
+			}
 			if problem := writeExecution(renderer, execution, "await"); problem != nil {
 				return a.fail(renderer, problem)
 			}
@@ -1227,6 +1239,30 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		case <-timer.C:
 		}
 	}
+}
+
+// Content collection succeeds only after delivery; missing content and output
+// errors leave the terminal visible for recovery through recent --unreconciled.
+func (a *app) writeAwaitContent(ctx context.Context, renderer output.Renderer, c common, id ids.ExecutionID) *output.Error {
+	journal, problem := a.openRead(c)
+	if problem != nil {
+		return problem
+	}
+	_, outcome, problem := dereferenceResult(ctx, journal, id, resultOptions{requireContent: true}, renderer.Mode)
+	journal.Close()
+	if problem != nil {
+		return problem
+	}
+	if outcome.Content == nil {
+		return output.NewError(output.CodeNotFound, "execution has no stored text content", false).WithDetail("execution_id", id.String()).WithDetail("availability", outcome.Availability).WithDetail("unavailable_reason", outcome.UnavailableReason)
+	}
+	if _, err := io.WriteString(renderer.Writer, outcome.Content.Text); err != nil {
+		return output.Wrap(output.CodeInternal, "write awaited content", false, err)
+	}
+	if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementAwait); problem != nil {
+		_, _ = fmt.Fprintln(a.stderr, "agentctl: answer delivered but acknowledgement failed:", problem)
+	}
+	return nil
 }
 
 func boolCount(values ...bool) int {
@@ -1367,7 +1403,7 @@ func writeExecutionReported(renderer output.Renderer, e model.Execution, operati
 		warnings = append(warnings, taskContractAcceptanceWarning())
 	}
 	if operation == "run" {
-		warnings = append(warnings, output.Warning{Code: "foreground_execution_owned", Message: "foreground run is owned by this process and has no default wall-clock timeout; parent-background this command, or use dispatch for work that must outlive this process"})
+		warnings = append(warnings, output.Warning{Code: "foreground_execution_owned", Message: "foreground run is owned by this process and has no default wall-clock timeout; use delegate --detach for parent-independent structured native work, or dispatch for Multica-owned durable work"})
 		actions = append(actions, output.NextAction{Label: "Review run ownership and lifecycle", Argv: []string{"agentctl", "help", "run"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 	}
 	if !e.State.Terminal() {

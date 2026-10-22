@@ -3,7 +3,7 @@
   "x-agentctl-docs": "../docs/structured-delegation.md",
   "$id": "urn:agentctl:schema:delegate-result:v1",
   "title": "Delegate success result payload v1",
-  "description": "The result member of the normal success envelope; --content emits raw answer text instead.",
+  "description": "The result member of the normal success envelope; --content emits raw answer text instead. Detached admission returns this same receipt after launch, without asserting completion or acknowledging collection.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -192,7 +192,8 @@
               "settings.speed",
               "settings.effort",
               "speed",
-              "effort"
+              "effort",
+              "settings.access"
             ]
           }
         }
@@ -223,7 +224,22 @@
       "const": "read_only"
     },
     "lifecycle": {
-      "type": "object"
+      "type": "object",
+      "description": "Plans describe prospective ownership. A new detached receipt includes owner=detached_process, parent_independent=true, reboot_recovery=false. A replay makes no ownership migration claim.",
+      "properties": {
+        "owner": {
+          "enum": [
+            "foreground_process",
+            "detached_process"
+          ]
+        },
+        "parent_independent": {
+          "type": "boolean"
+        },
+        "reboot_recovery": {
+          "const": false
+        }
+      }
     },
     "native": {
       "type": "object",

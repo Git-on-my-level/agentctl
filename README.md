@@ -35,6 +35,10 @@ the agent these commands, so you never write the JSON yourself.
 - **Set it up once, use it on every machine.** Keep your agent and model
   choices in one Git repository. Each machine pulls the same config, and the
   installer adds the agentctl skill to every agent CLI it finds.
+- **Work can outlive its parent.** `delegate --detach` returns a tracked
+  execution ID while an independent native owner runs the task. Collect once
+  with `await <id> --content`. See the [lifecycle contract](docs/generalized-lifecycle.md)
+  for recovery and authority limits.
 - **Answers don't get lost.** Every run gets an ID and a stored result. If the
   asking agent times out, crashes, or starts a new session, `agentctl inbox`
   shows what finished and `agentctl result` returns the answer. Retrying with

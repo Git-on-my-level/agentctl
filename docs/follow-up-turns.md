@@ -94,6 +94,11 @@ the native CLI, never journaled, identified only by its digest.
 
 ## Not covered
 
+Latest-turn addressing, explicit carry-forward rounds, and detached continuation
+are designed as [follow-up lifecycle PRs](generalized-lifecycle.md#follow-up-pr-designs).
+`delegate --detach` starts parent-independent work today; this command retains
+foreground ownership and native resume semantics.
+
 - Executions launched with expert `run`. They record no launch recipe.
 - A follow-up on another host. The native session lives where it ran.
 - Devin print-mode runs, and ZCode without a verified resume route.

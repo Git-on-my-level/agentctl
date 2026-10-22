@@ -15,3 +15,5 @@ const (
 func prepareDetachedCommand(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: detachedProcess | createNewProcessGroup, HideWindow: true}
 }
+
+func ignoreDetachedPipeSignal() {}

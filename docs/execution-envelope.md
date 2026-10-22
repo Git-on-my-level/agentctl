@@ -167,6 +167,11 @@ by default so a successful retrieval cannot be mistaken for an empty outcome;
 legacy records. Its `result_ref` is the execution's portable
 `agentctl://host-.../exec-...` URI, so callers never locate native session or
 rollout files.
+`agentctl await <execution-id> --content` combines waiting with exact content
+delivery and collection acknowledgement. Native `delegate --detach` hands
+observation to an independent process while keeping this same execution envelope;
+see [generalized lifecycle](generalized-lifecycle.md).
+
 `agentctl result <execution-id> --content` is the shell-friendly dereference:
 it writes the exact stored UTF-8 text, without a JSON envelope or an added
 newline, and stamps the same acknowledgement only after successful delivery.

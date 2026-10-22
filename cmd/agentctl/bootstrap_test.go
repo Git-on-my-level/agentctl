@@ -773,7 +773,7 @@ func TestBootstrapInstructionPointerCreatesCodexAgentsNotOverride(t *testing.T) 
 
 func instructionPointerBodyForTest() string {
 	return "CLI agents (`cursor-agent`, `codex`, `omp`, and similar) go through `agentctl`. Kick off a new agent with `delegate` (`agentctl help delegate`); `run` is the expert exact-argv path and does not inject permission flags.\n" +
-		"Do not manage native agent work with raw background shells; parent-background a foreground `agentctl run`, or use `dispatch` for work that must outlive this process.\n"
+		"Do not manage native agent work with raw background shells; use `delegate --detach` for parent-independent native work, or `dispatch` for Multica-owned durable tasks. Collect with `await <exec-id> --content`.\n"
 }
 
 func slimInstructionPointerBlockForTest() string {
@@ -908,5 +908,13 @@ func TestBootstrapMigratesExactPreV06PointerButPreservesEdits(t *testing.T) {
 	edited := strings.Replace(old, "just-in-time help.", "custom user policy.", 1)
 	if got := inspectInstructionPointerBytes("AGENTS.md", []byte(edited), expected); got.State != "conflict" {
 		t.Fatalf("edited block incorrectly adopted: %#v", got)
+	}
+}
+
+func TestBootstrapRecognizesReleasedForegroundOnlyPointer(t *testing.T) {
+	old := mustReadFile(t, filepath.Join("testdata", "instruction-pointer-v0.11.0.txt"))
+	action := inspectInstructionPointerBytes("AGENTS.md", old, slimInstructionPointerBlockForTest())
+	if action.State != "stale" {
+		t.Fatalf("released pointer should upgrade: %#v", action)
 	}
 }

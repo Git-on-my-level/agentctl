@@ -190,8 +190,19 @@ has not been established.
 `--wait` requires completed work with a nonempty stored answer and acknowledges
 collection after delivery. `--content` returns exact answer text. Explicit
 `--require-result-source` and `--min-result-bytes` assertions are available.
-This is foreground-owned native work, with optional `--timeout`; background and
-external context handles are not supported by delegate yet. Plans are read-only.
+Native work is foreground-owned by default, with optional `--timeout`. For
+work that must survive the parent, use `delegate --detach` and retain its full
+`exec-*` handle. It returns after a detached owner journals the native launch,
+without acknowledging collection. Collect once with `await <id> --content`;
+failed, cancelled, and orphaned work returns a structured nonzero error.
+`--detach` and `--wait` are mutually exclusive. The prompt and frozen recipe
+travel through an anonymous pipe, with no prompt file dependency after handoff.
+Keep the execution cwd, config and journal on storage that survives scratch cleanup.
+This survives parent exit and parent process-group termination, not reboot or
+loss of the detached owner. Replay the same request key and inputs after a lost
+receipt; never invent a new key for recovery. Replay does not detach work that
+was already launched in the foreground. Plans are read-only. External context
+handles remain unsupported. See [the lifecycle contract](https://github.com/Git-on-my-level/agentctl/blob/main/docs/generalized-lifecycle.md).
 Multica delegation is rejected until its result/settings contract is available;
 explicit `dispatch` retains its existing lifecycle-only guarantees. The ZCode
 Flash recipe sets the non-secret `ZCODE_MODEL` selector; the host-managed
@@ -276,7 +287,8 @@ Discover the normative shape and limits with `agentctl help fanout` and
 requires a bound. Native work remains owned by the invoking agentctl process;
 the callback supervisor does not change launch ownership or durability.
 
-For long work that must outlive this process, use Multica `dispatch`. Do not
+For native work that must outlive this process, use structured `delegate --detach`.
+For Multica-owned durable tasks, use `dispatch`. Do not
 pass `run --background`; that flag is rejected because agents treat its
 journaled exit 0 as task completion. Parent-background a foreground
 `agentctl run` when the parent already owns process lifetime.
@@ -328,7 +340,8 @@ than sending it again. A finished
 execution cannot be steered; use `continue`. Steering needs a prompt that agentctl
 delivered (`--prompt-file` or `--prompt-stdin`), not one embedded in native argv.
 
-Native work remains owned by the invoking agentctl process. A direct adapter
+Native work remains owned by its launching agentctl process; `delegate --detach`
+makes that owner independent of the caller. A direct adapter
 does not gain cross-process cancellation; add `--timeout` when a hard stop is
 required unless capabilities advertise a durable cancel route. For aggregate usage, use `recent --since <RFC3339> --until <RFC3339> --summary`.
 `status` and `recent` expose nullable `progress_at` for newly recorded task
@@ -351,7 +364,7 @@ that already existed when acknowledgement tracking first write-opened the
 journal are not unreconciled. Labels are visible exact discovery metadata, never
 mutation targets; do not place secrets or prompt/result content in them.
 
-For durable cross-host work, plan and then dispatch through the configured
+For Multica-owned durable or cross-host work, plan and then dispatch through the configured
 Multica authority:
 
 ```bash
@@ -382,7 +395,7 @@ successful terminal return, so they are local operational writes:
 
 ```bash
 agentctl status <exec-id>
-agentctl await <exec-id>
+agentctl await <exec-id> --content
 agentctl result <exec-id>
 agentctl result <exec-id> --content
 agentctl recent --unreconciled
@@ -431,7 +444,12 @@ changed; local collection stamps are written. A generic process
 that exits 0, or writes a file, is not success: plain stdout is not a result
 contract, and a child's exit code is not the direct child's.
 
-Use `agentctl help subscribe` before durable callback setup. Delivery is
+For a single terminal wake-up, use `await <id> --content` (add
+`--ignore-attention` only when intentionally waiting through intervention).
+For a durable callback, use `subscribe create --execution <id> --kind terminal`
+with an explicit destination after reading `help subscribe`. Callbacks carry
+metadata only: deduplicate by `event_dedupe_key`, then read `result <id> --content`.
+Delivery is
 at-least-once, so deduplicate by the full event key. A receipt proves delivery,
 not successful work. A managed supervisor is required only for cross-restart
 delivery and must not be silently installed as a new service.
