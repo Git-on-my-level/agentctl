@@ -108,15 +108,23 @@ path); and a reviewed `<cwd>/.zcode/config.json` turning plugins, MCP,
 subagents, skills, memory and hooks off, since ZCode seeds its official plugins
 (including a JavaScript REPL exposed as an MCP tool) even into an empty home.
 Only Read, Glob, Grep, TodoRead, ReadSessionContext and AskUserQuestion remain;
-AskUserQuestion and ExitPlanMode fail headless. The launch refuses when the
-prompt starts with `/` (ZCode expands a leading command, which can run shell
-lines before the model), or when `zcode.json` or `.zcode/config.json` exists in
-the working directory or any ancestor (project configs merge from the
-repository root and can define hooks), or when `.zcode` is a symlink. The
-profile is created no-clobber and no-follow just before launch and removed,
-with the isolated home, after the child is reaped; a replaced profile is never
-deleted. A process concurrently rewriting the working directory is out of
-scope. Expert `run` never applies any of this. Claude Code
+AskUserQuestion and ExitPlanMode fail headless. Every ZCode storage location
+(`ZCODE_HOME`, `ZCODE_STORAGE_DIR`, `ZCODE_DATA_BASE_DIR`, the session DB and the
+XDG directories) is pinned inside the isolated home. The launch refuses
+(`zcode_read_only_unavailable`) when the prompt starts with `/` after any
+Unicode white space or format character (ZCode expands a leading command, which
+can run shell lines before the model); when the executable is not an absolute
+path; when the working directory is not a canonical path free of symlinks;
+when `zcode.json`, `.zcode/config.json` or `.env` exists in the working
+directory or any ancestor (project configs merge from the repository root and
+can define hooks; ZCode loads the nearest `.env` upward, which can redirect its
+settings); or when `.zcode` is a symlink. The profile is created no-clobber and
+no-follow just before launch. After the child is reaped it is moved to an
+unused random name and deleted only if it is still the same file (by inode)
+with the reviewed bytes; anything else is restored or left in place. The
+isolated home is then removed. A process concurrently rewriting the working
+directory or its ancestors during the launch is out of scope. Expert `run`
+never applies any of this. Claude Code
 (`claude` or `claude-code`) refuses `read_only` with `access_unavailable`: no
 reviewed mode guarantees blocking edits and shell writes in `--print`. Coding
 launches report `permissions: constrained` with or without the grant: auto mode

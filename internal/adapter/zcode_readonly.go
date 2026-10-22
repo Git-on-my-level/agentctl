@@ -3,6 +3,8 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
@@ -12,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/Git-on-my-level/agentctl/internal/launchrecipe"
 )
@@ -31,10 +34,11 @@ var zcodeReadOnlyConfig = []byte(`{"features":{"mcp":false,"subagent":false,"ski
 
 // zcodeVersion is replaceable in tests; it reports the CLI version the given
 // executable runs under env.
-var zcodeVersion = func(executable string, env []string) (string, error) {
+var zcodeVersion = func(executable, dir string, env []string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, executable, "--version")
+	cmd.Dir = dir
 	cmd.Env = env
 	out, err := cmd.Output()
 	if err != nil {
@@ -61,7 +65,8 @@ var zcodeVersion = func(executable string, env []string) (string, error) {
 //     no-clobber, no-follow semantics and removed after the child is reaped.
 //
 // It does not defend against a process that concurrently rewrites the working
-// directory: such a writer can already change what any agent reads there.
+// directory or its ancestors during the launch: such a writer can already
+// change what any agent reads there.
 func prepareZCodeLaunch(cwd string, argv, env []string) (func(), []string, error) {
 	if !hasEnvEntry(env, launchrecipe.ZCodeReadOnlyProfileEnv) {
 		return nil, nil, nil
@@ -73,17 +78,33 @@ func prepareZCodeLaunch(cwd string, argv, env []string) (func(), []string, error
 	if len(argv) < 3 || argv[len(argv)-2] != "--prompt" {
 		return nil, nil, refuse("the prompt must be the final argv value")
 	}
-	if strings.HasPrefix(strings.TrimLeft(argv[len(argv)-1], " \t\r\n"), "/") {
+	// ZCode trims with JavaScript's String.prototype.trim (Unicode white space,
+	// line terminators and the BOM) before matching a command. Strip a
+	// superset: all Unicode white space and format characters.
+	trimmed := strings.TrimLeftFunc(argv[len(argv)-1], func(r rune) bool { return unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) })
+	if strings.HasPrefix(trimmed, "/") {
 		return nil, nil, refuse("a prompt starting with / would expand a ZCode command")
+	}
+	if !filepath.IsAbs(argv[0]) {
+		return nil, nil, refuse("the ZCode executable must be an absolute path")
 	}
 	if !filepath.IsAbs(cwd) {
 		return nil, nil, refuse("working directory is not absolute")
 	}
+	// Node reports the physical directory, so every check below must see the
+	// same path ZCode will: refuse a working directory reached through a
+	// symlink rather than guess which ancestors ZCode will search.
+	if physical, err := filepath.EvalSymlinks(cwd); err != nil || physical != filepath.Clean(cwd) {
+		return nil, nil, refuse("working directory must be a canonical path without symlinks")
+	}
 	if info, err := os.Lstat(cwd); err != nil || !info.IsDir() {
 		return nil, nil, refuse("working directory is not a directory")
 	}
+	// Project configs merge from the repository root down and can define hooks
+	// and MCP servers; ZCode also loads the nearest .env upward, which can
+	// redirect its storage and provider settings. Refuse any of them.
 	for dir := filepath.Clean(cwd); ; dir = filepath.Dir(dir) {
-		for _, name := range []string{"zcode.json", filepath.Join(".zcode", "config.json")} {
+		for _, name := range []string{"zcode.json", filepath.Join(".zcode", "config.json"), ".env"} {
 			if _, err := os.Lstat(filepath.Join(dir, name)); err == nil || !errors.Is(err, fs.ErrNotExist) {
 				return nil, nil, refuse("a ZCode project config is present at " + filepath.Join(dir, name))
 			}
@@ -110,9 +131,16 @@ func prepareZCodeLaunch(cwd string, argv, env []string) (func(), []string, error
 	if err != nil {
 		return nil, nil, refuse("cannot create an isolated home: " + err.Error())
 	}
-	extra := []string{"HOME=" + home, "ZCODE_MODEL=", "ZCODE_HOME=", "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE=" + provider}
+	// Every storage location ZCode honours is pinned inside the isolated home,
+	// so inherited settings cannot point reads or writes elsewhere.
+	zdir := filepath.Join(home, ".zcode")
+	extra := []string{"HOME=" + home, "ZCODE_MODEL=", "ZCODE_HOME=" + zdir, "ZCODE_STORAGE_DIR=" + zdir,
+		"ZCODE_DATA_BASE_DIR=" + zdir, "ZCODE_SESSION_DB_PATH=" + filepath.Join(zdir, "cli", "db", "db.sqlite"),
+		"ZCODE_SESSION_DB=" + filepath.Join(zdir, "cli", "db", "db.sqlite"), "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
+		"XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"), "XDG_STATE_HOME=" + filepath.Join(home, ".local", "state"),
+		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"), "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE=" + provider}
 	removeHome := func() { _ = os.RemoveAll(home) }
-	version, err := zcodeVersion(argv[0], mergeEnvironment(env, extra))
+	version, err := zcodeVersion(argv[0], cwd, mergeEnvironment(append([]string(nil), env...), extra))
 	if err != nil || !zcodeReadOnlyVersions[version] {
 		removeHome()
 		return nil, nil, refuse("ZCode CLI version " + strconvQuote(version) + " is not a reviewed read_only version")
@@ -143,9 +171,15 @@ func prepareZCodeLaunch(cwd string, argv, env []string) (func(), []string, error
 		return nil, nil, refuse("cannot create .zcode/config.json: " + err.Error())
 	}
 	_, writeErr := file.Write(zcodeReadOnlyConfig)
+	created, statErr := file.Stat()
 	closeErr := file.Close()
+	if statErr != nil {
+		writeErr = statErr
+	}
 	release := func() {
-		removeIfExactly(path, zcodeReadOnlyConfig)
+		if created != nil {
+			removeIfOurs(path, created, zcodeReadOnlyConfig)
+		}
 		if createdDir {
 			// Fails, and so keeps the directory, if anything else was added.
 			_ = os.Remove(dir)
@@ -159,22 +193,32 @@ func prepareZCodeLaunch(cwd string, argv, env []string) (func(), []string, error
 	return release, extra, nil
 }
 
-// removeIfExactly removes the profile at path. It first renames the entry to a
-// private name, so the bytes it checks are the bytes it removes; anything else
+// removeIfOurs removes the profile only while path still names the very file
+// this launch created, unchanged. It first renames the entry to an unused
+// random sidecar, so the entry it checks is the entry it removes; anything else
 // found there is put back if the path is still free, or left under the
-// private name, never deleted.
-func removeIfExactly(path string, want []byte) {
-	aside := path + ".agentctl-release"
+// sidecar name, never deleted. It never opens a non-regular file, so a FIFO
+// swapped in cannot block it.
+func removeIfOurs(path string, created fs.FileInfo, want []byte) {
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return
+	}
+	aside := path + ".agentctl-release-" + hex.EncodeToString(nonce[:])
+	if _, err := os.Lstat(aside); !errors.Is(err, fs.ErrNotExist) {
+		return
+	}
 	if err := os.Rename(path, aside); err != nil {
 		return
 	}
-	file, err := os.OpenFile(aside, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	matches := false
-	if err == nil {
-		info, statErr := file.Stat()
-		got, readErr := io.ReadAll(io.LimitReader(file, int64(len(want))+1))
-		_ = file.Close()
-		matches = statErr == nil && readErr == nil && info.Mode().IsRegular() && bytes.Equal(got, want)
+	if info, err := os.Lstat(aside); err == nil && info.Mode().IsRegular() && os.SameFile(info, created) {
+		if file, err := os.OpenFile(aside, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0); err == nil {
+			opened, statErr := file.Stat()
+			got, readErr := io.ReadAll(io.LimitReader(file, int64(len(want))+1))
+			_ = file.Close()
+			matches = statErr == nil && readErr == nil && os.SameFile(opened, created) && bytes.Equal(got, want)
+		}
 	}
 	if matches {
 		_ = os.Remove(aside)

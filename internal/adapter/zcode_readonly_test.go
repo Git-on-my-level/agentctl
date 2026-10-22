@@ -20,6 +20,44 @@ func readOnlyArgv(prompt string) []string {
 	return []string{"/fake/zcode", "--json", "--mode", "plan", "--prompt", prompt}
 }
 
+func TestZCodeReadOnlyReleaseKeepsSameBytesDifferentFile(t *testing.T) {
+	withReadOnlyHost(t, "0.17.0")
+	dir := canonicalTemp(t)
+	release, _, err := prepareZCodeLaunch(dir, readOnlyArgv("hi"), readOnlyEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, ".zcode", "config.json")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, path, string(zcodeReadOnlyConfig))
+	sidecar := path + ".agentctl-release"
+	mustWrite(t, sidecar, "someone else's")
+	release()
+	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, zcodeReadOnlyConfig) {
+		t.Fatalf("a different file with identical bytes was removed: %v", err)
+	}
+	if got, err := os.ReadFile(sidecar); err != nil || string(got) != "someone else's" {
+		t.Fatalf("an existing sidecar was overwritten: %q %v", got, err)
+	}
+}
+
+func TestZCodeReadOnlyPinsStorageInsideIsolatedHome(t *testing.T) {
+	withReadOnlyHost(t, "0.17.0")
+	release, extra, err := prepareZCodeLaunch(canonicalTemp(t), readOnlyArgv("hi"), append([]string{"ZCODE_STORAGE_DIR=/tmp/outside", "ZCODE_SESSION_DB_PATH=/tmp/outside.db"}, readOnlyEnv...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	home := envValue(extra, "HOME")
+	for _, key := range []string{"ZCODE_HOME", "ZCODE_STORAGE_DIR", "ZCODE_DATA_BASE_DIR", "ZCODE_SESSION_DB_PATH", "ZCODE_SESSION_DB", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
+		if value := envValue(extra, key); !strings.HasPrefix(value, home+string(filepath.Separator)) {
+			t.Fatalf("%s=%q is outside the isolated home %q", key, value, home)
+		}
+	}
+}
+
 // withReadOnlyHost gives the test a fake real home holding provisioned
 // provider configs and a ZCode that reports version.
 func withReadOnlyHost(t *testing.T, version string) {
@@ -36,7 +74,7 @@ func withReadOnlyHost(t *testing.T, version string) {
 	}
 	t.Setenv("HOME", home)
 	previous := zcodeVersion
-	zcodeVersion = func(string, []string) (string, error) { return version, nil }
+	zcodeVersion = func(string, string, []string) (string, error) { return version, nil }
 	t.Cleanup(func() { zcodeVersion = previous })
 }
 
@@ -62,7 +100,7 @@ func TestZCodeLaunchWithoutProfileWritesNothing(t *testing.T) {
 func TestZCodeReadOnlyIsolatesHomeAndWritesProfile(t *testing.T) {
 	withReadOnlyHost(t, "0.17.0")
 	realHome := os.Getenv("HOME")
-	dir := t.TempDir()
+	dir := canonicalTemp(t)
 	release, extra, err := prepareZCodeLaunch(dir, readOnlyArgv("judge these trees"), readOnlyEnv)
 	if err != nil || release == nil {
 		t.Fatalf("release=%v err=%v", release != nil, err)
@@ -95,7 +133,7 @@ func TestZCodeReadOnlyIsolatesHomeAndWritesProfile(t *testing.T) {
 
 func TestZCodeReadOnlyKeepsExistingDirectory(t *testing.T) {
 	withReadOnlyHost(t, "0.17.0")
-	dir := t.TempDir()
+	dir := canonicalTemp(t)
 	keep := filepath.Join(dir, ".zcode", "notes.txt")
 	if err := os.MkdirAll(filepath.Dir(keep), 0o700); err != nil {
 		t.Fatal(err)
@@ -118,12 +156,22 @@ func TestZCodeReadOnlyKeepsExistingDirectory(t *testing.T) {
 
 func TestZCodeReadOnlyRefusals(t *testing.T) {
 	cases := map[string]struct {
-		version string
-		prompt  string
-		setup   func(t *testing.T, dir string)
+		version  string
+		prompt   string
+		setup    func(t *testing.T, dir string)
+		symlink  bool
+		relative bool
 	}{
-		"command prompt":     {prompt: "  /judge"},
-		"unreviewed version": {version: "0.18.0"},
+		"command prompt":   {prompt: "  /judge"},
+		"nbsp command":     {prompt: "\u00a0/judge"},
+		"bom command":      {prompt: "\ufeff/judge"},
+		"line sep command": {prompt: "\u2028/judge\nargs"},
+		"dotenv in ancestor": {setup: func(t *testing.T, dir string) {
+			mustWrite(t, filepath.Join(filepath.Dir(dir), ".env"), "ZCODE_STORAGE_DIR=/tmp/x")
+		}},
+		"symlinked cwd":       {setup: func(t *testing.T, dir string) {}, symlink: true},
+		"relative executable": {relative: true},
+		"unreviewed version":  {version: "0.18.0"},
 		"existing config": {setup: func(t *testing.T, dir string) {
 			mustWrite(t, filepath.Join(dir, ".zcode", "config.json"), `{"plugins":{"enabled":true}}`)
 		}},
@@ -152,7 +200,7 @@ func TestZCodeReadOnlyRefusals(t *testing.T) {
 				version = "0.17.0"
 			}
 			withReadOnlyHost(t, version)
-			dir := filepath.Join(t.TempDir(), "work")
+			dir := filepath.Join(canonicalTemp(t), "work")
 			if err := os.Mkdir(dir, 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -163,7 +211,18 @@ func TestZCodeReadOnlyRefusals(t *testing.T) {
 			if prompt == "" {
 				prompt = "hi"
 			}
-			release, _, err := prepareZCodeLaunch(dir, readOnlyArgv(prompt), readOnlyEnv)
+			if tc.symlink {
+				link := filepath.Join(t.TempDir(), "alias")
+				if err := os.Symlink(dir, link); err != nil {
+					t.Fatal(err)
+				}
+				dir = link
+			}
+			argv := readOnlyArgv(prompt)
+			if tc.relative {
+				argv[0] = "./bin/zcode"
+			}
+			release, _, err := prepareZCodeLaunch(dir, argv, readOnlyEnv)
 			refusal(t, release, err)
 		})
 	}
@@ -171,7 +230,7 @@ func TestZCodeReadOnlyRefusals(t *testing.T) {
 
 func TestZCodeReadOnlyReleaseKeepsReplacedConfig(t *testing.T) {
 	withReadOnlyHost(t, "0.17.0")
-	dir := t.TempDir()
+	dir := canonicalTemp(t)
 	release, _, err := prepareZCodeLaunch(dir, readOnlyArgv("hi"), readOnlyEnv)
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +254,7 @@ func TestZCodeAdapterDeclaresReadOnlyPreparation(t *testing.T) {
 // must remove both once the child is reaped.
 func TestZCodeReadOnlyLaunchHoldsProfileForChildLifetime(t *testing.T) {
 	withReadOnlyHost(t, "0.17.0")
-	dir := t.TempDir()
+	dir := canonicalTemp(t)
 	marker := filepath.Join(t.TempDir(), "home")
 	bin := filepath.Join(t.TempDir(), "zcode")
 	script := "#!/bin/sh\nprintf '%s' \"$HOME\" > " + marker + "\nif [ -f .zcode/config.json ]; then seen=yes; else seen=no; fi\nprintf '{\"sessionId\":\"sess_1\",\"turnId\":\"turn_1\",\"response\":\"%s\",\"projection\":{\"status\":\"idle\"}}\\n' \"$seen\"\n"
@@ -218,6 +277,15 @@ func TestZCodeReadOnlyLaunchHoldsProfileForChildLifetime(t *testing.T) {
 			t.Fatalf("%s left after the child exited: %v", gone, err)
 		}
 	}
+}
+
+func canonicalTemp(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func mustWrite(t *testing.T, path, content string) {
