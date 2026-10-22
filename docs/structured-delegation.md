@@ -111,8 +111,10 @@ Only Read, Glob, Grep, TodoRead, ReadSessionContext and AskUserQuestion remain;
 AskUserQuestion and ExitPlanMode fail headless. Inheritance of `ZCODE_*` and
 `OTEL_*` variables is deny by default: each inherited one is blanked unless
 agentctl sets it. Storage, the session DB, logs (except agentctl's own private
-activity log directory), the mailbox and the XDG directories live inside the
-isolated home; messaging and model telemetry are off; and the provider config
+activity log directory, which agentctl creates and watches), the mailbox and the XDG directories live inside the
+isolated home; messaging and model telemetry are off; `PATH` is system-only and the
+temporary directories are inside the home, because Read hands PDFs to Poppler
+from `PATH`, which writes temporary files (ZCode bundles its own ripgrep); and the provider config
 is copied into the home, since ZCode may rewrite the file it is given while
 reading it. The launch refuses
 (`zcode_read_only_unavailable`) when the prompt starts with `/` after any

@@ -54,7 +54,10 @@ func TestZCodeReadOnlyPinsStorageInsideIsolatedHome(t *testing.T) {
 	}
 	defer release()
 	home := envValue(extra, "HOME")
-	for _, key := range []string{"ZCODE_HOME", "ZCODE_STORAGE_DIR", "ZCODE_DATA_BASE_DIR", "ZCODE_SESSION_DB_PATH", "ZCODE_SESSION_DB", "ZCODE_LOG_DIR", "ZCODE_MAILBOX_ROOT", "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
+	if got := envValue(extra, "PATH"); got != "/usr/bin:/bin:/usr/sbin:/sbin" {
+		t.Fatalf("PATH=%q", got)
+	}
+	for _, key := range []string{"TMPDIR", "TMP", "TEMP", "ZCODE_HOME", "ZCODE_STORAGE_DIR", "ZCODE_DATA_BASE_DIR", "ZCODE_SESSION_DB_PATH", "ZCODE_SESSION_DB", "ZCODE_LOG_DIR", "ZCODE_MAILBOX_ROOT", "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
 		if value := envValue(extra, key); !strings.HasPrefix(value, home+string(filepath.Separator)) {
 			t.Fatalf("%s=%q is outside the isolated home %q", key, value, home)
 		}

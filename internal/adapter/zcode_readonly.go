@@ -210,12 +210,21 @@ func zcodeReadOnlyEnv(env []string, home, provider string) ([]string, error) {
 		return nil, errors.New("cannot copy the provider config into the isolated home")
 	}
 	db := filepath.Join(zdir, "cli", "db", "db.sqlite")
+	tmp := filepath.Join(home, "tmp")
+	if err := os.Mkdir(tmp, 0o700); err != nil {
+		return nil, errors.New("cannot create the isolated temporary directory")
+	}
 	set := map[string]string{
 		"HOME": home, "XDG_CONFIG_HOME": filepath.Join(home, ".config"), "XDG_DATA_HOME": filepath.Join(home, ".local", "share"),
 		"XDG_STATE_HOME": filepath.Join(home, ".local", "state"), "XDG_CACHE_HOME": filepath.Join(home, ".cache"),
 		"ZCODE_HOME": zdir, "ZCODE_STORAGE_DIR": zdir, "ZCODE_DATA_BASE_DIR": zdir, "ZCODE_SESSION_DB_PATH": db, "ZCODE_SESSION_DB": db,
 		"ZCODE_LOG_DIR": filepath.Join(zdir, "logs"), "ZCODE_MAILBOX_ROOT": filepath.Join(zdir, "mailbox"), "ZCODE_MESSAGE_ENABLED": "0",
 		"ZCODE_MODEL_TELEMETRY_ENABLED": "0", "OTEL_SDK_DISABLED": "true", "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE": copied,
+		// Read hands PDFs to Poppler (pdfinfo, pdftoppm) found on PATH, which
+		// writes temporary files. A system-only PATH leaves no Poppler to run
+		// (ZCode bundles the ripgrep its search tools need), and any temporary
+		// file still lands inside the isolated home.
+		"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "TMPDIR": tmp, "TMP": tmp, "TEMP": tmp,
 	}
 	// agentctl's own activity source binds the log directory it watches; keep
 	// that one, and only that one.
