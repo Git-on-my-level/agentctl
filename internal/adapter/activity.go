@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -98,6 +99,10 @@ var zcodeActivityEvents = map[string]bool{
 	"turn.phase.completed":       true,
 }
 
+// zcodeActivityDirs records the log directories this process created for
+// ZCode activity, so read-only isolation can tell them from caller input.
+var zcodeActivityDirs sync.Map
+
 // zcodeLogDirEnv names the directory ZCode writes its daily JSONL log to.
 const zcodeLogDirEnv = "ZCODE_LOG_DIR"
 
@@ -126,6 +131,7 @@ func newZCodeActivity(env []string) (activitySource, []string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	zcodeActivityDirs.Store(filepath.Clean(dir), struct{}{})
 	return &zcodeLogActivity{dir: dir, offsets: map[string]int64{}, partial: map[string][]byte{}}, []string{zcodeLogDirEnv + "=" + dir}, nil
 }
 

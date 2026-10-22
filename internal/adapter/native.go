@@ -1036,6 +1036,12 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 			var once sync.Once
 			release = func() { once.Do(prepared) }
 		}
+		// Preparation may block (ZCode's version probe); never start a child
+		// after the caller has cancelled or the deadline has passed.
+		if runCtx.Err() != nil {
+			release()
+			return LaunchResult{}, nativeContextError(runCtx, "native process launch")
+		}
 	}
 	if err := cmd.Start(); err != nil {
 		release()

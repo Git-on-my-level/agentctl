@@ -47,7 +47,8 @@ func TestZCodeReadOnlyPinsStorageInsideIsolatedHome(t *testing.T) {
 	withReadOnlyHost(t, "0.17.0")
 	inherited := []string{"ZCODE_STORAGE_DIR=/tmp/outside", "ZCODE_SESSION_DB_PATH=/tmp/outside.db", "ZCODE_LOG_DIR=/tmp/outside-logs",
 		"ZCODE_MAILBOX_ROOT=/tmp/outside-mail", "ZCODE_MESSAGE_ENABLED=1", "ZCODE_APP=/tmp/Other.app", "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE=/tmp/evil.json",
-		"ZCODE_SOMETHING_NEW=x", "OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.invalid", "OTEL_EXPORTER_OTLP_HEADERS=k=v"}
+		"ZCODE_SOMETHING_NEW=x", "OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.invalid", "OTEL_EXPORTER_OTLP_HEADERS=k=v",
+		"NODE_OPTIONS=--require /tmp/hook.js", "ELECTRON_EXTRA=1", "DYLD_INSERT_LIBRARIES=/tmp/x.dylib", "LD_PRELOAD=/tmp/x.so"}
 	release, extra, err := prepareZCodeLaunch(canonicalTemp(t), readOnlyArgv("hi"), append(inherited, readOnlyEnv...))
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +71,8 @@ func TestZCodeReadOnlyPinsStorageInsideIsolatedHome(t *testing.T) {
 	child := mergeEnvironment(append(inherited, readOnlyEnv...), extra)
 	for key, want := range map[string]string{"ZCODE_MESSAGE_ENABLED": "0", "ZCODE_MODEL_TELEMETRY_ENABLED": "0", "OTEL_SDK_DISABLED": "true",
 		"ZCODE_APP": "", "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE": "", "ZCODE_SOMETHING_NEW": "", "ZCODE_MODEL": "",
-		"OTEL_EXPORTER_OTLP_ENDPOINT": "", "OTEL_EXPORTER_OTLP_HEADERS": ""} {
+		"OTEL_EXPORTER_OTLP_ENDPOINT": "", "OTEL_EXPORTER_OTLP_HEADERS": "", "NODE_OPTIONS": "", "ELECTRON_EXTRA": "",
+		"DYLD_INSERT_LIBRARIES": "", "LD_PRELOAD": ""} {
 		if got := envValue(child, key); got != want {
 			t.Fatalf("child %s=%q want %q", key, got, want)
 		}
@@ -79,12 +81,26 @@ func TestZCodeReadOnlyPinsStorageInsideIsolatedHome(t *testing.T) {
 
 func TestZCodeReadOnlyKeepsOnlyAgentctlActivityLogDir(t *testing.T) {
 	withReadOnlyHost(t, "0.17.0")
-	owned, err := os.MkdirTemp("", "agentctl-zcode-log-")
+	source, bound, err := newZCodeActivity(nil)
+	if err != nil || source == nil {
+		t.Fatalf("source=%v err=%v", source, err)
+	}
+	owned := envValue(bound, "ZCODE_LOG_DIR")
+	defer os.RemoveAll(owned)
+	forged, err := os.MkdirTemp("", "agentctl-zcode-log-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(owned)
-	release, extra, err := prepareZCodeLaunch(canonicalTemp(t), readOnlyArgv("hi"), append([]string{"ZCODE_LOG_DIR=" + owned}, readOnlyEnv...))
+	defer os.RemoveAll(forged)
+	release, extra, err := prepareZCodeLaunch(canonicalTemp(t), readOnlyArgv("hi"), append([]string{"ZCODE_LOG_DIR=" + forged}, readOnlyEnv...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := envValue(extra, "ZCODE_LOG_DIR"); got == forged {
+		t.Fatalf("a caller-created directory was trusted: %q", got)
+	}
+	release()
+	release, extra, err = prepareZCodeLaunch(canonicalTemp(t), readOnlyArgv("hi"), append([]string{"ZCODE_LOG_DIR=" + owned}, readOnlyEnv...))
 	if err != nil {
 		t.Fatal(err)
 	}

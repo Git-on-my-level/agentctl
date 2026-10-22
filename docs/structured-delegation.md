@@ -108,10 +108,11 @@ path); and a reviewed `<cwd>/.zcode/config.json` turning plugins, MCP,
 subagents, skills, memory and hooks off, since ZCode seeds its official plugins
 (including a JavaScript REPL exposed as an MCP tool) even into an empty home.
 Only Read, Glob, Grep, TodoRead, ReadSessionContext and AskUserQuestion remain;
-AskUserQuestion and ExitPlanMode fail headless. Inheritance of `ZCODE_*` and
-`OTEL_*` variables is deny by default: each inherited one is blanked unless
-agentctl sets it. Storage, the session DB, logs (except agentctl's own private
-activity log directory, which agentctl creates and watches), the mailbox and the XDG directories live inside the
+AskUserQuestion and ExitPlanMode fail headless. Inheritance of `ZCODE_*`, `OTEL_*`,
+`NODE_*`, `ELECTRON_*`, `DYLD_*`, `LD_*` and npm config variables is deny by
+default: each inherited one is blanked unless agentctl sets it, so nothing can
+preload code into ZCode's Electron-as-Node process. Storage, the session DB, logs (except the activity log directory this agentctl process itself created
+for the launch; a caller-supplied one is never kept), the mailbox and the XDG directories live inside the
 isolated home; messaging and model telemetry are off; `PATH` is system-only and the
 temporary directories are inside the home, because Read hands PDFs to Poppler
 from `PATH`, which writes temporary files (ZCode bundles its own ripgrep); and the provider config

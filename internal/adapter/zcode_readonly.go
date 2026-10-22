@@ -243,7 +243,7 @@ func zcodeReadOnlyEnv(env []string, home, provider string) ([]string, error) {
 	extra := make([]string, 0, len(set)+8)
 	for _, entry := range env {
 		key, _, ok := strings.Cut(entry, "=")
-		if !ok || (!strings.HasPrefix(key, "ZCODE_") && !strings.HasPrefix(key, "OTEL_")) {
+		if !ok || !zcodeReadOnlyBlankedKey(key) {
 			continue
 		}
 		if _, pinned := set[key]; !pinned {
@@ -256,16 +256,28 @@ func zcodeReadOnlyEnv(env []string, home, provider string) ([]string, error) {
 	return extra, nil
 }
 
+// zcodeReadOnlyBlankedKey reports the inherited variables a read-only child
+// must not see unless agentctl sets them: ZCode's own and OpenTelemetry
+// settings, and the Node, Electron and dynamic-loader variables that can load
+// code into ZCode's Electron-as-Node process before any control applies.
+func zcodeReadOnlyBlankedKey(key string) bool {
+	for _, prefix := range []string{"ZCODE_", "OTEL_", "NODE_", "ELECTRON_", "DYLD_", "LD_", "npm_config_", "NPM_CONFIG_"} {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// agentctlActivityLogDir reports whether dir is the log directory this
+// process's own activity source created for a launch. A caller-supplied
+// directory, however it is named, is never trusted.
 func agentctlActivityLogDir(dir string) bool {
-	if dir == "" || filepath.Dir(filepath.Clean(dir)) != filepath.Clean(os.TempDir()) || !strings.HasPrefix(filepath.Base(dir), "agentctl-zcode-log-") {
+	if dir == "" {
 		return false
 	}
-	info, err := os.Lstat(dir)
-	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
-		return false
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && int(stat.Uid) == os.Getuid()
+	_, ok := zcodeActivityDirs.Load(filepath.Clean(dir))
+	return ok
 }
 
 func copyPrivate(from, to string) error {
