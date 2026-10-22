@@ -41,6 +41,7 @@ type runOptions struct {
 	preparedPrompt                           *promptPayload
 	admissionReused                          *bool
 	admissionRecorded                        *bool
+	started                                  func(model.Execution, bool)
 	adapter, cwd, idempotencyKey, issue, run string
 	promptFile, promptDelivery               string
 	taskContractFile                         string
@@ -258,6 +259,9 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	}
 	if reused {
 		journal.Close()
+		if opts.started != nil {
+			opts.started(execution, true)
+		}
 		return writeExecution(renderer, execution, "run")
 	}
 	// bbolt takes a process-wide writer lock. Do not hold it for the lifetime of
@@ -334,6 +338,9 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		return mapStoreError("record started event", err)
 	}
 	writeJournal.Close()
+	if opts.started != nil {
+		opts.started(execution, false)
+	}
 	cursor := ""
 	nextRunnerHeartbeat := a.now().Add(nativeRunnerHeartbeatEvery)
 	ticker := time.NewTicker(50 * time.Millisecond)
@@ -658,7 +665,7 @@ func parseRun(args []string) (runOptions, *output.Error) {
 			}
 			o.labels = append(o.labels, label)
 		case "--background":
-			return o, output.NewError(output.CodeUsage, "run --background is not supported; parent-background a foreground agentctl run, or use dispatch for work that must outlive this process", false).WithDetail("flag", "--background")
+			return o, output.NewError(output.CodeUsage, "run --background is not supported; use delegate --detach for parent-independent structured native work, or dispatch for Multica-owned durable work", false).WithDetail("flag", "--background")
 		case "--plan":
 			o.plan = true
 		case "--no-store-result":
@@ -771,21 +778,41 @@ func (a *app) loadPromptForCommand(command string, opts runOptions) (*promptPayl
 				return nil, output.Wrap(output.CodeInternal, "resolve working directory", false, err)
 			}
 		}
-		root, _ = filepath.Abs(root)
-		path := opts.promptFile
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(root, path)
-		}
-		path, _ = filepath.Abs(filepath.Clean(path))
-		rel, err := filepath.Rel(root, path)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-			return nil, promptOutsideRootError(command, opts, path, root)
+		root, err := filepath.Abs(root)
+		if err != nil {
+			return nil, output.Wrap(output.CodeAuthorizationDenied, "resolve prompt working root", false, err)
 		}
 		resolvedRoot, err := filepath.EvalSymlinks(root)
 		if err != nil {
 			return nil, output.Wrap(output.CodeAuthorizationDenied, "resolve prompt working root", false, err).WithDetail("root", root)
 		}
-		path = filepath.Join(resolvedRoot, rel)
+		path := opts.promptFile
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(root, path)
+		}
+		path, err = filepath.Abs(filepath.Clean(path))
+		if err != nil {
+			return nil, output.Wrap(output.CodeAuthorizationDenied, "resolve prompt file", false, err)
+		}
+		// The working root may already be canonical (delegate), while an
+		// absolute prompt still names a system alias such as /var on macOS.
+		// Compare canonical paths, then open below the resolved root without
+		// following any path components that changed after resolution.
+		originalPath := path
+		path, err = filepath.EvalSymlinks(path)
+		if err != nil {
+			return nil, output.Wrap(output.CodeAuthorizationDenied, "resolve prompt file", false, err).WithDetail("path", originalPath)
+		}
+		rel, err := filepath.Rel(resolvedRoot, path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return nil, promptOutsideRootError(command, opts, originalPath, resolvedRoot)
+		}
+		// Root aliases are allowed; a prompt file itself must still be a
+		// regular non-symlink, including when it would share a cache key.
+		info, err := os.Lstat(originalPath)
+		if err != nil || !info.Mode().IsRegular() {
+			return nil, output.Wrap(output.CodeAuthorizationDenied, "prompt file must be regular and not a symlink", false, err).WithDetail("path", originalPath)
+		}
 		file, err := openRegularBelow(resolvedRoot, path)
 		if err != nil {
 			return nil, output.Wrap(output.CodeAuthorizationDenied, "open prompt file", false, err).WithDetail("path", path)
