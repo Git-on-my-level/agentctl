@@ -156,7 +156,12 @@ launches (omitted `settings.access`, or `"coding"`) include Cursor `--force`,
 Codex `--dangerously-bypass-approvals-and-sandbox`, Claude Code
 `--permission-mode auto`, and Devin ACP permission approval. Set `settings.access` to `read_only` for
 Cursor `--mode ask` and Codex `--sandbox read-only`; that access never
-receives the coding permission flags. Claude Code refuses `read_only` because no reviewed
+receives the coding permission flags. ZCode `read_only` (reviewed for CLI
+0.17.0 only) runs plan mode with a tool denylist, a private empty HOME, and a
+launch-scoped `.zcode/config.json`; it refuses (`zcode_read_only_unavailable`)
+on another version, a prompt starting with `/`, a relative executable, a
+non-canonical cwd, or `zcode.json`, `.zcode/config.json` or `.env` in the cwd
+or an ancestor. Claude Code refuses `read_only` because no reviewed
 mode guarantees blocking edits and shell writes in `--print`. Without the coding
 grant Claude Code adds no permission flag and reports `permissions: constrained`;
 with the grant it still reports `constrained`: auto mode retains native

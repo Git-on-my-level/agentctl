@@ -114,7 +114,7 @@ func Build(in Input) (Recipe, error) {
 	case "opencode":
 		recipe, err = buildOpenCode(in.Executable, model, speed, effort)
 	case "zcode":
-		recipe, err = buildZCode(in.Executable, model, speed, effort)
+		recipe, err = buildZCode(in.Executable, model, speed, effort, access)
 	case "devin":
 		recipe, err = buildDevin(in.Executable, model, speed, effort, access, in.UnattendedCodingPermissions)
 	case "claude-code":
@@ -155,7 +155,7 @@ func requireReviewedAccess(harness, access string) error {
 		return nil
 	}
 	switch harness {
-	case "cursor", "codex":
+	case "cursor", "codex", "zcode":
 		return nil
 	case "devin":
 		return fail("access_unavailable", "devin ACP has no verified read-only enforcement mode; omit access or choose another harness")

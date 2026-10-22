@@ -96,7 +96,46 @@ grant: `delegation.unattended_coding_permissions: true` adds Cursor `--force`,
 Codex `--dangerously-bypass-approvals-and-sandbox`, Claude Code
 `--permission-mode auto`, and grants Devin ACP one-operation permission approvals on coding launches (the default
 `settings.access`). `settings.access: "read_only"` uses Cursor `--mode ask`
-and Codex `--sandbox read-only` and never adds those coding permission flags. Claude Code
+and Codex `--sandbox read-only` and never adds those coding permission flags.
+ZCode read-only (reviewed for ZCode CLI 0.17.0 only; any other version
+refuses with `zcode_read_only_unavailable`) layers every control the CLI
+offers, because none is sufficient alone: `--mode plan` (Bash still runs in
+plan mode); `--disallowed-tools=` naming every built-in tool that writes,
+executes, spawns, messages or reaches the network; a private empty `HOME` per
+launch, so user-level hooks, custom commands, plugins and settings never load
+(the provider config the host launcher would choose is passed by absolute
+path); and a reviewed `<cwd>/.zcode/config.json` turning plugins, MCP,
+subagents, skills, memory and hooks off, since ZCode seeds its official plugins
+(including a JavaScript REPL exposed as an MCP tool) even into an empty home.
+Only Read, Glob, Grep, TodoRead, ReadSessionContext and AskUserQuestion remain;
+AskUserQuestion and ExitPlanMode fail headless. Inheritance of `ZCODE_*`, `OTEL_*`,
+`NODE_*`, `ELECTRON_*`, `DYLD_*`, `LD_*` and npm config variables is deny by
+default: each inherited one is blanked unless agentctl sets it, so nothing can
+preload code into ZCode's Electron-as-Node process. Storage, the session DB, logs (except the activity log directory this agentctl process itself created
+for the launch; a caller-supplied one is never kept), the mailbox and the XDG directories live inside the
+isolated home; messaging and model telemetry are off; `PATH` is system-only and the
+temporary directories are inside the home, because Read hands PDFs to Poppler
+from `PATH`, which writes temporary files (ZCode bundles its own ripgrep); and the provider config
+is copied into the home, since ZCode may rewrite the file it is given while
+reading it. The launch refuses
+(`zcode_read_only_unavailable`) when the prompt starts with `/` after any
+Unicode white space or format character (ZCode expands a leading command, which
+can run shell lines before the model); when the executable is not an absolute
+path; when the working directory is not a canonical path free of symlinks;
+when `zcode.json`, `.zcode/config.json` or `.env` exists in the working
+directory or any ancestor (project configs merge from the repository root and
+can define hooks; ZCode loads the nearest `.env` upward, which can redirect its
+settings); or when `.zcode` is a symlink. The profile is created no-clobber and
+no-follow just before launch. After the child is reaped it is moved to an
+unused random name and deleted only if it is still the same file (by inode)
+with the reviewed bytes; anything else is restored or left in place. The
+isolated home is then removed. Known residual: at startup ZCode
+runs fixed, read-only `git` queries (rev-parse, status, log, config) to
+describe the working directory; prompt text cannot change their arguments, and
+the environment disables optional index locks, user and system git config,
+terminal prompts and `core.fsmonitor`. A process concurrently rewriting the
+working directory or its ancestors during the launch is out of scope. Expert `run`
+never applies any of this. Claude Code
 (`claude` or `claude-code`) refuses `read_only` with `access_unavailable`: no
 reviewed mode guarantees blocking edits and shell writes in `--print`. Coding
 launches report `permissions: constrained` with or without the grant: auto mode

@@ -664,6 +664,12 @@ type nativeConfig struct {
 	// returns a source bound to this launch plus environment entries that bind
 	// the child to it. A nil source means no exclusive signal is available.
 	NewActivitySource func(env []string) (activitySource, []string, error)
+	// PrepareLaunch lays down launch-scoped state after the child's argv,
+	// working directory and environment are final and before it starts. It may
+	// return environment entries that override the child's. A refusal fails the
+	// launch closed. The returned release runs exactly once: after the child is
+	// reaped, or at once when the launch fails to start.
+	PrepareLaunch func(cwd string, argv, env []string) (release func(), extraEnv []string, err error)
 }
 
 // NativeAdapter implements the common process/session behavior. Constructors
@@ -1013,7 +1019,32 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	if err != nil {
 		return LaunchResult{}, dependencyError("cannot capture native stderr", err)
 	}
+	release := func() {}
+	if a.config.PrepareLaunch != nil {
+		dir := cmd.Dir
+		if dir == "" {
+			if dir, err = os.Getwd(); err != nil {
+				return LaunchResult{}, dependencyError("cannot resolve the launch working directory", err)
+			}
+		}
+		prepared, extra, err := a.config.PrepareLaunch(dir, argv, cmd.Env)
+		if err != nil {
+			return LaunchResult{}, err
+		}
+		cmd.Env = mergeEnvironment(cmd.Env, extra)
+		if prepared != nil {
+			var once sync.Once
+			release = func() { once.Do(prepared) }
+		}
+		// Preparation may block (ZCode's version probe); never start a child
+		// after the caller has cancelled or the deadline has passed.
+		if runCtx.Err() != nil {
+			release()
+			return LaunchResult{}, nativeContextError(runCtx, "native process launch")
+		}
+	}
 	if err := cmd.Start(); err != nil {
+		release()
 		// exec.CommandContext reports a context error from Start when the
 		// caller is cancelled before the child is accepted. That is an
 		// interruption, not an unavailable executable or other dependency.
@@ -1076,6 +1107,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		// against a child that is writing while it reads.
 		if _, err := live.send(req.Stdin); err != nil {
 			a.cancelRecord(record, "kill", 0)
+			release()
 			return LaunchResult{}, err
 		}
 	}
@@ -1085,6 +1117,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		// is still being drained, producing a false malformed/no-page result.
 		record.pipes.Wait()
 		err := cmd.Wait()
+		release()
 		if runCtx.Err() != nil {
 			record.mu.Lock()
 			record.cancelled = true
