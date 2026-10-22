@@ -26,7 +26,8 @@ agentctl await exec-... --content
 `delegate --detach` resolves the same explicit constraints and reviewed defaults
 as foreground delegation. It starts the same binary in an independent session
 and process group on Unix (detached process and new process group on Windows).
-That process owns the existing native adapter observation loop. Native CLIs
+Windows detachment has not been tested; no Windows runtime survival claim is
+made. That process owns the existing native adapter observation loop. Native CLIs
 remain the session, execution, permission, and account authorities. There is no
 new scheduler, task board, conversation store, credential store, or service.
 The explicit executable, reviewed environment, permissions, cwd, timeout and

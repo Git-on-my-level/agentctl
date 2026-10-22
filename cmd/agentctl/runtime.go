@@ -778,21 +778,41 @@ func (a *app) loadPromptForCommand(command string, opts runOptions) (*promptPayl
 				return nil, output.Wrap(output.CodeInternal, "resolve working directory", false, err)
 			}
 		}
-		root, _ = filepath.Abs(root)
-		path := opts.promptFile
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(root, path)
-		}
-		path, _ = filepath.Abs(filepath.Clean(path))
-		rel, err := filepath.Rel(root, path)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-			return nil, promptOutsideRootError(command, opts, path, root)
+		root, err := filepath.Abs(root)
+		if err != nil {
+			return nil, output.Wrap(output.CodeAuthorizationDenied, "resolve prompt working root", false, err)
 		}
 		resolvedRoot, err := filepath.EvalSymlinks(root)
 		if err != nil {
 			return nil, output.Wrap(output.CodeAuthorizationDenied, "resolve prompt working root", false, err).WithDetail("root", root)
 		}
-		path = filepath.Join(resolvedRoot, rel)
+		path := opts.promptFile
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(root, path)
+		}
+		path, err = filepath.Abs(filepath.Clean(path))
+		if err != nil {
+			return nil, output.Wrap(output.CodeAuthorizationDenied, "resolve prompt file", false, err)
+		}
+		// The working root may already be canonical (delegate), while an
+		// absolute prompt still names a system alias such as /var on macOS.
+		// Compare canonical paths, then open below the resolved root without
+		// following any path components that changed after resolution.
+		originalPath := path
+		path, err = filepath.EvalSymlinks(path)
+		if err != nil {
+			return nil, output.Wrap(output.CodeAuthorizationDenied, "resolve prompt file", false, err).WithDetail("path", originalPath)
+		}
+		rel, err := filepath.Rel(resolvedRoot, path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return nil, promptOutsideRootError(command, opts, originalPath, resolvedRoot)
+		}
+		// Root aliases are allowed; a prompt file itself must still be a
+		// regular non-symlink, including when it would share a cache key.
+		info, err := os.Lstat(originalPath)
+		if err != nil || !info.Mode().IsRegular() {
+			return nil, output.Wrap(output.CodeAuthorizationDenied, "prompt file must be regular and not a symlink", false, err).WithDetail("path", originalPath)
+		}
 		file, err := openRegularBelow(resolvedRoot, path)
 		if err != nil {
 			return nil, output.Wrap(output.CodeAuthorizationDenied, "open prompt file", false, err).WithDetail("path", path)
