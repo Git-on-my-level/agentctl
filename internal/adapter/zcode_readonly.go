@@ -168,22 +168,26 @@ func prepareZCodeLaunch(cwd string, argv, env []string) (func(), []string, error
 		return nil, nil, refuse("cannot create .zcode/config.json: " + err.Error())
 	}
 	_, writeErr := file.Write(zcodeReadOnlyConfig)
+	syncErr := file.Sync()
 	created, statErr := file.Stat()
-	closeErr := file.Close()
 	if statErr != nil {
 		writeErr = statErr
 	}
+	// The descriptor stays open until release. While it is open the inode
+	// cannot be freed, so no later file can reuse its number and pass the
+	// identity check (filesystems such as ext4 and tmpfs reuse inodes at once).
 	release := func() {
 		if created != nil {
 			removeIfOurs(path, created, zcodeReadOnlyConfig)
 		}
+		_ = file.Close()
 		if createdDir {
 			// Fails, and so keeps the directory, if anything else was added.
 			_ = os.Remove(dir)
 		}
 		removeHome()
 	}
-	if writeErr != nil || closeErr != nil {
+	if writeErr != nil || syncErr != nil {
 		release()
 		return nil, nil, refuse("cannot write .zcode/config.json")
 	}
