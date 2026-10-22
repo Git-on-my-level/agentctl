@@ -128,8 +128,12 @@ settings); or when `.zcode` is a symlink. The profile is created no-clobber and
 no-follow just before launch. After the child is reaped it is moved to an
 unused random name and deleted only if it is still the same file (by inode)
 with the reviewed bytes; anything else is restored or left in place. The
-isolated home is then removed. A process concurrently rewriting the working
-directory or its ancestors during the launch is out of scope. Expert `run`
+isolated home is then removed. Known residual: at startup ZCode
+runs fixed, read-only `git` queries (rev-parse, status, log, config) to
+describe the working directory; prompt text cannot change their arguments, and
+the environment disables optional index locks, user and system git config,
+terminal prompts and `core.fsmonitor`. A process concurrently rewriting the
+working directory or its ancestors during the launch is out of scope. Expert `run`
 never applies any of this. Claude Code
 (`claude` or `claude-code`) refuses `read_only` with `access_unavailable`: no
 reviewed mode guarantees blocking edits and shell writes in `--print`. Coding

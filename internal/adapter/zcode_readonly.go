@@ -225,6 +225,11 @@ func zcodeReadOnlyEnv(env []string, home, provider string) ([]string, error) {
 		// (ZCode bundles the ripgrep its search tools need), and any temporary
 		// file still lands inside the isolated home.
 		"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "TMPDIR": tmp, "TMP": tmp, "TEMP": tmp,
+		// ZCode runs fixed, read-only git queries at startup to describe the
+		// working directory. Keep them from writing the index, reading user or
+		// system config, prompting, or running an fsmonitor hook from repo config.
+		"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0",
+		"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "false",
 	}
 	// agentctl's own activity source binds the log directory it watches; keep
 	// that one, and only that one.
