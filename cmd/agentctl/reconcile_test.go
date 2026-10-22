@@ -17,6 +17,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 const reconcileSecret = "RECONCILE_PRIVATE_RESULT"
@@ -658,7 +659,7 @@ func TestReconcileLegacyUnprovenRules(t *testing.T) {
 }
 
 func TestReconcileLegacyApplyRecordsUnprovenOwner(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	journal, err := store.Open(path, store.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -736,7 +737,7 @@ func TestReconcileLegacyApplyRecordsUnprovenOwner(t *testing.T) {
 }
 
 func TestReconcileLegacyPIDPresentIsLeftUnchanged(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	journal, err := store.Open(path, store.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -775,7 +776,7 @@ func TestReconcileLegacyPIDPresentIsLeftUnchanged(t *testing.T) {
 }
 
 func TestReconcileLegacyPIDAppearingAtApplyIsSkipped(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	journal, err := store.Open(path, store.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -909,7 +910,7 @@ func (w reconcileWorld) apply(t *testing.T, app *reconcileTestApp, stdout *bytes
 
 func seedReconcileWorld(t *testing.T) reconcileWorld {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	journal, err := store.Open(path, store.Options{})
 	if err != nil {
 		t.Fatal(err)

@@ -15,6 +15,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestInboxStaleBoundUsesLastVerifiedObservation(t *testing.T) {
@@ -49,7 +50,7 @@ func TestInboxStaleBoundUsesLastVerifiedObservation(t *testing.T) {
 }
 
 func TestInboxCommandExplainsWithoutReadingResultContent(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	native := `{"type":"result","status":"completed","result":"INBOX_PRIVATE_RESULT"}`
@@ -88,7 +89,7 @@ func TestInboxCommandExplainsWithoutReadingResultContent(t *testing.T) {
 }
 
 func TestInboxCommandKeepsConflictedTerminalVisibleAfterAcknowledgement(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	native := `{"type":"result","status":"completed","result":"CONFLICTED_PRIVATE_RESULT"}`
@@ -334,7 +335,7 @@ func TestInboxReNotifyPersistsUntilAcknowledgement(t *testing.T) {
 }
 
 func TestInboxAgedUnacknowledgedTerminalSurvivesLimitInCommandOutput(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	// Stamp the acknowledgement epoch two weeks in the past on first open, so
 	// the seeded terminals below are post-epoch like a journal that has been in
 	// use for a while.
@@ -552,7 +553,7 @@ func TestInboxMulticaRecoveryRequiresExactBoundRefreshCapability(t *testing.T) {
 }
 
 func TestInboxStaleRecoveryIsReadOnlyAndInspectionActionsKeepJournal(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
 	journal, err := store.Open(journalPath, store.Options{Clock: func() time.Time { return now.Add(-2 * time.Hour) }})
 	if err != nil {

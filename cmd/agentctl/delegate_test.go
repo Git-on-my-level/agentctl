@@ -375,7 +375,7 @@ func TestDelegateConcurrentFailedProbeRecoversAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := f
-	other.config = filepath.Join(f.root, "other-config.json")
+	other.config = filepath.Join(filepath.Dir(f.config), "other-config.json")
 	raw, err := os.ReadFile(f.config)
 	if err != nil {
 		t.Fatal(err)

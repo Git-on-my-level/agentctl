@@ -12,6 +12,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func enableCallerEnvironment(a *app) {
@@ -59,7 +60,7 @@ func TestExecutionCallerUsesOnlyExplicitBoundedDeclaration(t *testing.T) {
 
 func TestRunCallerAdmissionReplayAndChildIsolation(t *testing.T) {
 	t.Setenv(adapter.CallerHarnessEnv, "hermes")
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journal := filepath.Join(root, "state", "journal.db")
 	capture := filepath.Join(root, "launches")
 	var stdout, stderr bytes.Buffer
@@ -109,7 +110,7 @@ func TestRunCallerAdmissionReplayAndChildIsolation(t *testing.T) {
 
 func TestInvalidCallerFailsBeforeNativeProbeOrJournal(t *testing.T) {
 	t.Setenv(adapter.CallerHarnessEnv, "private-session-token")
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journal := filepath.Join(root, "state", "journal.db")
 	capture := filepath.Join(root, "probe-or-launch")
 	fixture := filepath.Join(root, "fixture")
@@ -137,7 +138,7 @@ func TestUndeclaredRunCallerStaysUnknown(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	enableCallerEnvironment(a)
-	journal := filepath.Join(t.TempDir(), "state", "journal.db")
+	journal := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	code := a.run(context.Background(), []string{"--journal", journal, "run", "--adapter", "generic-process", "--", "/bin/echo", `{"type":"result","status":"completed","result":"answer"}`})
 	if code != 0 || strings.Contains(stdout.String(), `"caller"`) || strings.Contains(stdout.String(), "native-session-token") {
 		t.Fatalf("undeclared caller exit=%d output=%s", code, stdout.String())
@@ -146,7 +147,7 @@ func TestUndeclaredRunCallerStaysUnknown(t *testing.T) {
 
 func TestDispatchCallerAdmissionPlanReplayAndEnvironmentIsolation(t *testing.T) {
 	t.Setenv(adapter.CallerHarnessEnv, "hermes")
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	agents := `[{"id":"agent-fixture","name":"Fixture Agent","model":"fixture-model","runtime_id":"runtime-fixture","status":"idle","archived_at":null}]`
 	runtimes := `[{"id":"runtime-fixture","custom_name":"Fixture Host","provider":"codex","status":"online"}]`
 	fake, capture := writeDispatchFixture(t, root, agents, runtimes)

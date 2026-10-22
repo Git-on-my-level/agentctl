@@ -17,6 +17,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/subscription"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func durableTestSubscription(id string) subscription.Subscription {
@@ -38,7 +39,7 @@ func durableTestID(typ ids.Type, payload uint64) string {
 
 func TestSubscriptionPutUpdateCASAndRestart(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	generator := &sequenceGenerator{next: map[ids.Type]uint64{ids.TypeHost: 100, ids.TypeExecution: 2, ids.TypeEvent: 3, ids.TypeSubscription: 4, ids.TypeDelivery: 5}}
 	now := time.Date(2026, 8, 10, 18, 0, 0, 0, time.UTC)
 	j, err := Open(path, Options{Generator: generator, Clock: func() time.Time { return now }})
@@ -141,7 +142,7 @@ func TestOutboxAtomicDedupeConcurrencyAndDeterministicDueOrder(t *testing.T) {
 
 func TestOutboxReceiptRetryPauseDeadLetterAndRestart(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	now := time.Date(2026, 8, 10, 18, 0, 0, 0, time.UTC)
 	generator := &sequenceGenerator{next: map[ids.Type]uint64{ids.TypeHost: 100, ids.TypeExecution: 2, ids.TypeEvent: 3, ids.TypeSubscription: 4, ids.TypeDelivery: 5}}
 	j, err := Open(path, Options{Generator: generator, Clock: func() time.Time { return now }})

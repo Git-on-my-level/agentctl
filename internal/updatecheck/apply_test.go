@@ -19,10 +19,12 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestApplyUpdatesManagedInstallFromVerifiedArchive(t *testing.T) {
-	prefix := t.TempDir()
+	prefix := testutil.TempDir(t)
 	executable := filepath.Join(prefix, "bin", "agentctl-custom")
 	oldBinary := []byte("#!/bin/sh\nexit 0\n")
 	writeManagedInstall(t, prefix, executable, oldBinary)
@@ -51,7 +53,7 @@ func TestApplyUpdatesManagedInstallFromVerifiedArchive(t *testing.T) {
 	}))
 	defer server.Close()
 
-	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	statePath := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
 	if err := writeState(statePath, cacheState{SchemaVersion: stateSchema, CheckedOn: time.Now().UTC().Format("2006-01-02"), LatestVersion: "v0.3.3", InstalledVersion: "v0.3.3"}); err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +74,7 @@ func TestApplyUpdatesManagedInstallFromVerifiedArchive(t *testing.T) {
 	if err != nil || !bytes.Equal(installed, newBinary) {
 		t.Fatalf("installed=%q err=%v", installed, err)
 	}
-	status, err := ReadStatus(statePath, filepath.Join(t.TempDir(), "missing-policy"), func(string) string { return "" })
+	status, err := ReadStatus(statePath, filepath.Join(testutil.TempDir(t), "missing-policy"), func(string) string { return "" })
 	if err != nil || status.InstalledVersion != "v0.3.4" || status.LastErrorCode != "" {
 		t.Fatalf("status=%#v err=%v", status, err)
 	}
@@ -81,7 +83,7 @@ func TestApplyUpdatesManagedInstallFromVerifiedArchive(t *testing.T) {
 func TestApplyRejectsNoncanonicalReleaseTagBeforeDownload(t *testing.T) {
 	for _, tag := range []string{"v0.3.4/../../evil", "v0.3.4;touch", "v0.3.4..", "v0.3.4-rc1", "v0.03.4", "0.3.4"} {
 		t.Run(tag, func(t *testing.T) {
-			prefix := t.TempDir()
+			prefix := testutil.TempDir(t)
 			executable := filepath.Join(prefix, "bin", "agentctl")
 			oldBinary := []byte("#!/bin/sh\nexit 0\n")
 			writeManagedInstall(t, prefix, executable, oldBinary)
@@ -95,7 +97,7 @@ func TestApplyRejectsNoncanonicalReleaseTagBeforeDownload(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": tag})
 			}))
 			defer server.Close()
-			statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+			statePath := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
 			_, err := Apply(context.Background(), ApplyOptions{Check: Options{CurrentVersion: "v0.3.3", StatePath: statePath, Endpoint: server.URL + "/latest", Client: server.Client(), Getenv: func(string) string { return "" }, Force: true}, Executable: executable, ReleaseBaseURL: server.URL, Client: server.Client()})
 			var failure *ApplyError
 			if !errors.As(err, &failure) || (failure.Code != "invalid_release_version" && failure.Code != "release_check_failed") || downloads.Load() != 0 {
@@ -110,10 +112,10 @@ func TestApplyRejectsNoncanonicalReleaseTagBeforeDownload(t *testing.T) {
 }
 
 func TestApplyRejectsNoncanonicalCachedTagBeforeDownload(t *testing.T) {
-	prefix := t.TempDir()
+	prefix := testutil.TempDir(t)
 	executable := filepath.Join(prefix, "bin", "agentctl")
 	writeManagedInstall(t, prefix, executable, []byte("#!/bin/sh\nexit 0\n"))
-	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	statePath := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
 	if err := writeState(statePath, cacheState{SchemaVersion: stateSchema, CheckedOn: time.Now().UTC().Format("2006-01-02"), LatestVersion: "v0.03.4"}); err != nil {
 		t.Fatal(err)
 	}
@@ -131,10 +133,10 @@ func TestApplyRejectsNoncanonicalCachedTagBeforeDownload(t *testing.T) {
 }
 
 func TestApplyManagedInstallReportsBusyStateLock(t *testing.T) {
-	prefix := t.TempDir()
+	prefix := testutil.TempDir(t)
 	executable := filepath.Join(prefix, "bin", "agentctl")
 	writeManagedInstall(t, prefix, executable, []byte("#!/bin/sh\nexit 0\n"))
-	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	statePath := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
 	state := cacheState{SchemaVersion: stateSchema, InstalledVersion: "v0.3.2"}
 	if err := writeState(statePath, state); err != nil {
 		t.Fatal(err)
@@ -160,7 +162,7 @@ func TestApplyManagedInstallReportsBusyStateLock(t *testing.T) {
 }
 
 func TestApplyNoopReconcilesVersionAfterManualInstall(t *testing.T) {
-	prefix := t.TempDir()
+	prefix := testutil.TempDir(t)
 	executable := filepath.Join(prefix, "bin", "agentctl")
 	writeManagedInstall(t, prefix, executable, []byte("#!/bin/sh\nexit 0\n"))
 	var releaseChecks atomic.Int32
@@ -169,7 +171,7 @@ func TestApplyNoopReconcilesVersionAfterManualInstall(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": "v0.11.1"})
 	}))
 	defer server.Close()
-	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	statePath := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
 	if err := writeState(statePath, cacheState{SchemaVersion: stateSchema, CheckedOn: time.Now().UTC().Format("2006-01-02"), LatestVersion: "v0.10.2", InstalledVersion: "v0.10.2"}); err != nil {
 		t.Fatal(err)
 	}
@@ -188,11 +190,11 @@ func TestApplyCurrentUnmanagedBinaryDoesNotClaimInstalledVersion(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": "v0.11.1"})
 	}))
 	defer server.Close()
-	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	statePath := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
 	if err := writeState(statePath, cacheState{SchemaVersion: stateSchema, InstalledVersion: "v0.10.2"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := Apply(context.Background(), ApplyOptions{Check: Options{CurrentVersion: "v0.11.1", StatePath: statePath, Endpoint: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }, Force: true}, Executable: filepath.Join(t.TempDir(), "not-managed")})
+	result, err := Apply(context.Background(), ApplyOptions{Check: Options{CurrentVersion: "v0.11.1", StatePath: statePath, Endpoint: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }, Force: true}, Executable: filepath.Join(testutil.TempDir(t), "not-managed")})
 	if err != nil || result.Updated || result.InstalledVersion != "" {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
@@ -203,7 +205,7 @@ func TestApplyCurrentUnmanagedBinaryDoesNotClaimInstalledVersion(t *testing.T) {
 }
 
 func TestApplyCurrentNoopClearsPreviousUpdateFailure(t *testing.T) {
-	prefix := t.TempDir()
+	prefix := testutil.TempDir(t)
 	executable := filepath.Join(prefix, "bin", "agentctl")
 	writeManagedInstall(t, prefix, executable, []byte("#!/bin/sh\nexit 0\n"))
 	for _, latest := range []string{"v0.11.1", "v0.10.2"} {
@@ -212,7 +214,7 @@ func TestApplyCurrentNoopClearsPreviousUpdateFailure(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": latest})
 			}))
 			defer server.Close()
-			statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+			statePath := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
 			if err := writeState(statePath, cacheState{SchemaVersion: stateSchema, InstalledVersion: "v0.11.1", LastErrorCode: "release_check_failed", LastErrorStage: "release_check_failed"}); err != nil {
 				t.Fatal(err)
 			}
@@ -235,14 +237,14 @@ func TestApplyReportsBusyLockInsteadOfCurrent(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": "v0.11.2"})
 	}))
 	defer server.Close()
-	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	statePath := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
 	if err := writeState(statePath, cacheState{SchemaVersion: stateSchema, InstalledVersion: "v0.11.1"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(statePath+".lock", []byte("1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := Apply(context.Background(), ApplyOptions{Check: Options{CurrentVersion: "v0.11.1", StatePath: statePath, Endpoint: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }, Force: true}, Executable: filepath.Join(t.TempDir(), "not-managed")})
+	result, err := Apply(context.Background(), ApplyOptions{Check: Options{CurrentVersion: "v0.11.1", StatePath: statePath, Endpoint: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }, Force: true}, Executable: filepath.Join(testutil.TempDir(t), "not-managed")})
 	var applyError *ApplyError
 	if result.Updated || result.InstalledVersion != "" || !errors.As(err, &applyError) || applyError.Code != "state_lock_failed" || !applyError.Retryable {
 		t.Fatalf("result=%#v error=%#v raw=%v", result, applyError, err)
@@ -253,14 +255,14 @@ func TestApplyReportsBusyLockInsteadOfCurrent(t *testing.T) {
 }
 
 func TestApplyClassifiesRateLimitedReleaseCheckAndReconcilesInstalledVersion(t *testing.T) {
-	prefix := t.TempDir()
+	prefix := testutil.TempDir(t)
 	executable := filepath.Join(prefix, "bin", "agentctl")
 	writeManagedInstall(t, prefix, executable, []byte("#!/bin/sh\nexit 0\n"))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		http.Error(w, "token=secret", http.StatusForbidden)
 	}))
 	defer server.Close()
-	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	statePath := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
 	if err := writeState(statePath, cacheState{SchemaVersion: stateSchema, CheckedOn: time.Now().UTC().Format("2006-01-02"), LatestVersion: "v0.10.2", InstalledVersion: "v0.10.2"}); err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +278,7 @@ func TestApplyClassifiesRateLimitedReleaseCheckAndReconcilesInstalledVersion(t *
 }
 
 func TestApplyRejectsChecksumMismatchBeforeInstaller(t *testing.T) {
-	prefix := t.TempDir()
+	prefix := testutil.TempDir(t)
 	executable := filepath.Join(prefix, "bin", "agentctl")
 	oldBinary := []byte("#!/bin/sh\nexit 0\n")
 	writeManagedInstall(t, prefix, executable, oldBinary)
@@ -293,7 +295,7 @@ func TestApplyRejectsChecksumMismatchBeforeInstaller(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	statePath := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
 	_, err := Apply(context.Background(), ApplyOptions{Check: Options{CurrentVersion: "v0.3.3", StatePath: statePath, Endpoint: server.URL + "/latest", Client: server.Client(), Getenv: func(string) string { return "" }}, Executable: executable, ReleaseBaseURL: server.URL, Client: server.Client()})
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("err=%v", err)
@@ -309,7 +311,7 @@ func TestApplyRejectsChecksumMismatchBeforeInstaller(t *testing.T) {
 }
 
 func TestRetryableApplyFailureBecomesDueAfterBackoff(t *testing.T) {
-	prefix := t.TempDir()
+	prefix := testutil.TempDir(t)
 	executable := filepath.Join(prefix, "bin", "agentctl")
 	writeManagedInstall(t, prefix, executable, []byte("#!/bin/sh\nexit 0\n"))
 	archiveName := fmt.Sprintf("agentctl_v0.3.4_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
@@ -324,7 +326,7 @@ func TestRetryableApplyFailureBecomesDueAfterBackoff(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	statePath := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
 	options := Options{CurrentVersion: "v0.3.3", StatePath: statePath, Endpoint: server.URL + "/latest", Client: server.Client(), Getenv: func(string) string { return "" }}
 	_, err := Apply(context.Background(), ApplyOptions{Check: options, Executable: executable, ReleaseBaseURL: server.URL, Client: server.Client()})
 	var applyError *ApplyError
@@ -374,7 +376,7 @@ func TestExtractArchiveRejectsTraversalAndLinks(t *testing.T) {
 			if err := compressed.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if err := extractArchive(archive.Bytes(), t.TempDir()); err == nil {
+			if err := extractArchive(archive.Bytes(), testutil.TempDir(t)); err == nil {
 				t.Fatal("unsafe archive was accepted")
 			}
 		})

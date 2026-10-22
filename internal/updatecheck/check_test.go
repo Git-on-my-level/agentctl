@@ -12,10 +12,12 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestCheckLockContentionFailsForcedLookupButSkipsDailyCheck(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "update-check.json")
+	path := filepath.Join(testutil.TempDir(t), "state", "update-check.json")
 	release, acquired, err := acquireLock(path+".lock", time.Now().UTC())
 	if err != nil || !acquired {
 		t.Fatalf("acquire lock: acquired=%t err=%v", acquired, err)
@@ -42,7 +44,7 @@ func TestCheckNotifiesOncePerUTCDay(t *testing.T) {
 	defer server.Close()
 
 	now := time.Date(2026, 8, 16, 23, 30, 0, 0, time.UTC)
-	path := filepath.Join(t.TempDir(), "state", "update-check.json")
+	path := filepath.Join(testutil.TempDir(t), "state", "update-check.json")
 	options := Options{CurrentVersion: "v0.3.2", StatePath: path, Endpoint: server.URL, Now: func() time.Time { return now }, Client: server.Client(), Getenv: func(string) string { return "" }}
 	notice, err := Check(context.Background(), options)
 	if err != nil || notice == nil || notice.LatestVersion != "v0.3.3" {
@@ -81,7 +83,7 @@ func TestForceCheckFallsBackFromRateLimitedAPIToReleaseRedirect(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	statePath := filepath.Join(t.TempDir(), "state", "update-state.json")
+	statePath := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
 	if err := writeState(statePath, cacheState{SchemaVersion: stateSchema, CheckedOn: time.Now().UTC().Format("2006-01-02"), LatestVersion: "v0.10.2"}); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +120,7 @@ func TestSuppressedAutoDiscoveryDoesNotConsumeNotification(t *testing.T) {
 	defer server.Close()
 
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
-	path := filepath.Join(t.TempDir(), "state", "update-state.json")
+	path := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
 	auto := Options{CurrentVersion: "v0.3.2", StatePath: path, Endpoint: server.URL, Now: func() time.Time { return now }, Client: server.Client(), Getenv: func(string) string { return "" }, DiscoveryOnly: true}
 	if notice, err := Check(context.Background(), auto); err != nil || notice == nil {
 		t.Fatalf("auto discovery notice=%#v err=%v", notice, err)
@@ -134,7 +136,7 @@ func TestSuppressedAutoDiscoveryDoesNotConsumeNotification(t *testing.T) {
 }
 
 func TestCheckSkipsCurrentDevelopmentAndDisabledVersions(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "update-check.json")
+	path := filepath.Join(testutil.TempDir(t), "update-check.json")
 	for _, test := range []Options{
 		{CurrentVersion: "0.1.0-dev", StatePath: path},
 		{CurrentVersion: "v0.14.0-1-g073be4b", StatePath: path},
@@ -159,7 +161,7 @@ func TestCheckFailsOpenAndBacksOffNetworkFailure(t *testing.T) {
 	defer server.Close()
 
 	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
-	options := Options{CurrentVersion: "v0.3.2", StatePath: filepath.Join(t.TempDir(), "state", "update-check.json"), Endpoint: server.URL, Now: func() time.Time { return now }, Client: server.Client(), Getenv: func(string) string { return "" }}
+	options := Options{CurrentVersion: "v0.3.2", StatePath: filepath.Join(testutil.TempDir(t), "state", "update-check.json"), Endpoint: server.URL, Now: func() time.Time { return now }, Client: server.Client(), Getenv: func(string) string { return "" }}
 	if notice, err := Check(context.Background(), options); err == nil || notice != nil {
 		t.Fatalf("failed check notice=%#v err=%v", notice, err)
 	}
@@ -185,7 +187,7 @@ func TestCachedNoticeIsNotRepeatedAfterSuccessfulRetry(t *testing.T) {
 	defer server.Close()
 
 	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
-	options := Options{CurrentVersion: "v0.3.2", StatePath: filepath.Join(t.TempDir(), "state", "update-check.json"), Endpoint: server.URL, Now: func() time.Time { return now }, Client: server.Client(), Getenv: func(string) string { return "" }}
+	options := Options{CurrentVersion: "v0.3.2", StatePath: filepath.Join(testutil.TempDir(t), "state", "update-check.json"), Endpoint: server.URL, Now: func() time.Time { return now }, Client: server.Client(), Getenv: func(string) string { return "" }}
 	if notice, err := Check(context.Background(), options); err != nil || notice == nil {
 		t.Fatalf("initial notice=%#v err=%v", notice, err)
 	}
@@ -211,7 +213,7 @@ func TestCheckDoesNotNotifyForCurrentOrOlderRelease(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": latest})
 		}))
-		options := Options{CurrentVersion: "v0.3.2", StatePath: filepath.Join(t.TempDir(), "state", "update-check.json"), Endpoint: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }}
+		options := Options{CurrentVersion: "v0.3.2", StatePath: filepath.Join(testutil.TempDir(t), "state", "update-check.json"), Endpoint: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }}
 		if notice, err := Check(context.Background(), options); err != nil || notice != nil {
 			t.Fatalf("latest=%s notice=%#v err=%v", latest, notice, err)
 		}
@@ -226,7 +228,7 @@ func TestCheckReportsBusyLockAsFailure(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v0.3.3"})
 	}))
 	defer server.Close()
-	path := filepath.Join(t.TempDir(), "state", "update-check.json")
+	path := filepath.Join(testutil.TempDir(t), "state", "update-check.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +258,7 @@ func TestConcurrentChecksCoalesce(t *testing.T) {
 	}))
 	defer server.Close()
 
-	options := Options{CurrentVersion: "v0.3.2", StatePath: filepath.Join(t.TempDir(), "state", "update-check.json"), Endpoint: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }}
+	options := Options{CurrentVersion: "v0.3.2", StatePath: filepath.Join(testutil.TempDir(t), "state", "update-check.json"), Endpoint: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }}
 	var notices atomic.Int32
 	var wait sync.WaitGroup
 	wait.Add(8)
@@ -278,7 +280,7 @@ func TestConcurrentChecksCoalesce(t *testing.T) {
 }
 
 func TestUnsafeCacheFailsOpenWithoutReplacement(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "update-check.json")
+	path := filepath.Join(testutil.TempDir(t), "update-check.json")
 	if err := os.WriteFile(path, []byte(`{"schema_version":1}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +297,7 @@ func TestUnsafeCacheFailsOpenWithoutReplacement(t *testing.T) {
 }
 
 func TestSymlinkedCacheParentIsRejectedBeforeMutation(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	realParent := filepath.Join(root, "real")
 	if err := os.Mkdir(realParent, 0o700); err != nil {
 		t.Fatal(err)

@@ -13,13 +13,14 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/portableasset"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestBootstrapStatusDetectsDuplicateAndReconciledHarnesses(t *testing.T) {
 	originalVersion := version
 	version = "v0.1.4"
 	t.Cleanup(func() { version = originalVersion })
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	writeBootstrapSkill(t, filepath.Join(home, ".agents", "skills"), "tree:v0.1.4", "portable")
 	writeBootstrapSkill(t, filepath.Join(home, ".codex", "skills"), "tree:v0.1.4", "portable")
 	writeExecutable(t, filepath.Join(home, ".local", "bin", "agentctl"))
@@ -66,7 +67,7 @@ func TestBootstrapStatusDetectsCrossHarnessDriftAndMissing(t *testing.T) {
 	originalVersion := version
 	version = "v0.1.4"
 	t.Cleanup(func() { version = originalVersion })
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	writeBootstrapSkill(t, filepath.Join(home, ".agents", "skills"), "tree:v0.1.4", "one")
 	writeBootstrapSkill(t, filepath.Join(home, ".hermes", "skills"), "tree:v0.1.5", "two")
 	writeExecutable(t, filepath.Join(home, ".local", "bin", "agentctl"))
@@ -96,7 +97,7 @@ func TestPortableVersionComparison(t *testing.T) {
 }
 
 func TestBootstrapDetectsExecutableHarnessesOnly(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +125,7 @@ func TestBootstrapDetectsExecutableHarnessesOnly(t *testing.T) {
 }
 
 func TestBootstrapUpdateInstallsAndDeduplicatesSharedRoot(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	for _, executable := range []string{"codex", "omp"} {
 		bin := filepath.Join(home, "bin", executable)
 		writeExecutable(t, bin)
@@ -168,7 +169,7 @@ func TestBootstrapUpdateInstallsAndDeduplicatesSharedRoot(t *testing.T) {
 }
 
 func TestBootstrapUpdateRefusesModifiedManagedSkill(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	root := filepath.Join(home, ".agents", "skills")
 	writeBootstrapSkill(t, root, "tree:v0.1.6", "modified")
 	var stdout bytes.Buffer
@@ -185,7 +186,7 @@ func TestBootstrapUpdateRefusesModifiedManagedSkill(t *testing.T) {
 }
 
 func TestBootstrapUpdateRefusesManagedCompatibilityDuplicate(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	compat := filepath.Join(home, ".codex", "skills")
 	oldSkill := []byte("old portable skill")
 	writeManagedFixture(t, compat, oldSkill, "tree:v0.1.6")
@@ -206,7 +207,7 @@ func TestBootstrapUpdateRefusesManagedCompatibilityDuplicate(t *testing.T) {
 }
 
 func TestBootstrapUpdateRejectsPartialMulticaInstall(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	target := filepath.Join(home, "multica-skills")
 	var stdout bytes.Buffer
 	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
@@ -221,7 +222,7 @@ func TestBootstrapUpdateRejectsPartialMulticaInstall(t *testing.T) {
 }
 
 func TestBootstrapUpdateUpgradesHashBoundLegacyManifest(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	root := filepath.Join(home, ".agents", "skills")
 	oldSkill := []byte("old portable skill")
 	writeManagedFixture(t, root, oldSkill, "tree:v0.1.6")
@@ -242,7 +243,7 @@ func TestBootstrapUpdateUpgradesHashBoundLegacyManifest(t *testing.T) {
 }
 
 func TestBootstrapUpdateRefusesInvalidManagedMarker(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	var stdout bytes.Buffer
 	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
 	renderer := output.Renderer{Mode: output.JSON, Writer: &stdout}
@@ -266,7 +267,7 @@ func TestBootstrapUpdateRefusesInvalidManagedMarker(t *testing.T) {
 }
 
 func TestBootstrapUpdateRefusesInvalidManagedMarkerDuringUpgrade(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	root := filepath.Join(home, ".agents", "skills")
 	writeManagedFixture(t, root, []byte("old portable skill"), "tree:v0.1.6")
 	markerPath := filepath.Join(root, "agentctl-portable", bootstrapManagedMarkerName)
@@ -295,7 +296,7 @@ func TestBootstrapStatusMarksSkillOlderThanEmbeddedRelease(t *testing.T) {
 	}
 	version = strings.TrimPrefix(embeddedSkill.Revision, "tree:")
 	t.Cleanup(func() { version = originalVersion })
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	writeBootstrapSkill(t, filepath.Join(home, ".agents", "skills"), "tree:v0.2.5", "old portable skill")
 	status := buildBootstrapStatus(home, []string{"codex"}, func(string) string { return "" })
 	if status.Healthy || !containsString(status.Problems, "codex_outdated") {
@@ -304,7 +305,7 @@ func TestBootstrapStatusMarksSkillOlderThanEmbeddedRelease(t *testing.T) {
 }
 
 func TestBootstrapUpdateDoesNotInventMulticaRoot(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	var stdout bytes.Buffer
 	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
 	renderer := output.Renderer{Mode: output.JSON, Writer: &stdout}
@@ -320,7 +321,7 @@ func TestBootstrapInstructionPointerLifecycle(t *testing.T) {
 	originalVersion := version
 	version = "v0.3.11"
 	t.Cleanup(func() { version = originalVersion })
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	instructionPath := filepath.Join(home, ".claude", "CLAUDE.md")
 	if err := os.MkdirAll(filepath.Dir(instructionPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -397,7 +398,7 @@ func TestBootstrapInstructionPointerLifecycle(t *testing.T) {
 }
 
 func TestBootstrapInstructionPointerCreatesMissingFile(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	var stdout bytes.Buffer
 	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
 	renderer := output.Renderer{Mode: output.JSON, Writer: &stdout}
@@ -415,7 +416,7 @@ func TestBootstrapInstructionPointerCreatesMissingFile(t *testing.T) {
 }
 
 func TestBootstrapInstructionPointerRefusesDuplicateMarker(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	path := filepath.Join(home, ".codex", "AGENTS.md")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -452,7 +453,7 @@ func TestBootstrapStatusPointerMissingDoesNotFailHealth(t *testing.T) {
 	originalVersion := version
 	version = "v0.3.11"
 	t.Cleanup(func() { version = originalVersion })
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	skill, err := portableasset.Skill()
 	if err != nil {
 		t.Fatal(err)
@@ -473,7 +474,7 @@ func TestBootstrapStatusPointerMissingDoesNotFailHealth(t *testing.T) {
 }
 
 func TestBootstrapUnknownHarnessStillRejected(t *testing.T) {
-	if _, problem := parseBootstrapHarnesses(t.TempDir(), "unknown", "", func(string) string { return "" }); problem == nil || problem.Code != output.CodeUsage {
+	if _, problem := parseBootstrapHarnesses(testutil.TempDir(t), "unknown", "", func(string) string { return "" }); problem == nil || problem.Code != output.CodeUsage {
 		t.Fatalf("unknown harness was accepted: %#v", problem)
 	}
 }
@@ -520,7 +521,7 @@ func writeExecutable(t *testing.T, path string) {
 }
 
 func TestBootstrapInstructionPointerSkipsOmpAgentDirectory(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	if err := os.MkdirAll(filepath.Join(home, ".omp", "agent"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +536,7 @@ func TestBootstrapInstructionPointerSkipsOmpAgentDirectory(t *testing.T) {
 }
 
 func TestBootstrapInstructionPointerFollowsSoulSymlink(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	target := filepath.Join(home, "shared", "SOUL.md")
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		t.Fatal(err)
@@ -567,7 +568,7 @@ func TestBootstrapInstructionPointerFollowsSoulSymlink(t *testing.T) {
 }
 
 func TestBootstrapInstructionPointerWritesCursorAgents(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	path := filepath.Join(home, ".cursor", "AGENTS.md")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -587,7 +588,7 @@ func TestBootstrapInstructionPointerWritesCursorAgents(t *testing.T) {
 }
 
 func TestBootstrapAdoptsDigestMatchingUnmanagedSkillAndWritesSoul(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	skill, err := portableasset.Skill()
 	if err != nil {
 		t.Fatal(err)
@@ -628,7 +629,7 @@ func TestBootstrapAdoptsDigestMatchingUnmanagedSkillAndWritesSoul(t *testing.T) 
 }
 
 func TestBootstrapWritesPointerWhenSkillRootConflicts(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	writeBootstrapSkill(t, filepath.Join(home, ".hermes", "skills"), "tree:v0.1.0", "third-party skill")
 	soul := filepath.Join(home, ".hermes", "SOUL.md")
 	if err := os.MkdirAll(filepath.Dir(soul), 0o700); err != nil {
@@ -658,7 +659,7 @@ func TestBootstrapWritesPointerWhenSkillRootConflicts(t *testing.T) {
 }
 
 func TestBootstrapInstructionPointerRepairsTruncatedBlock(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	path := filepath.Join(home, ".claude", "CLAUDE.md")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -681,7 +682,7 @@ func TestBootstrapInstructionPointerRepairsTruncatedBlock(t *testing.T) {
 }
 
 func TestBootstrapInstructionPointerRefusesDuplicateShippedBlocks(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	path := filepath.Join(home, ".claude", "CLAUDE.md")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -706,7 +707,7 @@ func TestBootstrapInstructionPointerRefusesDuplicateShippedBlocks(t *testing.T) 
 }
 
 func TestBootstrapInstructionPointerOptOut(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	if resolved, err := filepath.EvalSymlinks(home); err == nil {
 		home = resolved
 	}
@@ -736,7 +737,7 @@ func TestBootstrapInstructionPointerOptOut(t *testing.T) {
 }
 
 func TestBootstrapInstructionPointerInvalidConfigFailsClosed(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	if resolved, err := filepath.EvalSymlinks(home); err == nil {
 		home = resolved
 	}
@@ -756,7 +757,7 @@ func TestBootstrapInstructionPointerInvalidConfigFailsClosed(t *testing.T) {
 }
 
 func TestBootstrapInstructionPointerCreatesCodexAgentsNotOverride(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	var stdout bytes.Buffer
 	a := &app{stdout: &stdout, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
 	if problem := a.bootstrapUpdate(output.Renderer{Mode: output.JSON, Writer: &stdout}, home, []string{"codex"}, "", false); problem != nil {
@@ -785,7 +786,7 @@ func TestBootstrapUpgradesV0102InstructionPointers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	paths := []string{".claude/CLAUDE.md", ".codex/AGENTS.md", ".cursor/AGENTS.md", ".hermes/SOUL.md"}
 	for _, relative := range paths {
 		path := filepath.Join(home, relative)

@@ -22,6 +22,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 // Tests that omit --journal must never contend with or mutate the operator's
@@ -129,9 +130,9 @@ func TestSkillsCommandsDoNotStartInvocationUpdateWorker(t *testing.T) {
 }
 
 func TestUpdateCheckStatePathIsGlobalAcrossSelectedJournals(t *testing.T) {
-	stateRoot := t.TempDir()
+	stateRoot := testutil.TempDir(t)
 	t.Setenv("XDG_STATE_HOME", stateRoot)
-	custom := filepath.Join(t.TempDir(), "isolated", "journal.db")
+	custom := filepath.Join(testutil.TempDir(t), "isolated", "journal.db")
 	path, err := updateCheckStatePath(common{journalPath: custom})
 	if err != nil {
 		t.Fatal(err)
@@ -142,7 +143,7 @@ func TestUpdateCheckStatePathIsGlobalAcrossSelectedJournals(t *testing.T) {
 }
 
 func TestUpdatePolicyAndStatusCommandsUseOwnerGlobalState(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	getenv := func(name string) string {
 		if name == "XDG_STATE_HOME" {
 			return root
@@ -185,7 +186,7 @@ func TestAdapterProbeErrorsPreserveStableClassification(t *testing.T) {
 }
 
 func TestSubscribeCancelRejectsInvalidIDBeforeCreatingJournal(t *testing.T) {
-	journal := filepath.Join(t.TempDir(), "journal.db")
+	journal := filepath.Join(testutil.TempDir(t), "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "subscribe", "cancel", "not-a-subscription-id"}); code != 2 {
@@ -197,7 +198,7 @@ func TestSubscribeCancelRejectsInvalidIDBeforeCreatingJournal(t *testing.T) {
 }
 
 func TestEventsRejectsLimitOutsideNativeIntRangeBeforeCreatingJournal(t *testing.T) {
-	journal := filepath.Join(t.TempDir(), "journal.db")
+	journal := filepath.Join(testutil.TempDir(t), "journal.db")
 	executionID, err := ids.New(ids.TypeExecution)
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +214,7 @@ func TestEventsRejectsLimitOutsideNativeIntRangeBeforeCreatingJournal(t *testing
 }
 
 func TestDoctorRequiresProfileSelectionWhenConfigHasNoDefault(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "config.json")
+	configPath := filepath.Join(testutil.TempDir(t), "config.json")
 	if err := os.WriteFile(configPath, []byte(`{"schema_version":1,"profiles":{"local":{"adapters":{"generic":{"executable":"/bin/echo"}}}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +441,7 @@ func TestRunLifecycleThroughBuiltBinary(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("generic shell fixture is Unix-only")
 	}
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	binary := filepath.Join(root, "agentctl")
 	build := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, ".")
 	buildOutput, err := build.CombinedOutput()
@@ -633,7 +634,7 @@ printf '%s\n' '{"type":"session","version":3,"id":"omp-background-fixture"}' '{"
 }
 
 func TestRecentDiscoversNewestExecutionsByExactLabel(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journal := filepath.Join(root, "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
@@ -668,7 +669,7 @@ func TestRecentDiscoversNewestExecutionsByExactLabel(t *testing.T) {
 }
 
 func TestRecentUnreconciledRequiresResultOrAwaitAcknowledgement(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journal := filepath.Join(root, "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
@@ -763,7 +764,7 @@ func TestRecentUnreconciledRequiresResultOrAwaitAcknowledgement(t *testing.T) {
 }
 
 func TestResultContentWritesExactStoredTextAndAcknowledges(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journal := filepath.Join(root, "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
@@ -801,7 +802,7 @@ func TestResultContentRejectsSummaryCombination(t *testing.T) {
 }
 
 func TestRecentUnreconciledHidesTerminalsThatPredateAcknowledgementTracking(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journalPath := filepath.Join(root, "state", "journal.db")
 	now := time.Now().UTC()
 	past := now.Add(-2 * time.Hour)
@@ -892,7 +893,7 @@ func recentJSONContains(t *testing.T, raw []byte, executionID string, unreconcil
 }
 
 func TestRunPromptFilePlanDoesNotExposePromptContent(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	promptPath := filepath.Join(root, "task.md")
 	secret := "private multi-line prompt\nsecond line"
 	if err := os.WriteFile(promptPath, []byte(secret), 0o600); err != nil {
@@ -921,7 +922,7 @@ func TestRunPromptFilePlanDoesNotExposePromptContent(t *testing.T) {
 }
 
 func TestRunPromptStdinDeliveryStoresResult(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	script := filepath.Join(root, "stdin-agent")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nIFS= read -r prompt\nprintf '%s\\n' \"{\\\"type\\\":\\\"result\\\",\\\"status\\\":\\\"completed\\\",\\\"result\\\":\\\"$prompt\\\"}\"\n"), 0o700); err != nil {
 		t.Fatal(err)
@@ -960,7 +961,7 @@ func TestRunPromptFlagsFailClosed(t *testing.T) {
 }
 
 func TestFanoutRunsOnePromptThroughArgvAndStdin(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	promptPath := filepath.Join(root, "task.md")
 	if err := os.WriteFile(promptPath, []byte("FANOUT_PROMPT_OK"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1002,7 +1003,7 @@ func TestFanoutRunsOnePromptThroughArgvAndStdin(t *testing.T) {
 }
 
 func TestFanoutManifestRejectsInvalidChildControls(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	if err := os.WriteFile(filepath.Join(root, "task.md"), []byte("prompt"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1036,7 +1037,7 @@ func TestFanoutManifestRejectsInvalidChildControls(t *testing.T) {
 }
 
 func TestPromptAndManifestRejectSymlinks(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	realPrompt := filepath.Join(root, "real.md")
 	if err := os.WriteFile(realPrompt, []byte("prompt"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1049,7 +1050,7 @@ func TestPromptAndManifestRejectSymlinks(t *testing.T) {
 	if _, problem := a.loadPrompt(runOptions{cwd: root, promptFile: "linked.md", promptDelivery: "argv"}); problem == nil || problem.Code != output.CodeAuthorizationDenied {
 		t.Fatalf("prompt symlink problem=%#v", problem)
 	}
-	outside := t.TempDir()
+	outside := testutil.TempDir(t)
 	if err := os.WriteFile(filepath.Join(outside, "escaped.md"), []byte("outside"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1076,7 +1077,7 @@ func TestPromptAndManifestRejectSymlinks(t *testing.T) {
 }
 
 func TestOwnedRunSurvivesJournalLockWhileChildTerminalizes(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	marker := filepath.Join(root, "started")
 	gate := filepath.Join(root, "release")
 	script := filepath.Join(root, "agent")
@@ -1138,7 +1139,7 @@ func TestOwnedRunSurvivesJournalLockWhileChildTerminalizes(t *testing.T) {
 
 func TestCursorPlanModeFailsClosedBeforeProbeOrJournal(t *testing.T) {
 	for _, native := range [][]string{{"cursor-agent", "--print", "--plan", "review"}, {"cursor-agent", "--mode", "plan", "review"}, {"cursor-agent", "--mode=plan", "review"}} {
-		journal := filepath.Join(t.TempDir(), "journal.db")
+		journal := filepath.Join(testutil.TempDir(t), "journal.db")
 		var stdout, stderr bytes.Buffer
 		a := testApp(&stdout, &stderr)
 		args := append([]string{"--journal", journal, "run", "--"}, native...)
@@ -1158,7 +1159,7 @@ func TestCursorPlanModeFailsClosedBeforeProbeOrJournal(t *testing.T) {
 
 func TestOMPResultModeFailsClosedBeforeProbeOrJournal(t *testing.T) {
 	for _, native := range [][]string{{"omp", "-p", "review"}, {"omp", "-p", "--mode", "text", "review"}, {"omp", "-p", "--mode=rpc", "review"}} {
-		journal := filepath.Join(t.TempDir(), "journal.db")
+		journal := filepath.Join(testutil.TempDir(t), "journal.db")
 		var stdout, stderr bytes.Buffer
 		a := testApp(&stdout, &stderr)
 		args := append([]string{"--journal", journal, "run", "--"}, native...)
@@ -1195,7 +1196,7 @@ func TestKnownAdapterStructuredOutputFailsClosedBeforeProbeOrJournal(t *testing.
 		{adapter: "cursor", argv: []string{"missing-cursor-binary", "--print", "--output-format", "stream-json", "--output-format", "text", "review"}},
 		{adapter: "omp", argv: []string{"missing-omp-binary", "-p", "--mode=json", "--mode", "text", "review"}},
 	} {
-		journal := filepath.Join(t.TempDir(), "journal.db")
+		journal := filepath.Join(testutil.TempDir(t), "journal.db")
 		var stdout, stderr bytes.Buffer
 		a := testApp(&stdout, &stderr)
 		args := []string{"--journal", journal, "run", "--adapter", tc.adapter, "--"}
@@ -1210,7 +1211,7 @@ func TestKnownAdapterStructuredOutputFailsClosedBeforeProbeOrJournal(t *testing.
 }
 
 func TestCleanExitWithoutTerminalJournalsExtractionFailure(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1270,7 +1271,7 @@ func TestAssistantResultSourceAcceptsCursorTerminalAndFallback(t *testing.T) {
 }
 
 func TestRunTimeoutTerminalizesExecution(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	code := a.run(context.Background(), []string{"--journal", journalPath, "run", "--timeout", "300ms", "--allow-missing-result", "--", "/bin/sh", "-c", "sleep 2"})
@@ -1298,7 +1299,7 @@ func TestRunTimeoutTerminalizesExecution(t *testing.T) {
 }
 
 func TestRunInterruptionTerminalizesExecutionAsCancelled(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	rawExecutionID, err := ids.New(ids.TypeExecution)
 	if err != nil {
 		t.Fatal(err)
@@ -1380,7 +1381,7 @@ func TestRunInterruptionTerminalizesExecutionAsCancelled(t *testing.T) {
 }
 
 func TestNativeAttentionUpdatesExecutionAndStopsAwait(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journalPath := filepath.Join(root, "state", "journal.db")
 	script := filepath.Join(root, "attention-agent")
 	blocker := filepath.Join(root, "attention-blocker")
@@ -1458,7 +1459,7 @@ func TestNativeAttentionUpdatesExecutionAndStopsAwait(t *testing.T) {
 
 func TestAwaitContextCancellationIsNotReportedAsTimeout(t *testing.T) {
 	now := time.Now().UTC()
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	journal, err := store.Open(journalPath, store.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -1491,7 +1492,7 @@ func TestAwaitContextCancellationIsNotReportedAsTimeout(t *testing.T) {
 
 func TestAwaitDefaultDoesNotApplyTenMinuteTimeout(t *testing.T) {
 	now := time.Now().UTC()
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	journal, err := store.Open(journalPath, store.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -1543,7 +1544,7 @@ func TestAwaitDefaultDoesNotApplyTenMinuteTimeout(t *testing.T) {
 }
 
 func TestContextBoundJournalOpenDoesNotOverrunDeadline(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	owner, err := store.Open(journalPath, store.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -1566,7 +1567,7 @@ func TestContextBoundJournalOpenDoesNotOverrunDeadline(t *testing.T) {
 }
 
 func TestRunCancelledBeforeLaunchDoesNotCreateExecution(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1581,7 +1582,7 @@ func TestRunCancelledBeforeLaunchDoesNotCreateExecution(t *testing.T) {
 }
 
 func TestAwaitThroughExecutionDeadlineUsesRecordedDeadline(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1615,7 +1616,7 @@ func TestAwaitThroughExecutionDeadlineUsesRecordedDeadline(t *testing.T) {
 }
 
 func TestAwaitThroughExecutionDeadlineRequiresRecordedDeadline(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1670,7 +1671,7 @@ func TestParseCommonLeavesKnowledgeBundleOutputForSubcommand(t *testing.T) {
 }
 
 func TestTopLevelKnowledgeCompileKeepsBundleOutput(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	repository := filepath.Join(root, "knowledge")
 	if err := os.MkdirAll(repository, 0o700); err != nil {
 		t.Fatal(err)
@@ -1773,7 +1774,7 @@ func TestRouteExplainWarnsWhenTaskProseIsIgnored(t *testing.T) {
 
 func TestRouteExplainFailsClosedForExplicitMissingConfigAndProfile(t *testing.T) {
 	for _, args := range [][]string{
-		{"--config", filepath.Join(t.TempDir(), "missing.json"), "route", "explain", "m5", "grok"},
+		{"--config", filepath.Join(testutil.TempDir(t), "missing.json"), "route", "explain", "m5", "grok"},
 		{"--profile", "missing", "route", "explain", "m5", "grok"},
 	} {
 		var stdout, stderr bytes.Buffer
@@ -1788,7 +1789,7 @@ func TestRouteExplainFailsClosedForExplicitMissingConfigAndProfile(t *testing.T)
 }
 
 func TestRouteExplainRemoteIsExplicitlyNotDispatched(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	configPath := filepath.Join(root, "config.json")
 	raw := `{"schema_version":1,"default_profile":"fleet","profiles":{"fleet":{"agent_preferences":{"mode":"advisory","preferred":[{"agent":"codex","model":"gpt-5.6-sol","speed":"regular","use_for":"alias:sol"}]},"route":{"this_host":"m4-air","hosts":{"m5":"m5-mbp"},"placement":{"kind":"multica"}}}}}`
 	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
@@ -1805,7 +1806,7 @@ func TestRouteExplainRemoteIsExplicitlyNotDispatched(t *testing.T) {
 }
 
 func TestRouteExplainOffPolicyDoesNotLookValidated(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	configPath := filepath.Join(root, "config.json")
 	raw := `{"schema_version":1,"default_profile":"fleet","profiles":{"fleet":{"agent_preferences":{"mode":"advisory","preferred":[{"agent":"codex","model":"gpt-5.6-sol","speed":"regular","use_for":"alias:sol"}]},"route":{"this_host":"m4-air","hosts":{"m5":"m5-mbp"},"placement":{"kind":"multica"}}}}}`
 	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
@@ -1825,7 +1826,7 @@ func TestRouteExplainOffPolicyDoesNotLookValidated(t *testing.T) {
 }
 
 func TestRunWarnsOffPolicyAndStillLaunches(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	configPath := filepath.Join(root, "config.json")
 	raw := `{"schema_version":1,"default_profile":"fleet","profiles":{"fleet":{"agent_preferences":{"mode":"advisory","preferred":[{"agent":"cursor","model":"cursor-grok-4.6-high","speed":"regular","use_for":"alias:grok"},{"agent":"codex","model":"gpt-5.6-sol","speed":"regular","use_for":"alias:sol"}]}}}}`
 	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
@@ -1849,7 +1850,7 @@ func TestRunWarnsOffPolicyAndStillLaunches(t *testing.T) {
 }
 
 func TestRunInTableModelDoesNotWarn(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	configPath := filepath.Join(root, "config.json")
 	raw := `{"schema_version":1,"default_profile":"fleet","profiles":{"fleet":{"agent_preferences":{"mode":"advisory","preferred":[{"agent":"generic-process","model":"gpt-5.6-sol","speed":"regular","use_for":"alias:sol"},{"agent":"cursor","model":"cursor-grok-4.6-high","speed":"regular","use_for":"alias:grok"}]}}}}`
 	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
@@ -1888,7 +1889,7 @@ func TestCapabilitiesSummaryCanRequireResultContent(t *testing.T) {
 }
 
 func TestOpenClawCapabilitiesWithLocalBinary(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "openclaw")
+	path := filepath.Join(testutil.TempDir(t), "openclaw")
 	if err := os.WriteFile(path, []byte("#!/bin/sh\necho 'OpenClaw 2026.6.10 (aa69b12)'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1903,7 +1904,7 @@ func TestOpenClawCapabilitiesWithLocalBinary(t *testing.T) {
 func TestNativeRunPersistsRetrievableOutcomeAndRedactsPrivateSource(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
-	journal := filepath.Join(t.TempDir(), "state", "journal.db")
+	journal := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	native := `{"type":"result","status":"completed","result":{"summary":"must-not-enter-journal"}}`
 	code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--adapter", "generic-process", "--", "/bin/echo", native})
 	if code != 0 {
@@ -1942,7 +1943,7 @@ func TestNativeRunPersistsRetrievableOutcomeAndRedactsPrivateSource(t *testing.T
 func TestNoStoreResultWritesExplicitOutcomeTombstone(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
-	journal := filepath.Join(t.TempDir(), "state", "journal.db")
+	journal := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	secret := "do-not-persist-this-result"
 	native := `{"type":"result","status":"completed","result":"` + secret + `"}`
 	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--adapter", "generic-process", "--no-store-result", "--", "/bin/echo", native}); code != 0 {
@@ -1977,7 +1978,7 @@ func TestNoStoreResultWritesExplicitOutcomeTombstone(t *testing.T) {
 func TestFailedRunResultReturnsStoredFailureWithoutAllowEmpty(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
-	journal := filepath.Join(t.TempDir(), "state", "journal.db")
+	journal := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	native := `{"type":"result","status":"failed","error":"permission denied"}`
 	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--adapter", "generic-process", "--", "/bin/echo", native}); code != 0 {
 		t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
@@ -2008,7 +2009,7 @@ func TestFailedRunResultReturnsStoredFailureWithoutAllowEmpty(t *testing.T) {
 func TestResultRejectsConflictedTerminalEvidence(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	native := `{"type":"result","status":"completed","result":"answer"}`
 	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "run", "--adapter", "generic-process", "--", "/bin/echo", native}); code != 0 {
 		t.Fatalf("run exit=%d output=%s", code, stdout.String())
@@ -2043,7 +2044,7 @@ func TestResultRejectsConflictedTerminalEvidence(t *testing.T) {
 }
 
 func TestNativeRunWithPreallocatedIDReleasesJournalWhileRunning(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journalPath := filepath.Join(root, "state", "journal.db")
 	script := filepath.Join(root, "slow-agent")
 	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"status\",\"status\":\"running\"}'\nwhile [ ! -e \"$1\" ]; do sleep 0.02; done\nprintf '%s\\n' '{\"type\":\"result\",\"status\":\"completed\"}'\n"
@@ -2131,7 +2132,7 @@ func TestNativeRunWithPreallocatedIDReleasesJournalWhileRunning(t *testing.T) {
 }
 
 func TestNativeRunRenewsLeaseWhileReapingAfterEarlyResult(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journalPath := filepath.Join(root, "state", "journal.db")
 	script := filepath.Join(root, "slow-exit-agent")
 	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"result\",\"status\":\"completed\",\"result\":\"done\"}'\nsleep 7\n"
@@ -2197,7 +2198,7 @@ func TestNativeRunRenewsLeaseWhileReapingAfterEarlyResult(t *testing.T) {
 }
 
 func TestCursorRunStoresAssistantFallbackAndDrainsFinalEvents(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journalPath := filepath.Join(root, "state", "journal.db")
 	script := filepath.Join(root, "cursor-empty-result")
 	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"cursor-fallback\"}' '{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"fallback answer\"}]}}' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}'\n"
@@ -2270,7 +2271,7 @@ func TestIncompleteMutationReturnsStableUsageError(t *testing.T) {
 }
 
 func TestSubscriptionAndPromotionPlanUseTypedDurableState(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journal := filepath.Join(root, "state", "journal.db")
 	configPath := filepath.Join(root, "config", "config.json")
 	var stdout, stderr bytes.Buffer
@@ -2307,7 +2308,7 @@ func TestSubscriptionAndPromotionPlanUseTypedDurableState(t *testing.T) {
 }
 
 func TestPromotionExecuteReplayReturnsPersistedAliasAndOneLifecycle(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journalPath := filepath.Join(root, "state", "journal.db")
 	configPath := filepath.Join(root, "config", "config.json")
 	fakeMultica := filepath.Join(root, "fake-multica")
@@ -2396,7 +2397,7 @@ func TestPromotionExecuteReplayReturnsPersistedAliasAndOneLifecycle(t *testing.T
 }
 
 func TestPromotionRejectsMismatchedIssueReadBeforeClaimingSnapshot(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journalPath := filepath.Join(root, "state", "journal.db")
 	configPath := filepath.Join(root, "config", "config.json")
 	fakeMultica := filepath.Join(root, "fake-multica")
@@ -2447,7 +2448,7 @@ func TestPromotionRejectsMismatchedIssueReadBeforeClaimingSnapshot(t *testing.T)
 }
 
 func TestPromotionSendsContentBoundProvenanceOnStdin(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journalPath := filepath.Join(root, "state", "journal.db")
 	configPath := filepath.Join(root, "config", "config.json")
 	fakeMultica := filepath.Join(root, "fake-multica")
@@ -2532,7 +2533,7 @@ func TestPromotionSendsContentBoundProvenanceOnStdin(t *testing.T) {
 }
 
 func TestGenericExtractionNoStoreDoesNotCaptureOutput(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journalPath := filepath.Join(root, "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)

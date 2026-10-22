@@ -15,6 +15,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func writeTaskContractFixture(t *testing.T, root string) string {
@@ -33,7 +34,7 @@ func writeTaskContractFixture(t *testing.T, root string) string {
 }
 
 func TestRunTaskContractRetainedByStatusAndResult(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	contractPath := writeTaskContractFixture(t, root)
 	journal := filepath.Join(root, "state", "journal.db")
 	var stdout, stderr bytes.Buffer
@@ -69,7 +70,7 @@ func TestRunTaskContractRetainedByStatusAndResult(t *testing.T) {
 }
 
 func TestRunTaskContractPlanValidatesWithoutJournalWrite(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	contractPath := writeTaskContractFixture(t, root)
 	journal := filepath.Join(root, "state", "journal.db")
 	var stdout, stderr bytes.Buffer
@@ -86,7 +87,7 @@ func TestRunTaskContractPlanValidatesWithoutJournalWrite(t *testing.T) {
 }
 
 func TestRunTaskContractInputFailsClosed(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	unknown := filepath.Join(root, "unknown.json")
 	if err := os.WriteFile(unknown, []byte(`{"objective_summary":"bounded","surprise":true}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -129,7 +130,7 @@ func TestRunTaskContractInputFailsClosed(t *testing.T) {
 }
 
 func TestRunTaskContractRejectsMulticaAuthority(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	contractPath := writeTaskContractFixture(t, root)
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
@@ -145,7 +146,7 @@ func TestBuiltBinaryRejectsInvalidTaskContractsAndRetainsForegroundContract(t *t
 	if runtime.GOOS == "windows" {
 		t.Skip("generic shell fixture is Unix-only")
 	}
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	binary := filepath.Join(root, "agentctl")
 	build := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, ".")
 	if outputBytes, err := build.CombinedOutput(); err != nil {

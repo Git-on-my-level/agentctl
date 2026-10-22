@@ -5,10 +5,12 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestDefaultPathsAreBinaryGlobal(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	getenv := func(name string) string {
 		if name == "XDG_STATE_HOME" {
 			return root
@@ -28,7 +30,7 @@ func TestDefaultPathsAreBinaryGlobal(t *testing.T) {
 }
 
 func TestPolicyDefaultsAutoAndPersistsExplicitModes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "update-policy.json")
+	path := filepath.Join(testutil.TempDir(t), "state", "update-policy.json")
 	if mode, err := ResolveMode(path, func(string) string { return "" }); err != nil || mode != ModeAuto {
 		t.Fatalf("default mode=%q err=%v", mode, err)
 	}
@@ -44,7 +46,7 @@ func TestPolicyDefaultsAutoAndPersistsExplicitModes(t *testing.T) {
 
 func TestDueReadsStateWithoutMutation(t *testing.T) {
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
-	path := filepath.Join(t.TempDir(), "state", "update-state.json")
+	path := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
 	options := Options{CurrentVersion: "v0.3.3", StatePath: path, Now: func() time.Time { return now }}
 	if !Due(options) {
 		t.Fatal("missing state should be due")

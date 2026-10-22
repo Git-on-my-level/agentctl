@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 const validBundle = `{
@@ -35,7 +37,7 @@ const validBundle = `{
 
 func writeBundle(t *testing.T, content string, mode os.FileMode) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "bundle.json")
+	path := filepath.Join(testutil.TempDir(t), "bundle.json")
 	if err := os.WriteFile(path, []byte(content), mode); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +83,7 @@ func TestAgentPreferencesAreAdvisoryBoundedAndStrict(t *testing.T) {
 }
 
 func TestLiveConfigRoundTripsAgentPreferences(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
+	path := filepath.Join(testutil.TempDir(t), "config.json")
 	preferences := &AgentPreferences{Mode: "advisory", Preferred: []AgentPreference{{Agent: "cursor", Model: "composer-2.5", Speed: "regular"}}, Notes: []string{"Never fast."}}
 	cfg := Config{SchemaVersion: SchemaVersion, DefaultProfile: "guidance", Profiles: map[string]Profile{"guidance": {AgentPreferences: preferences}}}
 	if err := Save(path, cfg, false); err != nil {
@@ -167,7 +169,7 @@ func TestBundleAndLiveConfigPreserveDelegationGrantAndPreferenceMetadata(t *test
 	if !materialized.Profiles["private"].Delegation.CursorWorkspaceTrust || materialized.Profiles["private"].AgentPreferences.Preferred[0].Family != "grok" {
 		t.Fatal("cloneProfile aliased delegation or preferred metadata")
 	}
-	livePath := filepath.Join(t.TempDir(), "config.json")
+	livePath := filepath.Join(testutil.TempDir(t), "config.json")
 	if err := Save(livePath, materialized, false); err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +209,7 @@ func TestSourceEnrichmentPreservesExistingDelegationGrant(t *testing.T) {
 
 func TestSkillHubSelectionRoundTripsAndRejectsUnsafePolicy(t *testing.T) {
 	selection := &Skills{Source: SkillSource{Remote: "https://git.example.test/david/skill-hub.git", Ref: "main", ManifestPath: "manifests/agentctl/fleet-core.json"}, UpdatePolicy: "auto-clean"}
-	path := filepath.Join(t.TempDir(), "config.json")
+	path := filepath.Join(testutil.TempDir(t), "config.json")
 	cfg := Config{SchemaVersion: SchemaVersion, Skills: selection}
 	if err := Save(path, cfg, false); err != nil {
 		t.Fatal(err)
@@ -255,7 +257,7 @@ func TestLoadBundleRejectsWritableOrSymlinkSource(t *testing.T) {
 	if _, _, err := LoadBundle(writable); !errors.Is(err, ErrUnmanaged) {
 		t.Fatalf("writable source error=%v, want ErrUnmanaged", err)
 	}
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	target := filepath.Join(root, "target.json")
 	if err := os.WriteFile(target, []byte(validBundle), 0o600); err != nil {
 		t.Fatal(err)
@@ -270,7 +272,7 @@ func TestLoadBundleRejectsWritableOrSymlinkSource(t *testing.T) {
 }
 
 func TestResolveBundleIsAdditiveAndWorksWithoutBaseConfig(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "missing.json")
+	missing := filepath.Join(testutil.TempDir(t), "missing.json")
 	path := writeBundle(t, validBundle, 0o644)
 	resolution, err := Resolve(missing, path)
 	if err != nil {
@@ -289,7 +291,7 @@ func TestResolveBundleIsAdditiveAndWorksWithoutBaseConfig(t *testing.T) {
 }
 
 func TestResolveBundleCannotReplaceUserConfig(t *testing.T) {
-	basePath := filepath.Join(t.TempDir(), "config.json")
+	basePath := filepath.Join(testutil.TempDir(t), "config.json")
 	base := Config{SchemaVersion: SchemaVersion, DefaultProfile: "local", Profiles: map[string]Profile{"local": {Adapters: map[string]Adapter{"codex": {Executable: "/usr/bin/codex"}}}}}
 	if err := Save(basePath, base, false); err != nil {
 		t.Fatal(err)
@@ -306,7 +308,7 @@ func TestResolveBundleAllowsIdenticalIdempotentProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	basePath := filepath.Join(t.TempDir(), "config.json")
+	basePath := filepath.Join(testutil.TempDir(t), "config.json")
 	base := Config{SchemaVersion: SchemaVersion, DefaultProfile: bundle.DefaultProfile, Profiles: map[string]Profile{"private": bundle.Profiles["private"].profile()}}
 	if err := Save(basePath, base, false); err != nil {
 		t.Fatal(err)
@@ -330,7 +332,7 @@ func TestConfigStrictDecodeRejectsUnknownFields(t *testing.T) {
 		"arguments":  `{"schema_version":1,"profiles":{"local":{"adapters":{"codex":{"executable":"/bin/echo","arguments":["--danger"]}}}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.json")
+			path := filepath.Join(testutil.TempDir(t), "config.json")
 			if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 				t.Fatal(err)
 			}

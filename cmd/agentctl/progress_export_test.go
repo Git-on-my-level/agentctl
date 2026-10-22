@@ -13,10 +13,11 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestStatusRecentProgressExportIsReadOnly(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	seedRecentExport(t, path, at, 2)
 	journal, err := store.Open(path, store.Options{})
@@ -110,7 +111,7 @@ func TestStatusRecentProgressExportIsReadOnly(t *testing.T) {
 func TestNativeProgressWritersExcludeHeartbeats(t *testing.T) {
 	ctx := context.Background()
 	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
-	journal, err := store.Open(filepath.Join(t.TempDir(), "state", "journal.db"), store.Options{Clock: func() time.Time { return at }})
+	journal, err := store.Open(filepath.Join(testutil.TempDir(t), "state", "journal.db"), store.Options{Clock: func() time.Time { return at }})
 	if err != nil {
 		t.Fatal(err)
 	}

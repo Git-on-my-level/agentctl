@@ -8,6 +8,8 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 INSTALL="$ROOT/scripts/install.sh"
 UNINSTALL="$ROOT/scripts/uninstall.sh"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/agentctl-install-test.XXXXXX")
+# Installer fixtures require canonical paths; macOS TMPDIR may contain /var.
+TMP=$(CDPATH= cd -- "$TMP" && pwd -P)
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }

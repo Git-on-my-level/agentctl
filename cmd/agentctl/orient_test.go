@@ -16,6 +16,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 type fakeOrientGitResult struct {
@@ -84,7 +85,7 @@ func TestInspectOrientWorkspaceDistinguishesUnknownAndNotRepository(t *testing.T
 }
 
 func TestInspectOrientConfigurationUsesStaticExecutableHealth(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	executable := filepath.Join(root, "codex")
 	if err := os.WriteFile(executable, []byte("fixture"), 0o700); err != nil {
 		t.Fatal(err)
@@ -189,7 +190,7 @@ func TestDiscoveredOrientAdaptersCoverEveryKnownNativeAdapter(t *testing.T) {
 }
 
 func TestDiscoveredOrientAdaptersFindZCodeLegacyLauncher(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	launcher := filepath.Join(home, ".zcode", "server", "agents", "glm", "zcode-agent")
 	if err := os.MkdirAll(filepath.Dir(launcher), 0o700); err != nil {
 		t.Fatal(err)
@@ -225,7 +226,7 @@ func TestDiscoveredOrientAdaptersFindZCodeLegacyLauncher(t *testing.T) {
 }
 
 func TestInspectOrientConfigurationConfiguredAdaptersOverrideDiscovery(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	executable := filepath.Join(root, "zcode")
 	if err := os.WriteFile(executable, []byte("fixture"), 0o700); err != nil {
 		t.Fatal(err)
@@ -252,7 +253,7 @@ func strconvQuote(value string) string {
 }
 
 func TestInspectOrientExecutionsMatchesOnlyCurrentWorkspace(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journalPath := filepath.Join(root, "state", "journal.db")
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	journal, err := store.Open(journalPath, store.Options{Clock: func() time.Time { return now }})
@@ -328,7 +329,7 @@ func orientTestExecution(now time.Time) model.Execution {
 func orientStringPointer(value string) *string { return &value }
 
 func TestOrientMissingStateIsVisibleAndReadOnly(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	configPath := filepath.Join(root, "missing-config.json")
 	journalPath := filepath.Join(root, "missing-state", "journal.db")
 	var stdout, stderr bytes.Buffer

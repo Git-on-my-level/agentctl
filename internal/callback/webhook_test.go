@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
+	"github.com/Git-on-my-level/agentctl/internal/unixsocket"
 )
 
 func testEnvelope(t *testing.T) Envelope {
@@ -148,8 +151,17 @@ func TestSafeWebhookDialRejectsDNSRebindingAndIPv6ULA(t *testing.T) {
 	}
 }
 
+func TestValidateUnixSocketReportsLengthBeforeFilesystemAccess(t *testing.T) {
+	path := "/" + strings.Repeat("x", unixsocket.PathLimit)
+	err := ValidateUnixSocket(path)
+	var length *unixsocket.PathLengthError
+	if !errors.Is(err, ErrInvalidUnixSocket) || !errors.As(err, &length) || length.Limit != unixsocket.PathLimit {
+		t.Fatalf("socket length error = %v", err)
+	}
+}
+
 func TestValidateUnixSocketOwnershipTypeAndSymlink(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.SocketDir(t)
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +204,7 @@ func TestValidateUnixSocketOwnershipTypeAndSymlink(t *testing.T) {
 }
 
 func TestUnixUnacknowledgedAndAcknowledgedDelivery(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.SocketDir(t)
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +274,7 @@ func TestUnixUnacknowledgedAndAcknowledgedDelivery(t *testing.T) {
 }
 
 func TestCommandIdentityRejectsPathReplacement(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	path := filepath.Join(dir, "callback-command")
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func testBootstrapConfig() Config {
@@ -18,7 +20,7 @@ func testBootstrapConfig() Config {
 }
 
 func TestSaveCreatesOwnerOnlyConfigAndParents(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", "agentctl", "config.json")
+	path := filepath.Join(testutil.TempDir(t), "nested", "agentctl", "config.json")
 	if err := Save(path, testBootstrapConfig(), false); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +37,7 @@ func TestSaveCreatesOwnerOnlyConfigAndParents(t *testing.T) {
 }
 
 func TestSaveManagedConflictAndExplicitOverwrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
+	path := filepath.Join(testutil.TempDir(t), "config.json")
 	first := testBootstrapConfig()
 	if err := Save(path, first, false); err != nil {
 		t.Fatal(err)
@@ -61,7 +63,7 @@ func TestSaveManagedConflictAndExplicitOverwrite(t *testing.T) {
 }
 
 func TestSaveRejectsUnmanagedTrailingJSONAndModes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
+	path := filepath.Join(testutil.TempDir(t), "config.json")
 	if err := os.WriteFile(path, []byte(`{"schema_version":1}{"unexpected":true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +89,7 @@ func TestSaveRejectsUnmanagedTrailingJSONAndModes(t *testing.T) {
 }
 
 func TestSaveRejectsSymlinkComponents(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	target := filepath.Join(root, "target.json")
 	if err := os.WriteFile(target, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
@@ -139,7 +141,7 @@ func TestBuildProfileRequiresCompleteExplicitMulticaAndNoFalseDefault(t *testing
 }
 
 func TestCheckProvenanceIsLocalAndStructured(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "adapter")
+	path := filepath.Join(testutil.TempDir(t), "adapter")
 	if err := os.WriteFile(path, []byte("adapter binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
 	"github.com/Git-on-my-level/agentctl/internal/supervisor"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func writeDispatchFixture(t *testing.T, root, agents, runtimes string) (string, string) {
@@ -157,7 +158,7 @@ func writeDispatchConfig(t *testing.T, path, multica string, preferred, hosts an
 }
 
 func TestDispatchPlanResolvesLiveTargetWithoutWriting(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	agents := `[{
       "id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol",
       "runtime_id":"runtime-m5-codex","status":"working","archived_at":null
@@ -189,7 +190,7 @@ func TestDispatchPlanResolvesLiveTargetWithoutWriting(t *testing.T) {
 }
 
 func TestDispatchExecuteReplayTracksOneExecutionWithoutPromptRetention(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	prompt := "Review the private implementation detail, but never retain this sentence."
 	agents := `[{"id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol","runtime_id":"runtime-m5-codex","status":"idle","archived_at":null}]`
 	runtimes := `[{"id":"runtime-m5-codex","custom_name":"M5 MBP","provider":"codex","status":"online"}]`
@@ -313,7 +314,7 @@ func TestDispatchRejectsMismatchedIssueReadWithoutActivation(t *testing.T) {
 		{"AGENTCTL_TEST_ISSUE_GET_WORKSPACE", "workspace-foreign"},
 	} {
 		t.Run(env.key, func(t *testing.T) {
-			root := t.TempDir()
+			root := testutil.TempDir(t)
 			agents := `[{"id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol","runtime_id":"runtime-m5-codex","status":"idle","archived_at":null}]`
 			runtimes := `[{"id":"runtime-m5-codex","custom_name":"M5 MBP","provider":"codex","status":"online"}]`
 			fake, capture := writeDispatchFixture(t, root, agents, runtimes)
@@ -379,7 +380,7 @@ func TestDispatchRejectsMismatchedIssueReadWithoutActivation(t *testing.T) {
 }
 
 func TestAwaitRetriesTransientMulticaRefreshFailures(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	agents := `[{"id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol","runtime_id":"runtime-m5-codex","status":"idle","archived_at":null}]`
 	runtimes := `[{"id":"runtime-m5-codex","custom_name":"M5 MBP","provider":"codex","status":"online"}]`
 	fake, capture := writeDispatchFixture(t, root, agents, runtimes)
@@ -428,7 +429,7 @@ func TestAwaitRetriesTransientMulticaRefreshFailures(t *testing.T) {
 }
 
 func TestAwaitReturnsThirdConsecutiveMulticaRefreshFailure(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	agents := `[{"id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol","runtime_id":"runtime-m5-codex","status":"idle","archived_at":null}]`
 	runtimes := `[{"id":"runtime-m5-codex","custom_name":"M5 MBP","provider":"codex","status":"online"}]`
 	fake, capture := writeDispatchFixture(t, root, agents, runtimes)
@@ -475,7 +476,7 @@ func TestAwaitReturnsThirdConsecutiveMulticaRefreshFailure(t *testing.T) {
 }
 
 func TestMulticaAwaitCancellationWinsOverRetry(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	agents := `[{"id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol","runtime_id":"runtime-m5-codex","status":"idle","archived_at":null}]`
 	runtimes := `[{"id":"runtime-m5-codex","custom_name":"M5 MBP","provider":"codex","status":"online"}]`
 	fake, capture := writeDispatchFixture(t, root, agents, runtimes)
@@ -530,7 +531,7 @@ func TestMulticaAwaitCancellationWinsOverRetry(t *testing.T) {
 }
 
 func TestMulticaAwaitTimeoutBoundsInflightReprobe(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	agents := `[{"id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol","runtime_id":"runtime-m5-codex","status":"idle","archived_at":null}]`
 	runtimes := `[{"id":"runtime-m5-codex","custom_name":"M5 MBP","provider":"codex","status":"online"}]`
 	fake, capture := writeDispatchFixture(t, root, agents, runtimes)
@@ -573,7 +574,7 @@ func TestMulticaAwaitTimeoutBoundsInflightReprobe(t *testing.T) {
 }
 
 func TestDispatchUsesRuntimePlacementNotMisleadingAgentName(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	agents := `[{"id":"agent-grok","name":"M1 Studio Cursor (Grok 4.6)","model":"grok-4.6","runtime_id":"runtime-m4-cursor","status":"idle","archived_at":null}]`
 	runtimes := `[{"id":"runtime-m4-cursor","custom_name":"M4 Mini","provider":"cursor","status":"online"}]`
 	fake, capture := writeDispatchFixture(t, root, agents, runtimes)
@@ -595,7 +596,7 @@ func TestDispatchUsesRuntimePlacementNotMisleadingAgentName(t *testing.T) {
 }
 
 func TestDispatchRecoversCommittedActivationWithoutMutableFleetResolution(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	prompt := "Review the recovery boundary."
 	agents := `[{"id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol","runtime_id":"runtime-m5-codex","status":"idle","archived_at":null}]`
 	runtimes := `[{"id":"runtime-m5-codex","custom_name":"M5 MBP","provider":"codex","status":"online"}]`
@@ -647,7 +648,7 @@ func TestDispatchRecoversCommittedActivationWithoutMutableFleetResolution(t *tes
 }
 
 func TestDispatchRejectsUnavailableAgentBeforeIssueCreation(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	agents := `[{"id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol","runtime_id":"runtime-m5-codex","status":"offline","archived_at":null}]`
 	runtimes := `[{"id":"runtime-m5-codex","custom_name":"M5 MBP","provider":"codex","status":"online"}]`
 	fake, capture := writeDispatchFixture(t, root, agents, runtimes)
@@ -669,7 +670,7 @@ func TestDispatchRejectsUnavailableAgentBeforeIssueCreation(t *testing.T) {
 }
 
 func TestDispatchRejectsOffPolicyModel(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	agents := `[{"id":"agent-grok","name":"M5 Cursor Grok","model":"cursor-grok-4.6-high","runtime_id":"runtime-m5-cursor","status":"idle","archived_at":null}]`
 	runtimes := `[{"id":"runtime-m5-cursor","custom_name":"M5 MBP","provider":"cursor","status":"online"}]`
 	fake, capture := writeDispatchFixture(t, root, agents, runtimes)
@@ -691,7 +692,7 @@ func TestDispatchRejectsOffPolicyModel(t *testing.T) {
 }
 
 func TestDispatchPlanAcceptsInTableGrok(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	agents := `[{"id":"agent-grok","name":"M4 Mini Cursor (Grok)","model":"cursor-grok-4.6-high","runtime_id":"runtime-m4-cursor","status":"idle","archived_at":null}]`
 	runtimes := `[{"id":"runtime-m4-cursor","custom_name":"M4 Mini","provider":"cursor","status":"online"}]`
 	fake, capture := writeDispatchFixture(t, root, agents, runtimes)
@@ -713,7 +714,7 @@ func TestDispatchPlanAcceptsInTableGrok(t *testing.T) {
 }
 
 func TestDispatchPlanExactModelSelectsOnlyReviewedMatch(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	agents := `[
       {"id":"agent-fusion","name":"M5 Devin (Fusion)","model":"fusion-gpt-6-sol-high-sidekick-swe-2-high","runtime_id":"runtime-m5-devin","status":"idle","archived_at":null},
       {"id":"agent-swe2","name":"M5 Devin (SWE-2)","model":"swe-2-high","runtime_id":"runtime-m5-devin","status":"idle","archived_at":null}
@@ -750,7 +751,7 @@ func TestDispatchPlanExactModelSelectsOnlyReviewedMatch(t *testing.T) {
 }
 
 func TestDispatchReplayDoesNotRegressAdvancedIssue(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	agents := `[{"id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol","runtime_id":"runtime-m5-codex","status":"working","archived_at":null}]`
 	runtimes := `[{"id":"runtime-m5-codex","custom_name":"M5 MBP","provider":"codex","status":"online"}]`
 	fake, capture := writeDispatchFixture(t, root, agents, runtimes)
@@ -790,7 +791,7 @@ func TestDispatchRequiresReplayKeyAndExactPromptSource(t *testing.T) {
 }
 
 func TestSupervisorCycleDoesNotBlockAnotherProcessJournal(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	agents := `[{"id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol","runtime_id":"runtime-m5-codex","status":"idle","archived_at":null}]`
 	runtimes := `[{"id":"runtime-m5-codex","custom_name":"M5 MBP","provider":"codex","status":"online"}]`
 	fake, capture := writeDispatchFixture(t, root, agents, runtimes)
@@ -869,7 +870,7 @@ func TestJournalProcessProbe(t *testing.T) {
 }
 
 func TestDispatchFailureMetadataAndSameKeyRecovery(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	agents := `[{
       "id":"agent-sol","name":"M5 MBP Codex (Sol)","model":"gpt-5.6-sol",
       "runtime_id":"runtime-m5-codex","status":"working","archived_at":null
@@ -950,7 +951,7 @@ func TestDispatchFailureMetadataAndSameKeyRecovery(t *testing.T) {
 func TestExternalMutationsReleaseJournal(t *testing.T) {
 	for _, operation := range []string{"dispatch", "promote", "cancel"} {
 		t.Run(operation, func(t *testing.T) {
-			root := t.TempDir()
+			root := testutil.TempDir(t)
 			var configPath, journalPath string
 			var args []string
 			var stdout, stderr bytes.Buffer
@@ -993,7 +994,7 @@ func TestExternalMutationsReleaseJournal(t *testing.T) {
 }
 
 func TestConcurrentDispatchReplaysPreserveOneExecutionAndBinding(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	fake, capture := writeDispatchFixture(t, root,
 		`[{"id":"agent-sol","name":"M5 Codex","model":"gpt-5.6-sol","runtime_id":"runtime-m5","status":"idle"}]`,
 		`[{"id":"runtime-m5","custom_name":"M5 MBP","provider":"codex","status":"online"}]`)
@@ -1084,7 +1085,7 @@ func TestDispatchFailureStagesRecoverWithOriginalKey(t *testing.T) {
 		{"AGENTCTL_TEST_FAIL_UPDATE_ONCE", "1", "issue_activate", 17, false},
 	} {
 		t.Run(tc.stage, func(t *testing.T) {
-			root := t.TempDir()
+			root := testutil.TempDir(t)
 			fake, _ := writeDispatchFixture(t, root,
 				`[{"id":"agent-sol","name":"M5 Codex","model":"gpt-5.6-sol","runtime_id":"runtime-m5","status":"idle"}]`,
 				`[{"id":"runtime-m5","custom_name":"M5 MBP","provider":"codex","status":"online"}]`)

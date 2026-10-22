@@ -19,6 +19,7 @@ import (
 	agentruntime "github.com/Git-on-my-level/agentctl/internal/runtime"
 	"github.com/Git-on-my-level/agentctl/internal/store"
 	"github.com/Git-on-my-level/agentctl/internal/supervisor"
+	"github.com/Git-on-my-level/agentctl/internal/unixsocket"
 )
 
 func (a *app) supervisorCommand(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
@@ -116,6 +117,9 @@ func (a *app) supervisorRun(ctx context.Context, renderer output.Renderer, c com
 		}
 		return nil
 	}
+	if problem := unixSocketPathProblem(service.Config().SocketPath); problem != nil {
+		return problem
+	}
 	if renderer.Mode == output.JSON {
 		// A long-running process cannot emit a final success envelope. Emit one
 		// compact startup document before blocking.
@@ -150,6 +154,9 @@ func (a *app) supervisorStatus(ctx context.Context, renderer output.Renderer, ar
 			return problem
 		}
 	}
+	if problem := unixSocketPathProblem(socketPath); problem != nil {
+		return problem
+	}
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 	if err != nil {
 		return output.Wrap(output.CodeDependencyUnavailable, "connect supervisor", true, err)
@@ -170,6 +177,16 @@ func (a *app) supervisorStatus(ctx context.Context, renderer output.Renderer, ar
 	status := *response.Status
 	if err := renderer.Success(output.Success{Result: status, Lines: []output.Line{{Lead: "supervisor", Fields: []output.Field{{Name: "running", Value: status.Running}, {Name: "state", Value: status.Health.State}, {Name: "pending", Value: status.Health.PendingDeliveries}, {Name: "socket", Value: status.SocketPath}}}}}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
+	}
+	return nil
+}
+
+func unixSocketPathProblem(path string) *output.Error {
+	if err := unixsocket.ValidatePathLength(path); err != nil {
+		return output.Wrap(output.CodeUsage, err.Error(), false, err).
+			WithDetail("reason", "unix_socket_path_too_long").
+			WithDetail("max_bytes", unixsocket.PathLimit).
+			WithDetail("path_bytes", len(path))
 	}
 	return nil
 }

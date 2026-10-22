@@ -10,6 +10,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestRunnerLeasePreservesBlockedLiveness(t *testing.T) {
@@ -27,7 +28,7 @@ func TestRunnerLeasePreservesBlockedLiveness(t *testing.T) {
 
 func TestCommitCancellationWritesOutcomeAndTerminalEventAtomically(t *testing.T) {
 	now := time.Date(2026, 8, 13, 3, 0, 0, 0, time.UTC)
-	journal, err := store.Open(filepath.Join(t.TempDir(), "state", "journal.db"), store.Options{Clock: func() time.Time { return now }})
+	journal, err := store.Open(filepath.Join(testutil.TempDir(t), "state", "journal.db"), store.Options{Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +53,7 @@ func TestCommitCancellationWritesOutcomeAndTerminalEventAtomically(t *testing.T)
 
 func TestFinalizeResultConvergesOnExistingTerminalOutcome(t *testing.T) {
 	now := time.Date(2026, 8, 13, 3, 0, 0, 0, time.UTC)
-	journal, err := store.Open(filepath.Join(t.TempDir(), "state", "journal.db"), store.Options{Clock: func() time.Time { return now }})
+	journal, err := store.Open(filepath.Join(testutil.TempDir(t), "state", "journal.db"), store.Options{Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}

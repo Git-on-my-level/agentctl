@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/model"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func writeOpenCodeFixture(t *testing.T, dir string) string {
@@ -32,8 +33,8 @@ printf '%s\n' '{"type":"step_start","sessionID":"ses_cli","part":{"type":"step-s
 func TestOpenCodeRunInfersAdapterAndResultIsRetrievable(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
-	journal := filepath.Join(t.TempDir(), "state", "journal.db")
-	script := writeOpenCodeFixture(t, t.TempDir())
+	journal := filepath.Join(testutil.TempDir(t), "state", "journal.db")
+	script := writeOpenCodeFixture(t, testutil.TempDir(t))
 	code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--", script, "run", "--format", "json"})
 	if code != 0 {
 		t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
@@ -80,7 +81,7 @@ func TestOpenCodeRunInfersAdapterAndResultIsRetrievable(t *testing.T) {
 }
 
 func TestOpenCodeCapabilitiesStaticAndFixtureProbe(t *testing.T) {
-	script := writeOpenCodeFixture(t, t.TempDir())
+	script := writeOpenCodeFixture(t, testutil.TempDir(t))
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	if code := a.run(context.Background(), []string{"--output", "json", "capabilities", "opencode", "--static", "--require", "launch,result_content"}); code != 0 {
@@ -106,7 +107,7 @@ func TestOpenCodeCapabilitiesStaticAndFixtureProbe(t *testing.T) {
 }
 
 func TestRouteExplainOpenCodeSelectors(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	builtinConfig := filepath.Join(root, "builtin.json")
 	if err := os.WriteFile(builtinConfig, []byte(`{"schema_version":1,"default_profile":"fleet","profiles":{"fleet":{"route":{"this_host":"m4-air"}}}}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -151,7 +152,7 @@ type openCodeDelegateFixture struct{ root, config, journal, request, count, prob
 
 func newOpenCodeDelegateFixture(t *testing.T) openCodeDelegateFixture {
 	t.Helper()
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	f := openCodeDelegateFixture{root: root, config: filepath.Join(root, "config.json"), journal: filepath.Join(root, "state", "journal.db"), request: filepath.Join(root, "request.json"), count: filepath.Join(root, "launches"), probe: filepath.Join(root, "probes")}
 	script := "#!/bin/sh\nif [ \"$1\" = '--version' ]; then\n echo probe >> '" + f.probe + "'\n echo 'opencode 1.17.13'\n exit 0\nfi\necho launch >> '" + f.count + "'\nprintf '%s\\n' '{\"type\":\"text\",\"sessionID\":\"ses_delegate\",\"part\":{\"type\":\"text\",\"text\":\"delegate answer\",\"time\":{\"end\":2}}}' '{\"type\":\"step_finish\",\"sessionID\":\"ses_delegate\",\"part\":{\"type\":\"step-finish\",\"reason\":\"stop\"}}'\n"
 	if err := os.WriteFile(filepath.Join(root, "opencode"), []byte(script), 0o700); err != nil {

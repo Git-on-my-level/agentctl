@@ -10,10 +10,11 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestDataInventoryAndCleanupRequireExplicitReviewedApply(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	if code := a.run(context.Background(), []string{"--journal", journalPath, "run", "--adapter", "generic-process", "--", "/bin/echo", "retention result"}); code != 0 {
@@ -72,7 +73,7 @@ func TestDataInventoryAndCleanupRequireExplicitReviewedApply(t *testing.T) {
 }
 
 func TestDataCleanupPlanDoesNotCreateMissingJournal(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "missing", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "missing", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	cutoff := time.Now().UTC().Format(time.RFC3339)
@@ -82,7 +83,7 @@ func TestDataCleanupPlanDoesNotCreateMissingJournal(t *testing.T) {
 }
 
 func TestDataCleanupProtectsUncollectedResultsUntilExplicitOptOut(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	if code := a.run(context.Background(), []string{"--journal", journalPath, "run", "--adapter", "generic-process", "--", "/bin/echo", "uncollected result"}); code != 0 {

@@ -9,10 +9,12 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestSyncSourceUsesNativeGitForLocalFixture(t *testing.T) {
-	origin := t.TempDir()
+	origin := testutil.TempDir(t)
 	run := func(dir string, args ...string) {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
@@ -26,7 +28,7 @@ func TestSyncSourceUsesNativeGitForLocalFixture(t *testing.T) {
 	}
 	run(origin, "add", "README.md")
 	run(origin, "-c", "user.email=fixture@example.test", "-c", "user.name=Fixture", "commit", "--quiet", "-m", "fixture")
-	checkout := filepath.Join(t.TempDir(), "checkout")
+	checkout := filepath.Join(testutil.TempDir(t), "checkout")
 	reg := fixtureReg()
 	reg.Remote.URL = origin
 	result, err := SyncSource(context.Background(), reg, checkout)
@@ -76,7 +78,7 @@ func TestParseValidateYAMLAndGlob(t *testing.T) {
 }
 
 func TestIngestLooseIsReadOnlyAndDeterministic(t *testing.T) {
-	d := t.TempDir()
+	d := testutil.TempDir(t)
 	if err := os.MkdirAll(filepath.Join(d, "nested"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +108,7 @@ func TestIngestLooseIsReadOnlyAndDeterministic(t *testing.T) {
 }
 
 func TestCompileVerifyInstall(t *testing.T) {
-	d := t.TempDir()
+	d := testutil.TempDir(t)
 	if err := os.WriteFile(filepath.Join(d, "a.md"), []byte("# Alpha\nhello world\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -116,14 +118,14 @@ func TestCompileVerifyInstall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := filepath.Join(t.TempDir(), "bundle")
+	src := filepath.Join(testutil.TempDir(t), "bundle")
 	if err := b.Write(src); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := VerifyBundle(src); err != nil {
 		t.Fatal(err)
 	}
-	dst := filepath.Join(t.TempDir(), "installed")
+	dst := filepath.Join(testutil.TempDir(t), "installed")
 	if err := InstallBundle(src, dst); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +152,7 @@ func TestCompileVerifyInstall(t *testing.T) {
 }
 
 func TestLoadBundleRejectsDuplicateInvalidAndSymlinkAssets(t *testing.T) {
-	d := t.TempDir()
+	d := testutil.TempDir(t)
 	reg := fixtureReg()
 	if err := os.WriteFile(filepath.Join(d, "a.md"), []byte("safe"), 0644); err != nil {
 		t.Fatal(err)
@@ -168,7 +170,7 @@ func TestLoadBundleRejectsDuplicateInvalidAndSymlinkAssets(t *testing.T) {
 	if len(assetNames) == 0 {
 		t.Fatal("fixture did not compile an asset")
 	}
-	base := filepath.Join(t.TempDir(), "base")
+	base := filepath.Join(testutil.TempDir(t), "base")
 	if err := b.Write(base); err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +221,7 @@ func TestLoadBundleRejectsDuplicateInvalidAndSymlinkAssets(t *testing.T) {
 		t.Fatal("duplicate record ID was accepted")
 	}
 
-	invalid := filepath.Join(t.TempDir(), "invalid")
+	invalid := filepath.Join(testutil.TempDir(t), "invalid")
 	if err := b.Write(invalid); err != nil {
 		t.Fatal(err)
 	}
@@ -255,12 +257,12 @@ func TestLoadBundleRejectsDuplicateInvalidAndSymlinkAssets(t *testing.T) {
 		t.Fatal("invalid provenance was accepted")
 	}
 
-	linked := filepath.Join(t.TempDir(), "linked")
+	linked := filepath.Join(testutil.TempDir(t), "linked")
 	if err := b.Write(linked); err != nil {
 		t.Fatal(err)
 	}
 	assetPath := filepath.Join(linked, filepath.FromSlash(assetNames[0]))
-	outside := filepath.Join(t.TempDir(), "outside.json")
+	outside := filepath.Join(testutil.TempDir(t), "outside.json")
 	if err := os.Rename(assetPath, outside); err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +305,7 @@ func TestAuditValidationAndStrictParsing(t *testing.T) {
 		t.Fatal("trailing JSON document accepted")
 	}
 
-	d := t.TempDir()
+	d := testutil.TempDir(t)
 	// Assemble the test token at runtime so repository scanners do not mistake
 	// this intentionally invalid fixture for a committed credential.
 	manifest := `{"records":[{"id":"knowledge-secret","title":"bad","text":"` + "AKIA" + `1234567890ABCDEF"}]}`
@@ -329,7 +331,7 @@ func TestAuditValidationAndStrictParsing(t *testing.T) {
 }
 
 func TestCompileRejectsDirtyIncludedAndUntrackedFilesButAllowsExcludedDirt(t *testing.T) {
-	d := t.TempDir()
+	d := testutil.TempDir(t)
 	if err := os.MkdirAll(filepath.Join(d, "raw"), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +377,7 @@ func TestCompileRejectsDirtyIncludedAndUntrackedFilesButAllowsExcludedDirt(t *te
 }
 
 func TestVerifyRejectsIncompatibleReaderAndRequiredFeatures(t *testing.T) {
-	d := t.TempDir()
+	d := testutil.TempDir(t)
 	if err := os.WriteFile(filepath.Join(d, "doc.md"), []byte("compatible"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +410,7 @@ func TestVerifyRejectsIncompatibleReaderAndRequiredFeatures(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	readerDir := filepath.Join(t.TempDir(), "reader")
+	readerDir := filepath.Join(testutil.TempDir(t), "reader")
 	if err := b.Write(readerDir); err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +418,7 @@ func TestVerifyRejectsIncompatibleReaderAndRequiredFeatures(t *testing.T) {
 	if _, err := VerifyBundle(readerDir); err == nil || !strings.Contains(err.Error(), "requires reader") {
 		t.Fatalf("incompatible minimum_reader was not rejected: %v", err)
 	}
-	featureDir := filepath.Join(t.TempDir(), "feature")
+	featureDir := filepath.Join(testutil.TempDir(t), "feature")
 	if err := b.Write(featureDir); err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +429,7 @@ func TestVerifyRejectsIncompatibleReaderAndRequiredFeatures(t *testing.T) {
 }
 
 func TestBundleRejectsSymlinkPathComponents(t *testing.T) {
-	d := t.TempDir()
+	d := testutil.TempDir(t)
 	reg := fixtureReg()
 	if err := os.WriteFile(filepath.Join(d, "a.md"), []byte("safe"), 0644); err != nil {
 		t.Fatal(err)
@@ -437,18 +439,18 @@ func TestBundleRejectsSymlinkPathComponents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	realDir := filepath.Join(t.TempDir(), "real")
+	realDir := filepath.Join(testutil.TempDir(t), "real")
 	if err := os.Mkdir(realDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	linkParent := filepath.Join(t.TempDir(), "link-parent")
+	linkParent := filepath.Join(testutil.TempDir(t), "link-parent")
 	if err := os.Symlink(realDir, linkParent); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.Write(filepath.Join(linkParent, "bundle")); err == nil {
 		t.Fatal("bundle write followed symlink parent")
 	}
-	checkoutLink := filepath.Join(t.TempDir(), "checkout-link")
+	checkoutLink := filepath.Join(testutil.TempDir(t), "checkout-link")
 	if err := os.Symlink(d, checkoutLink); err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +460,7 @@ func TestBundleRejectsSymlinkPathComponents(t *testing.T) {
 }
 
 func TestInstallRejectsSymlinkDestinationAndUnrelatedBackup(t *testing.T) {
-	d := t.TempDir()
+	d := testutil.TempDir(t)
 	reg := fixtureReg()
 	if err := os.WriteFile(filepath.Join(d, "a.md"), []byte("safe"), 0644); err != nil {
 		t.Fatal(err)
@@ -468,12 +470,12 @@ func TestInstallRejectsSymlinkDestinationAndUnrelatedBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := filepath.Join(t.TempDir(), "bundle")
+	src := filepath.Join(testutil.TempDir(t), "bundle")
 	if err := b.Write(src); err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(t.TempDir(), "target")
-	targetReal := filepath.Join(t.TempDir(), "target-real")
+	target := filepath.Join(testutil.TempDir(t), "target")
+	targetReal := filepath.Join(testutil.TempDir(t), "target-real")
 	if err := os.Mkdir(targetReal, 0700); err != nil {
 		t.Fatal(err)
 	}

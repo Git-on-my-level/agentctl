@@ -13,6 +13,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 type recentExportDocument struct {
@@ -66,7 +67,7 @@ func readRecentExport(t *testing.T, path string, args ...string) (recentExportDo
 }
 
 func TestRecentExportCursorWindowAndNoWrites(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	seedRecentExport(t, path, at, 5)
 	before, err := os.ReadFile(path)
@@ -119,7 +120,7 @@ func TestRecentExportCursorWindowAndNoWrites(t *testing.T) {
 }
 
 func TestRecentExportCursorBindsScopeAndExcludesNewWork(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	seedRecentExport(t, path, time.Now().UTC().Add(-time.Hour), 3)
 	first, out, code := readRecentExport(t, path, "--limit", "1")
 	if code != 0 || first.Result.Next == "" {
@@ -134,7 +135,7 @@ func TestRecentExportCursorBindsScopeAndExcludesNewWork(t *testing.T) {
 	if code != 2 || !strings.Contains(out, "recent_invalid_cursor") {
 		t.Fatalf("changed scope %d %s", code, out)
 	}
-	other := filepath.Join(t.TempDir(), "state", "journal.db")
+	other := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	seedRecentExport(t, other, time.Now().UTC().Add(-time.Hour), 1)
 	_, out, code = readRecentExport(t, other, "--cursor", first.Result.Next)
 	if code != 2 || !strings.Contains(out, "different journal") {
@@ -143,7 +144,7 @@ func TestRecentExportCursorBindsScopeAndExcludesNewWork(t *testing.T) {
 }
 
 func TestRecentExportSummaryCallerAndValidation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	seedRecentExport(t, path, time.Now().UTC().Add(-time.Hour), 5)
 	doc, out, code := readRecentExport(t, path, "--summary", "--limit", "1")
 	if code != 0 || doc.Result.Total != 5 || doc.Result.Count != 0 || doc.Result.HasMore || doc.Result.Summary.ByCaller["hermes"] != 3 || doc.Result.Summary.ByCaller["unknown"] != 2 || doc.Result.Summary.ByAuthority["multica"] != 1 {
@@ -154,7 +155,7 @@ func TestRecentExportSummaryCallerAndValidation(t *testing.T) {
 	if code != 0 || doc.Result.Total != 2 {
 		t.Fatalf("caller %d %s", code, out)
 	}
-	missing := filepath.Join(t.TempDir(), "state", "journal.db")
+	missing := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	for _, args := range [][]string{{"--since", "yesterday"}, {"--since", "2026-10-02T00:00:00Z", "--until", "2026-10-01T00:00:00Z"}, {"--cursor", "invalid"}, {"--cursor", strings.Repeat("x", 3000)}, {"--caller", "secret-value"}, {"--summary", "--cursor", "invalid"}} {
 		_, out, code = readRecentExport(t, missing, args...)
 		if code != 2 {

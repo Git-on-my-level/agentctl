@@ -13,6 +13,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 // selfDefeatingErrorCode maps each state to the error class that an emitted
@@ -104,7 +105,7 @@ func TestEmittedNextActionsNeverReturnTheirOwnStateError(t *testing.T) {
 		model.StateAttention, model.StateCompleted, model.StateFailed, model.StateCancelled, model.StateOrphaned,
 	} {
 		t.Run(string(state), func(t *testing.T) {
-			journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+			journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 			execution := seedExecutionInState(t, journalPath, state)
 			var stdout, stderr bytes.Buffer
 			a := testApp(&stdout, &stderr)
@@ -133,7 +134,7 @@ func TestEmittedNextActionsNeverReturnTheirOwnStateError(t *testing.T) {
 }
 
 func TestAttentionOffersAnEscapeFromItsOwnStopCondition(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	execution := seedExecutionInState(t, journalPath, model.StateAttention)
 
 	var stdout, stderr bytes.Buffer
@@ -218,7 +219,7 @@ func assertAttentionActions(t *testing.T, actions []output.NextAction) {
 }
 
 func TestInboxAttachesPerItemAttentionActions(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	seedExecutionInState(t, journalPath, model.StateAttention)
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)

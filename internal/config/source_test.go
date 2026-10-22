@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func runGitTest(t *testing.T, dir string, args ...string) string {
@@ -25,7 +27,7 @@ func runGitTest(t *testing.T, dir string, args ...string) string {
 
 func sourceFixture(t *testing.T) (remote, author, configPath, checkout string) {
 	t.Helper()
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	remote = filepath.Join(root, "remote.git")
 	if err := os.Mkdir(remote, 0o700); err != nil {
 		t.Fatal(err)
@@ -257,7 +259,7 @@ func containsString(values []string, want string) bool {
 }
 
 func TestSourcePlanAndUnconfiguredStatusDoNotCreatePaths(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	configPath := filepath.Join(root, "runtime", "config.json")
 	checkout := filepath.Join(root, "checkout")
 	plan, err := PlanSource(configPath, SourceSpec{Remote: "git@github.com:example/private.git", CheckoutPath: checkout}, "init")

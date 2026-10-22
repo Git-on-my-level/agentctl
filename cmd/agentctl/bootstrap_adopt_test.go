@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"github.com/Git-on-my-level/agentctl/internal/output"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,7 @@ import (
 )
 
 func TestPublishedAdoptionPlanApplyAndDrift(t *testing.T) {
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	home, _ = filepath.EvalSymlinks(home)
 	root := filepath.Join(home, ".hermes", "skills", "agentctl-portable")
 	os.MkdirAll(root, 0700)

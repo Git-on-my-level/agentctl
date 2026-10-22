@@ -13,6 +13,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/supervisor"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 type doctorDocument struct {
@@ -32,7 +33,7 @@ type doctorDocument struct {
 
 func runDoctorWithSupervisorHealth(t *testing.T, probe func(context.Context) (supervisor.Status, error), now time.Time) doctorDocument {
 	t.Helper()
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	t.Setenv("HOME", home)
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
@@ -69,7 +70,7 @@ esac
 
 func runDoctorWithMultica(t *testing.T, probe func(context.Context) (supervisor.Status, error), now time.Time, args ...string) doctorDocument {
 	t.Helper()
-	home := t.TempDir()
+	home := testutil.TempDir(t)
 	t.Setenv("HOME", home)
 	fake := writeDoctorMulticaFixture(t, home)
 	configPath := filepath.Join(home, "config", "config.json")

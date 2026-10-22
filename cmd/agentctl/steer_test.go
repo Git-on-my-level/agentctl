@@ -16,6 +16,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/launchrecipe"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 const steerSecret = "STEER-MESSAGE-TEXT-7731"
@@ -66,7 +67,7 @@ func startSteerFixture(t *testing.T, script, adapterName, delivery string, nativ
 
 func startSteerFixtureTimeout(t *testing.T, timeout, script, adapterName, delivery string, nativeArgs ...string) *steerFixture {
 	t.Helper()
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	path := filepath.Join(root, "fake-agent")
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -251,7 +252,7 @@ func TestSteerRejectsExecutionsWithoutARoute(t *testing.T) {
 
 func TestSteerWithdrawsARequestTheOwnerNeverTakes(t *testing.T) {
 	now := time.Now().UTC()
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	journal, err := store.Open(path, store.Options{})
 	if err != nil {
 		t.Fatal(err)

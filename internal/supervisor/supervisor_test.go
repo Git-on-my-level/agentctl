@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 type fakeClock struct {
@@ -184,10 +186,10 @@ func (f *fakeDeliverer) Deliver(_ context.Context, entry Delivery) error {
 
 func testConfig(t *testing.T, clock Clock) Config {
 	t.Helper()
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	cfg := DefaultConfig()
 	cfg.StateDir = root
-	cfg.SocketPath = filepath.Join(root, "supervisor.sock")
+	cfg.SocketPath = filepath.Join(testutil.SocketDir(t), "supervisor.sock")
 	cfg.StatePath = filepath.Join(root, "state.json")
 	cfg.Clock = clock
 	cfg.CycleInterval = time.Hour
@@ -383,13 +385,13 @@ func TestStartSocketOwnerOnlyAndGracefulShutdown(t *testing.T) {
 
 func TestRestartReprobesNonterminalAndDrainsDurableOutbox(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(100, 0)}
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	if err := os.Chmod(root, 0700); err != nil {
 		t.Fatal(err)
 	}
 	cfg := testConfig(t, clock)
 	cfg.StateDir = root
-	cfg.SocketPath = filepath.Join(root, "supervisor.sock")
+	cfg.SocketPath = filepath.Join(testutil.SocketDir(t), "supervisor.sock")
 	cfg.StatePath = filepath.Join(root, "state.json")
 	executions := &fakeExecutions{
 		items:    []Execution{{ID: "exec-a", State: "running"}},
@@ -546,8 +548,8 @@ func TestRecoveryListFailureIsDegraded(t *testing.T) {
 }
 
 func TestSocketPathRejectsRegularFile(t *testing.T) {
-	root := t.TempDir()
-	socketPath := filepath.Join(root, "supervisor.sock")
+	root := testutil.TempDir(t)
+	socketPath := filepath.Join(testutil.SocketDir(t), "supervisor.sock")
 	if err := os.Chmod(root, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -611,7 +613,7 @@ func TestRunOnceReturnsImmediateContextCancellation(t *testing.T) {
 }
 
 func TestStateAndSocketSymlinkComponentsRejectedBeforeCreation(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.SocketDir(t)
 	if err := os.Chmod(root, 0700); err != nil {
 		t.Fatal(err)
 	}

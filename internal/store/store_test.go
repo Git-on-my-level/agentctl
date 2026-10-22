@@ -15,6 +15,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 type sequenceGenerator struct{ next map[ids.Type]uint64 }
@@ -29,7 +30,7 @@ func openTestJournal(t *testing.T) (*Journal, *sequenceGenerator, time.Time) {
 	t.Helper()
 	generator := &sequenceGenerator{next: map[ids.Type]uint64{ids.TypeHost: 100, ids.TypeExecution: 200, ids.TypeEvent: 300}}
 	now := time.Date(2026, 8, 10, 18, 0, 0, 0, time.UTC)
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	journal, err := Open(path, Options{Generator: generator, Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +40,7 @@ func openTestJournal(t *testing.T) (*Journal, *sequenceGenerator, time.Time) {
 }
 
 func TestOpenClassifiesLockTimeoutAsBusy(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	first, err := Open(path, Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -278,7 +279,7 @@ func TestTerminalOutcomeStateEventAndContentCommitAtomically(t *testing.T) {
 }
 
 func TestOwnerOnlyModesAndReadOnlyOpenDoNotCreate(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	missing := filepath.Join(root, "missing", "journal.db")
 	if _, err := Open(missing, Options{ReadOnly: true}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("read-only missing err=%v", err)

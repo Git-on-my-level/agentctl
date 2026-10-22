@@ -11,6 +11,7 @@ import (
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/model"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestRunInferenceWithoutImplicitProfile(t *testing.T) {
@@ -20,7 +21,7 @@ func TestRunInferenceWithoutImplicitProfile(t *testing.T) {
 		{"unselected-profile", `{"schema_version":1,"profiles":{"other":{"adapters":{"claude-code":{"executable":"codex"}}}}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
+			root := testutil.TempDir(t)
 			configPath := filepath.Join(root, "config.json")
 			if err := os.WriteFile(configPath, []byte(tc.config), 0600); err != nil {
 				t.Fatal(err)
@@ -57,7 +58,7 @@ func TestRunInferenceWithoutImplicitProfile(t *testing.T) {
 }
 
 func TestInferConfiguredGenericAdapters(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	path := filepath.Join(root, "codex")
 	for _, alias := range []string{"process", "generic", "generic-process"} {
 		configured := map[string]config.Adapter{alias: {Executable: path}}
@@ -89,7 +90,7 @@ func TestInferConfiguredGenericAdapters(t *testing.T) {
 }
 
 func TestInferConfiguredAdapter(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	path := filepath.Join(root, "claude-2")
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0700); err != nil {
 		t.Fatal(err)
@@ -129,7 +130,7 @@ func TestInferConfiguredAdapter(t *testing.T) {
 }
 
 func TestRunConfiguredClaudeExecutableStoresNativeResult(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	path := filepath.Join(root, "claude-2")
 	script := "#!/bin/sh\nif [ \"$1\" = --version ]; then echo '2.1.0 (Claude Code)'; exit 0; fi\n" + delegateSuccessScript + "\n"
 	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
