@@ -664,11 +664,12 @@ type nativeConfig struct {
 	// returns a source bound to this launch plus environment entries that bind
 	// the child to it. A nil source means no exclusive signal is available.
 	NewActivitySource func(env []string) (activitySource, []string, error)
-	// PrepareLaunch lays down launch-scoped files after the child's argv,
-	// working directory and environment are final and before it starts. A
-	// refusal fails the launch closed. The returned release runs exactly once:
-	// after the child is reaped, or at once when the launch fails to start.
-	PrepareLaunch func(cwd string, env []string) (release func(), err error)
+	// PrepareLaunch lays down launch-scoped state after the child's argv,
+	// working directory and environment are final and before it starts. It may
+	// return environment entries that override the child's. A refusal fails the
+	// launch closed. The returned release runs exactly once: after the child is
+	// reaped, or at once when the launch fails to start.
+	PrepareLaunch func(cwd string, argv, env []string) (release func(), extraEnv []string, err error)
 }
 
 // NativeAdapter implements the common process/session behavior. Constructors
@@ -1026,10 +1027,11 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 				return LaunchResult{}, dependencyError("cannot resolve the launch working directory", err)
 			}
 		}
-		prepared, err := a.config.PrepareLaunch(dir, cmd.Env)
+		prepared, extra, err := a.config.PrepareLaunch(dir, argv, cmd.Env)
 		if err != nil {
 			return LaunchResult{}, err
 		}
+		cmd.Env = mergeEnvironment(cmd.Env, extra)
 		if prepared != nil {
 			var once sync.Once
 			release = func() { once.Do(prepared) }

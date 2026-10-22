@@ -600,7 +600,8 @@ func TestZCodeReadOnlyUsesPlanModeDenylistAndProfile(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []string{"zcode", "--json", "--mode", "plan", "--disallowed-tools=" + strings.Join(ZCodeReadOnlyDisallowedTools, ","), "--prompt"}
+		// Independent of the implementation's list: the reviewed 0.17.0 surface.
+		want := []string{"zcode", "--json", "--mode", "plan", "--disallowed-tools=Bash,Edit,Write,Agent,Skill,ExitPlanMode,EnterPlanMode,TodoWrite,TaskStop,TaskOutput,SendMessage,ReplyToChannel,WebFetch,WebSearch,mcp__web_reader__webReader", "--prompt"}
 		if strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") || contains(got.Argv, "yolo") {
 			t.Fatalf("grant=%v argv=%#v", grant, got.Argv)
 		}

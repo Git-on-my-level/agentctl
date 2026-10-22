@@ -97,20 +97,26 @@ Codex `--dangerously-bypass-approvals-and-sandbox`, Claude Code
 `--permission-mode auto`, and grants Devin ACP one-operation permission approvals on coding launches (the default
 `settings.access`). `settings.access: "read_only"` uses Cursor `--mode ask`
 and Codex `--sandbox read-only` and never adds those coding permission flags.
-ZCode read-only (verified with ZCode CLI 0.17.0 on m5-mbp) combines three
-controls, because none is sufficient alone: `--mode plan` (Bash still runs in
-plan mode), `--disallowed-tools=` naming every built-in tool that writes,
-executes, spawns, messages or reaches the network, and a reviewed
-`<cwd>/.zcode/config.json` that turns plugins, MCP, subagents, skills and memory
-off, since the flag cannot remove plugin MCP tools such as the JavaScript REPL.
+ZCode read-only (reviewed for ZCode CLI 0.17.0 only; any other version
+refuses with `zcode_read_only_unavailable`) layers every control the CLI
+offers, because none is sufficient alone: `--mode plan` (Bash still runs in
+plan mode); `--disallowed-tools=` naming every built-in tool that writes,
+executes, spawns, messages or reaches the network; a private empty `HOME` per
+launch, so user-level hooks, custom commands, plugins and settings never load
+(the provider config the host launcher would choose is passed by absolute
+path); and a reviewed `<cwd>/.zcode/config.json` turning plugins, MCP,
+subagents, skills, memory and hooks off, since ZCode seeds its official plugins
+(including a JavaScript REPL exposed as an MCP tool) even into an empty home.
 Only Read, Glob, Grep, TodoRead, ReadSessionContext and AskUserQuestion remain;
-AskUserQuestion and ExitPlanMode fail headless. The zcode adapter creates that
-config with no-clobber, no-follow semantics just before launch and removes it
-after the child is reaped, only while it still holds the exact reviewed bytes.
-It refuses the launch (`zcode_read_only_config_conflict`) when the working
-directory already has `.zcode/config.json`, a `zcode.json`, or a symlinked
-`.zcode`, since any of them could re-enable a removed tool. Expert `run` never
-writes the config. Claude Code
+AskUserQuestion and ExitPlanMode fail headless. The launch refuses when the
+prompt starts with `/` (ZCode expands a leading command, which can run shell
+lines before the model), or when `zcode.json` or `.zcode/config.json` exists in
+the working directory or any ancestor (project configs merge from the
+repository root and can define hooks), or when `.zcode` is a symlink. The
+profile is created no-clobber and no-follow just before launch and removed,
+with the isolated home, after the child is reaped; a replaced profile is never
+deleted. A process concurrently rewriting the working directory is out of
+scope. Expert `run` never applies any of this. Claude Code
 (`claude` or `claude-code`) refuses `read_only` with `access_unavailable`: no
 reviewed mode guarantees blocking edits and shell writes in `--print`. Coding
 launches report `permissions: constrained` with or without the grant: auto mode
