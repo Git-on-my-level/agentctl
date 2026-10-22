@@ -7,10 +7,12 @@ import (
 	"time"
 
 	"go.etcd.io/bbolt"
+
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestRecentExportCursorSurvivesBoundaryRowDeletion(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	path := filepath.Join(root, "state", "journal.db")
 	seedRecentExport(t, path, time.Now().UTC().Add(-time.Hour), 5)
 	whole, out, code := readRecentExport(t, path, "--limit", "20")

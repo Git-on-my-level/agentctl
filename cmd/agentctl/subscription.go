@@ -208,6 +208,11 @@ func (a *app) subscribeCreate(ctx context.Context, renderer output.Renderer, c c
 	default:
 		return output.NewError(output.CodeUsage, "persistent destination must be file, unix, webhook, or command", false)
 	}
+	if destination.Kind == callback.DestinationUnix {
+		if problem := unixSocketPathProblem(destination.Path); problem != nil {
+			return problem
+		}
+	}
 	if err := destination.Validate(); err != nil {
 		return output.Wrap(output.CodeUsage, "invalid callback destination", false, err)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func identityInvoke(t *testing.T, env map[string]string, args ...string) (int, identityReport, string) {
@@ -37,7 +38,7 @@ func identityInvoke(t *testing.T, env map[string]string, args ...string) (int, i
 	return code, envelope.Result, stdout.String()
 }
 func TestIdentityUnknownIsReadOnlyAndSecretFree(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journal := filepath.Join(root, "missing", "journal.db")
 	secret := "fixture-credential-never-output"
 	code, report, raw := identityInvoke(t, map[string]string{"OPENAI_API_KEY": secret, "ANTHROPIC_API_KEY": secret, "AGENTCTL_CONTEXT": secret}, "--journal", journal)
@@ -103,7 +104,7 @@ func TestIdentityNativeEnvironmentAndManagedParentIsolation(t *testing.T) {
 	}
 }
 func TestIdentityAvailabilityDoesNotClaimActiveProviderOrCapabilities(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	marker := filepath.Join(root, "executed")
 	for _, name := range []string{"codex", "devin", "zcode"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0700); err != nil {
@@ -142,7 +143,7 @@ func identityFixture(t *testing.T, journal *store.Journal, provider, session str
 	return created
 }
 func TestIdentityJournalCorrelatesAcrossExecutionsWithoutWriting(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	journal, err := store.Open(path, store.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -209,7 +210,7 @@ func TestNativeSessionBindingIdempotentAndRejectsProcessID(t *testing.T) {
 	}
 }
 func TestIdentitySessionIsObservableBeforeNativeCompletion(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	path := filepath.Join(root, "state", "journal.db")
 	script := filepath.Join(root, "codex")
 	release := filepath.Join(root, "release")
@@ -314,7 +315,7 @@ func TestIdentityCompetingNativeEnvironmentIsUnknown(t *testing.T) {
 }
 
 func TestIdentityImplicitManagedConflictFailsClosed(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	journal, err := store.Open(path, store.Options{})
 	if err != nil {
 		t.Fatal(err)

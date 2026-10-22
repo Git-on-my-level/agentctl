@@ -11,6 +11,8 @@ INSTALL="$ROOT/scripts/install-supervisor.sh"
 BINARY_INSTALL="$ROOT/scripts/install.sh"
 UNINSTALL="$ROOT/scripts/uninstall-supervisor.sh"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/agentctl-supervisor-test.XXXXXX")
+# Installer fixtures require canonical paths; macOS TMPDIR may contain /var.
+TMP=$(CDPATH= cd -- "$TMP" && pwd -P)
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }

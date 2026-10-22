@@ -9,10 +9,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestRunKnowledgeLifecycleAndContext(t *testing.T) {
-	origin := t.TempDir()
+	origin := testutil.TempDir(t)
 	runGit(t, origin, "init", "--quiet", "-b", "main")
 	if err := os.WriteFile(filepath.Join(origin, "runbook.md"), []byte("# Reliability\nrestart service safely\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -20,7 +22,7 @@ func TestRunKnowledgeLifecycleAndContext(t *testing.T) {
 	runGit(t, origin, "add", "runbook.md")
 	runGit(t, origin, "-c", "user.email=fixture@example.test", "-c", "user.name=Fixture", "commit", "--quiet", "-m", "fixture")
 
-	regFile := filepath.Join(t.TempDir(), "source.yaml")
+	regFile := filepath.Join(testutil.TempDir(t), "source.yaml")
 	reg := "schema_version: 1\n" +
 		"id: repo-amber-willow-orbit-tiger-harbor-gentle\n" +
 		"slug: fixture-knowledge\n" +
@@ -40,7 +42,7 @@ func TestRunKnowledgeLifecycleAndContext(t *testing.T) {
 		t.Fatalf("validate result: %#v %#v", got, lines)
 	}
 
-	checkout := filepath.Join(t.TempDir(), "checkout")
+	checkout := filepath.Join(testutil.TempDir(t), "checkout")
 	got, _, err = Run(context.Background(), []string{"knowledge", "sync", "--source", regFile, "--checkout", checkout}, IO{})
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +51,7 @@ func TestRunKnowledgeLifecycleAndContext(t *testing.T) {
 		t.Fatal("sync did not resolve commit")
 	}
 
-	bundle := filepath.Join(t.TempDir(), "bundle")
+	bundle := filepath.Join(testutil.TempDir(t), "bundle")
 	got, _, err = Run(context.Background(), []string{"knowledge", "compile", "--source", regFile + "=" + checkout, "--output", bundle}, IO{})
 	if err != nil {
 		t.Fatal(err)
@@ -70,11 +72,11 @@ func TestRunKnowledgeLifecycleAndContext(t *testing.T) {
 		t.Fatalf("verify revision: %#v", got)
 	}
 
-	installed := filepath.Join(t.TempDir(), "installed")
+	installed := filepath.Join(testutil.TempDir(t), "installed")
 	if _, _, err := Run(context.Background(), []string{"knowledge", "install", "--bundle", bundle, "--destination", installed}, IO{}); err != nil {
 		t.Fatal(err)
 	}
-	renderPath := filepath.Join(t.TempDir(), "context.md")
+	renderPath := filepath.Join(testutil.TempDir(t), "context.md")
 	got, lines, err = Run(context.Background(), []string{"context", "--bundle", installed, "--task-kind", "reliability", "--query", "restart", "--render", renderPath, "--max", "1", "--max-bytes", "512"}, IO{Now: func() time.Time { return time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC) }})
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +97,7 @@ func TestRunKnowledgeLifecycleAndContext(t *testing.T) {
 func TestRunReadCommandsDoNotUseInjectedGit(t *testing.T) {
 	called := false
 	git := fakeGit{run: func() { called = true }}
-	if _, _, err := Run(context.Background(), []string{"knowledge", "validate", "--source", filepath.Join(t.TempDir(), "missing")}, IO{Git: git}); err == nil {
+	if _, _, err := Run(context.Background(), []string{"knowledge", "validate", "--source", filepath.Join(testutil.TempDir(t), "missing")}, IO{Git: git}); err == nil {
 		t.Fatal("missing source unexpectedly validated")
 	}
 	if called {

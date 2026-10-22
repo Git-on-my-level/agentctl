@@ -80,6 +80,21 @@ Temporary files use the same filesystem as their atomic destination when
 required and are created owner-only. Symlink traversal and path escape are
 rejected.
 
+Prompt containment compares the resolved working root and resolved prompt path,
+so aliases of the same root are accepted. Escaping directory links and symlink
+prompt files remain denied, with a no-follow open below the resolved root.
+
+Filesystem Unix socket paths must fit the platform's `sun_path` buffer, including
+its terminating NUL: macOS permits 103 path bytes in its 104-byte buffer. Callback
+validation and supervisor start/request return a typed `unixsocket.PathLengthError`
+before connecting or creating state. Supervisor `run` and `status`, and Unix
+callback subscription creation, report a
+non-retryable `usage` error (exit 2), with `reason=unix_socket_path_too_long`,
+`max_bytes`, and `path_bytes` details. Choose a shorter owner-only directory with
+`supervisor run --socket /short/private/directory/s.sock` and use the same path
+for `status`. No fallback socket or additional authority is created; native and
+Multica-backed executions use the same local supervisor transport.
+
 State writes take an exclusive store lock, write a checksummed record, flush
 according to the command's durability class, and atomically advance the visible
 revision. A second process either observes the old or new complete revision.

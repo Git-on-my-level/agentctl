@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 type probeRequestRecorder struct {
@@ -61,7 +62,7 @@ func TestLaunchVersionProbeUsesManifestTimeout(t *testing.T) {
 }
 
 func TestSlowVersionProbeUsesInjectedPerAdapterBudget(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "slow-version")
+	path := filepath.Join(testutil.TempDir(t), "slow-version")
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nsleep 0.6\nprintf 'fake-zcode 1.0\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +103,7 @@ func TestSlowVersionProbeUsesInjectedPerAdapterBudget(t *testing.T) {
 }
 
 func TestCallerDeadlineIsNotReportedAsProbeBudgetTimeout(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "slow-version")
+	path := filepath.Join(testutil.TempDir(t), "slow-version")
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nsleep 2\nprintf 'fake-zcode 1.0\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}

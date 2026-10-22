@@ -13,6 +13,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 type unreconciledEnvelope struct {
@@ -65,7 +66,7 @@ func seedTerminalBacklog(t *testing.T, a *app, journalPath string, stdout *bytes
 }
 
 func TestUnreconciledBacklogIsCountableAndCollectableInBulk(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	seeded := seedTerminalBacklog(t, a, journalPath, &stdout, 22, "review")
@@ -160,7 +161,7 @@ func TestUnreconciledBacklogIsCountableAndCollectableInBulk(t *testing.T) {
 }
 
 func TestResultUnreconciledFiltersByLabel(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	seedTerminalBacklog(t, a, journalPath, &stdout, 6, "review")
@@ -190,7 +191,7 @@ func TestResultUnreconciledFiltersByLabel(t *testing.T) {
 }
 
 func TestResultUnreconciledReportsConflictedEvidenceWithoutFailingTheBatch(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	seeded := seedTerminalBacklog(t, a, journalPath, &stdout, 3, "")
@@ -259,7 +260,7 @@ func TestResultUnreconciledReportsConflictedEvidenceWithoutFailingTheBatch(t *te
 }
 
 func TestResultUnreconciledRejectsSingleResultFlags(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	for _, args := range [][]string{
@@ -287,7 +288,7 @@ func mustExecutionID(t *testing.T, value string) ids.ExecutionID {
 }
 
 func TestResultUnreconciledContinuationPreservesScopeAndAdvancesPastSkips(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	seedTerminalBacklog(t, a, journalPath, &stdout, 6, "review")
@@ -378,7 +379,7 @@ func TestResultUnreconciledContinuationPreservesScopeAndAdvancesPastSkips(t *tes
 }
 
 func TestResultUnreconciledCursorValidation(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	seeded := seedTerminalBacklog(t, a, journalPath, &stdout, 1, "")
@@ -404,7 +405,7 @@ func TestResultUnreconciledCursorValidation(t *testing.T) {
 }
 
 func TestResultUnreconciledCursorKeepsMulticaResultBoundary(t *testing.T) {
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	e := createMulticaCancelExecution(t, journalPath, false)
 	journal, err := store.Open(journalPath, store.Options{})
 	if err != nil {

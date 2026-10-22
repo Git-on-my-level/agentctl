@@ -12,13 +12,14 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/runtime"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 // Keep the CLI wiring boundary honest as store evolves independently.
 var _ runtime.Journal = (*store.Journal)(nil)
 
 func TestEngineWritesStoreAcceptedSemanticEvents(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	executable := filepath.Join(root, "fixture-agent")
 	body := "#!/bin/sh\nset -eu\nprintf '%s\\n' '{\"type\":\"session.started\",\"session_id\":\"store-session\"}' '{\"type\":\"result\",\"result\":\"bounded summary\",\"is_error\":false}'\n"
 	if err := os.WriteFile(executable, []byte(body), 0o700); err != nil {

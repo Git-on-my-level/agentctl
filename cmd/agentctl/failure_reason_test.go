@@ -18,6 +18,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestClassifyCapacityIsRetryableAndGenericProviderIsNot(t *testing.T) {
@@ -44,7 +45,7 @@ func TestClassifyCapacityIsRetryableAndGenericProviderIsNot(t *testing.T) {
 }
 
 func TestCodexFailureReasonSurfacesWithoutAnswerOrSecret(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	bin := filepath.Join(root, "codex")
 	script := `#!/bin/sh
 if [ "$1" = "--version" ]; then echo 0.0.0-test; exit 0; fi
@@ -160,7 +161,7 @@ func TestZCodeFailureReasonSurfacesAcrossDelegateStatusAndResult(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
+			root := testutil.TempDir(t)
 			bin := filepath.Join(root, "zcode")
 			script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 0.16.9; exit 0; fi\n"
 			if tc.stdoutShape != "" {
@@ -268,7 +269,7 @@ func jsonBool(value bool) string {
 
 func TestBuildOutcomeBoundsStructuredFailure(t *testing.T) {
 	now := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
-	journal, err := store.Open(filepath.Join(t.TempDir(), "state", "journal.db"), store.Options{Clock: func() time.Time { return now }})
+	journal, err := store.Open(filepath.Join(testutil.TempDir(t), "state", "journal.db"), store.Options{Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +404,7 @@ func TestStderrCauseAtExitPersistsWithoutSecrets(t *testing.T) {
 		{"capacity", "Selected model is at capacity. Please try a different model.", failureMessageCapacity, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
+			root := testutil.TempDir(t)
 			bin := filepath.Join(root, "codex")
 			script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo test-version; exit 0; fi\nprintf '\\n%s\\n' '" + tc.line + "' >&2\nprintf '%s\\n' 'Usage: native-command' >&2\nexit 1\n"
 			if err := os.WriteFile(bin, []byte(script), 0700); err != nil {

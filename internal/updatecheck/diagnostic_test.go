@@ -6,10 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestInstallerStageSurvivesStatusWithoutRawOutput(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	if err := os.Chmod(root, 0700); err != nil {
 		t.Fatal(err)
 	}

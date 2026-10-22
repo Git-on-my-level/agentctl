@@ -6,10 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestLoadAndResolveExplicitMulticaProfile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
+	path := filepath.Join(testutil.TempDir(t), "config.json")
 	data := `{
   "schema_version": 1,
   "default_profile": "fleet",
@@ -51,7 +53,7 @@ func TestBootstrapInstructionPointersPolicy(t *testing.T) {
 	if err := (Bootstrap{InstructionPointers: "silent"}).Validate(); err == nil {
 		t.Fatal("invalid instruction_pointers was accepted")
 	}
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = resolved
 	}
@@ -68,7 +70,7 @@ func TestBootstrapInstructionPointersPolicy(t *testing.T) {
 }
 
 func TestLoadDoesNotCreateMissingConfig(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing.json")
+	path := filepath.Join(testutil.TempDir(t), "missing.json")
 	if _, err := Load(path); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("error = %v, want ErrNotFound", err)
 	}
@@ -78,7 +80,7 @@ func TestLoadDoesNotCreateMissingConfig(t *testing.T) {
 }
 
 func TestLoadReportsValidationFailuresSeparatelyFromFileSecurity(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	oversized := filepath.Join(root, "oversized.json")
 	if err := os.WriteFile(oversized, []byte(`{"schema_version":1,"profiles":{"local":{"agent_preferences":{"mode":"advisory","preferred":[{"agent":"cursor","model":"example"}],"notes":["first","second","`+strings.Repeat("x", 1025)+`"]}}}}`), 0o600); err != nil {
 		t.Fatal(err)

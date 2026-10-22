@@ -14,13 +14,14 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 type delegateFixture struct{ root, config, journal, request, count, probe string }
 
 func newDelegateFixture(t *testing.T, body string) delegateFixture {
 	t.Helper()
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	f := delegateFixture{root: root, config: filepath.Join(root, "config.json"), journal: filepath.Join(root, "state", "journal.db"), request: filepath.Join(root, "request.json"), count: filepath.Join(root, "launches"), probe: filepath.Join(root, "probes")}
 	// Paths are fixture-generated and shell-quoted, never caller-controlled prompts.
 	script := "#!/bin/sh\nif [ \"$1\" = '--version' ]; then\n echo probe >> '" + f.probe + "'\n echo 2026.09.10\n exit 0\nfi\necho launch >> '" + f.count + "'\n" + body + "\n"

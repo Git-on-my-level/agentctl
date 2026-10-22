@@ -13,10 +13,11 @@ import (
 
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/output"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestPromptOutsideRootRepairsMatchCommandParsers(t *testing.T) {
-	root, outside := t.TempDir(), t.TempDir()
+	root, outside := testutil.TempDir(t), testutil.TempDir(t)
 	path := filepath.Join(outside, "private-prompt.md")
 	const secret = "prompt-repair-private-task-token"
 	if err := os.WriteFile(path, []byte(secret), 0600); err != nil {
@@ -50,7 +51,7 @@ func TestPromptOutsideRootRepairsMatchCommandParsers(t *testing.T) {
 			a := testApp(&stdout, &stderr)
 			input := strings.NewReader("unread-input")
 			a.stdin = input
-			journal := filepath.Join(t.TempDir(), "state", "journal.db")
+			journal := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 			argv := append([]string{"--output", "json", "--journal", journal, tt.command}, tt.args...)
 			if code := a.run(context.Background(), argv); code != output.ExitCodeFor(output.CodeAuthorizationDenied) {
 				t.Fatalf("exit=%d output=%s", code, stdout.String())
@@ -157,7 +158,7 @@ func applyPromptRepairFlags(t *testing.T, args []string, repair map[string]any) 
 func TestFanoutOutsideRootRepairUsesManifestGuidance(t *testing.T) {
 	for _, childPrompt := range []bool{false, true} {
 		t.Run(map[bool]string{false: "shared", true: "child"}[childPrompt], func(t *testing.T) {
-			root, outside := t.TempDir(), t.TempDir()
+			root, outside := testutil.TempDir(t), testutil.TempDir(t)
 			path := filepath.Join(outside, "private-prompt.md")
 			const secret = "fanout-repair-private-task-token"
 			if err := os.WriteFile(path, []byte(secret), 0600); err != nil {

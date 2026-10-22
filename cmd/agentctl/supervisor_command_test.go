@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,10 +15,48 @@ import (
 	agentruntime "github.com/Git-on-my-level/agentctl/internal/runtime"
 	"github.com/Git-on-my-level/agentctl/internal/store"
 	"github.com/Git-on-my-level/agentctl/internal/supervisor"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
+	"github.com/Git-on-my-level/agentctl/internal/unixsocket"
 )
 
+func TestUnixSocketLengthHasTypedUsageError(t *testing.T) {
+	state := filepath.Join(testutil.TempDir(t), "absent")
+	path := "/" + strings.Repeat("x", unixsocket.PathLimit)
+	for _, args := range [][]string{
+		{"supervisor", "status", "--socket", path},
+		{"supervisor", "run", "--state-dir", state, "--socket", path},
+		{"--journal", filepath.Join(state, "journal.db"), "subscribe", "create", "--authority", "native", "--destination", "unix", "--target", path},
+	} {
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		if code := a.run(context.Background(), args); code != 2 {
+			t.Fatalf("exit=%d output=%s", code, stdout.String())
+		}
+		var doc struct {
+			Error struct {
+				Code      string `json:"code"`
+				Retryable bool   `json:"retryable"`
+				Details   struct {
+					Reason    string `json:"reason"`
+					MaxBytes  int    `json:"max_bytes"`
+					PathBytes int    `json:"path_bytes"`
+				} `json:"details"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+			t.Fatalf("single error envelope: %v output=%s", err, stdout.String())
+		}
+		if doc.Error.Code != "usage" || doc.Error.Retryable || doc.Error.Details.Reason != "unix_socket_path_too_long" || doc.Error.Details.MaxBytes != unixsocket.PathLimit || doc.Error.Details.PathBytes != len(path) {
+			t.Fatalf("length diagnostic: %s", stdout.String())
+		}
+	}
+	if _, err := os.Stat(state); !os.IsNotExist(err) {
+		t.Fatalf("invalid socket path mutated state: %v", err)
+	}
+}
+
 func TestDefaultSupervisorSocketFollowsStateContract(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	a := &app{getenv: func(key string) string {
 		switch key {
 		case "AGENTCTL_STATE_HOME":
@@ -53,7 +92,7 @@ func TestDefaultSupervisorSocketFollowsStateContract(t *testing.T) {
 }
 
 func TestLinuxSupervisorPlanUsesXDGConfigHome(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	xdg := filepath.Join(root, "xdg-config")
 	t.Setenv("HOME", filepath.Join(root, "home"))
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
@@ -96,17 +135,10 @@ func TestLinuxSupervisorPlanUsesXDGConfigHome(t *testing.T) {
 }
 
 func TestLongRunningSupervisorReleasesJournalBetweenCycles(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	journalPath := filepath.Join(root, "state", "journal.db")
 	stateDir := filepath.Join(root, "d")
-	// macOS Unix socket paths are short; keep this integration test's socket
-	// path below that platform limit even though t.TempDir is nested.
-	socketRoot, err := os.MkdirTemp(os.TempDir(), "as-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(socketRoot) })
-	socketPath := filepath.Join(socketRoot, "s")
+	socketPath := filepath.Join(testutil.SocketDir(t), "s")
 
 	// Seed one durable execution so subscribe create is a real journal
 	// mutation, not merely a competing open.
@@ -176,7 +208,7 @@ func TestLongRunningSupervisorReleasesJournalBetweenCycles(t *testing.T) {
 }
 
 func TestSupervisorJournalOperationsHonorCancellationWhileLocked(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	journal, err := store.Open(path, store.Options{})
 	if err != nil {
 		t.Fatal(err)

@@ -7,6 +7,8 @@ umask 077
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 DIST="$ROOT/distributions"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/agentctl-distribution-test.XXXXXX")
+# Installer fixtures require canonical paths; macOS TMPDIR may contain /var.
+tmp=$(CDPATH= cd -- "$tmp" && pwd -P)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 export HOME="$tmp/home"
 mkdir -p "$HOME"

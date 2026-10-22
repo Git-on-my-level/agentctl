@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -344,15 +345,23 @@ func fanoutPromptCacheKey(root, path string) (string, bool) {
 	if err != nil {
 		return path, false
 	}
-	rel, err := filepath.Rel(absRoot, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
 		return path, false
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(absRoot)
 	if err != nil {
-		return filepath.Join(absRoot, rel), true
+		return path, false
 	}
-	return filepath.Join(resolvedRoot, rel), true
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return path, false
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolvedPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return path, false
+	}
+	return resolvedPath, true
 }
 
 func normalizedPromptDelivery(value string) string {

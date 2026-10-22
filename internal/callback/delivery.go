@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/unixsocket"
 )
 
 var (
@@ -315,6 +317,9 @@ func InvokeCommand(ctx context.Context, plan CommandPlan, eventPath string) erro
 func ValidateUnixSocket(path string) error {
 	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.IndexByte(path, 0) >= 0 {
 		return fmt.Errorf("%w: socket path must be absolute and canonical", ErrInvalidUnixSocket)
+	}
+	if err := unixsocket.ValidatePathLength(path); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidUnixSocket, err)
 	}
 	if err := ensureNoSymlink(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("%w: parent path: %v", ErrInvalidUnixSocket, err)

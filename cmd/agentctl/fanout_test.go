@@ -14,6 +14,7 @@ import (
 
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func writeFanoutTestFile(t *testing.T, root, name, body string, mode os.FileMode) string {
@@ -37,7 +38,7 @@ func writeFanoutTestManifest(t *testing.T, root string, m fanoutManifest) string
 func TestFanoutPreflightsWholeBatchBeforeAnyTaskLaunch(t *testing.T) {
 	for _, invalid := range []string{"missing_executable", "bad_cwd", "unsupported_invocation"} {
 		t.Run(invalid, func(t *testing.T) {
-			root := t.TempDir()
+			root := testutil.TempDir(t)
 			marker := filepath.Join(root, "launched")
 			writeFanoutTestFile(t, root, "task.md", "bounded task", 0o600)
 			script := writeFanoutTestFile(t, root, "agent", fmt.Sprintf("#!/bin/sh\n: > %q\nprintf '%%s\\n' '{\"type\":\"result\",\"status\":\"completed\",\"result\":\"ok\"}'\n", marker), 0o700)
@@ -77,7 +78,7 @@ func TestFanoutPreflightsWholeBatchBeforeAnyTaskLaunch(t *testing.T) {
 }
 
 func TestFanoutDistinctTasksPreserveArgvAndPersistLabels(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	writeFanoutTestFile(t, root, "review.md", "PRIVATE_REVIEW_TASK", 0o600)
 	writeFanoutTestFile(t, root, "implement.md", "PRIVATE_IMPLEMENT_TASK", 0o600)
 	script := writeFanoutTestFile(t, root, "agent", "#!/bin/sh\n[ \"$1\" = '--native-flag' ] || exit 9\nif [ \"$2\" = stdin ]; then prompt=$(cat); else prompt=$3; fi\nprintf '{\"type\":\"result\",\"status\":\"completed\",\"result\":\"%s\"}\\n' \"$prompt\"\n", 0o700)
@@ -137,7 +138,7 @@ func TestFanoutDistinctTasksPreserveArgvAndPersistLabels(t *testing.T) {
 }
 
 func TestFanoutPromptCacheSharesBytesNotDeliveryMetadata(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	writeFanoutTestFile(t, root, "task.md", "prompt", 0o600)
 	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
 	m := fanoutManifest{SchemaVersion: 1, PromptFile: "task.md", Children: []fanoutChild{{PromptDelivery: "argv"}, {PromptFile: "./task.md", PromptDelivery: "stdin"}}}
@@ -154,7 +155,7 @@ func TestFanoutPromptCacheSharesBytesNotDeliveryMetadata(t *testing.T) {
 }
 
 func TestFanoutPromptCacheCollapsesAbsolutePath(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	writeFanoutTestFile(t, root, "task.md", "prompt", 0o600)
 	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
 	m := fanoutManifest{SchemaVersion: 1, PromptFile: "task.md", Children: []fanoutChild{
@@ -174,7 +175,7 @@ func TestFanoutPromptCacheCollapsesAbsolutePath(t *testing.T) {
 }
 
 func TestFanoutPromptSymlinkIsStillRejected(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	writeFanoutTestFile(t, root, "task.md", "prompt", 0o600)
 	if err := os.Symlink("task.md", filepath.Join(root, "alias.md")); err != nil {
 		t.Skip(err)
@@ -190,7 +191,7 @@ func TestFanoutPromptSymlinkIsStillRejected(t *testing.T) {
 }
 
 func TestFanoutLoadsAllPromptsBeforeLaunching(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	writeFanoutTestFile(t, root, "first.md", "first", 0o600)
 	second := writeFanoutTestFile(t, root, "second.md", "ORIGINAL_SECOND_TASK", 0o600)
 	mutate := writeFanoutTestFile(t, root, "mutate-agent", fmt.Sprintf("#!/bin/sh\nprintf 'CHANGED' > %q\nprintf '%%s\\n' '{\"type\":\"result\",\"status\":\"completed\",\"result\":\"first\"}'\n", second), 0o700)
@@ -215,7 +216,7 @@ func TestFanoutLoadsAllPromptsBeforeLaunching(t *testing.T) {
 }
 
 func TestFanoutFailureSkipsQueuedWorkButDoesNotInventCancellationState(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	writeFanoutTestFile(t, root, "task.md", "task", 0o600)
 	fail := writeFanoutTestFile(t, root, "fail-agent", "#!/bin/sh\nexit 7\n", 0o700)
 	marker := filepath.Join(root, "second-started")
@@ -239,7 +240,7 @@ func TestFanoutFailureSkipsQueuedWorkButDoesNotInventCancellationState(t *testin
 }
 
 func TestFanoutTimeoutPreservesRecordedTerminalState(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	writeFanoutTestFile(t, root, "task.md", "task", 0o600)
 	script := writeFanoutTestFile(t, root, "agent", "#!/bin/sh\nexec sleep 30\n", 0o700)
 	manifest := writeFanoutTestManifest(t, root, fanoutManifest{SchemaVersion: 1, PromptFile: "task.md", Children: []fanoutChild{{Adapter: "generic-process", Timeout: "200ms", Argv: []string{script}}}})
@@ -261,7 +262,7 @@ func TestFanoutTimeoutPreservesRecordedTerminalState(t *testing.T) {
 }
 
 func TestFanoutPlanDoesNotCreateJournal(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	writeFanoutTestFile(t, root, "task.md", "task", 0o600)
 	marker := filepath.Join(root, "started")
 	script := writeFanoutTestFile(t, root, "agent", fmt.Sprintf("#!/bin/sh\n: > %q\n", marker), 0o700)
@@ -280,7 +281,7 @@ func TestFanoutPlanDoesNotCreateJournal(t *testing.T) {
 }
 
 func TestFanoutExistingIDRejectsWholeBatchWithoutReplay(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	writeFanoutTestFile(t, root, "task.md", "task", 0o600)
 	script := writeFanoutTestFile(t, root, "agent", "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"result\",\"status\":\"completed\",\"result\":\"ok\"}'\n", 0o700)
 	m := fanoutManifest{SchemaVersion: 1, PromptFile: "task.md", Children: []fanoutChild{{Adapter: "generic-process", Argv: []string{script}}}}

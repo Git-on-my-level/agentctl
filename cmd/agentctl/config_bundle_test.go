@@ -12,11 +12,12 @@ import (
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/output"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func cliBundle(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "bundle.json")
+	path := filepath.Join(testutil.TempDir(t), "bundle.json")
 	document := `{"schema_version":1,"default_profile":"private","profiles":{"private":{"adapters":{"codex":{"executable":"/bin/echo"}},"agent_preferences":{"mode":"advisory","preferred":[{"agent":"cursor","model":"composer-2.5","speed":"regular","use_for":"default"}],"notes":["Never select fast variants."]}}}}`
 	if err := os.WriteFile(path, []byte(document), 0o644); err != nil {
 		t.Fatal(err)
@@ -26,7 +27,7 @@ func cliBundle(t *testing.T) string {
 
 func TestConfigBundlePlanIsExplicitReadOnlyAndReportsDigest(t *testing.T) {
 	bundle := cliBundle(t)
-	base := filepath.Join(t.TempDir(), "missing-config.json")
+	base := filepath.Join(testutil.TempDir(t), "missing-config.json")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	args := []string{"--config", base, "--config-bundle", bundle, "config", "bundle", "plan"}
@@ -55,7 +56,7 @@ func TestConfigBundlePlanIsExplicitReadOnlyAndReportsDigest(t *testing.T) {
 
 func TestConfigShowAndDoctorExposeBundleComposition(t *testing.T) {
 	bundle := cliBundle(t)
-	base := filepath.Join(t.TempDir(), "missing-config.json")
+	base := filepath.Join(testutil.TempDir(t), "missing-config.json")
 	for _, command := range [][]string{{"config", "show"}, {"config", "doctor"}, {"doctor", "--static"}} {
 		var stdout, stderr bytes.Buffer
 		a := testApp(&stdout, &stderr)
@@ -76,7 +77,7 @@ func TestConfigBundleIsNeverImplicitlyDiscovered(t *testing.T) {
 	bundle := cliBundle(t)
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
-	base := filepath.Join(t.TempDir(), "missing-config.json")
+	base := filepath.Join(testutil.TempDir(t), "missing-config.json")
 	a.getenv = func(name string) string {
 		if name == "AGENTCTL_CONFIG_BUNDLE" {
 			return bundle
@@ -89,7 +90,7 @@ func TestConfigBundleIsNeverImplicitlyDiscovered(t *testing.T) {
 }
 
 func TestConfigBundleValidateReportsStaticRecipeCompatibilityWithoutProbes(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	marker := filepath.Join(root, "probe-ran")
 	executable := filepath.Join(root, "native")
 	if err := os.WriteFile(executable, []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0o755); err != nil {
@@ -144,7 +145,7 @@ func TestConfigBundleValidateReportsStaticRecipeCompatibilityWithoutProbes(t *te
 }
 
 func TestConfigSetProfilePreservesReviewedAgentPreferences(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
+	path := filepath.Join(testutil.TempDir(t), "config.json")
 	preferences := &config.AgentPreferences{Mode: "advisory", Preferred: []config.AgentPreference{{Agent: "cursor", Model: "composer-2.5", Speed: "regular"}}, Notes: []string{"Never fast."}}
 	cfg := config.Config{SchemaVersion: config.SchemaVersion, DefaultProfile: "fleet", Profiles: map[string]config.Profile{"fleet": {Adapters: map[string]config.Adapter{"cursor": {Executable: "/old/cursor"}}, AgentPreferences: preferences, Delegation: &config.DelegationPolicy{CursorWorkspaceTrust: true}}}}
 	if err := config.Save(path, cfg, false); err != nil {
@@ -171,7 +172,7 @@ func TestConfigSetProfilePreservesReviewedAgentPreferences(t *testing.T) {
 }
 
 func TestConfigSourceInitPlanIsNetworkFreeAndReadOnly(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	configPath := filepath.Join(root, "runtime", "config.json")
 	checkoutPath := filepath.Join(root, "checkout")
 	var stdout, stderr bytes.Buffer
@@ -194,7 +195,7 @@ func TestConfigSourceInitPlanIsNetworkFreeAndReadOnly(t *testing.T) {
 func TestConfigSourceStatusIsExplicitlyUnconfigured(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
-	configPath := filepath.Join(t.TempDir(), "missing", "config.json")
+	configPath := filepath.Join(testutil.TempDir(t), "missing", "config.json")
 	if code := a.run(context.Background(), []string{"--config", configPath, "config", "source", "status"}); code != 0 {
 		t.Fatalf("status exit=%d output=%s", code, stdout.String())
 	}

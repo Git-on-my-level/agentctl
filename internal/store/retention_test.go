@@ -17,6 +17,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func seedTerminalForRetention(t *testing.T, journal *Journal, createdAt time.Time, mutation contracts.MutationKey) model.Execution {
@@ -341,7 +342,7 @@ func containsReason(reasons []string, want string) bool {
 func openRetentionJournalWithEpoch(t *testing.T, epoch time.Time) *Journal {
 	t.Helper()
 	generator := &sequenceGenerator{next: map[ids.Type]uint64{ids.TypeHost: 100, ids.TypeExecution: 200, ids.TypeEvent: 300}}
-	path := filepath.Join(t.TempDir(), "state", "journal.db")
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	journal, err := Open(path, Options{Generator: generator, Clock: func() time.Time { return epoch }})
 	if err != nil {
 		t.Fatal(err)

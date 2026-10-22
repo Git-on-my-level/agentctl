@@ -15,6 +15,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func writeCancelMulticaFixture(t *testing.T, root string) (configPath, journalPath, capture string) {
@@ -116,7 +117,7 @@ func createMulticaCancelExecution(t *testing.T, journalPath string, withRun bool
 }
 
 func TestCancelMulticaAuthorityForwardsWithoutTerminalizing(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	configPath, journalPath, capture := writeCancelMulticaFixture(t, root)
 	execution := createMulticaCancelExecution(t, journalPath, true)
 	var stdout, stderr bytes.Buffer
@@ -152,7 +153,7 @@ func TestCancelMulticaAuthorityForwardsWithoutTerminalizing(t *testing.T) {
 }
 
 func TestCancelMulticaMissingRunBinding(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	configPath, journalPath, _ := writeCancelMulticaFixture(t, root)
 	execution := createMulticaCancelExecution(t, journalPath, false)
 	var stdout, stderr bytes.Buffer
@@ -167,7 +168,7 @@ func TestCancelMulticaMissingRunBinding(t *testing.T) {
 
 func TestCancelNativeStillTerminalizesExecution(t *testing.T) {
 	now := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
-	journalPath := filepath.Join(t.TempDir(), "state", "journal.db")
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
 	journal, err := store.Open(journalPath, store.Options{Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)

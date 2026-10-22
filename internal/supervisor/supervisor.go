@@ -17,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/unixsocket"
 )
 
 // Supervisor is a managed host-local supervisor.  It owns only process
@@ -165,6 +167,10 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	s.mu.Unlock()
 
 	if err := ctx.Err(); err != nil {
+		s.setFailed(err)
+		return err
+	}
+	if err := unixsocket.ValidatePathLength(s.cfg.SocketPath); err != nil {
 		s.setFailed(err)
 		return err
 	}
@@ -914,6 +920,9 @@ func ensureOwnerStateFile(path string) error {
 }
 
 func listenOwnerSocket(path string) (net.Listener, error) {
+	if err := unixsocket.ValidatePathLength(path); err != nil {
+		return nil, err
+	}
 	if err := rejectSymlinkComponents(path); err != nil {
 		return nil, err
 	}
@@ -1024,6 +1033,9 @@ func ownedByCurrentUser(info os.FileInfo) bool {
 // managed service itself.
 func Request(ctx context.Context, socketPath, op string) (RPCResponse, error) {
 	var response RPCResponse
+	if err := unixsocket.ValidatePathLength(socketPath); err != nil {
+		return response, err
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}

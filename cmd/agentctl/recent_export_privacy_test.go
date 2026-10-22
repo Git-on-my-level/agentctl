@@ -16,6 +16,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 const recentSecretPrompt = "recent-export-private-prompt-token"
@@ -100,7 +101,7 @@ func recentAcknowledgements(t *testing.T, path string) store.AcknowledgementInde
 }
 
 func TestRecentExportTerminalPrivacyAndNoWritesAcrossCallerFilters(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	path := filepath.Join(root, "state", "journal.db")
 	callers := []string{"hermes", "claude-code", "codex", "cursor", "omp", "zcode", "devin", "other", "unknown"}
 	expected := map[string]int{}

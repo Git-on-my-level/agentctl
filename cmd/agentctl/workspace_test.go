@@ -15,12 +15,13 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func TestDiscoverGitWorkspaceDistinguishesLinkedWorktreesAndOperations(t *testing.T) {
 	repository := initWorkspaceRepository(t)
-	siblingRoot := t.TempDir()
-	t.Setenv("OMI_GIT_WRAPPER_ENV", filepath.Join(t.TempDir(), "missing-wrapper-env"))
+	siblingRoot := testutil.TempDir(t)
+	t.Setenv("OMI_GIT_WRAPPER_ENV", filepath.Join(testutil.TempDir(t), "missing-wrapper-env"))
 	t.Setenv("OMI_WORKTREES", siblingRoot)
 	sibling := filepath.Join(siblingRoot, "sibling")
 	runGit(t, repository, "worktree", "add", "-b", "sibling", sibling)
@@ -56,7 +57,7 @@ func TestDiscoverGitWorkspaceDistinguishesLinkedWorktreesAndOperations(t *testin
 
 func TestDirectRunCapturesWorkspaceProvenance(t *testing.T) {
 	repository := initWorkspaceRepository(t)
-	journalRoot := t.TempDir()
+	journalRoot := testutil.TempDir(t)
 	if err := os.Chmod(journalRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +97,7 @@ func TestWorkspaceOwnersIsNonExclusiveAndLegacyRowsAreVisible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	journalRoot := t.TempDir()
+	journalRoot := testutil.TempDir(t)
 	if err := os.Chmod(journalRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +166,7 @@ func workspaceTestExecution(now time.Time, workspace *model.WorkspaceIdentity) m
 
 func initWorkspaceRepository(t *testing.T) string {
 	t.Helper()
-	repository := filepath.Join(t.TempDir(), "repository")
+	repository := filepath.Join(testutil.TempDir(t), "repository")
 	if err := os.Mkdir(repository, 0o700); err != nil {
 		t.Fatal(err)
 	}

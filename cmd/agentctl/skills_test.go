@@ -13,6 +13,7 @@ import (
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/skillpack"
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
 func gitFixtureCommand(t *testing.T, directory string, args ...string) string {
@@ -28,7 +29,7 @@ func gitFixtureCommand(t *testing.T, directory string, args ...string) string {
 
 func configuredSkillSource(t *testing.T) (configPath, home string) {
 	t.Helper()
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	hub := filepath.Join(root, "hub")
 	if err := os.Mkdir(hub, 0o700); err != nil {
 		t.Fatal(err)
@@ -124,7 +125,7 @@ func TestSkillsPlanIsReadOnlyAndReconcileUsesPinnedConfigSource(t *testing.T) {
 }
 
 func TestSkillsRequiresDurableGitSourceAndRejectsInvocationBundle(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	home := filepath.Join(root, "home")
 	if err := os.Mkdir(home, 0o700); err != nil {
 		t.Fatal(err)

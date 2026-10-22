@@ -10,11 +10,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Git-on-my-level/agentctl/internal/testutil"
 	"github.com/Git-on-my-level/agentctl/internal/updatecheck"
 )
 
 func TestUpdateNowWithoutOptionalConfigDoesNotFailOrCreateConfig(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	t.Setenv("HOME", root)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
@@ -59,7 +60,7 @@ func TestUpdateNowFailureAlwaysHasSafeDiagnostic(t *testing.T) {
 }
 
 func TestInstalledBinaryReconcilesStateAfterManualInstall(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	t.Setenv("HOME", root)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	statePath := filepath.Join(root, "state", "agentctl", "update-state.json")
@@ -93,7 +94,7 @@ func TestInstalledBinaryReconcilesStateAfterManualInstall(t *testing.T) {
 }
 
 func TestUpdateNowClassifiesUnsafeCopiedStateWithoutLeakingPath(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	t.Setenv("HOME", root)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	statePath := filepath.Join(root, "state", "agentctl", "update-state.json")
@@ -128,7 +129,7 @@ func TestUpdateNowClassifiesUnsafeCopiedStateWithoutLeakingPath(t *testing.T) {
 func TestAutomaticSkillsPreserveExplicitMissingAndMalformedConfigFailures(t *testing.T) {
 	for _, kind := range []string{"flag-missing", "environment-missing", "malformed", "unsafe"} {
 		t.Run(kind, func(t *testing.T) {
-			root := t.TempDir()
+			root := testutil.TempDir(t)
 			t.Setenv("HOME", root)
 			t.Setenv("XDG_CONFIG_HOME", root)
 			t.Setenv("AGENTCTL_CONFIG", "")
@@ -162,7 +163,7 @@ func TestAutomaticSkillsPreserveExplicitMissingAndMalformedConfigFailures(t *tes
 }
 
 func TestUpdateNowHonorsExplicitMissingConfig(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	t.Setenv("HOME", root)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
@@ -179,7 +180,7 @@ func TestUpdateNowHonorsExplicitMissingConfig(t *testing.T) {
 }
 
 func TestUpdateStatusAndWorkerKeepExplicitConfigSelection(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	t.Setenv("HOME", root)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
@@ -217,7 +218,7 @@ func TestUpdateStatusAndWorkerKeepExplicitConfigSelection(t *testing.T) {
 }
 
 func TestUpdateStatusAndDoctorSkipDevBuildWithoutStaleLatest(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.TempDir(t)
 	t.Setenv("HOME", root)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
