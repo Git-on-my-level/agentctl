@@ -9,7 +9,10 @@ MAIN_PKG=${MAIN_PKG:-./cmd/agentctl}
 VERSION=${VERSION:-}
 TARGETS=${TARGETS:-}
 PYTHON=${PYTHON:-python3}
-MIN_RELEASE_GO_VERSION=${MIN_RELEASE_GO_VERSION:-go1.26.9}
+# Space-separated per-release-line minimums: each listed Go line must meet its
+# own fixed patch (GO-2026-6809 is fixed in 1.26.10 and 1.27.3). A line older
+# than every listed line is rejected; a line newer than every listed line passes.
+MIN_RELEASE_GO_VERSION=${MIN_RELEASE_GO_VERSION:-go1.26.10 go1.27.3}
 
 die() { printf 'error: %s\n' "$*" >&2; exit 2; }
 usage() {
@@ -65,11 +68,18 @@ def version(value):
         raise SystemExit(2)
     return tuple(int(part or 0) for part in match.groups())
 
-raise SystemExit(0 if version(sys.argv[1]) >= version(sys.argv[2]) else 1)
+found = version(sys.argv[1])
+minimums = [version(item) for item in sys.argv[2].split()]
+if not minimums:
+    raise SystemExit(2)
+same_line = [m for m in minimums if m[:2] == found[:2]]
+if same_line:
+    raise SystemExit(0 if found >= max(same_line) else 1)
+raise SystemExit(0 if found[:2] > max(m[:2] for m in minimums) else 1)
 PY
 case "$?" in
   0) ;;
-  1) die "Go $MIN_RELEASE_GO_VERSION or newer is required for release builds (found $go_version)" ;;
+  1) die "Go release line minimums not met (found $go_version, required per line: $MIN_RELEASE_GO_VERSION)" ;;
   *) die "could not compare Go versions: found $go_version, minimum $MIN_RELEASE_GO_VERSION" ;;
 esac
 if [ -z "${TARGETS:-}" ] && [ -f "$ROOT/packaging/release-targets.txt" ]; then
