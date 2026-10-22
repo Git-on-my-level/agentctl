@@ -593,3 +593,31 @@ func TestZCodeYoloLabelIsConstrainedRegardlessOfGrant(t *testing.T) {
 		}
 	}
 }
+
+func TestZCodeReadOnlyUsesPlanModeDenylistAndProfile(t *testing.T) {
+	for _, grant := range []bool{false, true} {
+		got, err := Build(Input{Harness: "zcode", Model: "zai/glm-5.3-flash", Access: AccessReadOnly, UnattendedCodingPermissions: grant})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"zcode", "--json", "--mode", "plan", "--disallowed-tools=" + strings.Join(ZCodeReadOnlyDisallowedTools, ","), "--prompt"}
+		if strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") || contains(got.Argv, "yolo") {
+			t.Fatalf("grant=%v argv=%#v", grant, got.Argv)
+		}
+		if got.Permissions != PermissionsReadOnly || got.PromptDelivery != PromptDeliveryArgv {
+			t.Fatalf("grant=%v recipe=%#v", grant, got)
+		}
+		if strings.Join(got.Env, " ") != "ZCODE_MODEL=glm-5.3-flash "+ZCodeReadOnlyProfileEnv {
+			t.Fatalf("grant=%v env=%v", grant, got.Env)
+		}
+	}
+	for _, tool := range []string{"Bash", "Edit", "Write", "Agent", "ExitPlanMode", "WebFetch", "mcp__web_reader__webReader"} {
+		if !contains(ZCodeReadOnlyDisallowedTools, tool) {
+			t.Fatalf("denylist lacks %s", tool)
+		}
+	}
+	coding, err := Build(Input{Harness: "zcode", Model: "zai/glm-5.3"})
+	if err != nil || contains(coding.Env, ZCodeReadOnlyProfileEnv) || !contains(coding.Argv, "yolo") {
+		t.Fatalf("coding recipe=%#v err=%v", coding, err)
+	}
+}

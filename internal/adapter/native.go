@@ -664,6 +664,11 @@ type nativeConfig struct {
 	// returns a source bound to this launch plus environment entries that bind
 	// the child to it. A nil source means no exclusive signal is available.
 	NewActivitySource func(env []string) (activitySource, []string, error)
+	// PrepareLaunch lays down launch-scoped files after the child's argv,
+	// working directory and environment are final and before it starts. A
+	// refusal fails the launch closed. The returned release runs exactly once:
+	// after the child is reaped, or at once when the launch fails to start.
+	PrepareLaunch func(cwd string, env []string) (release func(), err error)
 }
 
 // NativeAdapter implements the common process/session behavior. Constructors
@@ -1013,7 +1018,25 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	if err != nil {
 		return LaunchResult{}, dependencyError("cannot capture native stderr", err)
 	}
+	release := func() {}
+	if a.config.PrepareLaunch != nil {
+		dir := cmd.Dir
+		if dir == "" {
+			if dir, err = os.Getwd(); err != nil {
+				return LaunchResult{}, dependencyError("cannot resolve the launch working directory", err)
+			}
+		}
+		prepared, err := a.config.PrepareLaunch(dir, cmd.Env)
+		if err != nil {
+			return LaunchResult{}, err
+		}
+		if prepared != nil {
+			var once sync.Once
+			release = func() { once.Do(prepared) }
+		}
+	}
 	if err := cmd.Start(); err != nil {
+		release()
 		// exec.CommandContext reports a context error from Start when the
 		// caller is cancelled before the child is accepted. That is an
 		// interruption, not an unavailable executable or other dependency.
@@ -1076,6 +1099,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		// against a child that is writing while it reads.
 		if _, err := live.send(req.Stdin); err != nil {
 			a.cancelRecord(record, "kill", 0)
+			release()
 			return LaunchResult{}, err
 		}
 	}
@@ -1085,6 +1109,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		// is still being drained, producing a false malformed/no-page result.
 		record.pipes.Wait()
 		err := cmd.Wait()
+		release()
 		if runCtx.Err() != nil {
 			record.mu.Lock()
 			record.cancelled = true

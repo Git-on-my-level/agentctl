@@ -60,7 +60,7 @@ func NewZCode() Adapter {
 	bin := resolveZCodeBinary()
 	base := newNativeAdapter(nativeConfig{
 		Manifest: zcodeManifest(), Binary: bin, Parser: zcodeParser{},
-		LaunchKind: "zcode_session", WholeStdout: true, TransformArgv: rewriteZCodeArgv, NewActivitySource: newZCodeActivity,
+		LaunchKind: "zcode_session", WholeStdout: true, TransformArgv: rewriteZCodeArgv, NewActivitySource: newZCodeActivity, PrepareLaunch: prepareZCodeLaunch,
 	})
 	return &zcodeAdapter{NativeAdapter: base}
 }

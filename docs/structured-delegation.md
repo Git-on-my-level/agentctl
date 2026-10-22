@@ -96,7 +96,21 @@ grant: `delegation.unattended_coding_permissions: true` adds Cursor `--force`,
 Codex `--dangerously-bypass-approvals-and-sandbox`, Claude Code
 `--permission-mode auto`, and grants Devin ACP one-operation permission approvals on coding launches (the default
 `settings.access`). `settings.access: "read_only"` uses Cursor `--mode ask`
-and Codex `--sandbox read-only` and never adds those coding permission flags. Claude Code
+and Codex `--sandbox read-only` and never adds those coding permission flags.
+ZCode read-only (verified with ZCode CLI 0.17.0 on m5-mbp) combines three
+controls, because none is sufficient alone: `--mode plan` (Bash still runs in
+plan mode), `--disallowed-tools=` naming every built-in tool that writes,
+executes, spawns, messages or reaches the network, and a reviewed
+`<cwd>/.zcode/config.json` that turns plugins, MCP, subagents, skills and memory
+off, since the flag cannot remove plugin MCP tools such as the JavaScript REPL.
+Only Read, Glob, Grep, TodoRead, ReadSessionContext and AskUserQuestion remain;
+AskUserQuestion and ExitPlanMode fail headless. The zcode adapter creates that
+config with no-clobber, no-follow semantics just before launch and removes it
+after the child is reaped, only while it still holds the exact reviewed bytes.
+It refuses the launch (`zcode_read_only_config_conflict`) when the working
+directory already has `.zcode/config.json`, a `zcode.json`, or a symlinked
+`.zcode`, since any of them could re-enable a removed tool. Expert `run` never
+writes the config. Claude Code
 (`claude` or `claude-code`) refuses `read_only` with `access_unavailable`: no
 reviewed mode guarantees blocking edits and shell writes in `--print`. Coding
 launches report `permissions: constrained` with or without the grant: auto mode
