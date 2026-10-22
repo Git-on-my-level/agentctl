@@ -45,16 +45,44 @@ func TestZCodeReadOnlyReleaseKeepsSameBytesDifferentFile(t *testing.T) {
 
 func TestZCodeReadOnlyPinsStorageInsideIsolatedHome(t *testing.T) {
 	withReadOnlyHost(t, "0.17.0")
-	release, extra, err := prepareZCodeLaunch(canonicalTemp(t), readOnlyArgv("hi"), append([]string{"ZCODE_STORAGE_DIR=/tmp/outside", "ZCODE_SESSION_DB_PATH=/tmp/outside.db"}, readOnlyEnv...))
+	inherited := []string{"ZCODE_STORAGE_DIR=/tmp/outside", "ZCODE_SESSION_DB_PATH=/tmp/outside.db", "ZCODE_LOG_DIR=/tmp/outside-logs",
+		"ZCODE_MAILBOX_ROOT=/tmp/outside-mail", "ZCODE_MESSAGE_ENABLED=1", "ZCODE_APP=/tmp/Other.app", "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE=/tmp/evil.json",
+		"ZCODE_SOMETHING_NEW=x", "OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.invalid", "OTEL_EXPORTER_OTLP_HEADERS=k=v"}
+	release, extra, err := prepareZCodeLaunch(canonicalTemp(t), readOnlyArgv("hi"), append(inherited, readOnlyEnv...))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
 	home := envValue(extra, "HOME")
-	for _, key := range []string{"ZCODE_HOME", "ZCODE_STORAGE_DIR", "ZCODE_DATA_BASE_DIR", "ZCODE_SESSION_DB_PATH", "ZCODE_SESSION_DB", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
+	for _, key := range []string{"ZCODE_HOME", "ZCODE_STORAGE_DIR", "ZCODE_DATA_BASE_DIR", "ZCODE_SESSION_DB_PATH", "ZCODE_SESSION_DB", "ZCODE_LOG_DIR", "ZCODE_MAILBOX_ROOT", "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
 		if value := envValue(extra, key); !strings.HasPrefix(value, home+string(filepath.Separator)) {
 			t.Fatalf("%s=%q is outside the isolated home %q", key, value, home)
 		}
+	}
+	child := mergeEnvironment(append(inherited, readOnlyEnv...), extra)
+	for key, want := range map[string]string{"ZCODE_MESSAGE_ENABLED": "0", "ZCODE_MODEL_TELEMETRY_ENABLED": "0", "OTEL_SDK_DISABLED": "true",
+		"ZCODE_APP": "", "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE": "", "ZCODE_SOMETHING_NEW": "", "ZCODE_MODEL": "",
+		"OTEL_EXPORTER_OTLP_ENDPOINT": "", "OTEL_EXPORTER_OTLP_HEADERS": ""} {
+		if got := envValue(child, key); got != want {
+			t.Fatalf("child %s=%q want %q", key, got, want)
+		}
+	}
+}
+
+func TestZCodeReadOnlyKeepsOnlyAgentctlActivityLogDir(t *testing.T) {
+	withReadOnlyHost(t, "0.17.0")
+	owned, err := os.MkdirTemp("", "agentctl-zcode-log-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(owned)
+	release, extra, err := prepareZCodeLaunch(canonicalTemp(t), readOnlyArgv("hi"), append([]string{"ZCODE_LOG_DIR=" + owned}, readOnlyEnv...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if got := envValue(extra, "ZCODE_LOG_DIR"); got != owned {
+		t.Fatalf("activity log dir replaced: %q", got)
 	}
 }
 
@@ -63,12 +91,12 @@ func TestZCodeReadOnlyPinsStorageInsideIsolatedHome(t *testing.T) {
 func withReadOnlyHost(t *testing.T, version string) {
 	t.Helper()
 	home := t.TempDir()
-	for _, dir := range []string{"", filepath.Join("models", "glm-5.3-flash")} {
+	for dir, content := range map[string]string{"": `{}`, filepath.Join("models", "glm-5.3-flash"): `{"model":"flash"}`} {
 		path := filepath.Join(home, ".zcode", "cli", dir, "provider_config.json")
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -109,11 +137,18 @@ func TestZCodeReadOnlyIsolatesHomeAndWritesProfile(t *testing.T) {
 	if isolated == "" || isolated == realHome || envValue(extra, "ZCODE_MODEL") != "" || !hasEnvEntry(extra, "ZCODE_MODEL=") {
 		t.Fatalf("extra=%v", extra)
 	}
-	if got := envValue(extra, "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE"); got != filepath.Join(realHome, ".zcode", "cli", "models", "glm-5.3-flash", "provider_config.json") {
-		t.Fatalf("provider=%q", got)
+	copied := envValue(extra, "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE")
+	if copied != filepath.Join(isolated, ".zcode", "cli", "provider_config.json") {
+		t.Fatalf("provider=%q", copied)
 	}
-	if entries, err := os.ReadDir(isolated); err != nil || len(entries) != 0 {
-		t.Fatalf("isolated home not empty: %v %v", entries, err)
+	if got, err := os.ReadFile(copied); err != nil || string(got) != `{"model":"flash"}` {
+		t.Fatalf("copied provider=%q err=%v", got, err)
+	}
+	if info, _ := os.Lstat(copied); info.Mode().Perm() != 0o600 {
+		t.Fatalf("copied provider mode=%v", info.Mode())
+	}
+	if original, _ := os.ReadFile(filepath.Join(realHome, ".zcode", "cli", "models", "glm-5.3-flash", "provider_config.json")); string(original) != `{"model":"flash"}` {
+		t.Fatalf("real provider changed: %q", original)
 	}
 	path := filepath.Join(dir, ".zcode", "config.json")
 	got, err := os.ReadFile(path)

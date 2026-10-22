@@ -108,9 +108,13 @@ path); and a reviewed `<cwd>/.zcode/config.json` turning plugins, MCP,
 subagents, skills, memory and hooks off, since ZCode seeds its official plugins
 (including a JavaScript REPL exposed as an MCP tool) even into an empty home.
 Only Read, Glob, Grep, TodoRead, ReadSessionContext and AskUserQuestion remain;
-AskUserQuestion and ExitPlanMode fail headless. Every ZCode storage location
-(`ZCODE_HOME`, `ZCODE_STORAGE_DIR`, `ZCODE_DATA_BASE_DIR`, the session DB and the
-XDG directories) is pinned inside the isolated home. The launch refuses
+AskUserQuestion and ExitPlanMode fail headless. Inheritance of `ZCODE_*` and
+`OTEL_*` variables is deny by default: each inherited one is blanked unless
+agentctl sets it. Storage, the session DB, logs (except agentctl's own private
+activity log directory), the mailbox and the XDG directories live inside the
+isolated home; messaging and model telemetry are off; and the provider config
+is copied into the home, since ZCode may rewrite the file it is given while
+reading it. The launch refuses
 (`zcode_read_only_unavailable`) when the prompt starts with `/` after any
 Unicode white space or format character (ZCode expands a leading command, which
 can run shell lines before the model); when the executable is not an absolute

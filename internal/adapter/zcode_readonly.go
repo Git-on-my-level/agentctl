@@ -131,15 +131,12 @@ func prepareZCodeLaunch(cwd string, argv, env []string) (func(), []string, error
 	if err != nil {
 		return nil, nil, refuse("cannot create an isolated home: " + err.Error())
 	}
-	// Every storage location ZCode honours is pinned inside the isolated home,
-	// so inherited settings cannot point reads or writes elsewhere.
-	zdir := filepath.Join(home, ".zcode")
-	extra := []string{"HOME=" + home, "ZCODE_MODEL=", "ZCODE_HOME=" + zdir, "ZCODE_STORAGE_DIR=" + zdir,
-		"ZCODE_DATA_BASE_DIR=" + zdir, "ZCODE_SESSION_DB_PATH=" + filepath.Join(zdir, "cli", "db", "db.sqlite"),
-		"ZCODE_SESSION_DB=" + filepath.Join(zdir, "cli", "db", "db.sqlite"), "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
-		"XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"), "XDG_STATE_HOME=" + filepath.Join(home, ".local", "state"),
-		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"), "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE=" + provider}
 	removeHome := func() { _ = os.RemoveAll(home) }
+	extra, err := zcodeReadOnlyEnv(env, home, provider)
+	if err != nil {
+		removeHome()
+		return nil, nil, refuse(err.Error())
+	}
 	version, err := zcodeVersion(argv[0], cwd, mergeEnvironment(append([]string(nil), env...), extra))
 	if err != nil || !zcodeReadOnlyVersions[version] {
 		removeHome()
@@ -199,6 +196,87 @@ func prepareZCodeLaunch(cwd string, argv, env []string) (func(), []string, error
 // found there is put back if the path is still free, or left under the
 // sidecar name, never deleted. It never opens a non-regular file, so a FIFO
 // swapped in cannot block it.
+// zcodeReadOnlyEnv builds the child's environment overrides. ZCode reads a
+// wide set of ZCODE_* and OTEL_* variables (storage, logging, mailbox,
+// telemetry export, app and provider locations), so inheritance is deny by
+// default: every inherited variable with either prefix is blanked unless set
+// here. Storage, logs and the mailbox live inside the isolated home;
+// messaging and telemetry are off. The provider config is copied into the
+// home, because ZCode may rewrite the file it is given while reading it.
+func zcodeReadOnlyEnv(env []string, home, provider string) ([]string, error) {
+	zdir := filepath.Join(home, ".zcode")
+	copied := filepath.Join(zdir, "cli", "provider_config.json")
+	if err := copyPrivate(provider, copied); err != nil {
+		return nil, errors.New("cannot copy the provider config into the isolated home")
+	}
+	db := filepath.Join(zdir, "cli", "db", "db.sqlite")
+	set := map[string]string{
+		"HOME": home, "XDG_CONFIG_HOME": filepath.Join(home, ".config"), "XDG_DATA_HOME": filepath.Join(home, ".local", "share"),
+		"XDG_STATE_HOME": filepath.Join(home, ".local", "state"), "XDG_CACHE_HOME": filepath.Join(home, ".cache"),
+		"ZCODE_HOME": zdir, "ZCODE_STORAGE_DIR": zdir, "ZCODE_DATA_BASE_DIR": zdir, "ZCODE_SESSION_DB_PATH": db, "ZCODE_SESSION_DB": db,
+		"ZCODE_LOG_DIR": filepath.Join(zdir, "logs"), "ZCODE_MAILBOX_ROOT": filepath.Join(zdir, "mailbox"), "ZCODE_MESSAGE_ENABLED": "0",
+		"ZCODE_MODEL_TELEMETRY_ENABLED": "0", "OTEL_SDK_DISABLED": "true", "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE": copied,
+	}
+	// agentctl's own activity source binds the log directory it watches; keep
+	// that one, and only that one.
+	if dir := envValue(env, "ZCODE_LOG_DIR"); agentctlActivityLogDir(dir) {
+		set["ZCODE_LOG_DIR"] = dir
+	}
+	extra := make([]string, 0, len(set)+8)
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok || (!strings.HasPrefix(key, "ZCODE_") && !strings.HasPrefix(key, "OTEL_")) {
+			continue
+		}
+		if _, pinned := set[key]; !pinned {
+			extra = append(extra, key+"=")
+		}
+	}
+	for key, value := range set {
+		extra = append(extra, key+"="+value)
+	}
+	return extra, nil
+}
+
+func agentctlActivityLogDir(dir string) bool {
+	if dir == "" || filepath.Dir(filepath.Clean(dir)) != filepath.Clean(os.TempDir()) || !strings.HasPrefix(filepath.Base(dir), "agentctl-zcode-log-") {
+		return false
+	}
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && int(stat.Uid) == os.Getuid()
+}
+
+func copyPrivate(from, to string) error {
+	source, err := os.OpenFile(from, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	if info, err := source.Stat(); err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return errors.New("provider config is not a small regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(source, 1<<20+1))
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
+		return err
+	}
+	target, err := os.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := target.Write(data); err != nil {
+		_ = target.Close()
+		return err
+	}
+	return target.Close()
+}
+
 func removeIfOurs(path string, created fs.FileInfo, want []byte) {
 	var nonce [8]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
