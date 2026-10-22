@@ -53,7 +53,7 @@
         "exit_code": {
           "enum": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 70]
         },
-        "details": {"type": "object"},
+        "details": {"type": "object", "properties": {"replayed": {"const": true}, "reused": {"type": "boolean"}, "continuation": {"$ref": "continue-result.schema.json#/properties/continuation"}}},
         "next_actions": {
           "type": "array",
           "items": {"$ref": "#/$defs/next_action"}

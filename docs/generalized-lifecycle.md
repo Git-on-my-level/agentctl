@@ -142,7 +142,7 @@ silently install a supervisor.
    envelope. Keep each round's events and collection separate. For Multica,
    exact issue/run continuation must use an advertised authoritative operation;
    unavailable support returns capability_unavailable (5), never local fallback.
-2. **Explicit carry-forward round:** add `follow-up <exec-id> --mode carry_forward`
+2. **Explicit carry-forward round (implemented):** use `continue <exec-id> --mode carry_forward`
    with the same stable request-key, prompt-source and result collection rules.
    Re-launch the original frozen recipe without native resume argv. Read a
    completed, integrity-verified stored answer without acknowledging it, and
@@ -150,7 +150,7 @@ silently install a supervisor.
    prior-result provenance/digest/text, and the new instruction. Treat prior text
    as quoted context, not executable policy. The caller supplies necessary task
    context because the original prompt is not retained. Refuse unavailable or
-   truncated results unless an explicit reviewed truncation policy is selected.
+   truncated results with no truncation policy. See [follow-up turns](follow-up-turns.md) for shipped size bounds and diagnostics.
    Journal only digests, byte counts and the relation `carry_forward`; neither
    the composed prompt nor a second transcript is stored. The new result reports
    `mode: carry_forward` and `native_session_reused: false`. This is available

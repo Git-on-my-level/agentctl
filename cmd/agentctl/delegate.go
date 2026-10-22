@@ -26,6 +26,7 @@ import (
 
 type delegateOptions struct {
 	detachedReceipt                         bool
+	continuationMode                        string
 	requestFile, promptFile, cwd, authority string
 	promptStdin, plan, wait, contentOnly    bool
 	detach                                  bool
@@ -303,7 +304,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 			return delegateError(output.CodeInternal, "delegate_binding_missing", "delegated execution is missing its resolution binding").WithDetail("execution_id", previous.ID.String())
 		}
 		if opts.plan {
-			return writeDelegatePlan(renderer, *previous.Delegation, nil, previous.ID.String())
+			return writeDelegatePlan(renderer, *previous.Delegation, nil, previous.ID.String(), previous)
 		}
 		return a.collectDelegation(ctx, renderer, c, previous, opts, true)
 	}
@@ -323,7 +324,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 			return delegateExecutionError(output.CodeInternal, "delegated execution has no resolution binding", previous)
 		}
 		if opts.plan {
-			return writeDelegatePlan(renderer, *previous.Delegation, nil, previous.ID.String())
+			return writeDelegatePlan(renderer, *previous.Delegation, nil, previous.ID.String(), previous)
 		}
 		return a.collectDelegation(ctx, renderer, c, previous, opts, true)
 	}
@@ -483,10 +484,10 @@ func (a *app) findDelegation(ctx context.Context, c common, mutation contracts.M
 	return execution, found, nil
 }
 
-func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding, native any, reusedID string) *output.Error {
+func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding, native any, reusedID string, replay ...model.Execution) *output.Error {
 	result := map[string]any{"plan": true, "requested": binding.Requested, "resolved": binding.Resolved,
 		"provenance":     map[string]any{"configuration_sha256": binding.ConfigurationSHA256, "defaulted": binding.Defaulted},
-		"lifecycle":      map[string]any{"owner": "foreground_process", "restart_durable": false, "background_flag_supported": false, "detach_flag_supported": true, "collection": "--wait --content requires completed work and stored answer", "cross_process_cancel": "only when explicitly advertised by adapter", "steering": "agentctl steer <id>; the route is the steer capability negotiated for this exact invocation", "follow_up": "agentctl continue <id> after completion; available when the resume capability is supported", "durable_authority": "Multica dispatch"},
+		"lifecycle":      map[string]any{"owner": "foreground_process", "restart_durable": false, "background_flag_supported": false, "detach_flag_supported": true, "collection": "--wait --content requires completed work and stored answer", "cross_process_cancel": "only when explicitly advertised by adapter", "steering": "agentctl steer <id>; the route is the steer capability negotiated for this exact invocation", "follow_up": "agentctl continue <id> after completion; native resume when supported; explicit --mode carry_forward with an eligible stored answer", "durable_authority": "Multica dispatch"},
 		"request_sha256": binding.RequestSHA256, "side_effect_class": output.ReadOnly, "reused": reusedID != ""}
 	if native != nil {
 		result["native"] = native
@@ -496,7 +497,12 @@ func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding
 	if reusedID != "" {
 		result["id"] = reusedID
 	}
-	err := renderer.Success(output.Success{Result: result, Lines: []output.Line{{Lead: "delegate.plan", Fields: []output.Field{
+	var actions []output.NextAction
+	if len(replay) != 0 && failedResultReplay(replay[0], true) {
+		result["replayed"] = true
+		actions = append(actions, retryWithNewKeyAction(replay[0]))
+	}
+	err := renderer.Success(output.Success{Result: result, NextActions: actions, Lines: []output.Line{{Lead: "delegate.plan", Fields: []output.Field{
 		{Name: "harness", Value: binding.Resolved.Harness}, {Name: "model", Value: binding.Resolved.Model}, {Name: "host", Value: binding.Resolved.Host}, {Name: "authority", Value: binding.Resolved.Authority}}}}})
 	if err != nil {
 		return output.Wrap(output.CodeInternal, "write delegation plan", false, err)
@@ -504,7 +510,15 @@ func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding
 	return nil
 }
 
-func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c common, execution model.Execution, opts delegateOptions, reused bool) *output.Error {
+func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c common, execution model.Execution, opts delegateOptions, reused bool) (problem *output.Error) {
+	defer func() {
+		if problem != nil && failedResultReplay(execution, reused) {
+			problem.WithDetail("replayed", true).WithDetail("reused", true).WithActions(retryWithNewKeyAction(execution))
+		}
+		if problem != nil && len(execution.Supersedes) != 0 && execution.Delegation != nil {
+			problem.WithDetail("continues", execution.Supersedes[0]).WithDetail("continuation", continuationMetadata(*execution.Delegation))
+		}
+	}()
 	for opts.wait && !execution.State.Terminal() {
 		if execution.State == model.StateAttention || execution.Liveness == model.LivenessBlocked {
 			return delegateExecutionError(output.CodeAttentionRequired, "delegated execution requires attention", execution)
@@ -578,6 +592,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		}
 		if len(execution.Supersedes) != 0 {
 			result["continues"] = execution.Supersedes[0]
+			result["continuation"] = continuationMetadata(*binding)
 		}
 		if outcome != nil {
 			result["outcome"] = outcome
@@ -585,6 +600,13 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		actions := []output.NextAction{{Label: "Retrieve final answer", Argv: []string{"agentctl", "result", execution.ID.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite}}
 		if item, ok := executionCapability(execution, adapter.CapabilityResume); ok && execution.State == model.StateCompleted && item.Status == model.CapabilitySupported {
 			actions = append(actions, output.NextAction{Label: "Send a follow-up turn to the same native session", Argv: []string{"agentctl", "continue", execution.ID.String(), "--request-key", "<key>", "--prompt-file", "<path>"}, Mutates: true, SideEffectClass: output.ExternalSideEffect, Preconditions: []string{"choose a new request key for this turn"}})
+		}
+		if execution.State == model.StateCompleted && execution.Delegation.NativePlan != nil {
+			actions = append(actions, output.NextAction{Label: "Start an explicit carry-forward round in a fresh session", Argv: []string{"agentctl", "continue", execution.ID.String(), "--mode", "carry_forward", "--request-key", "<new-key>", "--prompt-file", "<path>"}, Mutates: true, SideEffectClass: output.ExternalSideEffect, Preconditions: []string{"requires a verified complete stored answer of at most 64 KiB; include additional task context in the new prompt"}})
+		}
+		if failedResultReplay(execution, reused) {
+			result["replayed"] = true
+			actions = append(actions, retryWithNewKeyAction(execution))
 		}
 		if !execution.State.Terminal() {
 			actions = append([]output.NextAction{{Label: "Wait for execution", Argv: []string{"agentctl", "await", execution.ID.String(), "--content"}, Mutates: true, SideEffectClass: output.LocalOperationalWrite}}, actions...)
@@ -622,4 +644,17 @@ func (a *app) delegateFailedExecution(ctx context.Context, c common, execution m
 		problem.WithDetail("failure", view)
 	}
 	return problem
+}
+
+// Replayed terminal failures retain their original identity and exit behavior.
+func failedResultReplay(execution model.Execution, reused bool) bool {
+	return reused && !refusedAdmission(execution) && (execution.State == model.StateFailed || execution.State == model.StateCancelled)
+}
+
+func retryWithNewKeyAction(execution model.Execution) output.NextAction {
+	argv := []string{"agentctl", "delegate", "--request-file", "<request-with-new-key>", "--prompt-file", "<path>"}
+	if len(execution.Supersedes) != 0 && execution.Delegation != nil {
+		argv = []string{"agentctl", "continue", execution.Supersedes[0].String(), "--mode", continuationMetadata(*execution.Delegation).Mode, "--request-key", "<new-key>", "--prompt-file", "<path>"}
+	}
+	return output.NextAction{Label: "Result replayed; deliberately retry with a new request key", Argv: argv, Mutates: true, SideEffectClass: output.ExternalSideEffect, Preconditions: []string{"the existing FAILED/CANCELLED execution was recovered, not relaunched; choose a new key only for a deliberate new attempt", "for continue use the latest completed turn if the lineage has advanced"}}
 }

@@ -17,13 +17,11 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/output"
 )
 
-// A follow-up turn sends the next instruction to the native session of a
-// finished delegated execution. The native CLI still owns the conversation:
-// agentctl relaunches it with its own resume flag and the frozen launch
-// recipe, as a new execution that supersedes the one it continues. Each turn
-// therefore keeps its own result, events, and collection state.
+// A follow-up launches the frozen delegated recipe with native resume by
+// default, or an explicit fresh session carrying the prior answer. Both modes
+// share admission, idempotency and lineage; native CLIs own their conversations.
 
-const continueUsage = "usage: agentctl continue <execution-id> --request-key key (--prompt-file path|--prompt-stdin) [--plan] [--wait [--content] [--require-result-source source] [--min-result-bytes n]] [--timeout duration] [--label name ...]"
+const continueUsage = "usage: agentctl continue <execution-id> --request-key key (--prompt-file path|--prompt-stdin) [--mode native|carry_forward] [--plan] [--wait [--content] [--require-result-source source] [--min-result-bytes n]] [--timeout duration] [--label name ...]"
 
 // admissionRefusedSource marks an execution journaled only to close a
 // check-then-launch race. Nothing native was started, so its request key
@@ -35,7 +33,7 @@ func refusedAdmission(execution model.Execution) bool {
 }
 
 func parseContinue(args []string) (string, string, delegateOptions, *output.Error) {
-	opts := delegateOptions{authority: "native"}
+	opts := delegateOptions{authority: "native", continuationMode: "native"}
 	ref, key := "", ""
 	seen := map[string]bool{}
 	for i := 0; i < len(args); i++ {
@@ -55,13 +53,18 @@ func parseContinue(args []string) (string, string, delegateOptions, *output.Erro
 			opts.contentOnly = true
 		case "--prompt-stdin":
 			opts.promptStdin = true
-		case "--request-key", "--prompt-file", "--timeout", "--label", "--require-result-source", "--min-result-bytes":
+		case "--mode", "--request-key", "--prompt-file", "--timeout", "--label", "--require-result-source", "--min-result-bytes":
 			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
 				return "", "", opts, delegateError(output.CodeUsage, "continue_missing_flag_value", "continue flag requires a nonempty value").WithDetail("flag", flag)
 			}
 			i++
 			value := args[i]
 			switch flag {
+			case "--mode":
+				if value != "native" && value != "carry_forward" {
+					return "", "", opts, delegateError(output.CodeUsage, "continue_invalid_mode", "mode must be native or carry_forward")
+				}
+				opts.continuationMode = value
 			case "--request-key":
 				if len(value) > 256 || strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
 					return "", "", opts, delegateError(output.CodeUsage, "continue_invalid_request_key", "request key must be at most 256 printable bytes")
@@ -149,7 +152,12 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 	if problem != nil {
 		return problem
 	}
-	inputDigest, err := digestJSON(map[string]any{"continues": id.String(), "prompt_sha256": prompt.Digest, "timeout": opts.timeout.String(), "labels": opts.labels})
+	inputs := map[string]any{"continues": id.String(), "prompt_sha256": prompt.Digest, "timeout": opts.timeout.String(), "labels": opts.labels}
+	// Preserve pre-existing native request digests; explicit native is the default.
+	if opts.continuationMode != "native" {
+		inputs["mode"] = opts.continuationMode
+	}
+	inputDigest, err := digestJSON(inputs)
 	if err != nil {
 		return output.Wrap(output.CodeInternal, "digest continue inputs", false, err)
 	}
@@ -169,7 +177,7 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 			return delegateError(output.CodeInternal, "delegate_binding_missing", "continued execution is missing its resolution binding").WithDetail("execution_id", previous.ID.String())
 		}
 		if opts.plan {
-			return writeContinuePlan(renderer, id, *previous.Delegation, nil, previous.ID.String())
+			return writeContinuePlan(renderer, id, *previous.Delegation, nil, previous.ID.String(), previous)
 		}
 		return a.collectContinuation(ctx, renderer, c, id, previous, opts, true)
 	}
@@ -228,22 +236,32 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 	plan := source.Delegation.NativePlan
 	recipe := plan.Recipe()
 	session := nativeSessionID(source)
-	// Report a missing route before a missing session id: the route is the
-	// reason an adapter such as Devin never records one.
-	argv, err := adapter.ContinuationArgv(source.Adapter, recipe, plan.PromptDelivery, firstNonEmptyString(session, "unrecorded"))
-	if err != nil {
-		return mapAdapterError("this execution's native session cannot be continued", err).WithDetail("diagnostic_code", "continue_route_unavailable").WithDetail("execution_id", id.String()).WithDetail("adapter", source.Adapter)
-	}
-	if session == "" {
-		return continueError(output.CodeCapabilityUnavailable, "continue_session_unrecorded", "this execution recorded no native session id, so its exact session cannot be continued", source).WithDetail("adapter", source.Adapter)
+	var argv []string
+	continuation := &model.FollowUpContinuation{Mode: opts.continuationMode, NativeSessionReused: opts.continuationMode == "native"}
+	if opts.continuationMode == "carry_forward" {
+		prompt, continuation.PriorResult, problem = a.carryForwardPrompt(ctx, c, source, prompt)
+		if problem != nil {
+			return problem
+		}
+		argv = append([]string(nil), recipe...)
+	} else {
+		// Report a missing route before a missing session id.
+		argv, err = adapter.ContinuationArgv(source.Adapter, recipe, plan.PromptDelivery, firstNonEmptyString(session, "unrecorded"))
+		if err != nil {
+			return mapAdapterError("this execution's native session cannot be continued", err).WithDetail("diagnostic_code", "continue_route_unavailable").WithDetail("execution_id", id.String()).WithDetail("adapter", source.Adapter).
+				WithActions(output.NextAction{Label: "Inspect explicit carry-forward rounds", Argv: []string{"agentctl", "help", "continue"}, SideEffectClass: output.ReadOnly, Preconditions: []string{"choose --mode carry_forward for a fresh session carrying the prior answer"}})
+		}
+		if session == "" {
+			return continueError(output.CodeCapabilityUnavailable, "continue_session_unrecorded", "this execution recorded no native session id, so its exact session cannot be continued", source).WithDetail("adapter", source.Adapter)
+		}
 	}
 	if source.CWD == nil || *source.CWD == "" {
 		return continueError(output.CodeInvalidState, "continue_cwd_unrecorded", "the execution recorded no working directory", source)
 	}
 	if info, statErr := os.Stat(*source.CWD); statErr != nil || !info.IsDir() {
-		return continueError(output.CodeInvalidState, "continue_cwd_missing", "the execution's working directory no longer exists; native sessions are resumed where they ran", source)
+		return continueError(output.CodeInvalidState, "continue_cwd_missing", "the execution's working directory no longer exists; follow-up turns run where the original ran", source)
 	}
-	binding := &model.DelegationBinding{RequestSHA256: inputDigest, ConfigurationSHA256: source.Delegation.ConfigurationSHA256, Requested: append(json.RawMessage(nil), source.Delegation.Requested...),
+	binding := &model.DelegationBinding{Continuation: continuation, RequestSHA256: inputDigest, ConfigurationSHA256: source.Delegation.ConfigurationSHA256, Requested: append(json.RawMessage(nil), source.Delegation.Requested...),
 		Resolved: source.Delegation.Resolved, Defaulted: append([]string(nil), source.Delegation.Defaulted...),
 		NativePlan: &model.DelegationNativePlan{Env: append([]string(nil), plan.Env...), Argv: argv, PromptDelivery: plan.PromptDelivery, Permissions: plan.Permissions, RecipeArgv: append([]string(nil), recipe...)}}
 	prompt.Delivery = plan.PromptDelivery
@@ -283,7 +301,7 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 		if execution, ok, _ := a.findDelegation(context.Background(), c, mutation); ok {
 			problem.WithDetail("execution_id", execution.ID.String())
 		}
-		return problem.WithDetail("continues", id.String())
+		return problem.WithDetail("continues", id.String()).WithDetail("continuation", continuation)
 	}
 	if opts.plan {
 		var document struct {
@@ -292,7 +310,7 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 		if err := json.Unmarshal(captured.Bytes(), &document); err != nil {
 			return output.Wrap(output.CodeInternal, "decode native preflight", false, err)
 		}
-		return writeContinuePlan(renderer, id, *binding, map[string]any{"env": plan.Env, "argv": redactSession(argv, session), "prompt_delivery": plan.PromptDelivery, "permissions": plan.Permissions, "preflight": document.Result}, "")
+		return writeContinuePlan(renderer, id, *binding, map[string]any{"env": plan.Env, "argv": continuationPlanArgv(argv, session, continuation.Mode), "prompt_delivery": plan.PromptDelivery, "permissions": plan.Permissions, "preflight": document.Result}, "")
 	}
 	execution, found, problem := a.findDelegation(ctx, c, mutation)
 	if problem != nil {
@@ -352,9 +370,29 @@ func redactSession(argv []string, session string) []string {
 	return out
 }
 
-func writeContinuePlan(renderer output.Renderer, source ids.ExecutionID, binding model.DelegationBinding, native any, reusedID string) *output.Error {
-	result := map[string]any{"plan": true, "continues": source, "resolved": binding.Resolved,
-		"lifecycle": map[string]any{"owner": "foreground_process", "restart_durable": false, "turn": "new execution that supersedes the continued one once it completes", "session": "same native session; the native CLI owns its history",
+func continuationPlanArgv(argv []string, session, mode string) []string {
+	if mode == "carry_forward" {
+		return append([]string(nil), argv...)
+	}
+	return redactSession(argv, session)
+}
+
+func continuationMetadata(binding model.DelegationBinding) *model.FollowUpContinuation {
+	if binding.Continuation != nil {
+		return binding.Continuation
+	}
+	// Retained turns admitted before mode metadata existed always used resume.
+	return &model.FollowUpContinuation{Mode: "native", NativeSessionReused: true}
+}
+
+func writeContinuePlan(renderer output.Renderer, source ids.ExecutionID, binding model.DelegationBinding, native any, reusedID string, replay ...model.Execution) *output.Error {
+	continuation := continuationMetadata(binding)
+	sessionDescription := "same native session; the native CLI owns its history"
+	if continuation.Mode == "carry_forward" {
+		sessionDescription = "fresh native session with quoted prior answer; original conversation is not retained"
+	}
+	result := map[string]any{"plan": true, "continues": source, "continuation": continuation, "resolved": binding.Resolved,
+		"lifecycle": map[string]any{"owner": "foreground_process", "restart_durable": false, "turn": "new execution that supersedes the continued one once it completes", "session": sessionDescription,
 			"working_directory": "the continued execution's working directory", "collection": "--wait --content requires completed work and stored answer"},
 		"request_sha256": binding.RequestSHA256, "side_effect_class": output.ReadOnly, "reused": reusedID != ""}
 	if native != nil {
@@ -365,7 +403,12 @@ func writeContinuePlan(renderer output.Renderer, source ids.ExecutionID, binding
 	if reusedID != "" {
 		result["id"] = reusedID
 	}
-	if err := renderer.Success(output.Success{Result: result, Lines: []output.Line{{Lead: "continue.plan", Fields: []output.Field{
+	var actions []output.NextAction
+	if len(replay) != 0 && failedResultReplay(replay[0], true) {
+		result["replayed"] = true
+		actions = append(actions, retryWithNewKeyAction(replay[0]))
+	}
+	if err := renderer.Success(output.Success{Result: result, NextActions: actions, Lines: []output.Line{{Lead: "continue.plan", Fields: []output.Field{
 		{Name: "continues", Value: source}, {Name: "harness", Value: binding.Resolved.Harness}, {Name: "model", Value: binding.Resolved.Model}}}}}); err != nil {
 		return output.Wrap(output.CodeInternal, "write continue plan", false, err)
 	}

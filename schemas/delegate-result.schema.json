@@ -283,6 +283,10 @@
     },
     "outcome": {
       "$ref": "outcome.schema.json"
+    },
+    "replayed": {
+      "const": true,
+      "description": "Existing FAILED/CANCELLED work recovered by request key, without relaunch. Also present at error.details.replayed on --wait errors."
     }
   },
   "anyOf": [

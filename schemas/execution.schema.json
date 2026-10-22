@@ -164,6 +164,7 @@
         "defaulted"
       ],
       "properties": {
+        "continuation": {"$ref": "continue-result.schema.json#/properties/continuation"},
         "request_sha256": {
           "type": "string",
           "pattern": "^sha256:[a-f0-9]{64}$"

@@ -95,7 +95,7 @@ func TestContinueRunsFollowUpTurnsOnTheSameNativeSession(t *testing.T) {
 	}
 	third := resultID(t, out)
 
-	code, replay := f.command(t, "review feedback", "continue", first, "--request-key", "turn-2", "--prompt-stdin", "--wait")
+	code, replay := f.command(t, "review feedback", "continue", first, "--request-key", "turn-2", "--mode", "native", "--prompt-stdin", "--wait")
 	if code != 0 || resultID(t, replay) != second || !strings.Contains(replay, `"reused":true`) {
 		t.Fatalf("replay exit=%d output=%s", code, replay)
 	}
@@ -298,6 +298,8 @@ func TestContinueFlagsFailClosed(t *testing.T) {
 		{"exec-a", "--request-key", "k", "--prompt-stdin", "--plan", "--wait"},
 		{"exec-a", "--request-key", "k", "--prompt-stdin", "--timeout", "-1s"},
 		{"exec-a", "--request-key", "k", "--prompt-stdin", "--cwd", "/tmp"},
+		{"exec-a", "--request-key", "k", "--prompt-stdin", "--mode", "auto"},
+		{"exec-a", "--request-key", "k", "--prompt-stdin", "--mode", "native", "--mode", "carry_forward"},
 	} {
 		if _, _, _, problem := parseContinue(args); problem == nil {
 			t.Fatalf("args %v must be rejected", args)

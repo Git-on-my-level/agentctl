@@ -162,3 +162,42 @@ func TestCleanupRemovesDelegationIdempotencySnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDelegationRecoversContinuationDroppedByLegacyProjection(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	initial := sampleExecution(now)
+	initial.Delegation = storedDelegationFixture()
+	initial.Delegation.Continuation = &model.FollowUpContinuation{Mode: "carry_forward", PriorResult: &model.CarryForwardResult{Source: "assistant", SHA256: hash('c'), Bytes: 20}}
+	created, _, err := j.CreateExecution(ctx, initial, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, contradictory := range []bool{false, true} {
+		err = j.db.Update(func(tx *bbolt.Tx) error {
+			projection := created
+			binding := *projection.Delegation
+			binding.Continuation = nil
+			if contradictory {
+				binding.Continuation = &model.FollowUpContinuation{Mode: "native", NativeSessionReused: true}
+			}
+			projection.Delegation = &binding
+			body, err := json.Marshal(projection)
+			if err != nil {
+				return err
+			}
+			return tx.Bucket(bExecutions).Put([]byte(created.ID.String()), body)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		recovered, err := j.GetExecution(ctx, created.ID)
+		if contradictory {
+			if !errors.Is(err, ErrCorrupt) {
+				t.Fatalf("conflicting provenance err=%v", err)
+			}
+		} else if err != nil || !reflect.DeepEqual(recovered.Delegation, created.Delegation) {
+			t.Fatalf("recovered=%#v err=%v", recovered.Delegation, err)
+		}
+	}
+}
