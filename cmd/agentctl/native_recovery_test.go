@@ -14,7 +14,7 @@ import (
 func recoveryFixture(t *testing.T, failure string) delegateFixture {
 	t.Helper()
 	body := `case " $* " in
-*" exec resume thread-1 "*)
+*" resume "*" thread-1 "*)
  printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}' '{"type":"item.completed","item":{"type":"agent_message","text":"resumed answer"}}' '{"type":"turn.completed"}' ;;
 *)
  printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}' '` + failure + `' ;;
@@ -24,7 +24,7 @@ esac`
 		Adapters:         map[string]config.Adapter{"codex": {Executable: filepath.Join(f.root, "cursor-agent")}},
 		AgentPreferences: &config.AgentPreferences{Mode: "advisory", Preferred: []config.AgentPreference{{Agent: "codex", Family: "sol", Model: "test-model", Default: true}}},
 	}}}
-	if err := config.Save(f.config, cfg, false); err != nil {
+	if err := config.Save(f.config, cfg, true); err != nil {
 		t.Fatal(err)
 	}
 	f.selectRequest(t, `{"family":"sol"}`)
@@ -38,7 +38,7 @@ func TestZCodeRepeatedParkingSettlesAncestorsAndCancels(t *testing.T) {
 *" --resume s1 "*)
  case " $* " in
  *" park-again "*) printf '%s\n' '{"sessionId":"s1","error":{"message":"connect ECONNRESET"}}';;
- *) printf '%s\n' '{"sessionId":"s1","response":"recovered answer"}';;
+ *) printf '%s\n' '{"sessionId":"s1","turnId":"t3","response":"recovered answer"}';;
  esac;;
 *) printf '%s\n' '{"sessionId":"s1","error":{"message":"connect ECONNRESET"}}';;
 esac
