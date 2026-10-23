@@ -111,6 +111,8 @@ func Build(in Input) (Recipe, error) {
 		recipe, err = buildOMP(in.Executable, model, speed, effort)
 	case "openclaw":
 		recipe, err = buildOpenClaw(in.Executable, model, speed, effort)
+	case "hermes":
+		recipe, err = buildHermes(in.Executable, model, speed, effort, access, in.UnattendedCodingPermissions)
 	case "opencode":
 		recipe, err = buildOpenCode(in.Executable, model, speed, effort)
 	case "zcode":
@@ -172,7 +174,8 @@ func permissionLabel(harness, access string, grant bool) string {
 	}
 	// ZCode always requests yolo, which bypasses ordinary permission prompts
 	// but retains always-ask checks in the native evaluator (0.16.9).
-	if harness == "zcode" {
+	// Hermes yolo bypasses dangerous-command prompts, not all session policy.
+	if harness == "zcode" || harness == "hermes" {
 		return PermissionsConstrained
 	}
 	if !grant {
@@ -208,6 +211,8 @@ func CanonicalHarness(raw string) (string, error) {
 		return "omp", nil
 	case "openclaw":
 		return "openclaw", nil
+	case "hermes":
+		return "hermes", nil
 	case "opencode":
 		return "opencode", nil
 	case "zcode":
@@ -265,6 +270,8 @@ func defaultExecutable(harness string) string {
 		return "omp"
 	case "openclaw":
 		return "openclaw"
+	case "hermes":
+		return "hermes"
 	case "opencode":
 		return "opencode"
 	case "zcode":

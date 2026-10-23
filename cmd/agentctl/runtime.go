@@ -1060,6 +1060,8 @@ func inferAdapter(executable string) string {
 		return "omp"
 	case "openclaw":
 		return "openclaw"
+	case "hermes":
+		return "hermes"
 	case "opencode":
 		return "opencode"
 	case "zcode":
@@ -1416,6 +1418,8 @@ func (a *app) runtimeAdapter(c common, name, issue, run string) (adapter.Adapter
 		return adapter.NewOMP(), "", nil
 	case "openclaw":
 		return adapter.NewOpenClaw(), "", nil
+	case "hermes":
+		return adapter.NewHermes(), "", nil
 	case "opencode":
 		return adapter.NewOpenCode(), "", nil
 	case "zcode":
@@ -1744,7 +1748,7 @@ func buildOutcome(execution model.Execution, result adapter.Result, now time.Tim
 				stderrDiagnostic = nil
 			}
 			if stderrDiagnostic != nil && code == "native_execution_failed" && category == "" && nativeCode == "" {
-				code, kind, category, retryable = classifyOutcomeFailure(stderrDiagnostic.Message(), "", "", execution.Adapter, "")
+				code, kind, category, retryable = classifyOutcomeFailure(stderrDiagnostic.Message(), stderrDiagnostic.Code, "", execution.Adapter, "")
 			}
 			message := allowlistedFailureMessage(model.OutcomeFailure{Code: code, Category: category, Source: execution.Adapter, NativeCode: nativeCode, Message: raw})
 			message, _ = boundedOutcomeText(message, model.NativeFailureMessageLimit)
@@ -1806,7 +1810,7 @@ func allowlistedFailureMessage(failure model.OutcomeFailure) string {
 		return failureMessageApproval
 	case "quota_exceeded":
 		return failureMessageQuota
-	case "model_not_found", "executable_not_found", "permission_denied", "network", "invalid_arguments":
+	case "codex_git_repo_check_required", "model_not_found", "executable_not_found", "permission_denied", "network", "invalid_arguments":
 		return (&diagnostic.Stderr{Code: failure.Code}).Message()
 	case "result_extraction_failed":
 		return failureMessageUnextracted
@@ -1875,6 +1879,9 @@ func withAllowlistedFailure(outcome model.Outcome) model.Outcome {
 func stringData(data map[string]any, key string) string { value, _ := data[key].(string); return value }
 
 func classifyOutcomeFailure(message, diagnosticCode, nativeCode, harness, providerCategory string) (string, string, string, bool) {
+	if harness == "codex" && (diagnosticCode == "codex_git_repo_check_required" || message == (&diagnostic.Stderr{Code: "codex_git_repo_check_required"}).Message()) {
+		return "codex_git_repo_check_required", "configuration", "", false
+	}
 	if diagnosticCode == "result_extraction_failed" {
 		return "result_extraction_failed", "observation", "", false
 	}
@@ -2001,7 +2008,7 @@ func appendNativeEvent(ctx context.Context, journal *store.Journal, execution mo
 }
 func safeNativePayload(input map[string]any) map[string]any {
 	output := map[string]any{}
-	for _, key := range []string{"family", "type", "is_error", "status", "state", "subtype", "usage", "artifact_ref", "attention_kind", "diagnostic_code", "progress_phase"} {
+	for _, key := range []string{"family", "type", "is_error", "status", "state", "subtype", "usage", "artifact_ref", "attention_kind", "diagnostic_code", "repair_action", "progress_phase"} {
 		if value, ok := input[key]; ok {
 			output[key] = value
 		}

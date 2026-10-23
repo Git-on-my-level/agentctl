@@ -89,7 +89,7 @@ func (a *app) recent(ctx context.Context, renderer output.Renderer, c common, ar
 	}
 	items := make([]recentExecution, 0, opts.limit)
 	matched, remaining := 0, 0
-	summary := recentUsageSummary{ByAdapter: map[string]int{}, ByAuthority: map[string]int{}, ByState: map[string]int{}, ByCaller: map[string]int{}}
+	summary := recentUsageSummary{ByAdapter: map[string]int{}, ByAuthority: map[string]int{}, ByState: map[string]int{}, ByCaller: map[string]int{}, ByModel: map[string]int{}}
 	for i := len(executions) - 1; i >= 0; i-- {
 		execution := executions[i]
 		if execution.CreatedAt.After(asOf) || !recentMatches(execution, opts, acks) {
@@ -104,6 +104,11 @@ func (a *app) recent(ctx context.Context, renderer output.Renderer, c common, ar
 			caller = string(execution.Caller.Harness)
 		}
 		summary.ByCaller[caller]++
+		modelName := "unknown"
+		if execution.Delegation != nil && execution.Delegation.Resolved.Model != "" {
+			modelName = execution.Delegation.Resolved.Model
+		}
+		summary.ByModel[modelName]++
 		if acks.Unreconciled(execution) {
 			summary.Unreconciled++
 		}
@@ -145,7 +150,7 @@ func (a *app) recent(ctx context.Context, renderer output.Renderer, c common, ar
 	}
 	if opts.summary {
 		result["summary"] = summary
-		lines = append(lines, output.Line{Lead: "recent.summary", Fields: []output.Field{{Name: "total", Value: matched}, {Name: "unreconciled", Value: summary.Unreconciled}, {Name: "by_adapter", Value: summary.ByAdapter}, {Name: "by_authority", Value: summary.ByAuthority}, {Name: "by_state", Value: summary.ByState}, {Name: "by_caller", Value: summary.ByCaller}}})
+		lines = append(lines, output.Line{Lead: "recent.summary", Fields: []output.Field{{Name: "total", Value: matched}, {Name: "unreconciled", Value: summary.Unreconciled}, {Name: "by_adapter", Value: summary.ByAdapter}, {Name: "by_authority", Value: summary.ByAuthority}, {Name: "by_state", Value: summary.ByState}, {Name: "by_caller", Value: summary.ByCaller}, {Name: "by_model", Value: summary.ByModel}}})
 	}
 	if err := renderer.Success(output.Success{Result: result, Lines: lines}); err != nil {
 		return output.Wrap(output.CodeInternal, "write recent executions", false, err)
@@ -158,6 +163,7 @@ type recentUsageSummary struct {
 	ByAuthority  map[string]int `json:"by_authority"`
 	ByState      map[string]int `json:"by_state"`
 	ByCaller     map[string]int `json:"by_caller"`
+	ByModel      map[string]int `json:"by_model"`
 	Unreconciled int            `json:"unreconciled"`
 }
 

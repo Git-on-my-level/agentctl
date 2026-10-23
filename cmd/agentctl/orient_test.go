@@ -117,6 +117,7 @@ func TestDiscoveredOrientAdaptersCoverEveryKnownNativeAdapter(t *testing.T) {
 		"codex":        "/fake/bin/codex",
 		"cursor-agent": "/fake/bin/cursor-agent",
 		"devin":        "/fake/bin/devin",
+		"hermes":       "/fake/bin/hermes",
 		"omp":          "/fake/bin/omp",
 		"openclaw":     "/fake/bin/openclaw",
 		"opencode":     "/fake/bin/opencode",
@@ -129,7 +130,7 @@ func TestDiscoveredOrientAdaptersCoverEveryKnownNativeAdapter(t *testing.T) {
 		return "", errors.New("executable not found")
 	}}
 	want := []struct{ name, executable string }{
-		{"claude", "claude"}, {"codex", "codex"}, {"cursor", "cursor-agent"}, {"devin", "devin"}, {"omp", "omp"}, {"openclaw", "openclaw"}, {"opencode", "opencode"}, {"zcode", "zcode"},
+		{"claude", "claude"}, {"codex", "codex"}, {"cursor", "cursor-agent"}, {"devin", "devin"}, {"hermes", "hermes"}, {"omp", "omp"}, {"openclaw", "openclaw"}, {"opencode", "opencode"}, {"zcode", "zcode"},
 	}
 	adapters := discoveredOrientAdapters(deps)
 	if len(adapters) != len(want) {

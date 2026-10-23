@@ -96,7 +96,7 @@ grant: `delegation.unattended_coding_permissions: true` adds Cursor `--force`,
 Codex `--dangerously-bypass-approvals-and-sandbox`, Claude Code
 `--permission-mode auto`, and grants Devin ACP one-operation permission approvals on coding launches (the default
 `settings.access`). `settings.access: "read_only"` uses Cursor `--mode ask`
-and Codex `--sandbox read-only` and never adds those coding permission flags.
+and Codex `--sandbox read-only -c approval_policy="never"` and never adds those coding permission flags.
 ZCode read-only (reviewed for ZCode CLI 0.17.0 only; any other version
 refuses with `zcode_read_only_unavailable`) layers every control the CLI
 offers, because none is sufficient alone: `--mode plan` (Bash still runs in
@@ -335,3 +335,24 @@ ZCode 0.16.9 documents `--mode yolo` as its prompt permission mode. Its native
 evaluator bypasses ordinary permission prompts but checks always-ask tools
 first, so this existing argv reports `permissions: constrained` with or without
 the coding grant. This label does not assert sandbox isolation or change argv.
+
+## Unattended approval audit and Hermes
+
+Codex delegate recipes add `--skip-git-repo-check` by default, including coding
+without the permission grant. This skips repository admission only; it does not
+grant tools or remove the read-only sandbox. Older recipes and expert `run`
+classify the exact native trust failure as `codex_git_repo_check_required`.
+Read-only Codex also sets `approval_policy="never"`, so denied commands return
+to the native turn. See the [approval audit](unattended-approvals.md) for the
+per-recipe classifications and evidence limits.
+
+A configured `hermes` preference supports exact native model IDs, including
+`{"harness":"hermes","model":"glm-5.3-flash"}`. It resolves through the same
+preferred-entry allowlist as every other harness; it does not add model defaults.
+The recipe is `hermes chat --format stream-json --model MODEL --query-file -`,
+with optional `--reasoning` and grant-gated `--yolo`. Permissions are constrained;
+read_only and explicit service speed are refused. Managed stdin closes after the
+single query. Result extraction requires a successful terminal result and process
+exit. `continue` drops creation overrides on `--resume`; provider-backed resume
+is not verified and reported degraded. Live steering is unavailable. This native
+adapter does not establish a Multica runtime or change Multica dispatch policy.

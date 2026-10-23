@@ -234,7 +234,7 @@ func TestDoctorRequiresProfileSelectionWhenConfigHasNoDefault(t *testing.T) {
 
 func TestDoctorIncludesDetectedNativeAdaptersAlongsideConfiguredAuthority(t *testing.T) {
 	got := doctorAdapterSelection(nil, []string{"multica"}, []string{"claude", "codex", "cursor", "hermes"})
-	want := []string{"claude", "codex", "cursor", "multica"}
+	want := []string{"claude", "codex", "cursor", "hermes", "multica"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("selection=%v, want %v", got, want)
 	}

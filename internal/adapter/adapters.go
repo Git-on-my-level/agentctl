@@ -897,6 +897,8 @@ func baseManifest(name, version, kind, format string, capabilities []CapabilityD
 		executable = "claude"
 	case "omp":
 		executable = "omp"
+	case "hermes":
+		executable = "hermes"
 	case "opencode":
 		executable = "opencode"
 	case "zcode":
@@ -977,6 +979,13 @@ func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName, 
 		}
 		constraints := cloneMap(declaration.Constraints)
 		reason := ""
+		if manifest.Adapter == "hermes" && len(argv) != 0 && (name == CapabilityLaunch || name == CapabilityResultContent) {
+			constraints["required_prompt_delivery"] = PromptDeliveryStdin
+			constraints["requires_nonempty_prompt"] = true
+			if !hermesInvocationSatisfied(argv) || len(prompts) != 1 || prompts[0].Delivery != PromptDeliveryStdin || prompts[0].Bytes <= 0 {
+				return Capability{Name: name, Status: CapabilityUnavailable, Source: "manifest", SemanticsVersion: declaration.SemanticsVersion, Constraints: constraints, Reason: "Hermes requires chat --format stream-json --query-file - with nonempty managed stdin"}
+			}
+		}
 		if manifest.Adapter == "devin" && isDevinACP(argv) && (name == CapabilityLaunch || name == CapabilityResultContent) {
 			constraints["required_prompt_delivery"] = PromptDeliveryStdin
 			constraints["requires_nonempty_prompt"] = true
@@ -988,7 +997,7 @@ func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName, 
 		if declaredReason, ok := constraints["reason"].(string); ok {
 			reason = declaredReason
 		}
-		if len(argv) != 0 && name == CapabilityResultContent && (!invocationSatisfied(argv, constraints) || manifest.Adapter == "openclaw" && !openclawInvocationSatisfied(argv)) {
+		if len(argv) != 0 && name == CapabilityResultContent && (!invocationSatisfied(argv, constraints) || manifest.Adapter == "openclaw" && !openclawInvocationSatisfied(argv) || manifest.Adapter == "hermes" && !hermesInvocationSatisfied(argv)) {
 			status = CapabilityUnavailable
 			constraints["invocation_satisfied"] = false
 			reason = "exact invocation does not satisfy the structured-output requirement"

@@ -624,6 +624,10 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 }
 
 func delegateExecutionError(code output.Code, message string, execution model.Execution) *output.Error {
+	if nativeApprovalAttention(execution) {
+		return delegateError(code, "native_approval_required", message).WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State).WithDetail("repair_action", "Cancel the parked run, review its native permission policy, and retry with a new request key; agentctl cannot approve a native prompt.").WithActions(attentionNextActions(output.JSON, execution)...)
+	}
+
 	problem := delegateError(code, "delegate_"+string(code), message).WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State).
 		WithActions(output.NextAction{Label: "Inspect execution", Argv: []string{"agentctl", "status", execution.ID.String()}, SideEffectClass: output.ReadOnly})
 	if execution.NativeRecoveryParked() {

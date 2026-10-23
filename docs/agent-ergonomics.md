@@ -610,7 +610,8 @@ agentctl recent --caller hermes --limit 100 --cursor "$cursor"
 `--since` includes the creation timestamp; `--until` excludes it. Both accept
 RFC3339 timestamps, normalize to UTC, and reject an empty/reversed interval.
 `--summary` returns no execution rows and aggregates the entire filtered set by
-adapter, authority, state and declared caller, plus the unacknowledged-terminal
+adapter, authority, state, declared caller and resolved model (`by_model`;
+`unknown` when no resolved model is recorded), plus the unacknowledged-terminal
 count. `count` is zero, `total` is the aggregate population, and `has_more` is
 false. Summary and cursor cannot be combined. JSON is the machine interface;
 text includes the same summary counters.

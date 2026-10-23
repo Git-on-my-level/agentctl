@@ -143,7 +143,8 @@
         "by_authority",
         "by_state",
         "by_caller",
-        "unreconciled"
+        "unreconciled",
+        "by_model"
       ],
       "properties": {
         "by_adapter": {
@@ -177,6 +178,14 @@
         "unreconciled": {
           "type": "integer",
           "minimum": 0
+        },
+        "by_model": {
+          "type": "object",
+          "description": "Resolved model where recorded; unknown otherwise.",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
         }
       }
     }

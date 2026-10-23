@@ -64,6 +64,7 @@ type steerRoute struct {
 
 var steerRoutes = map[string]steerRoute{
 	"claude-code": {live: claudeLiveProtocol, liveArgv: []string{"--print", "--input-format", "stream-json", "--output-format", "stream-json", "--replay-user-messages"}, resume: claudeResumeArgv, interruptible: true},
+	"hermes":      {resume: hermesResumeArgv, unavailable: "Hermes interrupt and resume has not been verified; continue only after a completed turn"},
 	"codex":       {resume: codexResumeArgv, interruptible: true},
 	"cursor":      {resume: cursorResumeArgv, unavailable: "cursor-agent does not persist the prompt of a turn that is interrupted, so resuming would continue without the task; cursor-agent acp is not mapped by this adapter"},
 	"omp":         {resume: ompResumeArgv, unavailable: "omp does not persist a session that is interrupted during its first turn, so interrupt_resume is unverified; its --mode rpc steer command is not mapped by this adapter"},
@@ -193,6 +194,10 @@ func NegotiateResume(manifest Manifest, argv []string, promptDelivery string, pr
 		return capability
 	}
 	capability.Status = CapabilitySupported
+	if manifest.Adapter == "hermes" {
+		capability.Status = CapabilityDegraded
+		capability.Reason = "Hermes resume argv inherits session policy; provider-backed continuation is not verified on this host"
+	}
 	if manifest.Adapter == "devin" {
 		capability.Status = CapabilityDegraded
 		capability.Reason = "ACP session/load is checked at initialize; requires agentCapabilities.loadSession=true"
