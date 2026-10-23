@@ -431,9 +431,11 @@ func (a *app) markContinued(c common, source, continuation ids.ExecutionID) {
 					continue
 				}
 				for _, parent := range all {
-					if parent.ID == parentID && parent.NativeRecoveryParked() && nativeSessionID(parent) == nativeSessionID(child) {
+					if parent.ID == parentID && nativeSessionID(parent) == nativeSessionID(child) {
 						seen[parentID], changed = true, true
-						a.markContinuedOne(c, parentID, continuation)
+						if parent.NativeRecoveryParked() {
+							a.markContinuedOne(c, parentID, continuation)
+						}
 					}
 				}
 			}

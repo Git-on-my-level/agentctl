@@ -38,6 +38,7 @@ func TestZCodeRepeatedParkingSettlesAncestorsAndCancels(t *testing.T) {
 *" --resume s1 "*)
  case " $* " in
  *" park-again "*) printf '%s\n' '{"sessionId":"s1","error":{"message":"connect ECONNRESET"}}';;
+ *" unknown-failure "*) printf '%s\n' '{"sessionId":"s1","error":{"message":"unknown provider error"}}';;
  *) printf '%s\n' '{"sessionId":"s1","turnId":"t3","response":"recovered answer"}';;
  esac;;
 *) printf '%s\n' '{"sessionId":"s1","error":{"message":"connect ECONNRESET"}}';;
@@ -51,7 +52,12 @@ esac
 		t.Fatalf("initial park exit=%d: %s", code, out)
 	}
 	first := failureExecutionIDFromOutput(t, out)
-	code, out = f.command(t, "park-again", "continue", first, "--request-key", "second-park", "--prompt-stdin", "--wait")
+	code, out = f.command(t, "unknown-failure", "continue", first, "--request-key", "intermediate-failure", "--prompt-stdin", "--wait")
+	if code != 11 {
+		t.Fatalf("intermediate failure exit=%d: %s", code, out)
+	}
+	middle := failureExecutionIDFromOutput(t, out)
+	code, out = f.command(t, "park-again", "continue", middle, "--request-key", "second-park", "--prompt-stdin", "--wait")
 	if code != 10 {
 		t.Fatalf("second park exit=%d: %s", code, out)
 	}
@@ -61,7 +67,7 @@ esac
 		t.Fatalf("stale: %s", refused)
 	}
 	code, out = f.command(t, "recover", "continue", second, "--request-key", "final-recovery", "--prompt-stdin", "--wait")
-	if code != 0 || !strings.Contains(out, "recovered answer") || f.launches(t) != 3 {
+	if code != 0 || !strings.Contains(out, "recovered answer") || f.launches(t) != 4 {
 		t.Fatalf("recover exit=%d: %s", code, out)
 	}
 	for _, id := range []string{first, second} {
