@@ -36,7 +36,8 @@ To redirect an execution that is still running, use [steering](steering.md).
 | Situation | Outcome |
 | --- | --- |
 | The execution is still running | `invalid_state`, `continue_source_running`; wait or steer |
-| The execution failed, was cancelled, or is orphaned | `invalid_state`, `continue_source_not_completed`; an interrupted turn may not have kept its context |
+| The execution failed or is parked | Native recovery requires verified evidence, a recorded checkpoint and a verified failed-turn persistence route; carry-forward remains refused |
+| The execution was cancelled or is orphaned | `invalid_state`, `continue_source_not_completed` |
 | The execution was launched with expert `run` | `capability_unavailable`, `continue_launch_plan_missing`; no recipe was recorded |
 | A later completed turn exists | `conflict`, `continue_not_latest`, with `latest_execution_id` |
 | Another follow-up turn is running | `conflict`, `continue_in_progress`; nothing is launched |
@@ -47,6 +48,31 @@ To redirect an execution that is still running, use [steering](steering.md).
 
 A failed or cancelled follow-up does not block the session: continue again
 from the same completed turn with a new request key.
+
+## Transient failure parking
+
+Delegated Codex/ZCode children that exit with an explicit network or capacity
+failure and a recorded native session park as `attention`/`blocked`, with
+`source_state=paused_network` or `paused_capacity`. The attention event carries
+the fixed failure diagnostic and an exited-child receipt. The execution/event
+commit is atomic. `delegate --wait` exits 10 with `retryable=true` and a recovery
+plan action. A same-key replay returns the pause, never relaunches it.
+
+Parking preserves the original task binding, frozen recipe and checkpoint; it
+does not automatically replay a prompt or uncertain tool effect. Inspect events
+and surviving files, then send a new-key native `continue` instruction that
+reconciles prior tool effects. Recover the latest parked descendant, not an
+older ancestor. Only one active turn is admitted across the native session's
+lineage. On successful recovery all parked ancestors in that session settle as
+cancelled/superseded; their original attention receipts remain in history.
+
+Reconcile and supervisor preserve this intentional exited-child pause instead
+of inferring owner loss. `cancel` can close a still-idle parked execution locally
+under a fresh revision/lineage check; it refuses if a recovery turn is active.
+There is no timer, auto-resume, native process retained, or provider substitution.
+No-session, unknown, auth and real quota errors keep existing failure behavior.
+The parked marker describes execution state, not provider health or successful
+work. Multica issue/run authority and continuation are unchanged.
 
 Two invocations that both pass these checks still launch only one turn. Each
 journals its execution first and then looks again; the turn created first
@@ -171,7 +197,7 @@ build their argv from the same verified route, so an adapter that reports
 | Cursor | yes | `--resume <chat>` after a completed turn kept context across three turns. (An interrupted Cursor turn does not, which is why Cursor cannot be steered.) |
 | OMP | yes, for expert launches only in practice | `--resume <session>` after a completed turn kept context when run by hand. It has no delegate recipe on a host that does not list it as preferred. |
 | Devin ACP | conditional | Loads the recorded session only when initialize advertises loadSession; print-mode runs cannot continue. |
-| ZCode | no | No verified resume route. Not installed on the verification host. |
+| ZCode 0.17.0 coding | yes | `--resume <sessionId> --prompt`; synthetic continuity smoke recorded with the resilience change. Failed-turn recovery requires the recorded session; read_only storage is disposable and refused. No process-interruption steering. |
 | Generic process, Multica | no | No native session to resume; Multica owns its own continuation. |
 
 This table describes native resume. Explicit carry-forward uses a fresh
@@ -200,7 +226,7 @@ foreground ownership for both modes.
 
 - Executions launched with expert `run`. They record no launch recipe.
 - A follow-up on another host. The native session lives where it ran.
-- Native resume for Devin print-mode runs and ZCode; explicit carry-forward is available with a frozen delegate recipe and eligible stored answer.
+- Native resume for Devin print-mode runs or ZCode read_only runs; explicit carry-forward is available with a frozen delegate recipe and eligible stored answer.
 
 In native mode, Devin continuation starts a fresh ACP server and checks `loadSession` before
 `session/load`. A missing capability produces `acp_load_session_not_advertised`

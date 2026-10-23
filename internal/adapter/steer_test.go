@@ -363,7 +363,7 @@ func TestNegotiateResumeIsSeparateFromSteer(t *testing.T) {
 		{name: "omp without a session", manifest: ompManifest(), argv: []string{"omp", "-p", "--no-session", "task"}, delivery: PromptDeliveryArgv, promptArgs: 1, status: CapabilityUnavailable, reason: "disables a session"},
 		{name: "cursor embedded prompt", manifest: cursorManifest(), argv: []string{"cursor-agent", "--print", "task"}, status: CapabilityUnavailable, reason: "agentctl-managed prompt delivery"},
 		{name: "devin", manifest: devinManifest(), argv: []string{"devin", "-p", "--", "task"}, delivery: PromptDeliveryArgv, promptArgs: 1, status: CapabilityUnavailable, reason: "session id"},
-		{name: "zcode", manifest: zcodeManifest(), argv: []string{"zcode", "--json", "--prompt", "task"}, delivery: PromptDeliveryArgv, promptArgs: 1, status: CapabilityUnavailable, reason: "no verified native session resume"},
+		{name: "zcode", manifest: zcodeManifest(), argv: []string{"zcode", "--json", "--prompt", "task"}, delivery: PromptDeliveryArgv, promptArgs: 1, status: CapabilitySupported},
 		{name: "generic", manifest: genericManifest(), argv: []string{"/bin/echo", "task"}, delivery: PromptDeliveryArgv, promptArgs: 1, status: CapabilityUnavailable, reason: "no verified native session resume"},
 		{name: "multica", manifest: multicaManifest(), argv: []string{"multica"}, delivery: PromptDeliveryStdin, status: CapabilityUnavailable, reason: "Multica owns"},
 	} {
@@ -385,6 +385,7 @@ func TestContinuationArgv(t *testing.T) {
 		{adapter: "omp", delivery: PromptDeliveryArgv, base: []string{"omp", "--no-prewalk", "-p", "--mode", "json", "--model", "m"}, want: []string{"omp", "--no-prewalk", "-p", "--mode", "json", "--model", "m", "--resume", "s-1"}},
 		{adapter: "claude-code", delivery: PromptDeliveryStream, base: []string{"claude", "--print", "--input-format", "stream-json"}, want: []string{"claude", "--print", "--input-format", "stream-json", "--resume", "s-1"}},
 		{adapter: "codex", delivery: PromptDeliveryStdin, base: []string{"codex", "exec", "--json", "-"}, want: []string{"codex", "exec", "resume", "--json", "s-1", "-"}},
+		{adapter: "zcode", delivery: PromptDeliveryArgv, base: []string{"zcode", "--json", "--mode", "yolo", "--prompt"}, want: []string{"zcode", "--json", "--mode", "yolo", "--resume", "s-1", "--prompt"}},
 	} {
 		got, err := ContinuationArgv(test.adapter, test.base, test.delivery, "s-1")
 		if err != nil || !reflect.DeepEqual(got, test.want) {

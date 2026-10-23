@@ -119,14 +119,47 @@ func continueError(code output.Code, diagnostic, message string, source model.Ex
 // continuationSuccessors returns the turns already launched from source.
 func continuationSuccessors(all []model.Execution, source ids.ExecutionID) []model.Execution {
 	var out []model.Execution
-	for _, execution := range all {
-		for _, id := range execution.Supersedes {
-			if id == source && execution.Acquisition == model.AcquisitionLaunched {
-				out = append(out, execution)
+	seen := map[ids.ExecutionID]bool{source: true}
+	for changed := true; changed; {
+		changed = false
+		for _, execution := range all {
+			if seen[execution.ID] || refusedAdmission(execution) || execution.Acquisition != model.AcquisitionLaunched {
+				continue
+			}
+			for _, id := range execution.Supersedes {
+				if seen[id] {
+					seen[execution.ID] = true
+					out = append(out, execution)
+					changed = true
+					break
+				}
 			}
 		}
 	}
 	return out
+}
+
+func continuationRoot(all []model.Execution, source model.Execution) ids.ExecutionID {
+	seen := map[ids.ExecutionID]bool{}
+	for !seen[source.ID] {
+		seen[source.ID] = true
+		found := false
+		for _, parent := range all {
+			for _, id := range source.Supersedes {
+				if id == parent.ID && parent.Adapter == source.Adapter && nativeSessionID(parent) == nativeSessionID(source) {
+					source, found = parent, true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			break
+		}
+	}
+	return source.ID
 }
 
 func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
@@ -198,20 +231,34 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 	if source.Authority != model.AuthorityNative {
 		return continueError(output.CodeCapabilityUnavailable, "continue_authority_unavailable", "only native executions can be continued; Multica owns issue and run continuation", source)
 	}
-	if !source.State.Terminal() {
+	if !source.State.Terminal() && !source.NativeRecoveryParked() {
 		return continueError(output.CodeInvalidState, "continue_source_running", "the execution is still running; wait for it, or redirect it with steer", source).
 			WithActions(output.NextAction{Label: "Wait for the running turn", Argv: []string{"agentctl", "await", id.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}},
 				output.NextAction{Label: "Inspect steering", Argv: []string{"agentctl", "help", "steer"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 	}
-	if source.State != model.StateCompleted {
+	recovery := opts.continuationMode == "native" && (source.State == model.StateFailed || source.NativeRecoveryParked())
+	if source.State != model.StateCompleted && !recovery {
 		return continueError(output.CodeInvalidState, "continue_source_not_completed", "only a completed turn can be continued; a failed or cancelled turn may not have kept its context", source)
+	}
+	if recovery && source.Observation.Integrity != model.IntegrityVerified {
+		return continueError(output.CodeInvalidState, "continue_recovery_unverified", "failed-turn recovery requires verified execution evidence", source)
 	}
 	if source.Delegation == nil || source.Delegation.NativePlan == nil {
 		return continueError(output.CodeCapabilityUnavailable, "continue_launch_plan_missing", "only delegated executions record the launch plan a follow-up turn needs; start the work with delegate", source).
 			WithActions(output.NextAction{Label: "Discover delegate", Argv: []string{"agentctl", "help", "delegate"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 	}
+	var latestParked *model.Execution
 	for _, successor := range continuationSuccessors(all, id) {
-		if !successor.State.Terminal() {
+		if successor.NativeRecoveryParked() && (latestParked == nil || successor.CreatedAt.After(latestParked.CreatedAt)) {
+			candidate := successor
+			latestParked = &candidate
+		}
+	}
+	if latestParked != nil {
+		return continueError(output.CodeConflict, "continue_not_latest", "this session has a later parked turn; recover that checkpoint", source).WithDetail("latest_execution_id", latestParked.ID.String())
+	}
+	for _, successor := range continuationSuccessors(all, id) {
+		if !successor.State.Terminal() && !successor.NativeRecoveryParked() {
 			return continueError(output.CodeConflict, "continue_in_progress", "a follow-up turn on this session is already running", source).WithDetail("running_execution_id", successor.ID.String()).
 				WithActions(output.NextAction{Label: "Wait for the running turn", Argv: []string{"agentctl", "await", successor.ID.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}})
 		}
@@ -233,6 +280,12 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 			return continueError(output.CodeConflict, "continue_not_latest", "this session already has a later completed turn; continue from that execution", source).WithDetail("latest_execution_id", latest.ID.String())
 		}
 	}
+	root := continuationRoot(all, source)
+	for _, relative := range continuationSuccessors(all, root) {
+		if relative.ID != source.ID && !relative.State.Terminal() && !relative.NativeRecoveryParked() {
+			return continueError(output.CodeConflict, "continue_in_progress", "a turn in this native session lineage is already running", source).WithDetail("running_execution_id", relative.ID.String())
+		}
+	}
 	plan := source.Delegation.NativePlan
 	recipe := plan.Recipe()
 	session := nativeSessionID(source)
@@ -247,6 +300,9 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 	} else {
 		// Report a missing route before a missing session id.
 		argv, err = adapter.ContinuationArgv(source.Adapter, recipe, plan.PromptDelivery, firstNonEmptyString(session, "unrecorded"))
+		if recovery {
+			argv, err = adapter.FailedContinuationArgv(source.Adapter, recipe, plan.PromptDelivery, firstNonEmptyString(session, "unrecorded"))
+		}
 		if err != nil {
 			return mapAdapterError("this execution's native session cannot be continued", err).WithDetail("diagnostic_code", "continue_route_unavailable").WithDetail("execution_id", id.String()).WithDetail("adapter", source.Adapter).
 				WithActions(output.NextAction{Label: "Inspect explicit carry-forward rounds", Argv: []string{"agentctl", "help", "continue"}, SideEffectClass: output.ReadOnly, Preconditions: []string{"choose --mode carry_forward for a fresh session carrying the prior answer"}})
@@ -272,6 +328,9 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 	admissionReused, admissionRecorded := false, false
 	run := runOptions{env: append([]string(nil), plan.Env...), adapter: source.Adapter, cwd: *source.CWD, argv: append([]string(nil), argv...), preparedPrompt: prompt, plan: opts.plan, timeout: opts.timeout, labels: labels,
 		delegation: binding, supersedes: []ids.ExecutionID{id}, mutationOverride: &mutation, admissionReused: &admissionReused, admissionRecorded: &admissionRecorded}
+	if opts.continuationMode == "native" {
+		run.resumeSession = session
+	}
 	// Two invocations can both pass the checks above. Each journals its turn
 	// first and then looks again, so exactly one of them launches: the turn
 	// that was created first, with the execution ID as the tie-break.
@@ -281,13 +340,28 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 			return problem
 		}
 		all, err := journal.ListExecutions(context.Background(), false)
+		currentSource, sourceErr := journal.GetExecution(context.Background(), source.ID)
 		journal.Close()
 		if err != nil {
 			return mapStoreError("recheck follow-up turns", err)
 		}
-		for _, other := range continuationSuccessors(all, id) {
-			if other.ID == created.ID || (other.State.Terminal() && other.State != model.StateCompleted) {
+		if sourceErr != nil {
+			return mapStoreError("recheck continuation source", sourceErr)
+		}
+		if source.NativeRecoveryParked() && !currentSource.NativeRecoveryParked() {
+			return continueError(output.CodeConflict, "continue_source_changed", "the parked source changed before admission", currentSource)
+		}
+		descendants := map[ids.ExecutionID]bool{}
+		for _, descendant := range continuationSuccessors(all, id) {
+			descendants[descendant.ID] = true
+		}
+		for _, other := range continuationSuccessors(all, root) {
+			if other.ID == source.ID || other.ID == created.ID ||
+				(other.State.Terminal() && (other.State != model.StateCompleted || (!descendants[other.ID] && !other.CreatedAt.After(source.CreatedAt)))) {
 				continue
+			}
+			if other.NativeRecoveryParked() && !descendants[other.ID] {
+				continue // a parked ancestor is settled when this recovery succeeds
 			}
 			if other.CreatedAt.Before(created.CreatedAt) || (other.CreatedAt.Equal(created.CreatedAt) && other.ID.String() < created.ID.String()) {
 				return continueError(output.CodeConflict, "continue_in_progress", "another follow-up turn on this session was admitted first; this one was not launched", source).WithDetail("running_execution_id", other.ID.String())
@@ -335,6 +409,39 @@ func (a *app) collectContinuation(ctx context.Context, renderer output.Renderer,
 // link on the new execution is authoritative; this back-pointer is a
 // convenience for readers of the old record and is assigned at most once.
 func (a *app) markContinued(c common, source, continuation ids.ExecutionID) {
+	journal, problem := a.openRead(c)
+	if problem != nil {
+		return
+	}
+	all, err := journal.ListExecutions(context.Background(), false)
+	journal.Close()
+	if err != nil {
+		return
+	}
+	a.markContinuedOne(c, source, continuation)
+	seen := map[ids.ExecutionID]bool{source: true}
+	for changed := true; changed; {
+		changed = false
+		for _, child := range all {
+			if !seen[child.ID] {
+				continue
+			}
+			for _, parentID := range child.Supersedes {
+				if seen[parentID] {
+					continue
+				}
+				for _, parent := range all {
+					if parent.ID == parentID && parent.NativeRecoveryParked() && nativeSessionID(parent) == nativeSessionID(child) {
+						seen[parentID], changed = true, true
+						a.markContinuedOne(c, parentID, continuation)
+					}
+				}
+			}
+		}
+	}
+}
+
+func (a *app) markContinuedOne(c common, source, continuation ids.ExecutionID) {
 	journal, problem := a.openWrite(c)
 	if problem != nil {
 		return
@@ -345,6 +452,13 @@ func (a *app) markContinued(c common, source, continuation ids.ExecutionID) {
 		return
 	}
 	now := a.now().UTC()
+	if current.NativeRecoveryParked() {
+		current, err = finalizeResultConverging(context.Background(), journal, current,
+			adapter.Result{State: adapter.StateCancelled, Error: "parked turn recovered by a native continuation"}, now, false)
+		if err != nil {
+			return
+		}
+	}
 	current.SupersededBy = &continuation
 	current.UpdatedAt = now
 	updated, err := journal.UpdateExecution(context.Background(), current, current.Revision)

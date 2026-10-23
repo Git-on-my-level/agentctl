@@ -104,7 +104,7 @@ Verified against the installed CLIs on 2026-10-01.
 | Cursor 2026.09.23 | none | `--resume <chat>` after an interrupt answers without the interrupted turn's prompt, so the task would be lost. `cursor-agent acp` behaves the same after `session/cancel` and is not mapped. |
 | OMP 17.0.6 | none | A session interrupted during its first turn cannot be resumed. `--mode rpc` has a working `steer` command, and `omp acp` kept context across cancel and re-prompt; this adapter maps neither. |
 | Devin ACP | none | Session loading after completed turns is implemented. Cancel plus reprompt steering has not been verified by this adapter against real Devin; no steering route is advertised. |
-| ZCode | none | One JSON document per run and no verified resume route. Not installed on the verification host. |
+| ZCode 0.17.0 | none | Exited coding turns can continue via `--resume <sessionId> --prompt`; interrupted-process steering remains unverified. Disposable read_only sessions cannot resume. |
 | Generic process, Multica | none | No native steering route. Multica owns run input. |
 
 `delegate` launches Claude Code in the streaming-input form, so delegated

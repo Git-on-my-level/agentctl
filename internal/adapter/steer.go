@@ -67,7 +67,7 @@ var steerRoutes = map[string]steerRoute{
 	"codex":       {resume: codexResumeArgv, interruptible: true},
 	"cursor":      {resume: cursorResumeArgv, unavailable: "cursor-agent does not persist the prompt of a turn that is interrupted, so resuming would continue without the task; cursor-agent acp is not mapped by this adapter"},
 	"omp":         {resume: ompResumeArgv, unavailable: "omp does not persist a session that is interrupted during its first turn, so interrupt_resume is unverified; its --mode rpc steer command is not mapped by this adapter"},
-	"zcode":       {unavailable: "zcode headless runs print one JSON document and expose no verified steering or resume route", unresumable: "zcode has no verified native session resume route"},
+	"zcode":       {resume: zcodeResumeArgv, unavailable: "ZCode has no verified steering route; only exited-turn continuation is supported"},
 	"devin":       {resume: devinACPResumeArgv, unavailable: "devin ACP cancel plus reprompt steering has not been verified against the real CLI; print mode does not report its session id"},
 	"multica":     {unavailable: "Multica owns run input; no verified steering route exists for the current CLI", unresumable: "Multica owns issue and run continuation"},
 }
@@ -218,6 +218,29 @@ func ContinuationArgv(adapterName string, base []string, promptDelivery, session
 		return nil, capabilityError(CapabilityResume, err.Error())
 	}
 	return argv, nil
+}
+
+// FailedContinuationArgv requires the stronger interrupted-turn persistence
+// contract. A resume route verified only after completion is insufficient.
+func FailedContinuationArgv(adapterName string, base []string, promptDelivery, sessionID string) ([]string, error) {
+	if !steerRoutes[adapterName].interruptible && adapterName != "zcode" {
+		return nil, capabilityError(CapabilityResume, "adapter has no verified failed-turn session recovery route")
+	}
+	return ContinuationArgv(adapterName, base, promptDelivery, sessionID)
+}
+
+func zcodeResumeArgv(base []string, sessionID, delivery string) ([]string, error) {
+	if delivery != PromptDeliveryArgv || len(base) < 2 || base[len(base)-1] != "--prompt" || !argvHasFlag(base, "--json") {
+		return nil, fmt.Errorf("ZCode resume requires --json and a final --prompt with argv delivery")
+	}
+	if argvHasFlag(base, "--disallowed-tools", "--disallowedTools") {
+		return nil, fmt.Errorf("ZCode read-only launches use disposable session storage and cannot resume")
+	}
+	base = withoutSessionSelection(base, "--resume")
+	if argvHasFlag(base, "--continue", "-c") {
+		return nil, fmt.Errorf("ZCode resume requires an exact session, not latest-session selection")
+	}
+	return append(append([]string(nil), base[:len(base)-1]...), "--resume", sessionID, "--prompt"), nil
 }
 
 func steerBaseArgv(argv []string, promptDelivery string, promptArgs int) ([]string, error) {

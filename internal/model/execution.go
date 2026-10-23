@@ -64,6 +64,14 @@ func (s State) Terminal() bool {
 	return s == StateCompleted || s == StateFailed || s == StateCancelled || s == StateOrphaned
 }
 
+// NativeRecoveryParked marks an intentional pause after the owned child exited,
+// not a missing runner lease. Continuing still requires a verified session route.
+func (e Execution) NativeRecoveryParked() bool {
+	return e.Authority == AuthorityNative && e.State == StateAttention && e.Liveness == LivenessBlocked &&
+		e.SourceState != nil && (*e.SourceState == "paused_network" || *e.SourceState == "paused_capacity") &&
+		e.Observation.Integrity == IntegrityVerified
+}
+
 type SourceBinding struct {
 	Kind        string  `json:"kind"`
 	AliasID     ids.ID  `json:"alias_id"`

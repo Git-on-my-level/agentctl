@@ -1546,6 +1546,13 @@ func attentionDecisionPrecondition(e model.Execution) string {
 // evidence, a read-only re-check, and the explicit wait that continues through
 // attention. None of them returns attention_required again.
 func attentionNextActions(mode output.Mode, e model.Execution) []output.NextAction {
+	if e.NativeRecoveryParked() {
+		return []output.NextAction{
+			{Label: "Read the parked failure receipt", Argv: []string{"agentctl", "events", e.ID.String(), "--kind", "attention"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}},
+			{Label: "Plan native checkpoint recovery", Argv: []string{"agentctl", "continue", e.ID.String(), "--request-key", "<new-key>", "--prompt-file", "<recovery-instruction>", "--plan"}, SideEffectClass: output.ReadOnly, Preconditions: []string{"reconcile prior tool effects and recover from the latest parked turn"}},
+			{Label: "Cancel the idle parked turn", Argv: []string{"agentctl", "cancel", e.ID.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{"no recovery turn is active"}},
+		}
+	}
 	argv := []string{"agentctl", "await", e.ID.String(), "--output", string(mode), "--no-timeout", "--ignore-attention"}
 	if e.DeadlineAt != nil {
 		argv = []string{"agentctl", "await", e.ID.String(), "--output", string(mode), "--through-execution-deadline", "--ignore-attention"}
@@ -1565,7 +1572,7 @@ func eventLine(e model.Event) output.Line {
 	return output.Line{Lead: e.ID.String(), Fields: []output.Field{{Name: "execution", Value: e.ExecutionID}, {Name: "sequence", Value: e.Sequence}, {Name: "kind", Value: e.Kind}, {Name: "state", Value: e.State}, {Name: "ordering", Value: e.Ordering}}}
 }
 func outcomeError(code output.Code, message string, e model.Execution) *output.Error {
-	return output.NewError(code, message, code == output.CodeTimeout || code == output.CodeExecutionUnknown).WithDetail("execution_id", e.ID.String()).WithDetail("state", e.State).WithDetail("revision", e.Revision)
+	return output.NewError(code, message, code == output.CodeTimeout || code == output.CodeExecutionUnknown || e.NativeRecoveryParked()).WithDetail("execution_id", e.ID.String()).WithDetail("state", e.State).WithDetail("revision", e.Revision)
 }
 func mapStoreError(message string, err error) *output.Error {
 	switch {

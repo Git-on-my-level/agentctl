@@ -241,6 +241,9 @@ func mergeZCodeFailure(current, next *zcodeFailureDiagnostic) *zcodeFailureDiagn
 	if diagnostic.AuthenticationRequired(next.Message) {
 		return next
 	}
+	if current != nil && current.Category != "capacity" && next.Category != "capacity" && diagnostic.NetworkFailure(next.Message) {
+		return next
+	}
 	if current == nil || next.Category == "capacity" && current.Category != "capacity" {
 		return next
 	}
@@ -787,7 +790,11 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 			continue
 		}
 		if declaration.Name == CapabilityResume {
-			capabilities = append(capabilities, NegotiateResume(a.config.Manifest, req.Argv, req.PromptDelivery, req.PromptArgs))
+			resume := NegotiateResume(a.config.Manifest, req.Argv, req.PromptDelivery, req.PromptArgs)
+			if a.Name() == "zcode" && backendVersion != "0.17.0" {
+				resume.Status, resume.Reason = CapabilityUnavailable, "ZCode continuation is verified only for CLI 0.17.0"
+			}
+			capabilities = append(capabilities, resume)
 			continue
 		}
 		capabilities = append(capabilities, NegotiateInvocation(a.config.Manifest, req.Argv, declaration.Name, InvocationPrompt{Delivery: req.PromptDelivery, Bytes: req.PromptBytes}))

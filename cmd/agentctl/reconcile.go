@@ -325,6 +325,9 @@ func parseReconcileDuration(value string) (time.Duration, error) {
 func classifyReconcile(executions []model.Execution, acks store.AcknowledgementIndex, host ids.HostID, now time.Time, opts reconcileOptions, prove func(processIdentity) processProof) reconcileReport {
 	report := newReconcileReport(now, opts)
 	for _, execution := range executions {
+		if execution.NativeRecoveryParked() {
+			continue // a deliberate exited-child pause is not a lost owner
+		}
 		if !reconcileFilterMatches(execution, opts) {
 			continue
 		}
@@ -521,7 +524,7 @@ func (a *app) applyReconcile(ctx context.Context, journal *store.Journal, host i
 		if err != nil {
 			return mapStoreError("reread execution before orphan", err)
 		}
-		if current.State.Terminal() || current.OriginHostID != host || !reconcileFilterMatches(current, opts) {
+		if current.State.Terminal() || current.NativeRecoveryParked() || current.OriginHostID != host || !reconcileFilterMatches(current, opts) {
 			continue
 		}
 		age := observationAge(current, now)
