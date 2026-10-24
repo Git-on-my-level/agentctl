@@ -254,6 +254,11 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 	}
 	prepared = finalized
 	created := prepared
+	if created.State.Terminal() {
+		a.anxRegisterTerminal(c, created.ID)
+	} else {
+		a.anxRegisterStart(c, created)
+	}
 	publicTarget := publicDispatchTarget(target)
 	issueAlias, ok := bindingAlias(created.SourceBindings, "multica_issue")
 	if !ok {

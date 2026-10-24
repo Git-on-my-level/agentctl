@@ -6,7 +6,7 @@
   "skill": {
     "path": "agentctl-portable/SKILL.md",
     "source": "skills/agentctl-portable/SKILL.md",
-    "sha256": "2cf20b4254b954d844e5ab31d18247cb6e4c33fd33585a793378fced98b0d0ff"
+    "sha256": "621f5383fbebf9b15252254643491dc14b4aaa67cab7eaca737550d3cf07f62d"
   },
   "runtime": {
     "entrypoint": "agentctl",
@@ -40,7 +40,8 @@
       "skills",
       "bootstrap",
       "supervisor",
-      "update"
+      "update",
+      "anx"
     ],
     "authority": "native_or_multica_explicit",
     "correctness_owner": "selected_native_authority"

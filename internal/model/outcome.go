@@ -21,6 +21,8 @@ const (
 	NativeFailureMessageLimit = 200
 )
 
+var outcomeEvidenceSHA = regexp.MustCompile(`^[a-fA-F0-9]{40}$`)
+
 // nativeFailureCodePattern accepts a provider diagnostic code. Free text stays
 // out of native_code so a message cannot be copied into the code field.
 var nativeFailureCodePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_]{0,63}$`)
@@ -62,6 +64,17 @@ type OutcomeFailure struct {
 	Stderr        *diagnostic.Stderr `json:"stderr,omitempty"`
 }
 
+// OutcomeEvidence is an explicit structured producer field. Adapters must
+// never populate it by parsing Content.Text. Egress still requires repository
+// authority; local journal storage does not authorize publication.
+type OutcomeEvidence struct {
+	Kind   string `json:"kind"`
+	Owner  string `json:"owner,omitempty"`
+	Repo   string `json:"repo,omitempty"`
+	Number int    `json:"number,omitempty"`
+	SHA    string `json:"sha,omitempty"`
+}
+
 type Outcome struct {
 	SchemaVersion      int                 `json:"schema_version"`
 	ExecutionID        ids.ExecutionID     `json:"execution_id"`
@@ -71,6 +84,7 @@ type Outcome struct {
 	RecordedAt         time.Time           `json:"recorded_at"`
 	Source             string              `json:"source"`
 	ResultRef          string              `json:"result_ref"`
+	Evidence           []OutcomeEvidence   `json:"evidence,omitempty"`
 	Content            *OutcomeContent     `json:"content,omitempty"`
 	Failure            *OutcomeFailure     `json:"failure,omitempty"`
 	UnavailableReason  string              `json:"unavailable_reason,omitempty"`
@@ -89,6 +103,26 @@ func (o Outcome) Validate() error {
 	}
 	if strings.TrimSpace(o.Source) == "" || strings.TrimSpace(o.ResultRef) == "" {
 		return errors.New("outcome source and result_ref are required")
+	}
+	if len(o.Evidence) > 8 {
+		return errors.New("invalid structured evidence")
+	}
+	for _, e := range o.Evidence {
+		if len(e.Owner) > 39 || len(e.Repo) > 100 {
+			return errors.New("invalid structured evidence")
+		}
+		switch e.Kind {
+		case "pr", "issue":
+			if e.Owner == "" || e.Repo == "" || e.Number < 1 || e.Number > 2147483647 || e.SHA != "" {
+				return errors.New("invalid structured evidence")
+			}
+		case "commit":
+			if !outcomeEvidenceSHA.MatchString(e.SHA) || e.Owner != "" || e.Repo != "" || e.Number != 0 {
+				return errors.New("invalid structured evidence")
+			}
+		default:
+			return errors.New("invalid structured evidence")
+		}
 	}
 	switch o.Availability {
 	case OutcomeStored:

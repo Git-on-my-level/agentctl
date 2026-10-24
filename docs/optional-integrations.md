@@ -91,20 +91,66 @@ unavailable for snapshot-only executions.
 
 ## Agent Nexus
 
-Agent Nexus (ANX) can mirror agentctl executions for display. Add an ANX card
-reference as an execution label using the agentctl-safe form
-`anx.card.<card-slug>` (for example, `--label anx.card.card-123`). The full
-label is a lowercase token of at most 128 characters, leaving up to 119
-characters for the slug. Labels cannot contain the colons in the conceptual
-`anx:card:<ref>` notation. Configure a subscription filtered to those labels
-with a `command` destination that runs `anx runs ingest`. The destination
-receives the callback envelope on stdin according to the existing command
-destination contract.
+Agent Nexus (ANX) can link agentctl executions to its cards so a card answers
+"which runs worked on me and what did they conclude". Reference an ANX card as
+an execution label using the agentctl-safe form `anx.card.<card-slug>` (for
+example, `--label anx.card.watch-redesign` or the equivalent sugar
+`delegate --anx-card card:watch-redesign` / `run --anx-card watch-redesign`;
+the label remains the recorded contract). The full label is a lowercase token
+with a 1–64 character slug of lowercase letters, digits and hyphens. Labels
+cannot contain the colons in the conceptual `anx:card:<ref>` notation.
+
+Executions that carry such a label are registered with ANX automatically,
+off the critical path. Registration is best-effort and never blocks, delays,
+or fails a run:
+
+- At launch, a `running` registration is spooled locally; launch never waits
+  on ANX.
+- At terminal state, agentctl reads the outcome through the non-acknowledging
+  journal accessor and enqueues a validated registration. A detached worker
+  delivers it; the run's return path never waits on ANX.
+- Egress is allowlisted: validated durable ID, enum state/times, catalog-checked
+  harness/model (`other` otherwise), ANX-confirmed canonical card ref, strict GitHub PR/issue
+  coordinates and 40-hex SHAs. Labels and raw request keys stay local; a
+  host-keyed HMAC identifies the request on ANX.
+- Free-text summaries and result-text evidence parsing are absent. Only an
+  explicit typed outcome evidence producer can supply refs; current adapters
+  do not. Repository coordinates require a non-empty
+  `anx.run_links.allowed_orgs` containing the owner and the run CWD's exact
+  local GitHub origin. An empty list disables repository evidence. Git
+  environment overrides are cleared. All IPv4-like dotted-number runs and
+  Tailnet coordinates are rejected.
+- No candidate card ref enters the outbox or outbound lookup. A worker fetches
+  the target workspace's canonical card catalog, then matches locally. It
+  caches verified coordinates for the batch and fails closed when unavailable.
+- Secret-shape checks run per substring/window as a second layer. ANX
+  subprocesses terminate their process group on every exit and have a 250 ms
+  pipe-drain bound. Status prints only safe aliases and spool presence/counts,
+  never configured paths.
+- Delivery uses ANX sessions/participation when a native session exists, plus
+  an idempotent card message carrying the complete public run record. Multica
+  and no-session executions still post a record. Successful Multica `dispatch`
+  queues start registration; `await` queues an observed terminal. These carry honest outcome
+  availability. Fingerprints stay in the principal-private sessions API.
+- The owner-only outbox defaults to `<state dir>/anx-run-links` without config.
+  Detached workers retry on subsequent work-producing invocations. Pending
+  and dead letters are capped at 256; dead letters expire after seven days.
+  Errors contain only class enums and numeric codes.
+
+`agentctl anx status` is read-only. `agentctl anx flush` explicitly waits for
+delivery. Configure the optional `anx.run_links` section (default `labeled`;
+see [configuration](configuration.md)). Native runs-roster extensions and
+card-independent unlabeled registration remain ANX-side work; unlabeled
+`default: all` entries park as `card_unresolved` today. See
+[the ANX run-links design](design/anx-run-links.md#redaction-and-egress).
 
 ANX credentials belong only in the ANX command's own credential store and
-environment. agentctl neither reads nor forwards them. ANX mirrors run data for
-display; a completed run never implies that its task or card was accepted.
-Acceptance remains owned by the relevant task authority.
+environment. agentctl neither reads nor forwards them. A registered run
+outcome is evidence, never proof that its task or card was accepted.
+Acceptance remains owned by the relevant task authority. A subscription with
+a `command` destination that runs `anx runs ingest` (filtered to those labels)
+remains available as an alternative event-driven bridge; both routes are
+idempotent.
 
 ## Network and fleet tools
 

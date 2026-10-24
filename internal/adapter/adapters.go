@@ -534,7 +534,10 @@ func (m *multicaAdapter) readMulticaJSON(ctx context.Context, operation string, 
 	cmd.Env = WithoutCallerDeclaration(os.Environ())
 	prepareProcess(cmd)
 	cmd.Cancel = func() error { return killProcess(cmd) }
-	cmd.WaitDelay = 5 * time.Second
+	// A canceled read has no usable response. Escaped descendants may still
+	// hold inherited output pipes after the CLI's process group is killed;
+	// bound their drain as well as the process wait.
+	cmd.WaitDelay = 250 * time.Millisecond
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limitedWriter{w: &stdout, n: 1 << 20}
 	cmd.Stderr = &limitedWriter{w: &stderr, n: 64 << 10}

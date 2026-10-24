@@ -1,0 +1,292 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentctl:schema:anx-registration:v4",
+  "x-agentctl-docs": "../docs/design/anx-run-links.md#redaction-and-egress",
+  "title": "Authoritatively verified ANX run registration v4",
+  "description": "Generated/catalog metadata only in the outbox. Delivery enriches confirmed canonical ANX card refs and explicitly typed evidence after repository authority checks. No field is derived from result prose, URLs or JSON lines.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "phase",
+    "launcher",
+    "external_id",
+    "origin_host_id",
+    "durable_id",
+    "adapter",
+    "model",
+    "state",
+    "liveness",
+    "result_collected",
+    "sequence",
+    "built_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 4
+    },
+    "phase": {
+      "enum": [
+        "start",
+        "terminal"
+      ]
+    },
+    "launcher": {
+      "const": "agentctl"
+    },
+    "external_id": {
+      "$ref": "execution.schema.json#/$defs/execution_id"
+    },
+    "origin_host_id": {
+      "$ref": "execution.schema.json#/$defs/host_id"
+    },
+    "durable_id": {
+      "type": "string",
+      "pattern": "^agentctl://host-(?:[a-z]+-){5}[a-z]+/exec-(?:[a-z]+-){5}[a-z]+$",
+      "description": "Runtime additionally validates word dictionary, type-bound checksums, and equality with the two ID fields."
+    },
+    "request_key_hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "adapter": {
+      "enum": [
+        "claude-code",
+        "codex",
+        "cursor",
+        "omp",
+        "openclaw",
+        "opencode",
+        "hermes",
+        "zcode",
+        "devin",
+        "generic-process",
+        "multica",
+        "other"
+      ]
+    },
+    "model": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9./_\\[\\]=,-]{0,127}$",
+      "description": "Exact reviewed profile catalog membership for this adapter, else other."
+    },
+    "state": {
+      "enum": [
+        "starting",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "unknown"
+      ]
+    },
+    "liveness": {
+      "enum": [
+        "alive",
+        "stale",
+        "unknown"
+      ]
+    },
+    "card_refs": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "string",
+        "pattern": "^card:[a-z0-9][a-z0-9-]{0,63}$",
+        "description": "Delivery-only canonical ref from the target workspace cards.list response. Unverified refs never enter the outbox."
+      }
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "ended_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "built_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "result_collected": {
+      "type": "boolean"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "availability"
+      ],
+      "properties": {
+        "availability": {
+          "enum": [
+            "stored",
+            "omitted_by_policy",
+            "unavailable_at_source"
+          ]
+        },
+        "failure": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "properties": {
+            "code": {
+              "const": "execution_failed"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          }
+        },
+        "links": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "owner",
+                  "repo",
+                  "number"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "pr"
+                  },
+                  "owner": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 39,
+                    "pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"
+                  },
+                  "repo": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "pattern": "^[A-Za-z0-9_.-]+$",
+                    "description": "Runtime also rejects dot paths, .git/.wiki suffixes and credential/entropy shapes."
+                  },
+                  "number": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2147483647
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "owner",
+                  "repo",
+                  "number"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "issue"
+                  },
+                  "owner": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 39,
+                    "pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"
+                  },
+                  "repo": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "pattern": "^[A-Za-z0-9_.-]+$",
+                    "description": "Runtime also rejects dot paths, .git/.wiki suffixes and credential/entropy shapes."
+                  },
+                  "number": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2147483647
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "sha"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "commit"
+                  },
+                  "sha": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{40}$"
+                  }
+                }
+              }
+            ]
+          },
+          "description": "Explicit typed outcome evidence only, never extracted from content.text. Runtime requires a non-empty allowed_orgs containing the owner AND exact run-origin owner/repo for PRs/issues; cryptographic commits must be 40-hex."
+        },
+        "head_after": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        }
+      }
+    },
+    "native_session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "kind",
+        "fingerprint"
+      ],
+      "properties": {
+        "provider": {
+          "enum": [
+            "claude",
+            "codex",
+            "cursor",
+            "omp",
+            "openclaw",
+            "opencode",
+            "hermes",
+            "zcode",
+            "devin",
+            "generic-process",
+            "multica"
+          ]
+        },
+        "kind": {
+          "const": "provider_session_sha256"
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "supersedes_external_id": {
+      "$ref": "execution.schema.json#/$defs/execution_id"
+    },
+    "egress_error_code": {
+      "enum": [
+        1001,
+        1002,
+        1003,
+        1004
+      ],
+      "description": "egress_rejected: secret shape, length, format, or unverified authority; never includes the value."
+    }
+  }
+}

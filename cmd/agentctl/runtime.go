@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
+	"github.com/Git-on-my-level/agentctl/internal/anxrun"
 	"github.com/Git-on-my-level/agentctl/internal/callback"
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
@@ -278,7 +279,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			if openProblem != nil {
 				return openProblem
 			}
-			_, finalizeErr := finalizeResult(context.Background(), writeJournal, current, adapter.Result{Success: false, State: adapter.StateCancelled, Error: refusal.Message, Data: map[string]any{"diagnostic_code": admissionRefusedSource, "terminal_source_state": admissionRefusedSource}}, a.now().UTC(), opts.noStoreResult)
+			_, finalizeErr := a.finalizeResult(context.Background(), c, writeJournal, current, adapter.Result{Success: false, State: adapter.StateCancelled, Error: refusal.Message, Data: map[string]any{"diagnostic_code": admissionRefusedSource, "terminal_source_state": admissionRefusedSource}}, a.now().UTC(), opts.noStoreResult)
 			if finalizeErr == nil && mutation.Enabled() {
 				finalizeErr = writeJournal.ClearMutation(context.Background(), mutation)
 			}
@@ -286,6 +287,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			if finalizeErr != nil {
 				return mapStoreError("record refused admission", finalizeErr)
 			}
+			a.anxRegisterTerminal(c, execution.ID)
 			return refusal.WithDetail("execution_id", execution.ID.String())
 		}
 	}
@@ -309,11 +311,12 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		if launchInterrupted(err) {
 			failureState = adapter.StateCancelled
 		}
-		failed, finalizeErr := finalizeResult(context.Background(), writeJournal, current, adapter.Result{Success: false, State: failureState, Error: err.Error()}, a.now().UTC(), opts.noStoreResult)
+		failed, finalizeErr := a.finalizeResult(context.Background(), c, writeJournal, current, adapter.Result{Success: false, State: failureState, Error: err.Error()}, a.now().UTC(), opts.noStoreResult)
 		writeJournal.Close()
 		if finalizeErr != nil {
 			return mapStoreError("record launch failure outcome", finalizeErr)
 		}
+		a.anxRegisterTerminal(c, failed.ID)
 		return mapAdapterError("launch failed", err).WithDetail("execution_id", failed.ID.String())
 	}
 	// Native launches are same-process owned. Any return path must reap the
@@ -350,6 +353,9 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		return mapStoreError("record started event", err)
 	}
 	writeJournal.Close()
+	// ANX run-link start registration spools only — launch never waits on
+	// ANX — and defers its flush to the terminal hook or an explicit flush.
+	a.anxRegisterStart(c, execution)
 	if opts.started != nil {
 		opts.started(execution, false)
 	}
@@ -435,11 +441,12 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 					return writeExecution(renderer, parked, "run")
 				}
 			}
-			execution, err = finalizeResultConverging(context.Background(), writeJournal, current, result, a.now().UTC(), opts.noStoreResult)
+			execution, err = a.finalizeResultConverging(context.Background(), c, writeJournal, current, result, a.now().UTC(), opts.noStoreResult)
 			writeJournal.Close()
 			if err != nil {
 				return mapStoreError("record terminal result", err)
 			}
+			a.anxRegisterTerminal(c, execution.ID)
 			if launchCtx.Err() != nil && execution.State != model.StateCompleted {
 				return interruptedRunError(launchCtx.Err(), execution)
 			}
@@ -482,11 +489,12 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			if openProblem != nil {
 				return openProblem
 			}
-			execution, err = finalizeResultConverging(context.Background(), writeJournal, current, last, a.now().UTC(), opts.noStoreResult)
+			execution, err = a.finalizeResultConverging(context.Background(), c, writeJournal, current, last, a.now().UTC(), opts.noStoreResult)
 			writeJournal.Close()
 			if err != nil {
 				return mapStoreError("record timed out execution", err)
 			}
+			a.anxRegisterTerminal(c, execution.ID)
 			if execution.State == model.StateCompleted {
 				return writeExecution(renderer, execution, "run")
 			}
@@ -682,6 +690,19 @@ func parseRun(args []string) (runOptions, *output.Error) {
 			}
 			i++
 			label := strings.TrimSpace(args[i])
+			if problem := rejectExactLabel("run", label, o.labels); problem != nil {
+				return o, problem
+			}
+			o.labels = append(o.labels, label)
+		case "--anx-card":
+			if i+1 >= delimiter {
+				return o, output.NewError(output.CodeUsage, "--anx-card requires a value", false)
+			}
+			i++
+			label, err := anxrun.ParseCardOverride(args[i])
+			if err != nil {
+				return o, output.NewError(output.CodeUsage, "--anx-card must be card:<slug> or <slug>; the anx.card.<slug> label is the recorded contract", false).WithDetail("flag", "--anx-card")
+			}
 			if problem := rejectExactLabel("run", label, o.labels); problem != nil {
 				return o, problem
 			}
@@ -1278,31 +1299,38 @@ func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c comm
 		return output.NewError(output.CodeInvalidState, "terminal execution cannot be cancelled", false).WithDetail("execution_id", id.String()).WithDetail("state", execution.State)
 	}
 	if execution.NativeRecoveryParked() {
-		journal, problem = a.openWrite(c)
-		if problem != nil {
-			return problem
-		}
-		defer journal.Close()
-		current, err := journal.GetExecution(ctx, id)
-		if err != nil {
-			return mapStoreError("reread parked execution", err)
-		}
-		all, err := journal.ListExecutions(ctx, false)
-		if err != nil {
-			return mapStoreError("read parked lineage", err)
-		}
-		if !current.NativeRecoveryParked() {
-			return output.NewError(output.CodeConflict, "parked execution changed before cancellation", false)
-		}
-		for _, relative := range continuationSuccessors(all, continuationRoot(all, current)) {
-			if relative.ID != id && !relative.State.Terminal() && !relative.NativeRecoveryParked() && !refusedAdmission(relative) {
-				return output.NewError(output.CodeConflict, "a native recovery turn is active; cancel that turn instead", false).WithDetail("running_execution_id", relative.ID.String())
+		cancelled, parkProblem := func() (model.Execution, *output.Error) {
+			journal, problem = a.openWrite(c)
+			if problem != nil {
+				return model.Execution{}, problem
 			}
+			defer journal.Close()
+			current, err := journal.GetExecution(ctx, id)
+			if err != nil {
+				return model.Execution{}, mapStoreError("reread parked execution", err)
+			}
+			all, err := journal.ListExecutions(ctx, false)
+			if err != nil {
+				return model.Execution{}, mapStoreError("read parked lineage", err)
+			}
+			if !current.NativeRecoveryParked() {
+				return model.Execution{}, output.NewError(output.CodeConflict, "parked execution changed before cancellation", false)
+			}
+			for _, relative := range continuationSuccessors(all, continuationRoot(all, current)) {
+				if relative.ID != id && !relative.State.Terminal() && !relative.NativeRecoveryParked() && !refusedAdmission(relative) {
+					return model.Execution{}, output.NewError(output.CodeConflict, "a native recovery turn is active; cancel that turn instead", false).WithDetail("running_execution_id", relative.ID.String())
+				}
+			}
+			cancelled, err := commitCancellation(ctx, journal, current, a.now().UTC())
+			if err != nil {
+				return model.Execution{}, mapStoreError("cancel parked execution", err)
+			}
+			return cancelled, nil
+		}()
+		if parkProblem != nil {
+			return parkProblem
 		}
-		cancelled, err := commitCancellation(ctx, journal, current, a.now().UTC())
-		if err != nil {
-			return mapStoreError("cancel parked execution", err)
-		}
+		a.anxRegisterTerminal(c, cancelled.ID)
 		return writeExecution(renderer, cancelled, "cancel")
 	}
 	if execution.Authority == model.AuthorityMultica {
@@ -1319,17 +1347,24 @@ func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c comm
 	if err := runtime.Cancel(ctx, adapter.CancelRequest{Ref: ref, Signal: "term", Grace: 5 * time.Second}); err != nil {
 		return mapAdapterError("native cancellation failed", err).WithDetail("execution_id", id.String())
 	}
-	journal, problem = a.openWrite(c)
-	if problem != nil {
-		return problem
+	cancelled, cancelProblem := func() (model.Execution, *output.Error) {
+		journal, problem = a.openWrite(c)
+		if problem != nil {
+			return model.Execution{}, problem
+		}
+		defer journal.Close()
+		now := a.now().UTC()
+		execution, err = commitCancellation(ctx, journal, execution, now)
+		if err != nil {
+			return model.Execution{}, mapStoreError("record cancellation outcome", err)
+		}
+		return execution, nil
+	}()
+	if cancelProblem != nil {
+		return cancelProblem
 	}
-	defer journal.Close()
-	now := a.now().UTC()
-	execution, err = commitCancellation(ctx, journal, execution, now)
-	if err != nil {
-		return mapStoreError("record cancellation outcome", err)
-	}
-	return writeExecution(renderer, execution, "cancel")
+	a.anxRegisterTerminal(c, cancelled.ID)
+	return writeExecution(renderer, cancelled, "cancel")
 }
 
 func (a *app) cancelMulticaForward(ctx context.Context, renderer output.Renderer, c common, execution model.Execution, id ids.ExecutionID) *output.Error {
@@ -1660,7 +1695,7 @@ func runnerLeaseLiveness(state model.State) model.Liveness {
 		return model.LivenessAlive
 	}
 }
-func finalizeResult(ctx context.Context, journal *store.Journal, execution model.Execution, result adapter.Result, now time.Time, noStoreResult bool) (model.Execution, error) {
+func (a *app) finalizeResult(ctx context.Context, c common, journal *store.Journal, execution model.Execution, result adapter.Result, now time.Time, noStoreResult bool) (model.Execution, error) {
 	if !execution.State.Terminal() && execution.State != toModelState(result.State) {
 		execution.RecordProgress(now)
 	}
@@ -1697,8 +1732,8 @@ func finalizeResult(ctx context.Context, journal *store.Journal, execution model
 	return updated, err
 }
 
-func finalizeResultConverging(ctx context.Context, journal *store.Journal, execution model.Execution, result adapter.Result, now time.Time, noStoreResult bool) (model.Execution, error) {
-	updated, err := finalizeResult(ctx, journal, execution, result, now, noStoreResult)
+func (a *app) finalizeResultConverging(ctx context.Context, c common, journal *store.Journal, execution model.Execution, result adapter.Result, now time.Time, noStoreResult bool) (model.Execution, error) {
+	updated, err := a.finalizeResult(ctx, c, journal, execution, result, now, noStoreResult)
 	if !errors.Is(err, store.ErrTerminalConflict) {
 		return updated, err
 	}
@@ -1707,6 +1742,8 @@ func finalizeResultConverging(ctx context.Context, journal *store.Journal, execu
 		return model.Execution{}, readErr
 	}
 	if latest.State.Terminal() {
+		// Another process committed the terminal state; its registration hook
+		// owns the run link. Re-enqueueing here would only duplicate work.
 		return latest, nil
 	}
 	return model.Execution{}, err

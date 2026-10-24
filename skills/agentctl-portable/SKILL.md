@@ -622,3 +622,49 @@ overrides. Provider-backed success and resume are not verified on the audit host
 resume is degraded and interrupt steering unavailable. Do not add `--run-budget`
 from help alone: the installed gateway rejected it. `recent --summary` includes
 `by_model` from recorded resolved models, with `unknown` otherwise.
+
+## ANX run links: label work to a card
+
+When a run works on an Agent Nexus card, label it with the typed label
+`anx.card.<slug>` (or pass `--anx-card card:<slug>` on `delegate`/`run`, which
+adds the same label). Labeled runs register with ANX automatically,
+best-effort, and never block or fail: a `running` registration spools at
+launch, and at terminal state agentctl reads the stored outcome through the
+journal's read-only accessor (never `agentctl result`, which acknowledges
+collection) and enqueues an allowlisted record. A detached worker registers
+sessions/participation where available and an idempotent card message containing
+the durable ID `agentctl://<origin_host_id>/<exec-id>`, state, outcome and strict
+GitHub PR/issue or 40-hex commit evidence. Models must match the reviewed catalog
+or become `other`. Labels and raw request keys stay local; only the ANX-confirmed canonical card
+ref and a host-keyed request hash leave the host. Slugs are 1–64 lowercase
+letters/digits/hyphens with credential shapes rejected.
+
+Run-link fields require generated provenance, catalog membership or an
+authoritative source. Free-text summaries, JSON result lines and result-text
+evidence extraction are absent. Only explicit typed outcome evidence is
+eligible; current adapters do not emit it. PR/issue repositories must match
+a non-empty configured `anx.run_links.allowed_orgs` and the exact GitHub
+origin of the run's working directory. Empty allowlists send no repository
+evidence; origin never authorizes an owner. Numbers must be positive; commits are 40-hex SHAs.
+
+Card labels stay local. The outbox contains no candidate refs. Delivery first
+fetches the selected ANX workspace's canonical card catalog, without sending
+candidate slugs, then matches locally and caches confirmed coordinates for the
+batch. Failed checks grant no authority from an old cache. Prefix/entropy
+checks are per substring/window and never authorize a field by themselves.
+Native fingerprints remain principal-private. Multica dispatch queues start
+registration and await queues observed terminals; supervisor-only observations
+still need a later await or dispatch replay.
+
+If ANX is unreachable, registrations spool under `<state dir>/anx-run-links`
+and retry with backoff in detached workers on subsequent work. Errors are
+class enums plus numeric codes; dead letters expire after seven days. Check and force delivery with:
+
+```bash
+agentctl anx status   # safe workspace alias, spool presence/counts (read-only)
+agentctl anx flush    # retry delivery now
+```
+
+A registered outcome is evidence for the card, never acceptance. The raw
+native session id never leaves the host; only the `agentctl identity` v1
+correlator is registered.

@@ -269,6 +269,8 @@ func jsonBool(value bool) string {
 
 func TestBuildOutcomeBoundsStructuredFailure(t *testing.T) {
 	now := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
 	journal, err := store.Open(filepath.Join(testutil.TempDir(t), "state", "journal.db"), store.Options{Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
@@ -300,7 +302,7 @@ func TestBuildOutcomeBoundsStructuredFailure(t *testing.T) {
 		t.Fatalf("status projection kept provider text: %#v", view)
 	}
 	long := "server overloaded: " + strings.Repeat("x", 300) + " " + secret
-	updated, err := finalizeResult(context.Background(), journal, execution, adapter.Result{
+	updated, err := a.finalizeResult(context.Background(), common{}, journal, execution, adapter.Result{
 		Success: false, State: adapter.StateFailed, Error: long, Data: map[string]any{"native_code": "server_overloaded"},
 	}, now, false)
 	if err != nil || !updated.State.Terminal() {
