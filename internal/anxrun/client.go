@@ -159,7 +159,7 @@ func (s *CLISender) Send(ctx context.Context, registration Registration) error {
 		if err != nil {
 			return err
 		}
-		if !serverCoordinate.MatchString(sessionID) {
+		if !safeServerCoordinate(sessionID) {
 			return &SendError{Code: "protocol_error"}
 		}
 		for _, card := range r.CardRefs {
@@ -178,7 +178,7 @@ func (s *CLISender) Send(ctx context.Context, registration Registration) error {
 			ActorID string `json:"actor_id"`
 		} `json:"agent"`
 	}
-	if json.Unmarshal(identity, &me) != nil || !serverCoordinate.MatchString(me.Agent.ActorID) {
+	if json.Unmarshal(identity, &me) != nil || !safeServerCoordinate(me.Agent.ActorID) {
 		return &SendError{Code: "protocol_error"}
 	}
 	// A stable structured card message is today's public transport for run
@@ -195,7 +195,7 @@ func (s *CLISender) Send(ctx context.Context, registration Registration) error {
 				ThreadID string `json:"thread_id"`
 			} `json:"card"`
 		}
-		if json.Unmarshal(result, &target) != nil || !serverCoordinate.MatchString(target.Card.ThreadID) {
+		if json.Unmarshal(result, &target) != nil || !safeServerCoordinate(target.Card.ThreadID) {
 			return &SendError{Code: "protocol_error"}
 		}
 		text, _ := json.Marshal(r)
@@ -221,6 +221,11 @@ func (s *CLISender) Send(ctx context.Context, registration Registration) error {
 }
 
 var serverCoordinate = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+var serverUUID = regexp.MustCompile(`^(?:(?:agent|actor|session|sess|thread)_)?[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
+
+func safeServerCoordinate(value string) bool {
+	return serverCoordinate.MatchString(value) && stringCode(value, 128, serverUUID.MatchString(value)) == 0
+}
 
 func terminalANXState(state string) bool {
 	switch state {
@@ -242,6 +247,9 @@ func (s *CLISender) invoke(ctx context.Context, commandID string, params map[str
 
 func (s *CLISender) invokeResult(ctx context.Context, commandID string, params map[string]string, body []byte) (json.RawMessage, error) {
 	options := s.options.normalized()
+	if code := stringCode(options.WorkspaceAlias, 64, false); code != 0 {
+		return nil, egressError(code)
+	}
 	argv := []string{options.Executable, "--json", "--workspace", options.WorkspaceAlias}
 	if options.BaseURL != "" {
 		argv = append(argv, "--base-url", options.BaseURL)

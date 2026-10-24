@@ -144,7 +144,6 @@ func TestRunLinksValidation(t *testing.T) {
 		{WorkspaceAlias: "anx"},
 		{BaseURL: "https://anx.example.test"},
 		{BaseURL: "http://127.0.0.1:8080"},
-		{SummaryMaxBytes: 512},
 		{FlushTimeoutSecs: 30},
 		{SpoolDir: "/var/lib/agentctl/anx"},
 	}
@@ -161,7 +160,6 @@ func TestRunLinksValidation(t *testing.T) {
 		{BaseURL: "https://u:p@anx.example.test"},
 		{BaseURL: "http://anx.example.test"},
 		{BaseURL: "https://anx.example.test/?token=1"},
-		{SummaryMaxBytes: 4096},
 		{FlushTimeoutSecs: 61},
 		{Executable: "line\nbreak"},
 	}
@@ -169,5 +167,16 @@ func TestRunLinksValidation(t *testing.T) {
 		if err := value.Validate(); err == nil {
 			t.Fatalf("invalid case %d accepted: %#v", i, value)
 		}
+	}
+}
+
+func TestRunLinksSummaryConfigurationRemoved(t *testing.T) {
+	path := filepath.Join(testutil.TempDir(t), "config.json")
+	raw := `{"schema_version":1,"profiles":{"local":{}},"anx":{"run_links":{"summary_max_bytes":512}}}`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("removed summary option accepted: %v", err)
 	}
 }

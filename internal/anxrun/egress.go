@@ -32,7 +32,7 @@ func safeHarness(value string) string {
 func safeModel(harness, value string, catalog []route.ModelRecord) string {
 	for _, item := range catalog {
 		canonical, err := launchrecipe.CanonicalHarness(item.Adapter)
-		if err == nil && canonical == harness && item.Model == value && modelNamePattern.MatchString(value) && !sensitiveText(value) {
+		if err == nil && canonical == harness && item.Model == value && modelNamePattern.MatchString(value) && stringCode(value, 128, false) == 0 {
 			return value
 		}
 	}
@@ -52,14 +52,19 @@ func safeAvailability(value string) string {
 // accidentally cross the egress boundary. Call both before persistence and
 // immediately before delivery (including old on-disk registrations).
 func Allowlisted(r Registration, catalog []route.ModelRecord) (Registration, error) {
+	for _, value := range []string{r.OriginHostID, r.ExternalID} {
+		if code := wordIDCode(value); code != 0 {
+			return Registration{}, egressError(code)
+		}
+	}
 	if _, err := ids.ParseHostID(r.OriginHostID); err != nil {
-		return Registration{}, fmt.Errorf("invalid_run_identity")
+		return Registration{}, egressError(EgressFormat)
 	}
 	if _, err := ids.ParseExecutionID(r.ExternalID); err != nil {
-		return Registration{}, fmt.Errorf("invalid_run_identity")
+		return Registration{}, egressError(EgressFormat)
 	}
 	if r.Phase != PhaseStart && r.Phase != PhaseTerminal {
-		return Registration{}, fmt.Errorf("invalid_run_phase")
+		return Registration{}, egressError(EgressFormat)
 	}
 	state := r.State
 	switch state {
@@ -81,53 +86,89 @@ func Allowlisted(r Registration, catalog []route.ModelRecord) (Registration, err
 		StartedAt: r.StartedAt, EndedAt: r.EndedAt, BuiltAt: r.BuiltAt,
 		Sequence: r.Sequence, ResultCollected: r.ResultCollected,
 	}
+	out.EgressErrorCode = validEgressCode(r.EgressErrorCode)
+	reject := func(code int) {
+		if code != 0 {
+			out.EgressErrorCode = code
+		}
+	}
+	reject(stringCode(r.Adapter, 32, false))
+	reject(stringCode(r.Model, 128, false))
+	reject(stringCode(r.State, 16, false))
+	reject(stringCode(r.Liveness, 16, false))
 	out.Model = safeModel(out.Adapter, r.Model, catalog)
-	if digestPattern.MatchString(r.RequestKeyHash) {
+	if stringCode(r.RequestKeyHash, 71, true) == 0 && digestPattern.MatchString(r.RequestKeyHash) {
 		out.RequestKeyHash = r.RequestKeyHash
+	} else if r.RequestKeyHash != "" {
+		code := stringCode(r.RequestKeyHash, 71, true)
+		if code == 0 {
+			code = EgressFormat
+		}
+		reject(code)
 	}
 	for _, ref := range r.CardRefs {
+		code := stringCode(strings.TrimPrefix(ref, cardRefPrefix), 64, false)
+		if code != 0 {
+			reject(code)
+			continue
+		}
 		if strings.HasPrefix(ref, cardRefPrefix) && ParseCardSlug(strings.TrimPrefix(ref, cardRefPrefix)) == nil {
 			if len(out.CardRefs) == 16 {
 				break
 			}
 			out.CardRefs = append(out.CardRefs, ref)
+		} else {
+			reject(EgressFormat)
 		}
 	}
-	if _, err := ids.ParseExecutionID(r.SupersedesExternalID); err == nil {
+	if _, err := ids.ParseExecutionID(r.SupersedesExternalID); err == nil && wordIDCode(r.SupersedesExternalID) == 0 {
 		out.SupersedesExternalID = r.SupersedesExternalID
+	} else if r.SupersedesExternalID != "" {
+		code := wordIDCode(r.SupersedesExternalID)
+		if code == 0 {
+			code = EgressFormat
+		}
+		reject(code)
 	}
-	if n := r.NativeSession; n != nil && digestPattern.MatchString(n.Fingerprint) && n.Kind == NativeSessionIDKind {
-		provider := n.Provider
-		if provider == "claude" || safeHarness(provider) != "other" {
-			out.NativeSession = &NativeSession{Provider: provider, Kind: NativeSessionIDKind, Fingerprint: n.Fingerprint}
+	if n := r.NativeSession; n != nil {
+		code := stringCode(n.Provider, 32, false)
+		if code == 0 {
+			code = stringCode(n.Kind, 32, false)
+		}
+		if code == 0 {
+			code = stringCode(n.Fingerprint, 71, true)
+		}
+		if code == 0 && (!digestPattern.MatchString(n.Fingerprint) || n.Kind != NativeSessionIDKind || (n.Provider != "claude" && safeHarness(n.Provider) == "other")) {
+			code = EgressFormat
+		}
+		if code == 0 {
+			out.NativeSession = &NativeSession{Provider: n.Provider, Kind: NativeSessionIDKind, Fingerprint: n.Fingerprint}
+		} else {
+			reject(code)
 		}
 	}
 	if o := r.Outcome; o != nil {
 		out.Outcome = &Outcome{Availability: safeAvailability(o.Availability)}
+		reject(stringCode(o.Availability, 32, false))
 		if o.Failure != nil {
 			out.Outcome.Failure = &FailureProjection{Code: "execution_failed", Retryable: o.Failure.Retryable}
 		}
-		// Only schema v2 was built with the explicit summary-block opt-in.
-		if r.SchemaVersion == RegistrationSchemaVersion {
-			redacted := RedactSummary(o.Summary, DefaultSummaryMaxBytes)
-			out.Outcome.Summary = redacted.Summary
-			out.Outcome.SummaryOmittedReason = redacted.OmittedReason
-		}
-		if out.Outcome.Summary == "" {
-			switch o.SummaryOmittedReason {
-			case "not_opted_in", SummaryOmittedRedactionFailed:
-				out.Outcome.SummaryOmittedReason = o.SummaryOmittedReason
-			}
-		}
+		reject(validEgressCode(o.EgressErrorCode))
 		for _, link := range o.Links {
 			if len(out.Outcome.Links) == MaxLinks {
 				break
 			}
-			if safe, ok := SanitizeLink(link.Ref); ok && safe.Kind == link.Kind {
+			if safe, code := validateLink(link); code == 0 {
 				out.Outcome.Links = append(out.Outcome.Links, safe)
+			} else {
+				reject(code)
 			}
 		}
-		out.Outcome.HeadAfter, _ = SanitizeHeadAfter(o.HeadAfter)
+		var err error
+		out.Outcome.HeadAfter, err = SanitizeHeadAfter(o.HeadAfter)
+		if err != nil {
+			reject(EgressFormat)
+		}
 	}
 	return out, nil
 }

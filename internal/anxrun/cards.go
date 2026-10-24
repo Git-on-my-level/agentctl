@@ -21,7 +21,7 @@ var cardSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 // ParseCardSlug validates one card slug (without prefix).
 func ParseCardSlug(slug string) error {
-	if !cardSlugPattern.MatchString(slug) || sensitiveText(slug) {
+	if !cardSlugPattern.MatchString(slug) || stringCode(slug, 64, false) != 0 {
 		return fmt.Errorf("card slug must be 1-64 lowercase letters, digits or hyphens without credential shapes")
 	}
 	return nil
@@ -41,7 +41,10 @@ func ParseCardOverride(value string) (string, error) {
 // ResolveCards returns the sorted, deduplicated `card:<slug>` references for
 // one execution, derived from its anx.card.<slug> labels. Labels stay the
 // recorded contract; this projection is deterministic.
-func ResolveCards(labels []string) []string {
+func ResolveCards(labels []string) []string { cards, _ := resolveCards(labels); return cards }
+
+func resolveCards(labels []string) ([]string, int) {
+	code := 0
 	seen := map[string]struct{}{}
 	cards := []string{}
 	for _, label := range labels {
@@ -50,6 +53,10 @@ func ResolveCards(labels []string) []string {
 		}
 		slug := strings.TrimPrefix(label, CardLabelPrefix)
 		if err := ParseCardSlug(slug); err != nil {
+			code = stringCode(slug, 64, false)
+			if code == 0 {
+				code = EgressFormat
+			}
 			continue
 		}
 		ref := cardRefPrefix + slug
@@ -60,10 +67,15 @@ func ResolveCards(labels []string) []string {
 		cards = append(cards, ref)
 	}
 	sort.Strings(cards)
-	return cards
+	return cards, code
 }
 
 // LabeledReports whether any label opts this execution into run links.
 func Labeled(labels []string) bool {
-	return len(ResolveCards(labels)) > 0
+	for _, label := range labels {
+		if strings.HasPrefix(label, CardLabelPrefix) {
+			return true
+		}
+	}
+	return false
 }

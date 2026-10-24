@@ -8,9 +8,8 @@ import (
 )
 
 // RegistrationSchemaVersion versions the spooled registration document. The
-// ANX-side runs-ingest v2 bridge (design rollout step 4) consumes the same
-// shape when the core run fields land.
-const RegistrationSchemaVersion = 2
+// ANX-side bridge can consume the same shape when the core run fields land.
+const RegistrationSchemaVersion = 3
 
 // Phase distinguishes the two registration points for one execution.
 type Phase string
@@ -78,6 +77,7 @@ type Registration struct {
 	Outcome              *Outcome       `json:"outcome,omitempty"`
 	NativeSession        *NativeSession `json:"native_session,omitempty"`
 	SupersedesExternalID string         `json:"supersedes_external_id,omitempty"`
+	EgressErrorCode      int            `json:"egress_error_code,omitempty"`
 	BuiltAt              time.Time      `json:"built_at"`
 }
 
@@ -89,15 +89,12 @@ type NativeSession struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
-// Outcome is the size-capped, redacted, deterministic outcome block.
+// Outcome contains only typed metadata and bounded structured evidence.
 type Outcome struct {
-	Availability string             `json:"availability"`
-	Failure      *FailureProjection `json:"failure,omitempty"`
-	Summary      string             `json:"summary,omitempty"`
-	// SummaryOmittedReason is set when redaction could not prove the summary
-	// safe (never ship a maybe-leak).
-	SummaryOmittedReason string `json:"summary_omitted_reason,omitempty"`
-	Links                []Link `json:"links,omitempty"`
+	Availability    string             `json:"availability"`
+	Failure         *FailureProjection `json:"failure,omitempty"`
+	Links           []Link             `json:"links,omitempty"`
+	EgressErrorCode int                `json:"-"`
 	// HeadAfter is the bare 40-hex git HEAD in the launch cwd at terminal, or
 	// empty when it could not be read.
 	HeadAfter string `json:"head_after,omitempty"`
@@ -161,23 +158,22 @@ func BuildStart(execution model.Execution, now time.Time) Registration {
 		OriginHostID:  execution.OriginHostID.String(),
 		DurableID:     fmt.Sprintf("agentctl://%s/%s", execution.OriginHostID, execution.ID),
 		RequestKey:    delegationRequestKey(execution),
-		Adapter:       safeHarness(execution.Adapter),
+		Adapter:       execution.Adapter,
 		Model:         "other",
 		State:         ANXState(execution.State),
 		Liveness:      ANXLiveness(execution.Liveness),
 
-		CardRefs:      ResolveCards(execution.Labels),
 		StartedAt:     execution.StartedAt,
 		NativeSession: nativeSession(execution),
 		BuiltAt:       now.UTC(),
 	}
+	registration.CardRefs, registration.EgressErrorCode = resolveCards(execution.Labels)
 	return registration
 }
 
 // BuildTerminal builds the PhaseTerminal registration for one execution and
 // its stored outcome. The outcome is read through the journal's read-only
-// accessor. Only allowlisted metadata/evidence and an explicitly opted-in
-// summary block can leave the host.
+// accessor. Only allowlisted metadata and structured evidence leave the host.
 func BuildTerminal(execution model.Execution, outcome *model.Outcome, resultCollected bool, now time.Time) Registration {
 	registration := BuildStart(execution, now)
 	registration.Phase = PhaseTerminal
@@ -189,25 +185,22 @@ func BuildTerminal(execution model.Execution, outcome *model.Outcome, resultColl
 		registration.SupersedesExternalID = superseded.String()
 	}
 	if outcome != nil {
-		registration.Outcome = ProjectOutcome(*outcome, DefaultSummaryMaxBytes)
+		registration.Outcome = ProjectOutcome(*outcome)
 	} else {
 		registration.Outcome = &Outcome{Availability: AvailabilityUnavailableAtSource}
 	}
 	return registration
 }
 
-// ProjectOutcome builds the redacted outcome block from a stored journal
-// outcome. Deterministic: the same outcome and bound always project equally.
-func ProjectOutcome(outcome model.Outcome, maxBytes int) *Outcome {
+// ProjectOutcome projects only enum metadata and explicit structured evidence.
+// Free-text results, including formerly marked summaries, are never exported.
+func ProjectOutcome(outcome model.Outcome) *Outcome {
 	projected := &Outcome{Availability: safeAvailability(string(outcome.Availability))}
 	if outcome.Failure != nil {
 		projected.Failure = &FailureProjection{Code: "execution_failed", Retryable: outcome.Failure.Retryable}
 	}
 	if outcome.Content != nil {
-		redacted := MarkedSummary(outcome.Content.Text, maxBytes)
-		projected.Summary = redacted.Summary
-		projected.SummaryOmittedReason = redacted.OmittedReason
-		projected.Links = ExtractLinks(outcome.Content.Text)
+		projected.Links, projected.EgressErrorCode = extractLinks(outcome.Content.Text)
 	}
 	return projected
 }

@@ -1,6 +1,6 @@
 # Design: link agentctl runs to ANX cards with durable IDs
 
-Status: design v3 (2026-10-24). Rollout step 3 (agentctl run registration)
+Status: design v4 (2026-10-24). Rollout step 3 (agentctl run registration)
 is implemented in this repository; steps 1–2 and 4–6 remain planned.
 
 ## Problem
@@ -29,8 +29,9 @@ Agents keep losing other agents' work:
 - ANX stays generic and runs no models. agentctl is one provider of ANX's
   existing public sessions/participation/runs surface; any harness could do
   the same.
-- Raw transcripts never enter ANX. ANX stores links plus a size-capped,
-  redacted, deterministic outcome.
+- Raw transcripts and free-text results never enter ANX. ANX stores
+  structured evidence plus a deterministic enum outcome. A free-text summary
+  may come later as its own reviewed feature.
 - Registration is idempotent, at-least-once, and never blocks or fails a run.
 
 ## Non-goals
@@ -179,9 +180,8 @@ state-regression-protected, replay-detecting) gains these optional fields:
   "outcome": {
     "availability": "stored",
     "failure": null,
-    "summary": "Only an explicit marked summary block, at most 2048 UTF-8 bytes",
-    "links": [{"kind": "pr", "ref": "https://github.com/Git-on-my-level/agentctl/pull/104"},
-              {"kind": "commit", "ref": "0123456789abcdef0123456789abcdef01234567"}],
+    "links": [{"kind": "pr", "owner": "Git-on-my-level", "repo": "agentctl", "number": 104},
+              {"kind": "commit", "sha": "0123456789abcdef0123456789abcdef01234567"}],
     "head_after": "<40-hex git HEAD in the launch cwd at terminal, or null>"
   },
   "native_session": {"provider": "claude", "kind": "provider_session_sha256",
@@ -193,7 +193,7 @@ state-regression-protected, replay-detecting) gains these optional fields:
 }
 ```
 
-Bounds: `summary` ≤ 2048 bytes; `links` ≤ 8 entries, each ≤ 512 bytes;
+Bounds: no summary field; `links` ≤ 8 structured entries, each ≤ 512 input bytes;
 unknown fields rejected (existing behavior). `native_session` and
 `transcript` are principal-scoped: they are omitted from card-shared
 projections and task reads (which already never share native session
@@ -221,7 +221,7 @@ session heartbeat never refreshes participation and vice versa; unchanged.
 | --- | --- |
 | Execution envelope, result body, native session binding | agentctl journal (origin host) |
 | Transcript bytes, revisions, manifest, index | the pve3 backup (and local mirror) |
-| Run identity, outcome summary, links, transcript locator, card link | ANX run record + card `executions` |
+| Run identity, enum outcome, structured evidence, transcript locator, card link | ANX run record + card `executions` |
 | Card state, acceptance, evidence | ANX card (existing authorities) |
 
 agentctl remains a supervision layer: it adds no ANX credential handling.
@@ -273,7 +273,7 @@ Registration happens off the critical path: launch never waits on ANX.
 
 At terminal the helper reads the local journal through a **non-acknowledging**
 path and upserts the terminal record: state, times, failure projection,
-optional marked summary and strict evidence links, `native_session.fingerprint`,
+structured PR/issue coordinates and commit SHAs, `native_session.fingerprint`,
 `supersedes_external_id`, and — if the backup index is reachable —
 `transcript`. It reads the execution envelope and stored outcome through the
 journal's read-only outcome accessor (`GetOutcome` over a read-only journal
@@ -301,7 +301,7 @@ conversation continuity.
 
 An agent picking up a card: `anx work context <card>` (runs section) or
 `anx runs list --card card:<slug>` → newest non-superseded run → read its
-outcome summary and links; if it needs the full trail, see Fetch. The
+enum outcome and structured evidence; if it needs the full trail, see Fetch. The
 `agentctl://` run ID tells it where the authoritative journal lives; when the
 origin host is reachable, `agentctl status|result` there gives the envelope
 and stored answer directly.
@@ -324,9 +324,13 @@ never mark work collected; acknowledgement semantics stay with `result`.
 
 ## Redaction and egress
 
-Regex redaction is a second layer, not a safe boundary for arbitrary prose.
-agentctl builds a fresh allowlisted document before persistence and validates
-it again immediately before delivery. The v2 JSON contract is published in
+Free-text summaries are removed from this version, including the former
+marked-block opt-in, configuration knob and schema field. A summary may come
+later only as its own reviewed feature; decision 2 below describes its
+visibility if that feature is approved. Regex redaction cannot establish a
+safe boundary for arbitrary prose. agentctl builds a fresh allowlisted
+document before persistence and validates it again immediately before delivery.
+The v3 JSON contract is published in
 [anx-registration.schema.json](../../schemas/anx-registration.schema.json).
 
 - Durable identity is `agentctl://<origin_host_id>/<exec-id>`. Both parts
@@ -346,29 +350,35 @@ it again immediately before delivery. The v2 JSON contract is published in
   spool-local key and the domain `agentctl.anx.request-key.v1` followed by NUL.
   Persist that key across restarts; never transmit it. ANX message idempotency
   additionally uses a digest of the canonical public payload and card ref.
-- Evidence is limited to `https://github.com/<owner>/<repo>/pull/<number>`,
-  the corresponding `/issues/<number>`, or a bare 40-hex commit SHA, optionally
-  prefixed by `pr:`, `issue:` or `commit:` of the matching kind. Reject
-  credential shapes, userinfo, ports, query strings (even empty `?`), fragments,
-  encoded components and extra paths. At most eight links, each ≤512 bytes.
-- Free-text summary is **off by default**. Only exactly one explicit,
-  line-delimited block in the stored result opts in:
-
-  ```text
-  ---anx-summary---
-  Implemented the fix and passed tests.
-  ---end-anx-summary---
-  ```
-
-  Everything outside that block stays local. Malformed/duplicate markers,
-  credentials/partial credentials, PEM markers/material, assignments (including
-  inline and quoted values), URL credentials/queries, local paths (including
-  backticks), IP addresses (including Tailnet CGNAT), Tailnet names, invalid
-  UTF-8 or ambiguous long tokens omit the whole block with `redaction_failed`.
-  Unmarked results report `not_opted_in`. Only validated GitHub evidence URLs
-  survive in a marked summary. Clean opted-in text is capped at 2048 UTF-8
-  bytes (or the smaller configured limit), never salvaged line by line.
-  Legacy v1 spool summaries lack this opt-in provenance and are omitted.
+- Evidence is structured, never URLs: PRs/issues carry `kind`, `owner`,
+  `repo`, `number`; commits carry `kind: commit` and a 40-hex `sha`. Only
+  complete JSON objects on individual result lines (or `commit: <40-hex>`)
+  are parsed; arbitrary prose and URLs are ignored. The first 4096 bytes
+  are scanned; at most eight deduplicated entries, each ≤512 input bytes.
+  Owner names have 1–39 ASCII alphanumerics or single hyphens, no edge
+  hyphen; repository names have 1–100 ASCII alphanumerics, `.`, `_`, `-`.
+  Reject dot paths and reserved `.git`/`.wiki` suffixes. Numbers are integers
+  from 1 through 2147483647. ANX may reconstruct URLs from these coordinates.
+  See [GitHub repository naming](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-new-repository)
+  and [username rules](https://docs.github.com/en/enterprise-cloud%40latest/admin/managing-iam/iam-configuration-reference/username-considerations-for-external-authentication).
+- Every variable string passes a shared secret-shape detector as well as its
+  strict type/catalog validation before spooling and again before delivery.
+  This includes card slug, owner/repo, harness/model, host/exec IDs, private
+  session metadata and server-returned session/actor/thread coordinates.
+  Known credential prefixes (including all `gh[opsur]_`, `github_pat_`,
+  `glpat-`, `sk-`, Slack `xox[abpr]-`, `AKIA`, `AIza`), JWT shapes, length
+  limits and high-entropy runs cause rejection. Runs of at least 24 token
+  characters with Shannon entropy ≥3.5 bits/character are rejected.
+  Validated cryptographic SHA/HMAC/fingerprint and server UUID types skip
+  entropy rejection but still check prefixes and lengths. Real word IDs
+  check entropy per dictionary word, alongside full ID prefix/length checks
+  and the real dictionary/type-bound checksum parser.
+  Optional fields are dropped (harness/model become `other`) and the record
+  carries only `egress_error_code`: 1001 secret shape, 1002 length, 1003 format.
+  Required identity rejection drops the entire registration and overwrites a
+  bounded local receipt `{class: egress_rejected, code: <number>}`, shown in
+  status without any rejected value. Legacy summaries/URL refs are discarded
+  on read; no legacy free text can be re-exported.
 - Spool/status diagnostics contain only a closed error-class enum and numeric
   process code. No messages, paths, raw ANX codes, prompts or transcripts.
 
@@ -383,7 +393,10 @@ subsequent work-producing invocations; read-only commands never flush.
 `agentctl anx flush` is the explicit synchronous delivery command.
 The spool defaults beside the journal even when config is absent. Separate
 file locks serialize local sequence allocation/state changes and whole flush
-passes; enqueue never waits on ANX. Snapshot comparison prevents a flush from
+passes; enqueue never waits on ANX. A contending worker waits for the flush
+lock, then takes a fresh snapshot, so a terminal enqueue after the owner
+snapshot cannot lose its wakeup. Lock waiting is separate from each ANX call
+timeout and respects cancellation. Snapshot comparison prevents a flush from
 removing or overwriting a payload refreshed during delivery. A durable assigned
 and delivered sequence index preserves each phase's sequence across delivery,
 restarts and replay. Pending and dead letters are bounded to 256 entries;
@@ -445,8 +458,13 @@ model, never card visibility:
   exec→session resolution, and a later reconcile backfills ANX.
 - **Unknown card / label typos:** parked as `card_unresolved`, surfaced, never
   fatal.
-- **Multica mode:** run links register Multica-authority executions
-  (lifecycle state, card link) but `outcome.availability` is
+- **Multica mode:** successful `dispatch` queues a start registration after
+  local finalization, including idempotent replay. Native session identity is
+  never invented. Terminal registration is queued when `await` records a
+  terminal Multica observation. Supervisor-only/external terminal changes need
+  a later `await` or dispatch replay to enqueue that terminal record; this is
+  a current lifecycle observation gap. Run links register Multica-authority
+  executions (lifecycle state, card link) but `outcome.availability` is
   `unavailable_at_source` (the adapter has no result-content route) and
   `transcript.status` is `not_archived` unless a native worker session is
   bound and covered by the collector. Continuation stays Multica-owned.
@@ -459,8 +477,7 @@ model, never card visibility:
 - **`agentctl-config`** (reviewed bundle) gains a small advisory section:
 
 ```json
-"anx": {"run_links": {"default": "labeled", "workspace_alias": "anx",
-                       "summary_max_bytes": 2048}}
+"anx": {"run_links": {"default": "labeled", "workspace_alias": "anx"}}
 ```
 
   agentctl reads no ANX credentials; the detached helper invokes the public
@@ -489,9 +506,7 @@ model, never card visibility:
    (nullable columns; no migration), roster filters, principal-scoped
    projection, `work context` runs section, card `executions` writer.
 4. **`anx runs ingest` v2:** handle `started` events; build the outcome
-   (summary redaction with fixtures, links from the result's evidence block —
-   the same `---evidence---` convention the PM runner already parses — plus
-   `head_after`); sessions/participation registration; transcript reconcile
+   (enum metadata and structured evidence, with no summary, plus `head_after`); sessions/participation registration; transcript reconcile
    against the index; `run.links` integration + spool.
 5. **agentctl (this repo):** docs (this file linked from
    optional-integrations), portable skill update teaching the label
@@ -526,13 +541,13 @@ scratch or waits for a human.
 anx runs list --card card:watch-redesign --state failed
 # → run exec-<lane-a-id>, origin_host_id host-<studio>, adapter zcode,
 #   model zai/glm-5.3, state failed, ended_at 12:5xZ,
-#   outcome.summary "…backend watcher landed except the reconnect test…",
-#   links [pr …, commit …], transcript.status indexed
+#   outcome {availability: stored},
+#   links [{kind: pr, owner: …, repo: …, number: …}, {kind: commit, sha: …}], transcript.status indexed
 #   (after rollout step 1; before it, not_archived for zcode — honest)
 anx runs get run:<handle>        # full record incl. native_session.fingerprint
 ```
 
-The summary plus links answer "what did it conclude". For the full trail, the
+The state and structured evidence identify the result; prose stays in the journal. For the full trail, the
 origin host is offline, so step 1 of Fetch is skipped:
 
 ```bash
@@ -560,5 +575,5 @@ same card.
 
 1. ZCode session collector for `session-archive-daily`. This touches the Hermes and fleet hosts, so it is owned by the Hermes owner, with David's approval.
 2. Fingerprint index plus a `session-archive-find` helper over the existing manifests, keyed by `origin_host_id` and hostname.
-3. agentctl run registration: outcome schema, redaction, an idempotent upsert keyed by the delegate request key, spooling while ANX is unreachable, and default-on for runs that carry an `anx.card.*` label.
+3. agentctl run registration: outcome schema, allowlisted egress, an idempotent upsert keyed by the host-keyed delegate request hash, spooling while ANX is unreachable, and default-on for runs that carry an `anx.card.*` label.
 4. ANX: a runs view on `work context` and `runs list --card`, with the visibility rules from decision 2.

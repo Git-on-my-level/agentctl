@@ -47,7 +47,6 @@ type RunLinks struct {
 	Executable       string `json:"executable,omitempty"`
 	BaseURL          string `json:"base_url,omitempty"`
 	ConfigDir        string `json:"config_dir,omitempty"`
-	SummaryMaxBytes  int    `json:"summary_max_bytes,omitempty"`
 	SpoolDir         string `json:"spool_dir,omitempty"`
 	FlushTimeoutSecs int    `json:"flush_timeout_seconds,omitempty"`
 }
@@ -246,8 +245,7 @@ func (b Bootstrap) Validate() error {
 
 // RunLinks defaults.
 const (
-	RunLinksDefaultMode     = "labeled"
-	RunLinksMaxSummaryBytes = 2048
+	RunLinksDefaultMode = "labeled"
 )
 
 func (a Anx) Validate() error {
@@ -294,9 +292,6 @@ func (r RunLinks) Validate() error {
 		if parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopbackHost(parsed.Hostname())) {
 			return errors.New("base_url must use https (http is allowed only for loopback)")
 		}
-	}
-	if r.SummaryMaxBytes < 0 || r.SummaryMaxBytes > RunLinksMaxSummaryBytes {
-		return fmt.Errorf("summary_max_bytes must be between 1 and %d", RunLinksMaxSummaryBytes)
 	}
 	if r.FlushTimeoutSecs < 0 || r.FlushTimeoutSecs > 60 {
 		return errors.New("flush_timeout_seconds must be between 1 and 60")

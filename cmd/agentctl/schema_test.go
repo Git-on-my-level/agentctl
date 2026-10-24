@@ -87,7 +87,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 	for _, item := range document.Result.Schemas {
 		expectedVersion := 1
 		if item.Name == "anx-registration" {
-			expectedVersion = 2
+			expectedVersion = 3
 		}
 		if item.Version != expectedVersion || want[item.Name] != item.File {
 			t.Fatalf("unexpected schema listing item: %#v", item)

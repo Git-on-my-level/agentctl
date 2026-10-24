@@ -131,7 +131,6 @@ registers labeled executions with Agent Nexus (see
     "default": "labeled",
     "workspace_alias": "anx",
     "executable": "anx",
-    "summary_max_bytes": 2048,
     "flush_timeout_seconds": 10
   }
 }
@@ -143,8 +142,8 @@ runs; these park as `card_unresolved` until ANX supports card-independent
 run records), and `off`. `workspace_alias`, `base_url`, and `config_dir` are passed
 explicitly to the `anx` CLI; agentctl never hard-codes a base URL and reads no
 ANX credentials — authentication and workspace resolution stay with the `anx`
-CLI's own credential store. `summary_max_bytes` bounds the redacted outcome
-summary (1–2048), which is off unless an explicit marked summary block opts in.
+CLI's own credential store. Free-text summary support is absent; the former
+`summary_max_bytes` option is no longer accepted.
 `flush_timeout_seconds` bounds detached delivery; it never delays a run return. `spool_dir` overrides the default
 `<state dir>/anx-run-links` outbox. The section is advisory for standalone
 use: without it, labeled runs still register with the defaults above.

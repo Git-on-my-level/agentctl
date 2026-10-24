@@ -30,15 +30,14 @@ import (
 // config file keeps the zero-config default (register labeled runs); an
 // invalid config disables registration rather than guessing.
 type anxSettings struct {
-	Catalog         []route.ModelRecord
-	Mode            string
-	WorkspaceAlias  string
-	Executable      string
-	BaseURL         string
-	ConfigDir       string
-	SummaryMaxBytes int
-	SpoolDir        string
-	FlushTimeout    time.Duration
+	Catalog        []route.ModelRecord
+	Mode           string
+	WorkspaceAlias string
+	Executable     string
+	BaseURL        string
+	ConfigDir      string
+	SpoolDir       string
+	FlushTimeout   time.Duration
 }
 
 func (s anxSettings) registers(labels []string) bool {
@@ -53,7 +52,7 @@ func (s anxSettings) registers(labels []string) bool {
 }
 
 func (a *app) anxSettings(c common) (anxSettings, bool) {
-	settings := anxSettings{Mode: config.RunLinksDefaultMode, WorkspaceAlias: "anx", Executable: "anx", SummaryMaxBytes: anxrun.DefaultSummaryMaxBytes, FlushTimeout: 10 * time.Second}
+	settings := anxSettings{Mode: config.RunLinksDefaultMode, WorkspaceAlias: "anx", Executable: "anx", FlushTimeout: 10 * time.Second}
 	journalPath, pathErr := a.journalPath(c)
 	if pathErr != nil {
 		return settings, false
@@ -86,9 +85,6 @@ func (a *app) anxSettings(c common) (anxSettings, bool) {
 	}
 	settings.BaseURL = runLinks.BaseURL
 	settings.ConfigDir = runLinks.ConfigDir
-	if runLinks.SummaryMaxBytes > 0 {
-		settings.SummaryMaxBytes = runLinks.SummaryMaxBytes
-	}
 	if runLinks.FlushTimeoutSecs > 0 {
 		settings.FlushTimeout = time.Duration(runLinks.FlushTimeoutSecs) * time.Second
 	}
@@ -139,7 +135,7 @@ func (a *app) anxRegisterStart(c common, execution model.Execution) {
 		return
 	}
 	if _, err := spool.Enqueue(anxRegistrationModel(anxrun.BuildStart(execution, a.now()), execution)); err != nil {
-		a.anxNote("local_io:0")
+		a.anxEgressNote(err)
 	}
 	a.scheduleANXFlush(c)
 }
@@ -184,18 +180,13 @@ func (a *app) anxRegisterTerminal(c common, id ids.ExecutionID) {
 		return
 	}
 	registration := anxRegistrationModel(anxrun.BuildTerminal(execution, outcome, collected, a.now()), execution)
-	if outcome != nil {
-		// Re-project with the configured summary bound; BuildTerminal used
-		// the default.
-		registration.Outcome = anxrun.ProjectOutcome(*outcome, settings.SummaryMaxBytes)
-	}
 	spool, err := a.anxOpenSpool(settings)
 	if err != nil {
 		a.anxNote("local_io:0")
 		return
 	}
 	if _, err := spool.Enqueue(registration); err != nil {
-		a.anxNote("local_io:0")
+		a.anxEgressNote(err)
 		return
 	}
 	a.scheduleANXFlush(c)
@@ -248,10 +239,15 @@ func (a *app) anxFlushWorker(ctx context.Context, c common) int {
 		return 0
 	}
 	spool.Catalog = settings.Catalog
-	ctx, cancel := context.WithTimeout(ctx, settings.FlushTimeout)
-	defer cancel()
 	_, _ = spool.Flush(ctx, anxSender(settings), 0)
 	return 0
+}
+
+func (a *app) anxEgressNote(err error) {
+	class, code := anxrun.ErrorClass(err)
+	if a.stderr != nil {
+		fmt.Fprintf(a.stderr, "agentctl: anx run links: %s:%d\n", class, code)
+	}
 }
 
 // anxNote writes one bounded stderr note. It never changes a command result.
@@ -281,48 +277,55 @@ func (a *app) anxCommand(ctx context.Context, renderer output.Renderer, c common
 }
 
 type anxPendingItem struct {
-	ExecutionID string    `json:"execution_id"`
-	Phase       string    `json:"phase"`
-	CreatedAt   time.Time `json:"created_at"`
-	Attempts    int       `json:"attempts"`
-	NextAttempt time.Time `json:"next_attempt_at,omitempty"`
-	CardRefs    []string  `json:"card_refs,omitempty"`
-	LastError   string    `json:"last_error,omitempty"`
-	ErrorCode   int       `json:"error_code"`
+	ExecutionID     string    `json:"execution_id"`
+	Phase           string    `json:"phase"`
+	CreatedAt       time.Time `json:"created_at"`
+	Attempts        int       `json:"attempts"`
+	NextAttempt     time.Time `json:"next_attempt_at,omitempty"`
+	CardRefs        []string  `json:"card_refs,omitempty"`
+	LastError       string    `json:"last_error,omitempty"`
+	ErrorCode       int       `json:"error_code"`
+	EgressErrorCode int       `json:"egress_error_code,omitempty"`
 }
 
 type anxDeadItem struct {
-	ExecutionID string    `json:"execution_id"`
-	Phase       string    `json:"phase"`
-	Reason      string    `json:"reason"`
-	ErrorCode   int       `json:"error_code"`
-	CreatedAt   time.Time `json:"created_at"`
-	Attempts    int       `json:"attempts"`
+	ExecutionID     string    `json:"execution_id"`
+	Phase           string    `json:"phase"`
+	Reason          string    `json:"reason"`
+	ErrorCode       int       `json:"error_code"`
+	CreatedAt       time.Time `json:"created_at"`
+	Attempts        int       `json:"attempts"`
+	EgressErrorCode int       `json:"egress_error_code,omitempty"`
 }
 
 type anxStatusResult struct {
-	Mode           string           `json:"mode"`
-	WorkspaceAlias string           `json:"workspace_alias"`
-	SpoolDir       string           `json:"spool_dir"`
-	Pending        []anxPendingItem `json:"pending"`
-	Dead           []anxDeadItem    `json:"dead_letters"`
+	Mode           string            `json:"mode"`
+	WorkspaceAlias string            `json:"workspace_alias"`
+	SpoolDir       string            `json:"spool_dir"`
+	Pending        []anxPendingItem  `json:"pending"`
+	LastRejection  *anxrun.Rejection `json:"last_rejection,omitempty"`
+	Dead           []anxDeadItem     `json:"dead_letters"`
 }
 
 func (a *app) anxStatus(ctx context.Context, renderer output.Renderer, c common, settings anxSettings) *output.Error {
 	result := anxStatusResult{Mode: settings.Mode, WorkspaceAlias: settings.WorkspaceAlias, SpoolDir: settings.SpoolDir, Pending: []anxPendingItem{}, Dead: []anxDeadItem{}}
 	if spool, present, err := anxrun.OpenSpoolIfPresent(settings.SpoolDir); err == nil && present {
+		result.LastRejection = spool.LastRejection()
 		if pending, err := spool.ListPending(); err == nil {
 			for _, entry := range pending {
-				result.Pending = append(result.Pending, anxPendingItem{ExecutionID: entry.ExecutionID, Phase: string(entry.Phase), CreatedAt: entry.CreatedAt, Attempts: entry.Attempts, NextAttempt: entry.NextAttemptAt, CardRefs: entry.Registration.CardRefs, LastError: entry.LastError, ErrorCode: entry.ErrorCode})
+				result.Pending = append(result.Pending, anxPendingItem{ExecutionID: entry.ExecutionID, Phase: string(entry.Phase), CreatedAt: entry.CreatedAt, Attempts: entry.Attempts, NextAttempt: entry.NextAttemptAt, CardRefs: entry.Registration.CardRefs, LastError: entry.LastError, ErrorCode: entry.ErrorCode, EgressErrorCode: entry.Registration.EgressErrorCode})
 			}
 		}
 		if dead, err := spool.ListDead(); err == nil {
 			for _, entry := range dead {
-				result.Dead = append(result.Dead, anxDeadItem{ExecutionID: entry.ExecutionID, Phase: string(entry.Phase), Reason: deadLetterReason(entry), ErrorCode: entry.ErrorCode, CreatedAt: entry.CreatedAt, Attempts: entry.Attempts})
+				result.Dead = append(result.Dead, anxDeadItem{ExecutionID: entry.ExecutionID, Phase: string(entry.Phase), Reason: deadLetterReason(entry), ErrorCode: entry.ErrorCode, CreatedAt: entry.CreatedAt, Attempts: entry.Attempts, EgressErrorCode: entry.Registration.EgressErrorCode})
 			}
 		}
 	}
 	lines := []output.Line{{Lead: "anx", Fields: []output.Field{{Name: "mode", Value: result.Mode}, {Name: "workspace", Value: result.WorkspaceAlias}, {Name: "spool", Value: result.SpoolDir}}}}
+	if result.LastRejection != nil {
+		lines = append(lines, output.Line{Lead: result.LastRejection.Class, Fields: []output.Field{{Name: "code", Value: result.LastRejection.Code}}})
+	}
 	for _, item := range result.Pending {
 		lines = append(lines, output.Line{Lead: "pending", Fields: []output.Field{{Name: "execution_id", Value: item.ExecutionID}, {Name: "phase", Value: item.Phase}, {Name: "attempts", Value: item.Attempts}, {Name: "next_attempt_at", Value: item.NextAttempt}}})
 	}

@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:agentctl:schema:anx-registration:v2",
+  "$id": "urn:agentctl:schema:anx-registration:v3",
   "x-agentctl-docs": "../docs/design/anx-run-links.md#redaction-and-egress",
-  "title": "Allowlisted ANX run registration v2",
-  "description": "Private spool document. Public card-message projection removes native_session. Raw labels, request keys, prompts and transcripts are forbidden.",
+  "title": "Allowlisted ANX run registration v3",
+  "description": "Allowlisted private spool document; native_session is omitted from public card messages. No summaries, URLs, raw labels, request keys, prompts or transcripts. Every variable string passes strict type/enum and secret-shape checks at runtime.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -23,7 +23,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 2
+      "const": 3
     },
     "phase": {
       "enum": [
@@ -145,17 +145,6 @@
             }
           }
         },
-        "summary": {
-          "type": "string",
-          "maxLength": 2048,
-          "description": "Explicitly opted-in block only; runtime validates redaction and the UTF-8 byte cap, which may be smaller than 2048."
-        },
-        "summary_omitted_reason": {
-          "enum": [
-            "not_opted_in",
-            "redaction_failed"
-          ]
-        },
         "links": {
           "type": "array",
           "maxItems": 8,
@@ -166,15 +155,31 @@
                 "additionalProperties": false,
                 "required": [
                   "kind",
-                  "ref"
+                  "owner",
+                  "repo",
+                  "number"
                 ],
                 "properties": {
                   "kind": {
                     "const": "pr"
                   },
-                  "ref": {
+                  "owner": {
                     "type": "string",
-                    "pattern": "^https://github\\.com/[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}/pull/[1-9][0-9]{0,9}$"
+                    "minLength": 1,
+                    "maxLength": 39,
+                    "pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"
+                  },
+                  "repo": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "pattern": "^[A-Za-z0-9_.-]+$",
+                    "description": "Runtime also rejects dot paths, .git/.wiki suffixes and credential/entropy shapes."
+                  },
+                  "number": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2147483647
                   }
                 }
               },
@@ -183,15 +188,31 @@
                 "additionalProperties": false,
                 "required": [
                   "kind",
-                  "ref"
+                  "owner",
+                  "repo",
+                  "number"
                 ],
                 "properties": {
                   "kind": {
                     "const": "issue"
                   },
-                  "ref": {
+                  "owner": {
                     "type": "string",
-                    "pattern": "^https://github\\.com/[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}/issues/[1-9][0-9]{0,9}$"
+                    "minLength": 1,
+                    "maxLength": 39,
+                    "pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"
+                  },
+                  "repo": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "pattern": "^[A-Za-z0-9_.-]+$",
+                    "description": "Runtime also rejects dot paths, .git/.wiki suffixes and credential/entropy shapes."
+                  },
+                  "number": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2147483647
                   }
                 }
               },
@@ -200,13 +221,13 @@
                 "additionalProperties": false,
                 "required": [
                   "kind",
-                  "ref"
+                  "sha"
                 ],
                 "properties": {
                   "kind": {
                     "const": "commit"
                   },
-                  "ref": {
+                  "sha": {
                     "type": "string",
                     "pattern": "^[a-f0-9]{40}$"
                   }
@@ -256,6 +277,14 @@
     },
     "supersedes_external_id": {
       "$ref": "execution.schema.json#/$defs/execution_id"
+    },
+    "egress_error_code": {
+      "enum": [
+        1001,
+        1002,
+        1003
+      ],
+      "description": "egress_rejected: secret shape, length, or format. No rejected values or field names."
     }
   }
 }

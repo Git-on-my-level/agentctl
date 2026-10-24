@@ -118,7 +118,7 @@ func TestCLISenderNoSessionStillRegistersRun(t *testing.T) {
 	registration := testRegistration("exec-a", PhaseTerminal, 1)
 	registration.NativeSession = nil
 	registration.State = StateCompleted
-	registration.Outcome = &Outcome{Availability: AvailabilityUnavailableAtSource, Links: []Link{{Kind: LinkKindPR, Ref: "https://github.com/o/r/pull/104"}}}
+	registration.Outcome = &Outcome{Availability: AvailabilityUnavailableAtSource, Links: []Link{{Kind: LinkKindPR, Owner: "o", Repo: "r", Number: 104}}}
 	if err := sender.Send(context.Background(), registration); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestCLISenderOnlyDeletesAfterRunRecordAcknowledged(t *testing.T) {
 	r := testRegistration("exec-a", PhaseTerminal, 0)
 	r.State = StateCompleted
 	r.RequestKey = "private-key"
-	r.Outcome = &Outcome{Availability: AvailabilityStored, Summary: "Passed tests.", Links: []Link{{Kind: LinkKindPR, Ref: "https://github.com/o/r/pull/104"}}}
+	r.Outcome = &Outcome{Availability: AvailabilityStored, Links: []Link{{Kind: LinkKindPR, Owner: "o", Repo: "r", Number: 104}}}
 	if _, err := spool.Enqueue(r); err != nil {
 		t.Fatal(err)
 	}

@@ -109,7 +109,7 @@ func TestBuildStartAndTerminal(t *testing.T) {
 	if done.ResultCollected {
 		t.Fatal("uncollected result reported collected")
 	}
-	if done.Outcome == nil || done.Outcome.Summary != "" || len(done.Outcome.Links) != 1 || done.Outcome.Links[0].Kind != LinkKindCommit {
+	if done.Outcome == nil || len(done.Outcome.Links) != 1 || done.Outcome.Links[0].Kind != LinkKindCommit {
 		t.Fatalf("outcome projection = %#v", done.Outcome)
 	}
 	if done.EndedAt == nil || !done.EndedAt.Equal(*terminal.TerminalAt) {

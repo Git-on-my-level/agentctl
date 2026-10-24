@@ -163,6 +163,45 @@ func (s *Spool) lock(name string, nonblocking bool) (func(), error) {
 	return func() { _ = unix.Flock(int(f.Fd()), unix.LOCK_UN); _ = f.Close() }, nil
 }
 
+// Contending detached workers wait, then take their own fresh snapshot.
+// A busy lock must never consume the wakeup for a newly enqueued terminal.
+func (s *Spool) flushLock(ctx context.Context) (func(), error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		unlock, err := s.lock("flush", true)
+		if err == nil {
+			return unlock, nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) {
+			return nil, err
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// LastRejection is a bounded, value-free receipt for a rejected registration.
+type Rejection struct {
+	Class string `json:"class"`
+	Code  int    `json:"code"`
+}
+
+func (s *Spool) LastRejection() *Rejection {
+	raw, err := os.ReadFile(filepath.Join(s.root, "egress-rejection.json"))
+	var receipt Rejection
+	if err != nil || json.Unmarshal(raw, &receipt) != nil || receipt.Class != ReasonEgressRejected || validEgressCode(receipt.Code) == 0 {
+		return nil
+	}
+	return &receipt
+}
+
 // Assigned identities are retained after pending/dead cleanup. Delivered is
 // an explicit durable replay index; crashes before pending deletion are safe.
 type sequenceIndex struct {
@@ -262,6 +301,11 @@ func (s *Spool) Enqueue(registration Registration) (Entry, error) {
 	}
 	registration, err = Allowlisted(registration, s.Catalog)
 	if err != nil {
+		class, code := ErrorClass(err)
+		raw, _ := json.Marshal(Rejection{Class: class, Code: code})
+		if writeErr := writeFileAtomic(filepath.Join(s.root, "egress-rejection.json"), raw); writeErr != nil {
+			return Entry{}, writeErr
+		}
 		return Entry{}, err
 	}
 	key := entryKey(registration.ExternalID, registration.Phase)
@@ -418,10 +462,7 @@ type FlushResult struct {
 // the future are skipped.
 func (s *Spool) Flush(ctx context.Context, sender Sender, maxAttempts int) (FlushResult, error) {
 	result := FlushResult{}
-	flushUnlock, err := s.lock("flush", true)
-	if errors.Is(err, unix.EWOULDBLOCK) {
-		return result, nil
-	}
+	flushUnlock, err := s.flushLock(ctx)
 	if err != nil {
 		return result, err
 	}
@@ -586,7 +627,7 @@ func sanitizeReason(value string) string {
 	case "":
 		return ""
 	case ReasonAuthRequired, ReasonRejected, ReasonCardUnresolved, ReasonConflict,
-		"spool_full", "anx_delivery_failed", "anx_unavailable", "anx_timeout", "anx_protocol_error", "local_io":
+		ReasonEgressRejected, "spool_full", "anx_delivery_failed", "anx_unavailable", "anx_timeout", "anx_protocol_error", "local_io":
 		return value
 	default:
 		return "anx_delivery_failed"

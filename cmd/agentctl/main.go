@@ -1183,6 +1183,11 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		if execution.Observation.Integrity == model.IntegrityConflicted {
 			return a.fail(renderer, outcomeError(output.CodeUnknownState, "execution evidence is conflicted", execution))
 		}
+		if execution.Authority == model.AuthorityMultica && execution.State.Terminal() {
+			// Await is a mutating observation path. Queue lifecycle evidence
+			// before collection; the helper never acknowledges the result.
+			a.anxRegisterTerminal(c, execution.ID)
+		}
 		switch execution.State {
 		case model.StateCompleted:
 			if contentOnly {

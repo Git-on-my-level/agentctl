@@ -113,13 +113,17 @@ or fails a run:
   harness/model (`other` otherwise), parsed card ref, strict GitHub PR/issue
   coordinates and 40-hex SHAs. Labels and raw request keys stay local; a
   host-keyed HMAC identifies the request on ANX.
-- Summary is off by default. To opt in, emit exactly one `---anx-summary---`
-  / `---end-anx-summary---` block on separate lines. Only that block is
-  considered; any redaction ambiguity drops it entirely. The byte cap is
-  2048 or the smaller `anx.run_links.summary_max_bytes` value.
+- Free-text summaries are absent from this version. Former marked blocks have
+  no effect. PR/issue evidence is a complete JSON line such as
+  `{"kind":"pr","owner":"Git-on-my-level","repo":"agentctl","number":104}`;
+  commits are `{"kind":"commit","sha":"<40-hex>"}` or `commit: <40-hex>`.
+  URLs never enter the spool or wire record. Every variable string passes
+  format/catalog and secret-shape checks; rejected values are dropped with
+  enum/numeric diagnostics only.
 - Delivery uses ANX sessions/participation when a native session exists, plus
   an idempotent card message carrying the complete public run record. Multica
-  and no-session executions still post a record, with honest outcome
+  and no-session executions still post a record. Successful Multica `dispatch`
+  queues start registration; `await` queues an observed terminal. These carry honest outcome
   availability. Fingerprints stay in the principal-private sessions API.
 - The owner-only outbox defaults to `<state dir>/anx-run-links` without config.
   Detached workers retry on subsequent work-producing invocations. Pending

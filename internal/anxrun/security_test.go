@@ -18,45 +18,6 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/route"
 )
 
-func TestSecurityUnmarkedSummaryNeverLeavesHost(t *testing.T) {
-	for _, text := range []string{
-		"private customer notes", "-----BEGIN PRIVATE KEY-----\nSENSITIVE_KEY_MATERIAL\n-----END PRIVATE KEY-----",
-		`inline FOO="private-value" here`, "https://user:private-value@github.com/o/r/pull/1",
-		"edited `/Users/private/file`", "host 100.100.100.100",
-	} {
-		got := ProjectOutcome(model.Outcome{Availability: model.OutcomeStored, Content: &model.OutcomeContent{Text: text}}, 2048)
-		if got.Summary != "" {
-			t.Errorf("unmarked result escaped: %q", got.Summary)
-		}
-	}
-}
-
-func TestSecurityExplicitSummaryBlockIsConservative(t *testing.T) {
-	wrap := func(text string) string {
-		return "private surrounding text\n---anx-summary---\n" + text + "\n---end-anx-summary---\nprivate tail"
-	}
-	if got := MarkedSummary(wrap("Implemented the fix and passed tests."), 2048); got.Summary != "Implemented the fix and passed tests." {
-		t.Fatalf("explicit summary missing: %+v", got)
-	}
-	for _, text := range []string{
-		"-----BEGIN PRIVATE KEY-----\nSENSITIVE_KEY_MATERIAL\n-----END PRIVATE KEY-----",
-		`inline FOO="private-value" here`, `export FOO='private-value'`, "https://user:private-value@github.com/o/r/pull/1",
-		"edited `/Users/private/file`", "host 100.64.0.1", "host 100.127.255.254", "used sk-" + "abcdef01234567",
-		"-----BEGIN OPENSSH PRIVATE KEY-----\nKEY_BODY\n-----END OPENSSH PRIVATE KEY-----",
-		"token: short-value", "Authorization: Bearer short-value", "edited `/etc/private-file`", "~operator/private-file", "host fd7a:115c:a1e0::1",
-		"used sk-a", "used xoxb-short",
-	} {
-		if got := MarkedSummary(wrap(text), 2048); got.Summary != "" || got.OmittedReason != SummaryOmittedRedactionFailed {
-			t.Errorf("ambiguous opted-in text survived: %+v", got)
-		}
-	}
-	for _, text := range []string{"---anx-summary---\nincomplete", "---end-anx-summary---\n---anx-summary---", wrap("ok") + wrap("again"), "inline ---anx-summary---\ntext\n---end-anx-summary---"} {
-		if got := MarkedSummary(text, 2048); got.Summary != "" {
-			t.Fatalf("malformed block accepted: %+v", got)
-		}
-	}
-}
-
 func TestSecurityRequestKeyHMACStableAndHostLocal(t *testing.T) {
 	s := testSpool(t)
 	r := BuildStart(testExecution(t, []string{"anx.card.dogfooding"}, model.StateRunning), time.Now())
@@ -121,7 +82,7 @@ func TestSecurityLegacySummaryAndMetadataCannotEgress(t *testing.T) {
 	r.SchemaVersion = 1
 	r.Labels = []string{"private-label"}
 	r.RequestKey = "private-key"
-	r.Outcome = &Outcome{Availability: "private-availability", Summary: "private unmarked legacy summary", Failure: &FailureProjection{Code: "secret-failure", Kind: "/Users/private"}}
+	r.Outcome = &Outcome{Availability: "private-availability", Failure: &FailureProjection{Code: "secret-failure", Kind: "/Users/private"}}
 	safe, err := Allowlisted(r, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -129,14 +90,6 @@ func TestSecurityLegacySummaryAndMetadataCannotEgress(t *testing.T) {
 	raw, _ := json.Marshal(safe)
 	if strings.Contains(string(raw), "private") || strings.Contains(string(raw), "secret") {
 		t.Fatalf("legacy data escaped: %s", raw)
-	}
-}
-
-func TestSecurityShortSummaryByteLimit(t *testing.T) {
-	for n := 1; n < len(truncationMarker); n++ {
-		if got := RedactSummary(strings.Repeat("ok ", 20), n); len(got.Summary) > n {
-			t.Fatalf("summary exceeds %d-byte bound", n)
-		}
 	}
 }
 
@@ -324,13 +277,28 @@ func TestSecurityConcurrentFlushIsSerialized(t *testing.T) {
 		close(release)
 		t.Fatal(err)
 	}
-	result, err := other.Flush(context.Background(), senderFunc(func(context.Context, Registration) error { t.Error("concurrent delivery"); return nil }), 0)
-	close(release)
-	if firstErr := <-finished; firstErr != nil {
-		t.Fatal(firstErr)
+	second := make(chan error, 1)
+	go func() {
+		result, err := other.Flush(context.Background(), senderFunc(func(context.Context, Registration) error { t.Error("concurrent delivery"); return nil }), 0)
+		if result.Delivered != 0 {
+			second <- fmt.Errorf("duplicate delivery")
+			return
+		}
+		second <- err
+	}()
+	select {
+	case err := <-second:
+		close(release)
+		<-finished
+		t.Fatalf("did not wait: %v", err)
+	case <-time.After(50 * time.Millisecond):
 	}
-	if err != nil || result.Delivered != 0 {
-		t.Fatalf("second flush: %+v %v", result, err)
+	close(release)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-second; err != nil {
+		t.Fatal(err)
 	}
 }
 

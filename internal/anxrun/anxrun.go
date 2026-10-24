@@ -12,7 +12,7 @@
 //   - Outcomes are read through the journal's read-only outcome accessor.
 //     A registration never acknowledges collection: acknowledgement semantics
 //     stay with the parent's explicit `result`/`await` call.
-//   - Summaries are derived deterministically by RedactSummary; no model runs.
+//   - Free-text outcomes never leave the host. Evidence is structured.
 package anxrun
 
 import (
