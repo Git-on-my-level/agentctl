@@ -101,7 +101,8 @@ func TestBuildStartAndTerminal(t *testing.T) {
 	terminal.State = model.StateCompleted
 	terminal.Liveness = model.LivenessExited
 	outcome := model.Outcome{SchemaVersion: 1, ExecutionID: execution.ID, Revision: 1, State: model.StateCompleted, Availability: model.OutcomeStored, RecordedAt: now, Source: "claude-code", ResultRef: start.DurableID,
-		Content: &model.OutcomeContent{MediaType: "text/plain", Text: "Landed the watcher.\ncommit: 0123456789abcdef0123456789abcdef01234567", Preview: "Landed", Bytes: 68}}
+		Evidence: []model.OutcomeEvidence{{Kind: "commit", SHA: "0123456789abcdef0123456789abcdef01234567"}},
+		Content:  &model.OutcomeContent{MediaType: "text/plain", Text: "Landed the watcher.\ncommit: 0123456789abcdef0123456789abcdef01234567", Preview: "Landed", Bytes: 68}}
 	done := BuildTerminal(terminal, &outcome, false, now)
 	if done.Phase != PhaseTerminal || done.State != StateCompleted || done.Liveness != LivenessStale {
 		t.Fatalf("terminal projection wrong: %#v", done)

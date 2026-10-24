@@ -42,13 +42,14 @@ type Anx struct {
 // zero-config for the documented convention. "all" also registers unlabeled
 // runs; "off" disables registration entirely.
 type RunLinks struct {
-	Default          string `json:"default,omitempty"`
-	WorkspaceAlias   string `json:"workspace_alias,omitempty"`
-	Executable       string `json:"executable,omitempty"`
-	BaseURL          string `json:"base_url,omitempty"`
-	ConfigDir        string `json:"config_dir,omitempty"`
-	SpoolDir         string `json:"spool_dir,omitempty"`
-	FlushTimeoutSecs int    `json:"flush_timeout_seconds,omitempty"`
+	AllowedOrgs      []string `json:"allowed_orgs,omitempty"`
+	Default          string   `json:"default,omitempty"`
+	WorkspaceAlias   string   `json:"workspace_alias,omitempty"`
+	Executable       string   `json:"executable,omitempty"`
+	BaseURL          string   `json:"base_url,omitempty"`
+	ConfigDir        string   `json:"config_dir,omitempty"`
+	SpoolDir         string   `json:"spool_dir,omitempty"`
+	FlushTimeoutSecs int      `json:"flush_timeout_seconds,omitempty"`
 }
 
 // Bootstrap is host-local live-config policy. Git config bundles cannot set
@@ -256,6 +257,14 @@ func (a Anx) Validate() error {
 }
 
 func (r RunLinks) Validate() error {
+	if len(r.AllowedOrgs) > 64 {
+		return errors.New("allowed_orgs exceeds limit")
+	}
+	for _, org := range r.AllowedOrgs {
+		if len(org) > 39 || !regexp.MustCompile(`^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$`).MatchString(org) {
+			return errors.New("invalid allowed_orgs")
+		}
+	}
 	switch strings.TrimSpace(r.Default) {
 	case "", "labeled", "all", "off":
 	default:

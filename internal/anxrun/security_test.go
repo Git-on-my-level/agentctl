@@ -100,7 +100,7 @@ func TestSecurityEvidenceStrictAllowlist(t *testing.T) {
 		"https://github.com:443/o/r/pull/1", "https://gitlab.com/o/r/pull/1",
 		"pr: https://github.com/o/r/issues/1", "https://github.com/o/r/pull/01",
 	} {
-		if _, ok := SanitizeLink(ref); ok {
+		if len(ProjectOutcome(model.Outcome{Content: &model.OutcomeContent{Text: ref}}).Links) > 0 {
 			t.Errorf("unsafe evidence accepted: %q", ref)
 		}
 	}

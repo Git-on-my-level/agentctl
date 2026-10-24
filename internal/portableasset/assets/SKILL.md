@@ -635,27 +635,25 @@ collection) and enqueues an allowlisted record. A detached worker registers
 sessions/participation where available and an idempotent card message containing
 the durable ID `agentctl://<origin_host_id>/<exec-id>`, state, outcome and strict
 GitHub PR/issue or 40-hex commit evidence. Models must match the reviewed catalog
-or become `other`. Labels and raw request keys stay local; only the parsed card
+or become `other`. Labels and raw request keys stay local; only the ANX-confirmed canonical card
 ref and a host-keyed request hash leave the host. Slugs are 1–64 lowercase
 letters/digits/hyphens with credential shapes rejected.
 
-Free-text summaries are absent from this version; marked summary blocks have
-no effect. Emit evidence as complete JSON lines:
+Run-link fields require generated provenance, catalog membership or an
+authoritative source. Free-text summaries, JSON result lines and result-text
+evidence extraction are absent. Only explicit typed outcome evidence is
+eligible; current adapters do not emit it. PR/issue repositories must match
+configured `anx.run_links.allowed_orgs` or the exact GitHub origin of the run's
+working directory. Numbers must be positive; commits are 40-hex SHAs.
 
-```json
-{"kind":"pr","owner":"Git-on-my-level","repo":"agentctl","number":104}
-{"kind":"issue","owner":"Git-on-my-level","repo":"agentctl","number":12}
-{"kind":"commit","sha":"0123456789abcdef0123456789abcdef01234567"}
-```
-
-URLs are ignored. Coordinates must match GitHub naming rules; every variable
-string passes a secret-shape detector before spooling and egress. Optional
-unsafe fields are dropped; required unsafe identity drops the registration.
-Only enum/numeric diagnostics survive. Native fingerprints remain
-principal-private. Successful Multica `dispatch` queues a start registration;
-`await` queues an observed terminal with unavailable-at-source content.
-Supervisor-only terminal observations need a later await or dispatch replay.
-No-session runs register without inventing sessions.
+Card labels stay local. The outbox contains no candidate refs. Delivery first
+fetches the selected ANX workspace's canonical card catalog, without sending
+candidate slugs, then matches locally and caches confirmed coordinates for the
+batch. Failed checks grant no authority from an old cache. Prefix/entropy
+checks are per substring/window and never authorize a field by themselves.
+Native fingerprints remain principal-private. Multica dispatch queues start
+registration and await queues observed terminals; supervisor-only observations
+still need a later await or dispatch replay.
 
 If ANX is unreachable, registrations spool under `<state dir>/anx-run-links`
 and retry with backoff in detached workers on subsequent work. Errors are

@@ -27,13 +27,24 @@ func (f *fakeRunner) run(_ context.Context, argv []string, stdin []byte) ([]byte
 		return []byte(next), nil
 	}
 	joined := strings.Join(argv, " ")
-	if strings.Contains(joined, "api agents.me.get") {
+	if strings.Contains(joined, "api cards.list") {
+		return []byte(`{"ok":true,"result":{"cards":[{"ref":"card:watch-redesign","thread_id":"thread-test"},{"ref":"card:other","thread_id":"thread-other"},{"ref":"card:dogfooding","thread_id":"thread-dogfooding"}]}}`), nil
+	}
+	if strings.Contains(joined, "auth whoami") {
 		return []byte(`{"ok":true,"result":{"agent":{"actor_id":"actor-test"}}}`), nil
 	}
 	if strings.Contains(joined, "api cards.get") {
 		return []byte(`{"ok":true,"result":{"card":{"thread_id":"thread-test"}}}`), nil
 	}
 	return []byte(`{"ok":true,"result":{"session":{"id":"sess-1"}}}`), nil
+}
+
+func fixtureResolve(original Registration) func(context.Context, Registration) (Registration, *Repository, error) {
+	return func(_ context.Context, r Registration) (Registration, *Repository, error) {
+		r.CardRefs = original.CardRefs
+		r.Outcome = original.Outcome
+		return r, nil, nil
+	}
 }
 
 func TestCLISenderArgvAndBodies(t *testing.T) {
@@ -44,10 +55,10 @@ func TestCLISenderArgvAndBodies(t *testing.T) {
 	if err := sender.Send(context.Background(), registration); err != nil {
 		t.Fatal(err)
 	}
-	if len(runner.argvs) != 8 {
+	if len(runner.argvs) != 7 {
 		t.Fatalf("invocations = %d (session + 2 participants + identity + 2 card reads + 2 messages)", len(runner.argvs))
 	}
-	sessionArgv := runner.argvs[0]
+	sessionArgv := runner.argvs[1]
 	joined := strings.Join(sessionArgv, " ")
 	for _, want := range []string{"--json", "--workspace anx", "api sessions.register", "--json-body -"} {
 		if !strings.Contains(joined, want) {
@@ -58,7 +69,7 @@ func TestCLISenderArgvAndBodies(t *testing.T) {
 		t.Fatalf("base URL passed without configuration: %v", sessionArgv)
 	}
 	var sessionBody map[string]any
-	if err := json.Unmarshal([]byte(runner.stdins[0]), &sessionBody); err != nil {
+	if err := json.Unmarshal([]byte(runner.stdins[1]), &sessionBody); err != nil {
 		t.Fatal(err)
 	}
 	if sessionBody["native_session_id_kind"] != NativeSessionIDKind || sessionBody["provider"] != "claude" || sessionBody["activity"] != "idle" || sessionBody["sequence"] != float64(4) || sessionBody["host_scope"] != registration.OriginHostID {
@@ -68,12 +79,12 @@ func TestCLISenderArgvAndBodies(t *testing.T) {
 	if capabilities == nil || capabilities["resume"] != "unknown" {
 		t.Fatalf("capabilities = %#v", sessionBody["capabilities"])
 	}
-	cardArgv := strings.Join(runner.argvs[1], " ")
+	cardArgv := strings.Join(runner.argvs[2], " ")
 	if !strings.Contains(cardArgv, "api work.participants.register") || !strings.Contains(cardArgv, "--param card_ref=card:watch-redesign") {
 		t.Fatalf("participant argv wrong: %v", runner.argvs[1])
 	}
 	var participantBody map[string]any
-	if err := json.Unmarshal([]byte(runner.stdins[1]), &participantBody); err != nil {
+	if err := json.Unmarshal([]byte(runner.stdins[2]), &participantBody); err != nil {
 		t.Fatal(err)
 	}
 	// The session id from the register response feeds participation.
@@ -99,12 +110,12 @@ func TestCLISenderPassesExplicitEndpointOptions(t *testing.T) {
 
 func TestCLISenderStartRegistersActive(t *testing.T) {
 	runner := &fakeRunner{}
-	sender := &CLISender{options: CLIOptions{}, run: runner.run}
+	sender := &CLISender{options: CLIOptions{AllowedOrgs: []string{"o"}}, run: runner.run}
 	if err := sender.Send(context.Background(), testRegistration("exec-a", PhaseStart, 1)); err != nil {
 		t.Fatal(err)
 	}
 	var body map[string]any
-	if err := json.Unmarshal([]byte(runner.stdins[0]), &body); err != nil {
+	if err := json.Unmarshal([]byte(runner.stdins[1]), &body); err != nil {
 		t.Fatal(err)
 	}
 	if body["activity"] != "active" {
@@ -114,7 +125,7 @@ func TestCLISenderStartRegistersActive(t *testing.T) {
 
 func TestCLISenderNoSessionStillRegistersRun(t *testing.T) {
 	runner := &fakeRunner{}
-	sender := &CLISender{options: CLIOptions{}, run: runner.run}
+	sender := &CLISender{options: CLIOptions{AllowedOrgs: []string{"o"}}, run: runner.run}
 	registration := testRegistration("exec-a", PhaseTerminal, 1)
 	registration.NativeSession = nil
 	registration.State = StateCompleted
@@ -152,6 +163,7 @@ func TestCLISenderMulticaWithoutStoredOutcome(t *testing.T) {
 	execution := testExecution(t, []string{"anx.card.dogfooding"}, model.StateCompleted)
 	execution.Authority = model.AuthorityMultica
 	r := BuildTerminal(execution, nil, false, time.Now())
+	r.Sequence = 1
 	if r.NativeSession != nil || r.Outcome == nil || r.Outcome.Availability != AvailabilityUnavailableAtSource {
 		t.Fatalf("false Multica availability: %+v", r)
 	}
@@ -176,7 +188,7 @@ func TestCLISenderOnlyDeletesAfterRunRecordAcknowledged(t *testing.T) {
 	runner := &fakeRunner{}
 	var firstBody string
 	failMessage := true
-	sender := &CLISender{options: CLIOptions{}, run: func(ctx context.Context, argv []string, stdin []byte) ([]byte, error) {
+	sender := &CLISender{options: CLIOptions{AllowedOrgs: []string{"o"}}, Resolve: fixtureResolve(r), run: func(ctx context.Context, argv []string, stdin []byte) ([]byte, error) {
 		if strings.Contains(strings.Join(argv, " "), "api events.create") {
 			if firstBody == "" {
 				firstBody = string(stdin)
@@ -234,7 +246,7 @@ func TestCLISenderClassifiesANXErrors(t *testing.T) {
 	} {
 		runner := &fakeRunner{}
 		runner.envelopes = []string{`{"ok":false,"error":{"code":"` + code + `","message":"nope"}}`}
-		sender := &CLISender{options: CLIOptions{}, run: runner.run}
+		sender := &CLISender{options: CLIOptions{AllowedOrgs: []string{"o"}}, run: runner.run}
 		err := sender.Send(context.Background(), testRegistration("exec-a", PhaseTerminal, 1))
 		var sendErr *SendError
 		if err == nil || !errorsAs(err, &sendErr) {
@@ -254,7 +266,7 @@ func TestCLISenderClassifiesANXErrors(t *testing.T) {
 
 func TestCLISenderNonJSONEnvelopeIsRetryable(t *testing.T) {
 	runner := &fakeRunner{envelopes: []string{"not json at all"}}
-	sender := &CLISender{options: CLIOptions{}, run: runner.run}
+	sender := &CLISender{options: CLIOptions{AllowedOrgs: []string{"o"}}, run: runner.run}
 	err := sender.Send(context.Background(), testRegistration("exec-a", PhaseTerminal, 1))
 	sendErr, ok := err.(*SendError)
 	if !ok {

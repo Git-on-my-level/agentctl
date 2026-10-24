@@ -30,6 +30,7 @@ import (
 // config file keeps the zero-config default (register labeled runs); an
 // invalid config disables registration rather than guessing.
 type anxSettings struct {
+	AllowedOrgs    []string
 	Catalog        []route.ModelRecord
 	Mode           string
 	WorkspaceAlias string
@@ -74,6 +75,7 @@ func (a *app) anxSettings(c common) (anxSettings, bool) {
 		return settings, true
 	}
 	runLinks := *resolution.Config.Anx.RunLinks
+	settings.AllowedOrgs = runLinks.AllowedOrgs
 	if runLinks.Default != "" {
 		settings.Mode = runLinks.Default
 	}
@@ -109,12 +111,50 @@ func (a *app) anxOpenSpool(settings anxSettings) (*anxrun.Spool, error) {
 func anxSender(settings anxSettings) *anxrun.CLISender {
 	return anxrun.NewCLISender(anxrun.CLIOptions{
 		Catalog:        settings.Catalog,
+		AllowedOrgs:    settings.AllowedOrgs,
+		CacheDir:       settings.SpoolDir,
 		Executable:     settings.Executable,
 		WorkspaceAlias: settings.WorkspaceAlias,
 		BaseURL:        settings.BaseURL,
 		ConfigDir:      settings.ConfigDir,
 		Timeout:        settings.FlushTimeout,
 	})
+}
+
+// No unverified label or result text enters the spool. A delivery worker
+// recovers candidates by generated execution ID and resolves authoritative
+// cards and repository policy before the sender builds its public document.
+func (a *app) anxJournalSender(c common, settings anxSettings) *anxrun.CLISender {
+	sender := anxSender(settings)
+	sender.Resolve = func(ctx context.Context, r anxrun.Registration) (anxrun.Registration, *anxrun.Repository, error) {
+		journal, problem := a.openRead(c)
+		if problem != nil {
+			return r, nil, fmt.Errorf("local_io:0")
+		}
+		id, err := ids.ParseExecutionID(r.ExternalID)
+		if err != nil {
+			journal.Close()
+			return r, nil, err
+		}
+		execution, err := journal.GetExecution(ctx, id)
+		if err != nil {
+			journal.Close()
+			return r, nil, err
+		}
+		r.CardRefs = anxrun.ResolveCards(execution.Labels)
+		if r.Phase == anxrun.PhaseTerminal {
+			if outcome, err := journal.GetOutcome(ctx, id); err == nil {
+				r.Outcome = anxrun.ProjectOutcome(outcome)
+			}
+		}
+		journal.Close()
+		var origin *anxrun.Repository
+		if execution.CWD != nil {
+			origin = anxrun.OriginRepository(ctx, *execution.CWD)
+		}
+		return r, origin, nil
+	}
+	return sender
 }
 
 // anxRegisterStart spools the PhaseStart registration after an execution is
@@ -239,7 +279,7 @@ func (a *app) anxFlushWorker(ctx context.Context, c common) int {
 		return 0
 	}
 	spool.Catalog = settings.Catalog
-	_, _ = spool.Flush(ctx, anxSender(settings), 0)
+	_, _ = spool.Flush(ctx, a.anxJournalSender(c, settings), 0)
 	return 0
 }
 
@@ -360,7 +400,7 @@ func (a *app) anxFlush(ctx context.Context, renderer output.Renderer, c common, 
 	}
 	flushCtx, cancel := context.WithTimeout(ctx, settings.FlushTimeout+5*time.Second)
 	defer cancel()
-	summary, err := spool.Flush(flushCtx, anxSender(settings), 0)
+	summary, err := spool.Flush(flushCtx, a.anxJournalSender(c, settings), 0)
 	if err != nil {
 		return output.NewError(output.CodeDependencyUnavailable, "anx_delivery_failed:0", true)
 	}

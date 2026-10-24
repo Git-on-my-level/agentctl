@@ -130,6 +130,7 @@ registers labeled executions with Agent Nexus (see
   "run_links": {
     "default": "labeled",
     "workspace_alias": "anx",
+    "allowed_orgs": ["Git-on-my-level"],
     "executable": "anx",
     "flush_timeout_seconds": 10
   }
@@ -145,7 +146,12 @@ ANX credentials — authentication and workspace resolution stay with the `anx`
 CLI's own credential store. Free-text summary support is absent; the former
 `summary_max_bytes` option is no longer accepted.
 `flush_timeout_seconds` bounds detached delivery; it never delays a run return. `spool_dir` overrides the default
-`<state dir>/anx-run-links` outbox. The section is advisory for standalone
+`<state dir>/anx-run-links` outbox. `allowed_orgs` is an explicit reviewed GitHub
+organization allowlist (at most 64 names). Typed PR/issue evidence must match
+one of those owners or the exact GitHub owner/repo in the run CWD's local
+`origin` config. The default empty list grants only exact-origin authority.
+Result text/JSON lines are never parsed as evidence. Card refs require a fresh
+ANX workspace catalog confirmation in the delivery batch. The section is advisory for standalone
 use: without it, labeled runs still register with the defaults above.
 
 ## Profile selection

@@ -19,6 +19,10 @@
     "output_ref": {"type": "string", "maxLength": 1024, "description": "Private local file containing at most 64 KiB of generic-process stdout after extraction failure; never an answer contract."},
     "output_truncated": {"type": "boolean"},
     "output_capture_error": {"const": "output_capture_failed"},
+    "evidence": {
+      "$ref": "anx-registration.schema.json#/properties/outcome/properties/links",
+      "description": "Explicit structured producer field; current adapters do not populate it. Never derive from content.text. Outbound repository coordinates require independent authority."
+    },
     "content": {
       "type": "object",
       "required": ["media_type", "text", "preview", "bytes", "truncated"],

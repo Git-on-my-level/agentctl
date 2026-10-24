@@ -45,7 +45,7 @@ func fakeAnxScript(t *testing.T) (string, string) {
 	dir := testutil.TempDir(t)
 	log := filepath.Join(dir, "anx-calls.log")
 	script := filepath.Join(dir, "fake-anx")
-	body := "#!/bin/sh\necho \"$*\" >> " + log + "\ncat >> " + log + "\ncase \"$*\" in\n *agents.me.get*) echo '{\"ok\":true,\"result\":{\"agent\":{\"actor_id\":\"actor-test\"}}}' ;;\n *cards.get*) echo '{\"ok\":true,\"result\":{\"card\":{\"thread_id\":\"thread-test\"}}}' ;;\n *) echo '{\"ok\":true,\"result\":{\"session\":{\"id\":\"sess-1\"}}}' ;;\nesac\n"
+	body := "#!/bin/sh\necho \"$*\" >> " + log + "\ncat >> " + log + "\ncase \"$*\" in\n *whoami*) echo '{\"ok\":true,\"result\":{\"agent\":{\"actor_id\":\"actor-test\"}}}' ;;\n *cards.list*) echo '{\"ok\":true,\"result\":{\"cards\":[{\"ref\":\"card:watch-redesign\",\"thread_id\":\"thread-test\"},{\"ref\":\"card:dogfooding\",\"thread_id\":\"thread-test\"}]}}' ;;\n *cards.get*) echo '{\"ok\":true,\"result\":{\"card\":{\"thread_id\":\"thread-test\"}}}' ;;\n *) echo '{\"ok\":true,\"result\":{\"session\":{\"id\":\"sess-1\"}}}' ;;\nesac\n"
 
 	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
@@ -215,17 +215,13 @@ func TestANXRunLinkRegistersLabeledRunsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cards := map[string]bool{}
+	if len(pending)+len(dead) != 4 {
+		t.Fatalf("labeled registrations missing: %d", len(pending)+len(dead))
+	}
 	for _, entry := range append(pending, dead...) {
-		for _, ref := range entry.Registration.CardRefs {
-			cards[ref] = true
+		if len(entry.Registration.CardRefs) != 0 {
+			t.Fatal("unconfirmed card persisted")
 		}
-	}
-	if !cards["card:demo"] || !cards["card:sugared"] {
-		t.Fatalf("labeled runs missing from spool: %#v", cards)
-	}
-	if cards["card:unrelated"] {
-		t.Fatal("unlabeled run registered although default is labeled-only")
 	}
 
 	// Labels visible on the sugared execution: the label is the contract.
@@ -262,7 +258,7 @@ func TestANXStatusAndFlushCommands(t *testing.T) {
 	if code := a.run(context.Background(), []string{"--output", "json", "--config", brokenConfig, "--journal", journalPath, "anx", "status"}); code != 0 {
 		t.Fatalf("anx status exit=%d out=%s", code, stdout.String())
 	}
-	if !strings.Contains(stdout.String(), `"card:watch-redesign"`) || !strings.Contains(stdout.String(), `"pending"`) {
+	if strings.Contains(stdout.String(), `"card:watch-redesign"`) || !strings.Contains(stdout.String(), id) || !strings.Contains(stdout.String(), `"pending"`) {
 		t.Fatalf("status output missing pending entry: %s", stdout.String())
 	}
 	if len(readAnxCalls(t, log)) != 0 {

@@ -180,3 +180,17 @@ func TestRunLinksSummaryConfigurationRemoved(t *testing.T) {
 		t.Fatalf("removed summary option accepted: %v", err)
 	}
 }
+
+func TestRunLinksAllowedOrganizations(t *testing.T) {
+	if err := (RunLinks{AllowedOrgs: []string{"Git-on-my-level", "omi"}}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, org := range []string{"", "*", "o/r", "o--r", "-org", "org-", strings.Repeat("o", 40), "100.101.102.103"} {
+		if (RunLinks{AllowedOrgs: []string{org}}).Validate() == nil {
+			t.Fatal("invalid organization accepted")
+		}
+	}
+	if (RunLinks{AllowedOrgs: make([]string, 65)}).Validate() == nil {
+		t.Fatal("unbounded organization list")
+	}
+}

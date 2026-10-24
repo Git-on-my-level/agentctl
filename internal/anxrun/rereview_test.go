@@ -28,7 +28,7 @@ func TestReReviewNoFreeTextOutcome(t *testing.T) {
 			t.Fatal(err)
 		}
 		runner := &fakeRunner{}
-		if err := (&CLISender{run: runner.run}).Send(context.Background(), entry.Registration); err != nil {
+		if err := (&CLISender{run: runner.run, Resolve: fixtureResolve(testRegistration("exec-a", PhaseTerminal, 1))}).Send(context.Background(), entry.Registration); err != nil {
 			t.Fatal(err)
 		}
 		raw, _ := json.Marshal(entry)
@@ -53,19 +53,14 @@ func TestReReviewCredentialCoordinates(t *testing.T) {
 				t.Fatalf("credential coordinate accepted: %s %s %d", field, prefix, code)
 			}
 		}
-		if _, ok := SanitizeLink("https://github.com/o/" + prefix + strings.Repeat("a", 36) + "/pull/1"); ok {
+		if len(ProjectOutcome(model.Outcome{Content: &model.OutcomeContent{Text: "https://github.com/o/" + prefix + strings.Repeat("a", 36) + "/pull/1"}}).Links) > 0 {
 			t.Errorf("credential evidence accepted: %s", prefix)
 		}
 	}
 	if cards := ResolveCards([]string{"anx.card.glpat-abcdefghijklmnopqrst"}); len(cards) != 0 {
 		t.Fatalf("credential slug accepted: %v", cards)
 	}
-	if link, ok := SanitizeLink("https://github.com/o/r/pull/1"); ok {
-		raw, _ := json.Marshal(link)
-		if strings.Contains(string(raw), "https://") {
-			t.Fatal("evidence URL remains in egress")
-		}
-	}
+
 }
 
 func TestReReviewSecretShapesInEveryString(t *testing.T) {
@@ -110,7 +105,7 @@ func TestReReviewSecretShapesInEveryString(t *testing.T) {
 			}
 			runner := &fakeRunner{}
 			// Card rejection leaves no target; all other optional drops still deliver.
-			_ = (&CLISender{run: runner.run}).Send(context.Background(), entry.Registration)
+			_ = (&CLISender{run: runner.run, Resolve: fixtureResolve(testRegistration("exec-a", PhaseTerminal, 1))}).Send(context.Background(), entry.Registration)
 			raw, _ := json.Marshal(entry)
 			for _, data := range append(runner.stdins, string(raw)) {
 				if strings.Contains(data, secret) {
@@ -189,7 +184,7 @@ func TestReReviewLegacySummaryAndURLDroppedAtReadBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeRunner{}
-	if err := (&CLISender{run: runner.run}).Send(context.Background(), entries[0].Registration); err != nil {
+	if err := (&CLISender{run: runner.run, Resolve: fixtureResolve(testRegistration("exec-a", PhaseTerminal, 1))}).Send(context.Background(), entries[0].Registration); err != nil {
 		t.Fatal(err)
 	}
 	for _, data := range runner.stdins {

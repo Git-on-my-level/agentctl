@@ -1,6 +1,6 @@
 # Design: link agentctl runs to ANX cards with durable IDs
 
-Status: design v4 (2026-10-24). Rollout step 3 (agentctl run registration)
+Status: design v5 (2026-10-24). Rollout step 3 (agentctl run registration)
 is implemented in this repository; steps 1–2 and 4–6 remain planned.
 
 ## Problem
@@ -193,7 +193,7 @@ state-regression-protected, replay-detecting) gains these optional fields:
 }
 ```
 
-Bounds: no summary field; `links` ≤ 8 structured entries, each ≤ 512 input bytes;
+Bounds: no summary field; `links` ≤ 8 structured entries, with bounded typed coordinates;
 unknown fields rejected (existing behavior). `native_session` and
 `transcript` are principal-scoped: they are omitted from card-shared
 projections and task reads (which already never share native session
@@ -324,67 +324,94 @@ never mark work collected; acknowledgement semantics stay with `result`.
 
 ## Redaction and egress
 
-Free-text summaries are removed from this version, including the former
-marked-block opt-in, configuration knob and schema field. A summary may come
-later only as its own reviewed feature; decision 2 below describes its
-visibility if that feature is approved. Regex redaction cannot establish a
-safe boundary for arbitrary prose. agentctl builds a fresh allowlisted
-document before persistence and validates it again immediately before delivery.
-The v3 JSON contract is published in
-[anx-registration.schema.json](../../schemas/anx-registration.schema.json).
+No outbound or spooled field may be derived from free text. A fresh document
+is constructed before persistence and again before delivery. The v4 contract
+is [anx-registration.schema.json](../../schemas/anx-registration.schema.json).
+Fields belong to exactly these provenance classes:
 
-- Durable identity is `agentctl://<origin_host_id>/<exec-id>`. Both parts
-  pass the real typed six-word ID parser, including the dictionary and
-  type-bound checksum; the URI is reconstructed from those validated parts.
-- State, liveness, phase and outcome availability are enums; times are typed
-  RFC3339 timestamps. Failure projection contains only `execution_failed`
-  plus a retryable boolean, never upstream text.
-- Harness must belong to the known adapter catalog. Model must exactly match
-  the selected profile's reviewed `agent_preferences.preferred` catalog for
-  that harness and pass the bounded model-name format. Otherwise send `other`.
-- Labels never leave the host. Only parsed `card:<slug>` references survive:
-  1–64 lowercase letters/digits/hyphens, starting with a letter/digit, with
-  credential-shaped slugs rejected.
-- Request keys (up to 256 characters) stay local. Before persistence, replace
-  them with `request_key_hash`: HMAC-SHA256 under a random 32-byte, owner-only
-  spool-local key and the domain `agentctl.anx.request-key.v1` followed by NUL.
-  Persist that key across restarts; never transmit it. ANX message idempotency
-  additionally uses a digest of the canonical public payload and card ref.
-- Evidence is structured, never URLs: PRs/issues carry `kind`, `owner`,
-  `repo`, `number`; commits carry `kind: commit` and a 40-hex `sha`. Only
-  complete JSON objects on individual result lines (or `commit: <40-hex>`)
-  are parsed; arbitrary prose and URLs are ignored. The first 4096 bytes
-  are scanned; at most eight deduplicated entries, each ≤512 input bytes.
-  Owner names have 1–39 ASCII alphanumerics or single hyphens, no edge
-  hyphen; repository names have 1–100 ASCII alphanumerics, `.`, `_`, `-`.
-  Reject dot paths and reserved `.git`/`.wiki` suffixes. Numbers are integers
-  from 1 through 2147483647. ANX may reconstruct URLs from these coordinates.
-  See [GitHub repository naming](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-new-repository)
-  and [username rules](https://docs.github.com/en/enterprise-cloud%40latest/admin/managing-iam/iam-configuration-reference/username-considerations-for-external-authentication).
-- Every variable string passes a shared secret-shape detector as well as its
-  strict type/catalog validation before spooling and again before delivery.
-  This includes card slug, owner/repo, harness/model, host/exec IDs, private
-  session metadata and server-returned session/actor/thread coordinates.
-  Known credential prefixes (including all `gh[opsur]_`, `github_pat_`,
-  `glpat-`, `sk-`, Slack `xox[abpr]-`, `AKIA`, `AIza`), JWT shapes, length
-  limits and high-entropy runs cause rejection. Runs of at least 24 token
-  characters with Shannon entropy ≥3.5 bits/character are rejected.
-  Validated cryptographic SHA/HMAC/fingerprint and server UUID types skip
-  entropy rejection but still check prefixes and lengths. Real word IDs
-  check entropy per dictionary word, alongside full ID prefix/length checks
-  and the real dictionary/type-bound checksum parser.
-  Optional fields are dropped (harness/model become `other`) and the record
-  carries only `egress_error_code`: 1001 secret shape, 1002 length, 1003 format.
-  Required identity rejection drops the entire registration and overwrites a
-  bounded local receipt `{class: egress_rejected, code: <number>}`, shown in
-  status without any rejected value. Legacy summaries/URL refs are discarded
-  on read; no legacy free text can be re-exported.
-- Spool/status diagnostics contain only a closed error-class enum and numeric
-  process code. No messages, paths, raw ANX codes, prompts or transcripts.
+1. **Generated values with exact grammars.** Host and execution IDs pass the
+   real v1 dictionary/type-bound checksum parser, and the durable URI is
+   reconstructed from them. Sequence numbers come from the locked persistent
+   counter, timestamps from typed journal/generator times, and lifecycle and
+   availability from closed enums. Raw request keys never serialize: the
+   spool generates a domain-separated HMAC-SHA256 under its persistent random
+   owner-only 32-byte key. Native-session fingerprints use identity v1's
+   domain-separated SHA256 function and go only to principal-private sessions.
+   Generated digests must match their exact lowercase `sha256:<64-hex>`
+   grammar. Event request keys hash the canonical public record and card ref.
+   Failure output is only `execution_failed` and a retryable boolean.
+2. **Known catalog enums.** Harness must be a known canonical harness. Model
+   must exactly match the reviewed profile catalog for that harness. Otherwise
+   each is `other`. Arbitrary model or harness strings never serialize.
+3. **Authoritatively verified coordinates.** The rules below authorize card
+   and repository fields; format and secret checks alone grant no authority.
 
-Native fingerprints are validated SHA256 correlators and go only to ANX's
-principal-private sessions endpoint. They are omitted from card messages,
-as are transcript locators. Raw native IDs never leave the host.
+### Card confirmation
+
+Labels remain private journal inputs. The outbox stores generated identity
+and enum metadata, with no candidate card refs. A delivery worker reads label
+candidates from the private journal by generated execution ID. It calls
+`anx api cards.list` in the explicitly selected workspace with **no candidate
+slug, search text or label parameters**. Only an exact local match to a
+canonical `card:<slug>` in that response can authorize a ref. Delivery copies
+the server's canonical ref and thread ID. Unknown, malformed, ambiguous or
+credential-shaped refs are dropped. No candidate is sent to `cards.get`.
+
+The worker caches the confirmed catalog for its delivery batch and writes
+only verified refs/thread IDs, a hash of the target CLI settings, and a
+generated check time to owner-only `confirmed-cards.json`. Card prose never
+enters this cache. Every new batch requires a fresh successful catalog read;
+a previous disk snapshot grants no offline authority. Failed, unavailable,
+missing or incomplete/paginated catalog reads leave delivery pending with
+enum/numeric diagnostics, without sending any candidate ref. A confirmed
+catalog with no matching card parks the registration as `card_unresolved`.
+ANX's CLI owns authentication, identity and workspace resolution; agentctl
+reads no credentials or ANX config. Unavailable CLI identity fails closed.
+
+### Repository and evidence authority
+
+Evidence is an explicit typed `model.Outcome.Evidence` field. Neither prose,
+marked blocks, JSON lines nor URLs in `Outcome.Content.Text` are parsed.
+Current native/Multica adapters do not emit this field, so they report only
+enum outcomes until an explicit structured producer supplies evidence. This
+version makes no adapter capability claim for extracting PR/issue evidence.
+
+- PRs/issues carry `kind`, `owner`, `repo`, `number`. Owner/repo must match
+  `anx.run_links.allowed_orgs` (exact configured owner), or the exact owner
+  **and** repository of the run's CWD `origin` remote. The latter is read only
+  with `git config --local --no-includes --get remote.origin.url`; this runs
+  no SSH, hooks or network and sends no local path. Missing or invalid origin
+  grants nothing. HTTPS and GitHub SSH-form remotes are parsed locally;
+  credentials, ports, query strings and extra paths are rejected.
+- GitHub owner grammar is 1–39 ASCII alphanumerics with single interior
+  hyphens; repo grammar is 1–100 ASCII alphanumerics, `.`, `_`, `-`, excluding
+  dot paths and `.git`/`.wiki` suffixes. Reject IP literals/substrings and
+  Tailnet/`.ts.net`/`.local` host coordinates even under an allowed org.
+- PR/issue numbers are positive integers ≤2147483647. Commits are typed
+  40-hex SHAs, normalized to lowercase. At most eight evidence entries.
+  ANX reconstructs any display URLs; no evidence URL is transmitted.
+- The outbox omits unverified owner/repo fields. The worker recovers typed
+  evidence from the journal and checks current org/origin policy at delivery.
+  Legacy v1–v3 evidence and summaries have no acceptable provenance and are
+  discarded. Free-text summaries and their config/schema are absent; a
+  summary may return only as a separately reviewed feature. Decision 2 below
+  defines visibility if that future feature is approved.
+
+### Defense in depth and diagnostics
+
+The secret-shape detector grants no authority. It scans credential prefixes
+at **every substring**, including embedded `gh[opsur]_`, `github_pat_`,
+`glpat-`, `sk-`, Slack prefixes, AWS/Google keys and JWT shapes. It checks
+every 24-byte token window for entropy ≥3.5 bits/character, so padding cannot
+dilute a token. Length limits apply per field. Exact validated cryptographic
+types skip entropy rejection; real dictionary IDs are checked per word after
+the exact generator parser succeeds, avoiding token-like word boundaries.
+
+Dropped fields record only `egress_error_code`: 1001 secret shape, 1002
+length, 1003 format, 1004 missing authority. Required identity rejection drops
+the registration and writes a bounded value-free `{class: egress_rejected,
+code: <number>}` receipt. Spool and status errors are closed class enums plus
+numeric codes, never upstream messages, paths, prompts or result text.
 
 ### Current delivery transport and ANX-side gaps
 
@@ -396,13 +423,20 @@ file locks serialize local sequence allocation/state changes and whole flush
 passes; enqueue never waits on ANX. A contending worker waits for the flush
 lock, then takes a fresh snapshot, so a terminal enqueue after the owner
 snapshot cannot lose its wakeup. Lock waiting is separate from each ANX call
-timeout and respects cancellation. Snapshot comparison prevents a flush from
+timeout and respects cancellation. Each ANX subprocess gets a separate process
+group. Cancellation/timeout kills that group, and inherited stdout/stderr
+draining has a 250 ms deadline. Flush releases its lock immediately after canceled cleanup, before any
+best-effort retry accounting; state-lock contention cannot extend the
+cleanup bound. Escaped descendants cannot keep pipes or the flush lock open.
+On Windows this optional transport fails closed until equivalent job/group
+cleanup is implemented. Snapshot comparison prevents a flush from
 removing or overwriting a payload refreshed during delivery. A durable assigned
 and delivered sequence index preserves each phase's sequence across delivery,
 restarts and replay. Pending and dead letters are bounded to 256 entries;
 dead letters expire after seven days on both enqueue and flush.
 
-Today's ANX API accepts sessions, participants and idempotent `events.create`
+The documented `anx auth whoami` resolves the enrolled actor; no invented
+API command is used. Today's ANX API accepts sessions, participants and idempotent `events.create`
 card messages. Delivery registers the private native session and participation
 when available, then posts the allowlisted run record (durable ID, phase,
 terminal state, HMAC request identity, outcome and evidence) to each card's

@@ -26,14 +26,22 @@ import (
 // Sessions and participation are private/session metadata; an idempotent
 // card message carries the public run record until ANX extends /runs.
 type CLISender struct {
-	options CLIOptions
+	// Resolve reads only private typed journal fields; candidates never persist.
+	Resolve     func(context.Context, Registration) (Registration, *Repository, error)
+	cards       map[string]ConfirmedCard
+	cardsLoaded bool
+	options     CLIOptions
 	// run is injectable for tests; production uses runAnxProcess.
 	run func(ctx context.Context, argv []string, stdin []byte) (stdout []byte, err error)
 }
 
 // CLIOptions configure the anx subprocess.
 type CLIOptions struct {
-	Catalog []route.ModelRecord
+	CacheDir    string
+	AllowedOrgs []string
+	// Verification is an injected authoritative catalog snapshot for tests.
+	Verification *Verification
+	Catalog      []route.ModelRecord
 	// Executable defaults to "anx" (resolved on PATH).
 	Executable string
 	// WorkspaceAlias defaults to "anx". Never a hard-coded URL.
@@ -135,9 +143,39 @@ func classifyDeadReason(err error) string {
 // Send succeeds only after ANX acknowledges every required write. Partial
 // delivery is safe to replay; spool deletion is owned by Flush afterwards.
 func (s *CLISender) Send(ctx context.Context, registration Registration) error {
-	r, err := Allowlisted(registration, s.options.Catalog)
+	if _, err := Allowlisted(registration, s.options.Catalog); err != nil {
+		return err
+	}
+	if registration.Sequence < 1 {
+		return egressError(EgressFormat)
+	}
+	policy := Verification{AllowedOrgs: s.options.AllowedOrgs}
+	if s.options.Verification != nil {
+		policy = *s.options.Verification
+	} else {
+		if !s.cardsLoaded {
+			cards, err := s.loadCards(ctx)
+			if err != nil {
+				return err
+			}
+			s.cards = cards
+			s.cardsLoaded = true
+		}
+		policy.Cards = s.cards
+	}
+	if s.Resolve != nil {
+		var err error
+		registration, policy.Origin, err = s.Resolve(ctx, registration)
+		if err != nil {
+			return err
+		}
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	r, err := Allowlisted(registration, s.options.Catalog, policy)
 	if err != nil {
-		return &SendError{Fatal: true, Reason: ReasonRejected}
+		return err
 	}
 	if len(r.CardRefs) == 0 {
 		return &SendError{Fatal: true, Reason: ReasonCardUnresolved}
@@ -169,7 +207,7 @@ func (s *CLISender) Send(ctx context.Context, registration Registration) error {
 			}
 		}
 	}
-	identity, err := s.invokeResult(ctx, "agents.me.get", nil, nil)
+	identity, err := s.invokeResult(ctx, "auth.whoami", nil, nil)
 	if err != nil {
 		return err
 	}
@@ -186,19 +224,11 @@ func (s *CLISender) Send(ctx context.Context, registration Registration) error {
 	r.NativeSession = nil
 	r.BuiltAt = time.Time{}
 	for _, card := range r.CardRefs {
-		result, err := s.invokeResult(ctx, "cards.get", map[string]string{"card_id": card}, nil)
-		if err != nil {
-			return err
+		target := policy.Cards[card]
+		text, marshalErr := json.Marshal(r)
+		if marshalErr != nil {
+			return egressError(EgressFormat)
 		}
-		var target struct {
-			Card struct {
-				ThreadID string `json:"thread_id"`
-			} `json:"card"`
-		}
-		if json.Unmarshal(result, &target) != nil || !safeServerCoordinate(target.Card.ThreadID) {
-			return &SendError{Code: "protocol_error"}
-		}
-		text, _ := json.Marshal(r)
 		// Stable across retries/re-enqueues of the same payload, including a
 		// crash after ANX committed but before local acknowledgement.
 		digest := sha256.Sum256(append([]byte(card+"\x00"), text...))
@@ -206,8 +236,8 @@ func (s *CLISender) Send(ctx context.Context, registration Registration) error {
 			"actor_id": me.Agent.ActorID, "request_key": "agentctl-run-" + hex.EncodeToString(digest[:]),
 			"event": map[string]any{
 				"type": "message_posted", "actor_id": me.Agent.ActorID,
-				"thread_id": target.Card.ThreadID, "thread_ref": "thread:" + target.Card.ThreadID,
-				"refs":       []string{card, "thread:" + target.Card.ThreadID},
+				"thread_id": target.ThreadID, "thread_ref": "thread:" + target.ThreadID,
+				"refs":       []string{card, "thread:" + target.ThreadID},
 				"summary":    r.DurableID + " " + string(r.Phase) + " " + r.State,
 				"payload":    map[string]any{"kind": "card_message", "subject_ref": card, "subject_kind": "card", "text": string(text)},
 				"provenance": map[string]any{"sources": []string{"inferred"}},
@@ -257,7 +287,12 @@ func (s *CLISender) invokeResult(ctx context.Context, commandID string, params m
 	if options.ConfigDir != "" {
 		argv = append(argv, "--config-dir", options.ConfigDir)
 	}
-	argv = append(argv, "--timeout", options.Timeout.String(), "api", commandID)
+	argv = append(argv, "--timeout", options.Timeout.String())
+	if commandID == "auth.whoami" {
+		argv = append(argv, "auth", "whoami")
+	} else {
+		argv = append(argv, "api", commandID)
+	}
 	for _, key := range sortedKeys(params) {
 		argv = append(argv, "--param", key+"="+params[key])
 	}
@@ -271,6 +306,9 @@ func (s *CLISender) invokeResult(ctx context.Context, commandID string, params m
 	ctx, cancel := context.WithTimeout(ctx, options.Timeout)
 	defer cancel()
 	stdout, runErr := run(ctx, argv, body)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	var envelope anxEnvelope
 	parseErr := json.Unmarshal(bytes.TrimSpace(stdout), &envelope)
 	if parseErr == nil && !envelope.OK && envelope.Error != nil {
@@ -278,6 +316,10 @@ func (s *CLISender) invokeResult(ctx context.Context, commandID string, params m
 		return nil, &SendError{Code: knownANXCode(code), Fatal: fatalANXCode(code), Reason: reasonForCode(code), NumericCode: processCode(runErr)}
 	}
 	if runErr != nil {
+		var classified *SendError
+		if errors.As(runErr, &classified) {
+			return nil, classified
+		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return nil, context.DeadlineExceeded
 		}
@@ -379,6 +421,10 @@ func sortedKeys(values map[string]string) []string {
 // runAnxProcess executes the anx subprocess with the body on stdin.
 func runAnxProcess(ctx context.Context, argv []string, stdin []byte) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	if err := isolateANXProcess(cmd); err != nil {
+		return nil, err
+	}
+	cmd.WaitDelay = 250 * time.Millisecond
 	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Env = os.Environ()
 	var stdout bytes.Buffer

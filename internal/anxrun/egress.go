@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/launchrecipe"
@@ -51,7 +52,11 @@ func safeAvailability(value string) string {
 // Allowlisted creates a fresh document, so newly added local fields cannot
 // accidentally cross the egress boundary. Call both before persistence and
 // immediately before delivery (including old on-disk registrations).
-func Allowlisted(r Registration, catalog []route.ModelRecord) (Registration, error) {
+func Allowlisted(r Registration, catalog []route.ModelRecord, verified ...Verification) (Registration, error) {
+	policy := Verification{}
+	if len(verified) > 0 {
+		policy = verified[0]
+	}
 	for _, value := range []string{r.OriginHostID, r.ExternalID} {
 		if code := wordIDCode(value); code != 0 {
 			return Registration{}, egressError(code)
@@ -64,6 +69,12 @@ func Allowlisted(r Registration, catalog []route.ModelRecord) (Registration, err
 		return Registration{}, egressError(EgressFormat)
 	}
 	if r.Phase != PhaseStart && r.Phase != PhaseTerminal {
+		return Registration{}, egressError(EgressFormat)
+	}
+	if r.Sequence < 0 {
+		return Registration{}, egressError(EgressFormat)
+	}
+	if year := r.BuiltAt.UTC().Year(); year < 1 || year > 9999 {
 		return Registration{}, egressError(EgressFormat)
 	}
 	state := r.State
@@ -83,13 +94,26 @@ func Allowlisted(r Registration, catalog []route.ModelRecord) (Registration, err
 		ExternalID: r.ExternalID, OriginHostID: r.OriginHostID,
 		DurableID: "agentctl://" + r.OriginHostID + "/" + r.ExternalID,
 		Adapter:   safeHarness(r.Adapter), State: state, Liveness: liveness,
-		StartedAt: r.StartedAt, EndedAt: r.EndedAt, BuiltAt: r.BuiltAt,
+		BuiltAt:  r.BuiltAt.UTC(),
 		Sequence: r.Sequence, ResultCollected: r.ResultCollected,
 	}
 	out.EgressErrorCode = validEgressCode(r.EgressErrorCode)
 	reject := func(code int) {
-		if code != 0 {
+		if code != 0 && (out.EgressErrorCode == 0 || code < out.EgressErrorCode) {
 			out.EgressErrorCode = code
+		}
+	}
+	for _, field := range []struct {
+		source *time.Time
+		target **time.Time
+	}{{r.StartedAt, &out.StartedAt}, {r.EndedAt, &out.EndedAt}} {
+		if field.source != nil {
+			value := field.source.UTC()
+			if value.Year() < 1 || value.Year() > 9999 {
+				reject(EgressFormat)
+			} else {
+				*field.target = &value
+			}
 		}
 	}
 	reject(stringCode(r.Adapter, 32, false))
@@ -116,7 +140,11 @@ func Allowlisted(r Registration, catalog []route.ModelRecord) (Registration, err
 			if len(out.CardRefs) == 16 {
 				break
 			}
-			out.CardRefs = append(out.CardRefs, ref)
+			if card, ok := policy.Cards[ref]; ok && card.Ref == ref && safeServerCoordinate(card.ThreadID) {
+				out.CardRefs = append(out.CardRefs, card.Ref)
+			} else {
+				reject(EgressUnverified)
+			}
 		} else {
 			reject(EgressFormat)
 		}
@@ -155,17 +183,29 @@ func Allowlisted(r Registration, catalog []route.ModelRecord) (Registration, err
 		}
 		reject(validEgressCode(o.EgressErrorCode))
 		for _, link := range o.Links {
+			if r.SchemaVersion != RegistrationSchemaVersion {
+				reject(EgressUnverified)
+				continue
+			}
 			if len(out.Outcome.Links) == MaxLinks {
 				break
 			}
 			if safe, code := validateLink(link); code == 0 {
-				out.Outcome.Links = append(out.Outcome.Links, safe)
+				if safe.Kind == LinkKindCommit {
+					out.Outcome.Links = append(out.Outcome.Links, safe)
+				} else if authorized, ok := policy.repository(safe); ok {
+					out.Outcome.Links = append(out.Outcome.Links, authorized)
+				} else {
+					reject(EgressUnverified)
+				}
 			} else {
 				reject(code)
 			}
 		}
 		var err error
-		out.Outcome.HeadAfter, err = SanitizeHeadAfter(o.HeadAfter)
+		if r.SchemaVersion == RegistrationSchemaVersion {
+			out.Outcome.HeadAfter, err = SanitizeHeadAfter(o.HeadAfter)
+		}
 		if err != nil {
 			reject(EgressFormat)
 		}

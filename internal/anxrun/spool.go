@@ -166,11 +166,15 @@ func (s *Spool) lock(name string, nonblocking bool) (func(), error) {
 // Contending detached workers wait, then take their own fresh snapshot.
 // A busy lock must never consume the wakeup for a newly enqueued terminal.
 func (s *Spool) flushLock(ctx context.Context) (func(), error) {
+	return s.lockContext(ctx, "flush")
+}
+
+func (s *Spool) lockContext(ctx context.Context, name string) (func(), error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		unlock, err := s.lock("flush", true)
+		unlock, err := s.lock(name, true)
 		if err == nil {
 			return unlock, nil
 		}
@@ -466,11 +470,18 @@ func (s *Spool) Flush(ctx context.Context, sender Sender, maxAttempts int) (Flus
 	if err != nil {
 		return result, err
 	}
-	defer flushUnlock()
+	held := true
+	release := func() {
+		if held {
+			held = false
+			flushUnlock()
+		}
+	}
+	defer release()
 	if maxAttempts <= 0 {
 		maxAttempts = DefaultMaxAttempts
 	}
-	unlock, err := s.lock("state", false)
+	unlock, err := s.lockContext(ctx, "state")
 	if err != nil {
 		return result, err
 	}
@@ -500,7 +511,22 @@ func (s *Spool) Flush(ctx context.Context, sender Sender, maxAttempts int) (Flus
 		} else {
 			sendErr = &SendError{Fatal: true, Reason: ReasonRejected}
 		}
-		unlock, err := s.lock("state", false)
+		interrupted := ctx.Err()
+		if interrupted == nil && (errors.Is(sendErr, context.Canceled) || errors.Is(sendErr, context.DeadlineExceeded)) {
+			interrupted = sendErr
+		}
+		if interrupted != nil {
+			// The cleanup deadline governs the flush lock, not local retry
+			// bookkeeping. Release before a best-effort, nonblocking state write.
+			release()
+			if unlock, err := s.lock("state", true); err == nil {
+				_ = s.finishAttempt(snapshot, interrupted, maxAttempts, &result)
+				_ = s.cleanup(0)
+				unlock()
+			}
+			return result, interrupted
+		}
+		unlock, err := s.lockContext(ctx, "state")
 		if err != nil {
 			return result, err
 		}

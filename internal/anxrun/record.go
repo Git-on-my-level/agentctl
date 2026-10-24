@@ -9,7 +9,7 @@ import (
 
 // RegistrationSchemaVersion versions the spooled registration document. The
 // ANX-side bridge can consume the same shape when the core run fields land.
-const RegistrationSchemaVersion = 3
+const RegistrationSchemaVersion = 4
 
 // Phase distinguishes the two registration points for one execution.
 type Phase string
@@ -199,8 +199,11 @@ func ProjectOutcome(outcome model.Outcome) *Outcome {
 	if outcome.Failure != nil {
 		projected.Failure = &FailureProjection{Code: "execution_failed", Retryable: outcome.Failure.Retryable}
 	}
-	if outcome.Content != nil {
-		projected.Links, projected.EgressErrorCode = extractLinks(outcome.Content.Text)
+	for _, e := range outcome.Evidence {
+		projected.Links = append(projected.Links, Link{Kind: e.Kind, Owner: e.Owner, Repo: e.Repo, Number: e.Number, SHA: e.SHA})
+		if len(projected.Links) == MaxLinks {
+			break
+		}
 	}
 	return projected
 }

@@ -110,16 +110,18 @@ or fails a run:
   journal accessor and enqueues a validated registration. A detached worker
   delivers it; the run's return path never waits on ANX.
 - Egress is allowlisted: validated durable ID, enum state/times, catalog-checked
-  harness/model (`other` otherwise), parsed card ref, strict GitHub PR/issue
+  harness/model (`other` otherwise), ANX-confirmed canonical card ref, strict GitHub PR/issue
   coordinates and 40-hex SHAs. Labels and raw request keys stay local; a
   host-keyed HMAC identifies the request on ANX.
-- Free-text summaries are absent from this version. Former marked blocks have
-  no effect. PR/issue evidence is a complete JSON line such as
-  `{"kind":"pr","owner":"Git-on-my-level","repo":"agentctl","number":104}`;
-  commits are `{"kind":"commit","sha":"<40-hex>"}` or `commit: <40-hex>`.
-  URLs never enter the spool or wire record. Every variable string passes
-  format/catalog and secret-shape checks; rejected values are dropped with
-  enum/numeric diagnostics only.
+- Free-text summaries and result-text evidence parsing are absent. Only an
+  explicit typed outcome evidence producer can supply refs; current adapters
+  do not. Repository coordinates require `anx.run_links.allowed_orgs` or the
+  run CWD's exact local GitHub origin. IP and Tailnet coordinates are rejected.
+- No candidate card ref enters the outbox or outbound lookup. A worker fetches
+  the target workspace's canonical card catalog, then matches locally. It
+  caches verified coordinates for the batch and fails closed when unavailable.
+- Secret-shape checks run per substring/window as a second layer. ANX
+  subprocesses have process-group cancellation and a 250 ms pipe-drain bound.
 - Delivery uses ANX sessions/participation when a native session exists, plus
   an idempotent card message carrying the complete public run record. Multica
   and no-session executions still post a record. Successful Multica `dispatch`

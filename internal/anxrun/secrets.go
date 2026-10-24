@@ -4,6 +4,8 @@ import (
 	"math"
 	"regexp"
 	"strings"
+
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 )
 
 // Diagnostic values never contain the rejected value or its field name.
@@ -14,7 +16,7 @@ const (
 	EgressFormat         = 1003
 )
 
-var tokenPrefix = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:gh[opsur]_|github_pat_|glpat-|gldt-|glrt-|sk-|rk_live_|sk_live_|xox[abpr]-|hf_|npm_|pypi-|ya29\.|-----BEGIN)|AKIA|AIza`)
+var tokenPrefix = regexp.MustCompile(`(?i)(?:gh[opsur]_|github_pat_|glpat-|gldt-|glrt-|sk-|rk_live_|sk_live_|xox[abpr]-|hf_|npm_|pypi-|ya29\.|-----BEGIN)|AKIA|AIza`)
 var jwtShape = regexp.MustCompile(`[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`)
 var entropyRun = regexp.MustCompile(`[A-Za-z0-9+/=_-]{24,}`)
 
@@ -31,17 +33,23 @@ func stringCode(value string, limit int, cryptographic bool) int {
 	}
 	if !cryptographic {
 		for _, run := range entropyRun.FindAllString(value, -1) {
-			counts := map[byte]int{}
-			for i := range run {
-				counts[run[i]]++
-			}
-			entropy := 0.0
-			for _, count := range counts {
-				p := float64(count) / float64(len(run))
-				entropy -= p * math.Log2(p)
-			}
-			if entropy >= 3.5 {
-				return EgressSecretShape
+			// Examine every 24-byte window, so low-entropy padding cannot
+			// dilute a token-shaped substring. Iterate counts deterministically.
+			for start := 0; start+24 <= len(run); start++ {
+				counts := [256]int{}
+				for _, value := range []byte(run[start : start+24]) {
+					counts[value]++
+				}
+				entropy := 0.0
+				for _, count := range counts {
+					if count > 0 {
+						p := float64(count) / 24
+						entropy -= p * math.Log2(p)
+					}
+				}
+				if entropy >= 3.5 {
+					return EgressSecretShape
+				}
 			}
 		}
 	}
@@ -49,11 +57,14 @@ func stringCode(value string, limit int, cryptographic bool) int {
 }
 
 // Real word IDs contain only dictionary words plus a type-bound checksum.
-// Check the full ID for prefixes/length and each word for token entropy. A
+// Validate the generator grammar first, then check each dictionary word. A
 // hyphenated sentence must not make dictionary IDs look like random tokens.
 func wordIDCode(value string) int {
-	if code := stringCode(value, 128, true); code != 0 {
-		return code
+	if _, err := ids.Parse(value); err != nil {
+		if code := stringCode(value, 128, false); code != 0 {
+			return code
+		}
+		return EgressFormat
 	}
 	for _, word := range strings.Split(value, "-") {
 		if code := stringCode(word, 128, false); code != 0 {
@@ -65,7 +76,7 @@ func wordIDCode(value string) int {
 
 func validEgressCode(code int) int {
 	switch code {
-	case EgressSecretShape, EgressLength, EgressFormat:
+	case EgressSecretShape, EgressLength, EgressFormat, EgressUnverified:
 		return code
 	}
 	return 0

@@ -155,7 +155,7 @@ func (a *app) schemaCommand(renderer output.Renderer, args []string) *output.Err
 		return output.NewError(output.CodeUsage, "usage: agentctl schema list", false)
 	}
 	schemas := []map[string]any{
-		{"name": "anx-registration", "version": 3, "file": "schemas/anx-registration.schema.json"},
+		{"name": "anx-registration", "version": 4, "file": "schemas/anx-registration.schema.json"},
 		{"name": "adapter-manifest", "version": 1, "file": "schemas/adapter-manifest.schema.json"},
 		{"name": "callback-envelope", "version": 1, "file": "schemas/callback-envelope.schema.json"},
 		{"name": "config-bundle", "version": 1, "file": "schemas/config-bundle.schema.json"},

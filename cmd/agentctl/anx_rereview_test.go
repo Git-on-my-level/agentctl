@@ -74,11 +74,12 @@ func TestReReviewDetachedWorkersDoNotLoseTerminal(t *testing.T) {
 	script := `#!/usr/bin/env python3
 import json,sys,time,pathlib,os
 root=pathlib.Path(os.environ['AGENTCTL_REREVIEW_FIXTURE'])
-cmd=sys.argv[sys.argv.index('api')+1]
+cmd='auth.whoami' if 'whoami' in sys.argv else sys.argv[sys.argv.index('api')+1]
 body=json.load(sys.stdin) if '--json-body' in sys.argv else {}
 result={}
 if cmd=='sessions.register': result={'session':{'id':'session-test'}}
-elif cmd=='agents.me.get': result={'agent':{'actor_id':'actor-test'}}
+elif cmd=='auth.whoami': result={'agent':{'actor_id':'actor-test'}}
+elif cmd=='cards.list': result={'cards':[{'ref':'card:dogfooding','thread_id':'thread-test'}]}
 elif cmd=='cards.get': result={'card':{'thread_id':'thread-test'}}
 elif cmd=='events.create':
  phase=json.loads(body['event']['payload']['text'])['phase']
