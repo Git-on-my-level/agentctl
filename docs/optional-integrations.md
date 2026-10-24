@@ -110,23 +110,25 @@ or fails a run:
   journal accessor and enqueues a validated registration. A detached worker
   delivers it; the run's return path never waits on ANX.
 - Egress is allowlisted: validated durable ID, enum state/times, catalog-checked
-  harness/model (`other` otherwise), ANX-confirmed canonical card ref, strict GitHub PR/issue
-  coordinates and 40-hex SHAs. Labels and raw request keys stay local; a
+  harness/model (`other` otherwise), ANX-confirmed canonical card ref, origin
+  repository and working directory, typed PR/issue coordinates and 40-hex SHAs. Labels and raw request keys stay local; a
   host-keyed HMAC identifies the request on ANX.
 - Free-text summaries and result-text evidence parsing are absent. Only an
   explicit typed outcome evidence producer can supply refs; current adapters
-  do not. Repository coordinates require a non-empty
-  `anx.run_links.allowed_orgs` containing the owner and the run CWD's exact
-  local GitHub origin. An empty list disables repository evidence. Git
-  environment overrides are cleared. All IPv4-like dotted-number runs and
-  Tailnet coordinates are rejected.
+  do not. Repository metadata comes from the run CWD's local origin on any
+  host, with userinfo stripped before parsing. Typed PR/issue coordinates
+  must match that origin. An empty `anx.run_links.allowed_orgs` allows any
+  owner; a non-empty list restricts repository metadata and evidence to those
+  owners. Git environment overrides are cleared. Repository/user names,
+  IP-like names, Tailnet names and local paths may be disclosed under David's
+  2026-10-24 ruling. Credentials, prompts, transcripts and answers stay private.
 - No candidate card ref enters the outbox or outbound lookup. A worker fetches
   the target workspace's canonical card catalog, then matches locally. It
   caches verified coordinates for the batch and fails closed when unavailable.
 - Secret-shape checks run per substring/window as a second layer. ANX
   subprocesses terminate their process group on every exit and have a 250 ms
-  pipe-drain bound. Status prints only safe aliases and spool presence/counts,
-  never configured paths.
+  pipe-drain bound. Status prints safe aliases, the credential-checked spool
+  path and presence/counts; credential-shaped fields show `[redacted]`.
 - Delivery uses ANX sessions/participation when a native session exists, plus
   an idempotent card message carrying the complete public run record. Multica
   and no-session executions still post a record. Successful Multica `dispatch`

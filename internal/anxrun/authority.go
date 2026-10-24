@@ -5,18 +5,20 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 type Repository struct {
-	Owner string
-	Name  string
+	Host  string `json:"host,omitempty"`
+	Owner string `json:"owner,omitempty"`
+	Name  string `json:"name,omitempty"`
 }
 type ConfirmedCard struct {
 	Ref      string `json:"ref"`
@@ -33,20 +35,27 @@ type Verification struct {
 
 const EgressUnverified = 1004
 
-// Reject the shape, not parsed octets: invalid leading octets must not hide
-// overlapping valid addresses (999.100.101.102.103).
-var ipv4Substring = regexp.MustCompile(`[0-9]+(?:\.[0-9]+){3}`)
-
-func networkCoordinate(value string) bool {
-	lower := strings.ToLower(value)
-	if strings.Contains(lower, ".ts.net") || strings.Contains(lower, ".tailnet.") || strings.HasSuffix(lower, ".local") || net.ParseIP(value) != nil {
-		return true
-	}
-	return ipv4Substring.MatchString(value)
+// Coordinates are path components, not GitHub-specific names. Disclosure of
+// hostnames, IPs and user/repo names is permitted (David, 2026-10-24).
+func coordinate(value string) bool {
+	return value != "" && value != "." && value != ".." && utf8.ValidString(value) &&
+		!strings.ContainsAny(value, "/\\?#@:") && !strings.ContainsFunc(value, unicode.IsControl)
 }
 
 func ValidOrg(value string) bool {
-	return len(value) <= 39 && githubOwner.MatchString(value) && stringCode(value, 39, false) == 0 && !networkCoordinate(value)
+	return coordinate(value) && stringCode(value, len(value), false) == 0
+}
+
+func (v Verification) allowsOwner(owner string) bool {
+	if len(v.AllowedOrgs) == 0 {
+		return true
+	}
+	for _, org := range v.AllowedOrgs {
+		if ValidOrg(org) && strings.EqualFold(org, owner) {
+			return true
+		}
+	}
+	return false
 }
 
 func (v Verification) repository(link Link) (Link, bool) {
@@ -54,19 +63,14 @@ func (v Verification) repository(link Link) (Link, bool) {
 	if origin == nil || !strings.EqualFold(origin.Owner, link.Owner) || !strings.EqualFold(origin.Name, link.Repo) {
 		return Link{}, false
 	}
-	for _, org := range v.AllowedOrgs {
-		if ValidOrg(org) && strings.EqualFold(org, link.Owner) {
-			link.Owner, link.Repo = org, origin.Name
-			if safe, code := validateLink(link); code == 0 {
-				return safe, true
-			}
+	if v.allowsOwner(origin.Owner) {
+		link.Owner, link.Repo = origin.Owner, origin.Name
+		if safe, code := validateLink(link); code == 0 {
+			return safe, true
 		}
 	}
 	return Link{}, false
 }
-
-var httpsOrigin = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/]+)$`)
-var sshOrigin = regexp.MustCompile(`^(?:git@github\.com:|ssh://git@github\.com/)([^/]+)/([^/]+)$`)
 
 // Parsing an SSH-form remote never executes SSH. This command reads only the
 // run repository's local origin configuration: no includes, hooks or network.
@@ -80,7 +84,7 @@ func OriginRepository(ctx context.Context, cwd string) *Repository {
 	command.Env = originGitEnvironment()
 	command.WaitDelay = 100 * time.Millisecond
 	raw, err := command.Output()
-	if err != nil || len(raw) > 512 {
+	if err != nil {
 		return nil
 	}
 	return ParseOrigin(strings.TrimSpace(string(raw)))
@@ -100,18 +104,41 @@ func originGitEnvironment() []string {
 }
 
 func ParseOrigin(value string) *Repository {
-	match := httpsOrigin.FindStringSubmatch(value)
-	if match == nil {
-		match = sshOrigin.FindStringSubmatch(value)
+	// Strip userinfo before parsing coordinates, including malformed or
+	// credential-shaped userinfo. It is never a repository field.
+	if scheme := strings.Index(value, "://"); scheme >= 0 {
+		authority := scheme + 3
+		end := strings.IndexAny(value[authority:], "/?#")
+		if end < 0 {
+			end = len(value) - authority
+		}
+		if at := strings.LastIndex(value[authority:authority+end], "@"); at >= 0 {
+			value = value[:authority] + value[authority+at+1:]
+		}
+	} else {
+		if at := strings.LastIndex(value, "@"); at >= 0 {
+			value = value[at+1:]
+		}
+		// SCP-style remotes are parsed as URLs locally; never execute SSH.
+		host, path, ok := strings.Cut(value, ":")
+		if !ok {
+			return nil
+		}
+		value = "ssh://" + host + "/" + path
 	}
-	if match == nil {
+	u, err := url.Parse(value)
+	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" {
 		return nil
 	}
-	owner, repo := match[1], strings.TrimSuffix(match[2], ".git")
-	if _, code := validateLink(Link{Kind: LinkKindPR, Owner: owner, Repo: repo, Number: 1}); code != 0 {
+	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+	if len(parts) != 2 || !coordinate(parts[0]) {
 		return nil
 	}
-	return &Repository{Owner: owner, Name: repo}
+	name := strings.TrimSuffix(parts[1], ".git")
+	if !coordinate(name) || strings.ContainsFunc(u.Host, unicode.IsControl) {
+		return nil
+	}
+	return &Repository{Host: strings.ToLower(u.Host), Owner: parts[0], Name: name}
 }
 
 // loadCards requests the entire canonical workspace catalog without any

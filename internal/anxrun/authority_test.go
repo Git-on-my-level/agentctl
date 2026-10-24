@@ -104,13 +104,13 @@ func TestReview3RepositoryAuthority(t *testing.T) {
 			_ = json.Unmarshal([]byte(runner.stdins[len(runner.stdins)-1]), &body)
 			var got Registration
 			_ = json.Unmarshal([]byte(body.Event.Payload.Text), &got)
-			want := name == "allowed-origin"
+			want := name == "allowed-origin" || name == "origin"
 			if (len(got.Outcome.Links) == 1) != want {
 				t.Fatalf("repository authority not enforced: %+v", got.Outcome)
 			}
 		})
 	}
-	for _, repo := range []string{"100.101.102.103", "pve3.tailnet.ts.net", strings.Repeat("a", 40) + "ghs_" + strings.Repeat("b", 36)} {
+	for _, repo := range []string{strings.Repeat("a", 40) + "ghs_" + strings.Repeat("b", 36)} {
 		r.Outcome.Links[0].Repo = repo
 		runner := &fakeRunner{}
 		s := &CLISender{options: CLIOptions{AllowedOrgs: []string{"Git-on-my-level"}}, run: runner.run}
@@ -119,7 +119,7 @@ func TestReview3RepositoryAuthority(t *testing.T) {
 		}
 		for _, raw := range runner.stdins {
 			if strings.Contains(raw, repo) {
-				t.Fatal("network/credential coordinate escaped despite org policy")
+				t.Fatal("credential coordinate escaped despite org policy")
 			}
 		}
 	}
@@ -139,7 +139,7 @@ func TestReview3OriginIsLocalConfigurationOnly(t *testing.T) {
 			t.Fatalf("origin parse: %+v", origin)
 		}
 	}
-	for _, remote := range []string{"https://user:private@github.com/o/r.git", "https://github.com/o/100.101.102.103.git", "https://github.com/o/pve3.tailnet.ts.net", "https://github.com/o/r.git?token=x", "git@internal.ts.net:o/r.git", "file:///private/path"} {
+	for _, remote := range []string{"https://github.com/o/r.git?token=x", "file:///private/path", "https://github.com/o/../r", "https://github.com/o/r#fragment"} {
 		if origin := ParseOrigin(remote); origin != nil {
 			t.Fatal("unsafe origin accepted")
 		}

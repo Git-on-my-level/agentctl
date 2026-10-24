@@ -149,7 +149,9 @@ func (a *app) anxJournalSender(c common, settings anxSettings) *anxrun.CLISender
 		}
 		journal.Close()
 		var origin *anxrun.Repository
+		r.CWD = ""
 		if execution.CWD != nil {
+			r.CWD = *execution.CWD
 			origin = anxrun.OriginRepository(ctx, *execution.CWD)
 		}
 		return r, origin, nil
@@ -342,6 +344,7 @@ type anxStatusResult struct {
 	Mode           string            `json:"mode"`
 	WorkspaceAlias string            `json:"workspace_alias"`
 	Spool          string            `json:"spool"`
+	SpoolDir       string            `json:"spool_dir"`
 	PendingCount   int               `json:"pending_count"`
 	DeadCount      int               `json:"dead_letter_count"`
 	Pending        []anxPendingItem  `json:"pending"`
@@ -359,7 +362,7 @@ func (a *app) anxStatus(ctx context.Context, renderer output.Renderer, c common,
 	case "labeled", "all", "off":
 		mode = settings.Mode
 	}
-	result := anxStatusResult{Mode: mode, WorkspaceAlias: alias, Spool: "absent", Pending: []anxPendingItem{}, Dead: []anxDeadItem{}}
+	result := anxStatusResult{Mode: mode, WorkspaceAlias: alias, Spool: "absent", SpoolDir: anxrun.DisclosureValue(settings.SpoolDir), Pending: []anxPendingItem{}, Dead: []anxDeadItem{}}
 	if spool, present, err := anxrun.OpenSpoolIfPresent(settings.SpoolDir); err == nil && present {
 		result.Spool = "present"
 		result.LastRejection = spool.LastRejection()
@@ -375,7 +378,7 @@ func (a *app) anxStatus(ctx context.Context, renderer output.Renderer, c common,
 		}
 	}
 	result.PendingCount, result.DeadCount = len(result.Pending), len(result.Dead)
-	lines := []output.Line{{Lead: "anx", Fields: []output.Field{{Name: "mode", Value: result.Mode}, {Name: "workspace", Value: result.WorkspaceAlias}, {Name: "spool", Value: result.Spool}, {Name: "pending_count", Value: result.PendingCount}, {Name: "dead_letter_count", Value: result.DeadCount}}}}
+	lines := []output.Line{{Lead: "anx", Fields: []output.Field{{Name: "mode", Value: result.Mode}, {Name: "workspace", Value: result.WorkspaceAlias}, {Name: "spool", Value: result.Spool}, {Name: "spool_dir", Value: result.SpoolDir}, {Name: "pending_count", Value: result.PendingCount}, {Name: "dead_letter_count", Value: result.DeadCount}}}}
 	if result.LastRejection != nil {
 		lines = append(lines, output.Line{Lead: result.LastRejection.Class, Fields: []output.Field{{Name: "code", Value: result.LastRejection.Code}}})
 	}

@@ -36,7 +36,7 @@ func TestReview4ANXStatusConfigurationPrivacy(t *testing.T) {
 				t.Fatalf("status exit %d: %s", code, stdout.String()+stderr.String())
 			}
 			out := stdout.String() + stderr.String()
-			if strings.Contains(out, secret) || strings.Contains(out, root) || strings.Contains(out, "spool_dir") {
+			if strings.Contains(out, secret) || strings.Contains(out, root) {
 				t.Fatal("configuration leaked in status")
 			}
 			if !strings.Contains(out, "[redacted]") {
@@ -63,6 +63,34 @@ func TestReview4ANXStatusConfigurationPrivacy(t *testing.T) {
 			} else if !strings.Contains(out, "pending_count=0") || !strings.Contains(out, "dead_letter_count=0") {
 				t.Fatal("text status missing counts")
 			}
+		}
+	}
+}
+
+func TestANXStatusDisclosesSafeConfiguration(t *testing.T) {
+	for _, format := range []string{"json", "text"} {
+		root, err := os.MkdirTemp(os.TempDir(), "status-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(root) })
+		spoolPath := filepath.Join(root, "david", "private-spool")
+		configPath := filepath.Join(root, "config.json")
+		doc := map[string]any{"schema_version": 1, "anx": map[string]any{"run_links": map[string]any{"workspace_alias": "shared-work", "spool_dir": spoolPath}}}
+		raw, _ := json.Marshal(doc)
+		if err := os.WriteFile(configPath, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		if code := a.run(context.Background(), []string{"--output", format, "--config", configPath, "--journal", filepath.Join(root, "journal.db"), "anx", "status"}); code != 0 {
+			t.Fatalf("status: %s%s", stdout.String(), stderr.String())
+		}
+		if !strings.Contains(stdout.String(), spoolPath) || !strings.Contains(stdout.String(), "shared-work") {
+			t.Fatalf("safe config hidden: %s", stdout.String())
+		}
+		if _, err := os.Stat(spoolPath); !os.IsNotExist(err) {
+			t.Fatal("status created spool")
 		}
 	}
 }

@@ -41,12 +41,12 @@ func TestStructuredEvidenceGrammar(t *testing.T) {
 			t.Fatalf("valid evidence rejected: %+v %d", link, code)
 		}
 	}
-	for _, owner := range []string{"", "-o", "o-", "o--x", "o_x", "o/x", strings.Repeat("o", 40)} {
+	for _, owner := range []string{"", "o/x", "o\\x", "o:x", "o@x", "o\n"} {
 		if _, code := validateLink(Link{Kind: LinkKindPR, Owner: owner, Repo: "r", Number: 1}); code == 0 {
 			t.Fatal("invalid owner accepted")
 		}
 	}
-	for _, repo := range []string{"", ".", "..", "r.git", "r.wiki", "r/x", "r?token", "r#fragment", "r%20", strings.Repeat("r", 101), "100.101.102.103", "pve3.tailnet.ts.net"} {
+	for _, repo := range []string{"", ".", "..", "r/x", "r?token", "r#fragment"} {
 		if _, code := validateLink(Link{Kind: LinkKindPR, Owner: "o", Repo: repo, Number: 1}); code == 0 {
 			t.Fatal("invalid repository accepted")
 		}

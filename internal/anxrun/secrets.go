@@ -4,6 +4,8 @@ import (
 	"math"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 )
@@ -19,6 +21,33 @@ const (
 var tokenPrefix = regexp.MustCompile(`(?i)(?:gh[opsur]_|github_pat_|glpat-|gldt-|glrt-|sk-|rk_live_|sk_live_|xox[abpr]-|hf_|npm_|pypi-|ya29\.|-----BEGIN)|AKIA|AIza`)
 var jwtShape = regexp.MustCompile(`[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`)
 var entropyRun = regexp.MustCompile(`[A-Za-z0-9+/=_-]{24,}`)
+
+// Disclosed paths/host coordinates have no privacy length or charset policy.
+// Check credential prefixes/JWTs across the whole field, then entropy within
+// each path component so joining ordinary directory names cannot invent a
+// high-entropy token. An actual token in any component rejects this field.
+func disclosureCode(value string) int {
+	if !utf8.ValidString(value) || strings.ContainsFunc(value, unicode.IsControl) {
+		return EgressFormat
+	}
+	if tokenPrefix.MatchString(value) || jwtShape.MatchString(value) {
+		return EgressSecretShape
+	}
+	for _, token := range strings.FieldsFunc(value, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if code := stringCode(token, len(token), false); code != 0 {
+			return code
+		}
+	}
+	return 0
+}
+
+// DisclosureValue is for read-only diagnostic fields, never raw errors/prose.
+func DisclosureValue(value string) string {
+	if disclosureCode(value) != 0 {
+		return "[redacted]"
+	}
+	return value
+}
 
 // stringCode is a second layer on every variable string's strict type/enum
 // check. It is not a redactor for prose. Only validated cryptographic types

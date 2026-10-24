@@ -103,6 +103,31 @@ func Allowlisted(r Registration, catalog []route.ModelRecord, verified ...Verifi
 			out.EgressErrorCode = code
 		}
 	}
+	if code := disclosureCode(r.CWD); code == 0 {
+		out.CWD = r.CWD
+	} else {
+		reject(code)
+	}
+	// Only the locally resolved origin supplies repository coordinates. Never
+	// trust a repository object from a legacy or edited outbox entry.
+	if origin := policy.Origin; origin != nil && policy.allowsOwner(origin.Owner) {
+		repo := &Repository{}
+		for _, field := range []struct {
+			source string
+			target *string
+		}{
+			{origin.Host, &repo.Host}, {origin.Owner, &repo.Owner}, {origin.Name, &repo.Name},
+		} {
+			if code := disclosureCode(field.source); code == 0 {
+				*field.target = field.source
+			} else {
+				reject(code)
+			}
+		}
+		if *repo != (Repository{}) {
+			out.Repository = repo
+		}
+	}
 	for _, field := range []struct {
 		source *time.Time
 		target **time.Time
