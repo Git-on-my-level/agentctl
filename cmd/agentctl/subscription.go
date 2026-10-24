@@ -93,7 +93,7 @@ func (a *app) subscribeCommand(ctx context.Context, renderer output.Renderer, c 
 }
 
 func (a *app) subscribeCreate(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
-	var executionID, authority, destinationKind, target, credentialRef string
+	var executionID, labelPrefix, authority, destinationKind, target, credentialRef string
 	kinds := []string{string(model.EventTerminal), string(model.EventAttention), string(model.EventArtifact)}
 	var commandArgs, allowedHosts []string
 	kindsExplicit, allKinds := false, false
@@ -114,6 +114,12 @@ func (a *app) subscribeCreate(ctx context.Context, renderer output.Renderer, c c
 				return problem
 			}
 			executionID = value
+		case "--label-prefix":
+			value, problem := take()
+			if problem != nil {
+				return problem
+			}
+			labelPrefix = value
 		case "--authority":
 			value, problem := take()
 			if problem != nil {
@@ -190,8 +196,23 @@ func (a *app) subscribeCreate(ctx context.Context, renderer output.Renderer, c c
 			return output.NewError(output.CodeUsage, "unknown subscribe create flag", false).WithDetail("flag", args[i])
 		}
 	}
-	if executionID == "" && authority == "" {
-		return output.NewError(output.CodeUsage, "subscribe create requires --execution or --authority", false)
+	if executionID == "" && labelPrefix == "" && authority == "" {
+		return output.NewError(output.CodeUsage, "subscribe create requires --execution, --label-prefix, or --authority", false)
+	}
+	if executionID != "" && labelPrefix != "" {
+		return output.NewError(output.CodeUsage, "--execution and --label-prefix are mutually exclusive", false)
+	}
+	if labelPrefix != "" {
+		if !subscription.ValidLabelPrefix(labelPrefix) {
+			return output.NewError(output.CodeUsage, "label prefix must match ^[a-z][a-z0-9_.-]{0,127}$", false).WithDetail("label_prefix", labelPrefix)
+		}
+		// A label scope spans many executions, so one terminal never ends it.
+		autoExpire = false
+	}
+	for _, kind := range kinds {
+		if kind == "stall" {
+			return output.NewError(output.CodeCapabilityUnavailable, "stall detection is specified but not implemented in this build", false).WithDetail("diagnostic_code", "stall_unavailable").WithDetail("kind", kind)
+		}
 	}
 	if executionID != "" {
 		if _, err := ids.ParseExecutionID(executionID); err != nil {
@@ -216,7 +237,7 @@ func (a *app) subscribeCreate(ctx context.Context, renderer output.Renderer, c c
 	if err := destination.Validate(); err != nil {
 		return output.Wrap(output.CodeUsage, "invalid callback destination", false, err)
 	}
-	filter := subscription.EventFilter{Authority: authority, Kinds: kinds}
+	filter := subscription.EventFilter{Authority: authority, Kinds: kinds, LabelPrefix: labelPrefix}
 	if executionID != "" {
 		filter.ExecutionIDs = []string{executionID}
 	}
@@ -238,7 +259,7 @@ func (a *app) subscribeCreate(ctx context.Context, renderer output.Renderer, c c
 }
 
 func subscriptionLine(value subscription.Subscription) output.Line {
-	return output.Line{Lead: value.ID, Fields: []output.Field{{Name: "state", Value: value.State}, {Name: "destination", Value: value.Destination.Kind}, {Name: "expires", Value: value.ExpiresAt.UTC().Format(time.RFC3339)}, {Name: "executions", Value: len(value.Filter.ExecutionIDs)}, {Name: "kinds", Value: value.Filter.Kinds}}}
+	return output.Line{Lead: value.ID, Fields: []output.Field{{Name: "state", Value: value.State}, {Name: "destination", Value: value.Destination.Kind}, {Name: "expires", Value: value.ExpiresAt.UTC().Format(time.RFC3339)}, {Name: "executions", Value: len(value.Filter.ExecutionIDs)}, {Name: "label_prefix", Value: value.Filter.LabelPrefix}, {Name: "kinds", Value: value.Filter.Kinds}}}
 }
 
 func splitValues(value string) []string {

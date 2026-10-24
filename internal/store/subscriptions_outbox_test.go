@@ -324,11 +324,11 @@ func TestLegacyDirectAuthorityFilterMatchesNativeEvent(t *testing.T) {
 	now := time.Now().UTC()
 	value := subscription.Subscription{State: subscription.StateActive, ExpiresAt: now.Add(time.Hour), Filter: subscription.EventFilter{Authority: "direct"}}
 	event := &model.Event{Authority: model.AuthorityNative}
-	if !matchesEventScope(value, event, now) {
+	if !matchesEventScope(value, event, now, nil) {
 		t.Fatal("legacy direct authority did not match native event")
 	}
 	value.Filter.Authority = "unknown"
-	if matchesEventScope(value, event, now) {
+	if matchesEventScope(value, event, now, nil) {
 		t.Fatal("unknown authority unexpectedly matched")
 	}
 }
@@ -413,5 +413,62 @@ func TestSubscriptionReadsExposeEffectiveExpiredState(t *testing.T) {
 	listed, err := j.ListSubscriptions(ctx)
 	if err != nil || len(listed) != 1 || listed[0].State != subscription.StateExpired {
 		t.Fatalf("expired subscription list=%#v err=%v", listed, err)
+	}
+}
+
+func TestLabelPrefixSubscriptionMatchesExistingAndFutureExecutions(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	create := func(labels ...string) model.Execution {
+		t.Helper()
+		value := sampleExecution(now)
+		value.Labels = labels
+		created, _, err := j.CreateExecution(ctx, value, contracts.MutationKey{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created
+	}
+	existing := create("lane.alpha", "review")
+	subscriptionID := durableTestID(ids.TypeSubscription, 830)
+	value := durableTestSubscription(subscriptionID)
+	value.Filter = subscription.EventFilter{LabelPrefix: "lane.", Kinds: []string{string(model.EventTerminal)}}
+	// Even if a caller asks for auto-expiry, a label scope must outlive one terminal.
+	value.AutoExpireOnTerminal = true
+	if _, _, err := j.PutSubscription(ctx, value); err != nil {
+		t.Fatal(err)
+	}
+	future := create("lane.beta")
+	unrelated := create("other.lane")
+	unlabeled := create()
+	terminalState := model.StateCompleted
+	for i, execution := range []model.Execution{existing, future, unrelated, unlabeled} {
+		event := model.Event{SchemaVersion: model.SchemaVersion, ID: ids.EventID(durableTestID(ids.TypeEvent, uint64(840+i))), OriginHostID: execution.OriginHostID, ExecutionID: execution.ID, Sequence: 1, Ordering: model.OrderingObservation, Kind: model.EventTerminal, State: &terminalState, Authority: execution.Authority, Adapter: execution.Adapter, ObservedAt: now, DedupeKey: hash(byte('a' + i)), DedupeVersion: 1, Payload: map[string]any{"status": "completed"}}
+		if err := j.db.Update(func(tx *bbolt.Tx) error {
+			return enqueueMatchingSubscriptionsTx(tx, &event, []byte(`{"terminal":true}`), now, j.generator)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pending, err := j.ListPendingDeliveries(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matched := map[string]bool{}
+	for _, delivery := range pending {
+		if delivery.SubscriptionID != subscriptionID {
+			t.Fatalf("unexpected subscription delivery %#v", delivery)
+		}
+		matched[delivery.ExecutionID] = true
+	}
+	if len(pending) != 2 || !matched[existing.ID.String()] || !matched[future.ID.String()] {
+		t.Fatalf("label-prefix deliveries=%v", matched)
+	}
+	if err := j.AckDelivery(ctx, pending[0].ID, DeliveryReceipt{}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := j.GetSubscription(ctx, subscriptionID)
+	if err != nil || after.State != subscription.StateActive {
+		t.Fatalf("label-prefix subscription stopped after one terminal: %#v err=%v", after, err)
 	}
 }

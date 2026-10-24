@@ -53,6 +53,11 @@ type common struct {
 	mode                                                        output.Mode
 	profile, contextFile, configPath, configBundle, journalPath string
 	explain                                                     bool
+	// journalBusyBudget bounds internal retry of journal lock contention; 0
+	// keeps the historical two-attempt open.
+	journalBusyBudget     time.Duration
+	journalBusyBudgetFlag string
+	journalBusyBudgetSet  bool
 }
 
 func main() {
@@ -128,6 +133,11 @@ func (a *app) run(ctx context.Context, args []string) int {
 	if len(rest) == 0 {
 		return a.help(renderer, "")
 	}
+	if budget, budgetErr := resolveJournalBusyBudget(rest[0], commonArgs.journalBusyBudgetFlag, commonArgs.journalBusyBudgetSet, a.getenv); budgetErr != nil {
+		return a.fail(renderer, output.NewError(output.CodeUsage, budgetErr.Error(), false))
+	} else {
+		commonArgs.journalBusyBudget = budget
+	}
 	if topic, ok := inlineHelpTopic(rest); ok {
 		return a.help(renderer, topic)
 	}
@@ -173,6 +183,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.result(ctx, renderer, commonArgs, rest[1:])
 	case "await":
 		return a.await(ctx, renderer, commonArgs, rest[1:])
+	case "await-any":
+		return a.awaitAny(ctx, renderer, commonArgs, rest[1:])
 	case "run":
 		err = a.runNative(ctx, renderer, commonArgs, rest[1:])
 	case "dispatch":
@@ -338,6 +350,13 @@ func (a *app) parseCommon(args []string) (common, []string, error) {
 				return c, nil, e
 			}
 			c.journalPath = v
+		case "--journal-busy-budget":
+			v, e := take()
+			if e != nil {
+				return c, nil, e
+			}
+			c.journalBusyBudgetFlag = v
+			c.journalBusyBudgetSet = true
 		case "--explain":
 			c.explain = true
 		default:
@@ -1316,7 +1335,7 @@ func (a *app) openRead(c common) (*store.Journal, *output.Error) {
 	if err != nil {
 		return nil, output.Wrap(output.CodeInternal, "resolve journal path", false, err)
 	}
-	journal, err := openJournalWithRetry(path, store.Options{ReadOnly: true})
+	journal, err := openJournalWithBusyBudget(context.Background(), path, store.Options{ReadOnly: true}, false, c.journalBusyBudget)
 	if err != nil {
 		return nil, mapStoreError("open journal", err)
 	}
@@ -1623,7 +1642,12 @@ func mapStoreError(message string, err error) *output.Error {
 	case errors.Is(err, store.ErrCorrupt):
 		return output.Wrap(output.CodeInternal, message, false, err)
 	case errors.Is(err, store.ErrBusy):
-		return output.Wrap(output.CodeDependencyUnavailable, message, true, err).WithDetail("diagnostic_code", "journal_busy").WithDetail("recovery", "retry the identical invocation with bounded backoff; do not change journal or execution key").WithActions(output.NextAction{Label: "Inspect supervisor health without opening journal", Argv: []string{"agentctl", "supervisor", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+		problem := output.Wrap(output.CodeDependencyUnavailable, message, true, err).WithDetail("diagnostic_code", "journal_busy").WithDetail("recovery", "retry the identical invocation with bounded backoff; do not change journal or execution key").WithActions(output.NextAction{Label: "Inspect supervisor health without opening journal", Argv: []string{"agentctl", "supervisor", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+		var busy *journalBusyError
+		if errors.As(err, &busy) {
+			problem = problem.WithDetail("busy_attempts", busy.attempts).WithDetail("busy_waited_ms", busy.waited.Milliseconds()).WithDetail("busy_budget_ms", busy.budget.Milliseconds())
+		}
+		return problem
 	default:
 		return output.Wrap(output.CodeInternal, message, false, err)
 	}

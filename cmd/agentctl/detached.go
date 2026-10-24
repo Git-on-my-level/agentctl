@@ -150,6 +150,13 @@ func (a *app) detachedNativeWorker(ctx context.Context) int {
 		return a.fail(renderer, delegateError(output.CodeUsage, "detached_launch_invalid", "invalid internal detached launch"))
 	}
 	c := common{mode: output.JSON, profile: payload.Profile, configPath: payload.ConfigPath, configBundle: payload.ConfigBundle, journalPath: payload.JournalPath}
+	// The worker inherits the launcher's environment, so an operator budget
+	// override applies here too; otherwise it keeps the delegate default.
+	if budget, err := resolveJournalBusyBudget("delegate", "", false, a.getenv); err == nil {
+		c.journalBusyBudget = budget
+	} else {
+		c.journalBusyBudget = defaultJournalBusyBudget
+	}
 	sent := false
 	sendReceipt := func(execution model.Execution, reused bool) {
 		sent = true

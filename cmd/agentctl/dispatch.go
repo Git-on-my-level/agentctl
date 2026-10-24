@@ -156,7 +156,7 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 	if problem != nil {
 		return problem.WithDetail("client_key", clientKey)
 	}
-	journal := scopedJournal{path: initialJournal.Path()}
+	journal := scopedJournal{path: initialJournal.Path(), busyBudget: c.journalBusyBudget}
 	initialJournal.Close()
 	prepared, found, err := journal.GetExecutionByMutation(ctx, mutation)
 	if err != nil {

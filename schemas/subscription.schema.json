@@ -92,6 +92,10 @@
           "minItems": 1,
           "uniqueItems": true
         },
+        "label_prefix": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{0,127}$"
+        },
         "authority": {
           "enum": ["native", "multica"]
         },
@@ -121,9 +125,13 @@
         {
           "anyOf": [
             {"required": ["execution_ids"]},
+            {"required": ["label_prefix"]},
             {"required": ["authority"]},
             {"required": ["query"]}
           ]
+        },
+        {
+          "not": {"required": ["execution_ids", "label_prefix"]}
         },
         {
           "if": {"required": ["query"]},

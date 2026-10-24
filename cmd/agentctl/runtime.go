@@ -1493,7 +1493,7 @@ func (a *app) openWrite(c common) (*store.Journal, *output.Error) {
 	if err != nil {
 		return nil, output.Wrap(output.CodeInternal, "resolve journal path", false, err)
 	}
-	journal, err := openJournalWithRetry(path, store.Options{})
+	journal, err := openJournalWithBusyBudget(context.Background(), path, store.Options{}, false, c.journalBusyBudget)
 	if err != nil {
 		return nil, mapStoreError("open journal", err)
 	}

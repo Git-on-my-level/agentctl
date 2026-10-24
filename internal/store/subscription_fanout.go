@@ -48,6 +48,17 @@ func enqueueMatchingSubscriptionsTx(tx *bbolt.Tx, event *model.Event, canonicalP
 	if _, err := ensureJournalBucket(tx, bOutboxDedupe); err != nil {
 		return err
 	}
+	// Label-prefix subscriptions need the emitting execution's immutable
+	// labels. Read them once, lazily, inside this same transaction.
+	var labels []string
+	labelsLoaded := false
+	executionLabels := func() []string {
+		if !labelsLoaded {
+			labelsLoaded = true
+			labels = executionLabelsTx(tx, event.ExecutionID)
+		}
+		return labels
+	}
 	err := subs.ForEach(func(key, raw []byte) error {
 		var record SubscriptionRecord
 		if err := json.Unmarshal(raw, &record); err != nil {
@@ -59,7 +70,7 @@ func enqueueMatchingSubscriptionsTx(tx *bbolt.Tx, event *model.Event, canonicalP
 		if err := validateStoredSubscriptionIdentity(record.Subscription); err != nil {
 			return err
 		}
-		matchesScope := matchesEventScope(record.Subscription, event, now)
+		matchesScope := matchesEventScope(record.Subscription, event, now, executionLabels)
 		if !matchesScope || !matchesEventKind(record.Subscription, event) {
 			return nil
 		}
@@ -99,11 +110,31 @@ func enqueueMatchingSubscriptionsTx(tx *bbolt.Tx, event *model.Event, canonicalP
 	return nil
 }
 
-func matchesEvent(value subscription.Subscription, event *model.Event, now time.Time) bool {
-	return matchesEventScope(value, event, now) && matchesEventKind(value, event)
+func matchesEvent(value subscription.Subscription, event *model.Event, now time.Time, labels func() []string) bool {
+	return matchesEventScope(value, event, now, labels) && matchesEventKind(value, event)
 }
 
-func matchesEventScope(value subscription.Subscription, event *model.Event, now time.Time) bool {
+// executionLabelsTx returns nil when the execution record is unavailable; a
+// label-prefix subscription then fails closed for that event.
+func executionLabelsTx(tx *bbolt.Tx, id ids.ExecutionID) []string {
+	bucket := tx.Bucket(bExecutions)
+	if bucket == nil {
+		return nil
+	}
+	raw := bucket.Get([]byte(id.String()))
+	if raw == nil {
+		return nil
+	}
+	var value struct {
+		Labels []string `json:"labels"`
+	}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil
+	}
+	return value.Labels
+}
+
+func matchesEventScope(value subscription.Subscription, event *model.Event, now time.Time, labels func() []string) bool {
 	if value.State != subscription.StateActive {
 		return false
 	}
@@ -133,6 +164,21 @@ func matchesEventScope(value subscription.Subscription, event *model.Event, now 
 	}
 	if filter.Authority != "" && filter.Authority != string(event.Authority) {
 		return false
+	}
+	if filter.LabelPrefix != "" {
+		if labels == nil {
+			return false
+		}
+		matched := false
+		for _, label := range labels() {
+			if strings.HasPrefix(label, filter.LabelPrefix) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
 	}
 	// Query and scope evaluation requires a query planner/event scope
 	// contract. Never treat them as a broad wildcard in the storage layer.

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -24,19 +25,38 @@ var (
 	ErrInvalidRotation = errors.New("invalid subscription rotation")
 )
 
-// EventFilter is intentionally explicit: labels and broad unscoped queries
-// cannot be used to bind a cursor or subscription.
+// EventFilter is intentionally explicit: broad unscoped queries cannot be
+// used to bind a cursor or subscription. LabelPrefix is the one label-based
+// scope: it matches events from any execution, existing or future, carrying a
+// label that starts with the prefix. Labels are immutable, so the match for a
+// given execution never changes.
 type EventFilter struct {
 	ExecutionIDs []string          `json:"execution_ids,omitempty"`
+	LabelPrefix  string            `json:"label_prefix,omitempty"`
 	Authority    string            `json:"authority,omitempty"`
 	Scope        map[string]string `json:"scope,omitempty"`
 	Kinds        []string          `json:"kinds,omitempty"`
 	Query        string            `json:"query,omitempty"`
 }
 
+// labelPrefixPattern accepts any non-empty prefix of a valid execution label.
+var labelPrefixPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,127}$`)
+
+// ValidLabelPrefix reports whether prefix can select execution labels.
+func ValidLabelPrefix(prefix string) bool { return labelPrefixPattern.MatchString(prefix) }
+
 func (f EventFilter) Normalize() (EventFilter, error) {
-	if len(f.ExecutionIDs) == 0 && strings.TrimSpace(f.Authority) == "" && strings.TrimSpace(f.Query) == "" {
-		return EventFilter{}, fmt.Errorf("%w: exact execution, authority, or narrow query required", ErrInvalidFilter)
+	labelPrefix := strings.TrimSpace(f.LabelPrefix)
+	if len(f.ExecutionIDs) == 0 && labelPrefix == "" && strings.TrimSpace(f.Authority) == "" && strings.TrimSpace(f.Query) == "" {
+		return EventFilter{}, fmt.Errorf("%w: exact execution, label prefix, authority, or narrow query required", ErrInvalidFilter)
+	}
+	if labelPrefix != "" {
+		if len(f.ExecutionIDs) > 0 {
+			return EventFilter{}, fmt.Errorf("%w: label prefix and execution IDs are mutually exclusive", ErrInvalidFilter)
+		}
+		if !labelPrefixPattern.MatchString(labelPrefix) {
+			return EventFilter{}, fmt.Errorf("%w: label prefix must match %s", ErrInvalidFilter, labelPrefixPattern.String())
+		}
 	}
 	authority := strings.ToLower(strings.TrimSpace(f.Authority))
 	switch authority {
@@ -46,7 +66,7 @@ func (f EventFilter) Normalize() (EventFilter, error) {
 	default:
 		return EventFilter{}, fmt.Errorf("%w: authority must be direct, native, or multica", ErrInvalidFilter)
 	}
-	result := EventFilter{Authority: authority, Query: strings.TrimSpace(f.Query)}
+	result := EventFilter{Authority: authority, Query: strings.TrimSpace(f.Query), LabelPrefix: labelPrefix}
 	seen := make(map[string]struct{})
 	for _, id := range f.ExecutionIDs {
 		id = strings.TrimSpace(id)

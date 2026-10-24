@@ -500,7 +500,19 @@ with an explicit destination after reading `help subscribe`. Callbacks carry
 metadata only: deduplicate by `event_dedupe_key`, then read `result <id> --content`.
 Delivery is
 at-least-once, so deduplicate by the full event key. A receipt proves delivery,
-not successful work. A managed supervisor is required only for cross-restart
+not successful work.
+
+For several executions at once, label them with a shared prefix (labels use
+`.`, not `/`) and wake on the first one with
+`await-any --label-prefix <prefix> --timeout <duration>`; it exits like `await`
+(0, 9, 10, 11, 12, 13), names the execution in `execution_id` and
+`matched_kind`, and acknowledges only that execution. Loop until
+`pending_matches` is 0, passing the last `trigger_at` as `--since` to move past
+attention. For a durable fan-in callback use
+`subscribe create --label-prefix <prefix>`; it covers executions launched later
+but does not backfill earlier events. Do not wrap `delegate` in a retry loop
+for `journal_busy`: launch and wait commands already retry for
+`--journal-busy-budget` (default 120s). A managed supervisor is required only for cross-restart
 delivery and must not be silently installed as a new service.
 
 Permission-granting native flags remain explicit on expert `run` argv. `delegate`
