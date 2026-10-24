@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:agentctl:schema:anx-registration:v4",
+  "$id": "urn:agentctl:schema:anx-registration:v5",
   "x-agentctl-docs": "../docs/design/anx-run-links.md#redaction-and-egress",
-  "title": "Authoritatively verified ANX run registration v4",
+  "title": "Authoritatively verified ANX run registration v5",
   "description": "Generated/catalog metadata and credential-checked journal working directory in the outbox. Delivery enriches confirmed canonical ANX card refs, local origin host/owner/name, and explicit typed evidence after optional owner restrictions. No field is derived from result prose or JSON lines. Remote URL userinfo is stripped before parsing.",
   "type": "object",
   "additionalProperties": false,
@@ -23,7 +23,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 4
+      "const": 5
     },
     "phase": {
       "enum": [

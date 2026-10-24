@@ -633,19 +633,25 @@ launch, and at terminal state agentctl reads the stored outcome through the
 journal's read-only accessor (never `agentctl result`, which acknowledges
 collection) and enqueues an allowlisted record. A detached worker registers
 sessions/participation where available and an idempotent card message containing
-the durable ID `agentctl://<origin_host_id>/<exec-id>`, state, outcome and strict
-GitHub PR/issue or 40-hex commit evidence. Models must match the reviewed catalog
-or become `other`. Labels and raw request keys stay local; only the ANX-confirmed canonical card
-ref and a host-keyed request hash leave the host. Slugs are 1–64 lowercase
+the durable ID `agentctl://<origin_host_id>/<exec-id>`, state, outcome and typed
+PR/issue or 40-hex commit evidence. Models must match the reviewed catalog
+or become `other`. Labels and raw request keys stay local. Card refs must be
+ANX-confirmed, and request keys leave only as host-keyed hashes. Slugs are 1–64 lowercase
 letters/digits/hyphens with credential shapes rejected.
 
 Run-link fields require generated provenance, catalog membership or an
 authoritative source. Free-text summaries, JSON result lines and result-text
 evidence extraction are absent. Only explicit typed outcome evidence is
-eligible; current adapters do not emit it. PR/issue repositories must match
-a non-empty configured `anx.run_links.allowed_orgs` and the exact GitHub
-origin of the run's working directory. Empty allowlists send no repository
-evidence; origin never authorizes an owner. Numbers must be positive; commits are 40-hex SHAs.
+eligible; current adapters do not emit it. Under David's 2026-10-24 ruling,
+an empty `anx.run_links.allowed_orgs` allows any owner; a non-empty list restricts
+repository metadata and PR/issue evidence to those owners. Registrations send
+the run's working directory (`cwd`) and local origin `repository` host/owner/name
+for any remote host. PR/issue evidence must match that origin's owner/repository.
+Remote URL userinfo is stripped before parsing, and credential-shaped fields
+are dropped independently. Credentials and prompt, transcript or answer text
+never go out. Numbers must be positive; commits are 40-hex SHAs.
+Registration v5 adds `cwd`/`repository`; v4 spool entries retain their existing
+typed evidence under the same validation and origin checks.
 
 Card labels stay local. The outbox contains no candidate refs. Delivery first
 fetches the selected ANX workspace's canonical card catalog, without sending
@@ -661,7 +667,7 @@ and retry with backoff in detached workers on subsequent work. Errors are
 class enums plus numeric codes; dead letters expire after seven days. Check and force delivery with:
 
 ```bash
-agentctl anx status   # safe workspace alias, spool presence/counts (read-only)
+agentctl anx status   # safe alias, credential-checked spool path and counts (read-only)
 agentctl anx flush    # retry delivery now
 ```
 

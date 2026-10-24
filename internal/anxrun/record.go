@@ -9,7 +9,7 @@ import (
 
 // RegistrationSchemaVersion versions the spooled registration document. The
 // ANX-side bridge can consume the same shape when the core run fields land.
-const RegistrationSchemaVersion = 4
+const RegistrationSchemaVersion = 5
 
 // Phase distinguishes the two registration points for one execution.
 type Phase string

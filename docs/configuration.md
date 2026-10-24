@@ -159,6 +159,8 @@ credential detection; only a matching field is omitted.
 This follows David's 2026-10-24 ruling permitting repository, user and local
 path disclosure. Suggested shared-workspace restrictions are documented in
 [the agentctl-config proposal](agentctl-config-run-links.md).
+Registration v5 adds `cwd` and `repository`; existing v4 spool entries remain
+deliverable with their typed evidence under the same validation and origin checks.
 Result text/JSON lines are never parsed as evidence. Prompt, transcript and
 answer text never go out. Card refs require a fresh ANX workspace catalog
 confirmation in the delivery batch. Without this section, labeled runs still

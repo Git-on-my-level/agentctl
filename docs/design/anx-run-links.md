@@ -327,7 +327,7 @@ never mark work collected; acknowledgement semantics stay with `result`.
 ## Redaction and egress
 
 No outbound or spooled field may be derived from free text. A fresh document
-is constructed before persistence and again before delivery. The v4 contract
+is constructed before persistence and again before delivery. The v5 contract
 is [anx-registration.schema.json](../../schemas/anx-registration.schema.json).
 Fields belong to exactly these provenance classes:
 
@@ -410,6 +410,9 @@ forbidden. This supersedes the original disclosure restrictions in #104.
   ANX reconstructs any display URLs; no evidence URL is transmitted.
 - The outbox omits unverified owner/repo fields. The worker recovers typed
   evidence from the journal and checks current org/origin policy at delivery.
+  Registration v5 adds `cwd`/`repository`; v4 spool entries remain deliverable,
+  retaining typed evidence and `head_after` under the same validation and
+  current origin/owner checks. Delivery normalizes their registration to v5.
   Legacy v1–v3 evidence and summaries have no acceptable provenance and are
   discarded. Free-text summaries and their config/schema are absent; a
   summary may return only as a separately reviewed feature. Decision 2 below
