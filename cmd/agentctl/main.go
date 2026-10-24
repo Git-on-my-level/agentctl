@@ -133,9 +133,14 @@ func (a *app) run(ctx context.Context, args []string) int {
 	if len(rest) == 0 {
 		return a.help(renderer, "")
 	}
-	if budget, budgetErr := resolveJournalBusyBudget(rest[0], commonArgs.journalBusyBudgetFlag, commonArgs.journalBusyBudgetSet, a.getenv); budgetErr != nil {
-		return a.fail(renderer, output.NewError(output.CodeUsage, budgetErr.Error(), false))
-	} else {
+	// Discovery must keep working even with a malformed budget override.
+	switch rest[0] {
+	case "help", "--help", "-h", "version", "--version":
+	default:
+		budget, budgetErr := resolveJournalBusyBudget(rest[0], commonArgs.journalBusyBudgetFlag, commonArgs.journalBusyBudgetSet, a.getenv)
+		if budgetErr != nil {
+			return a.fail(renderer, output.NewError(output.CodeUsage, budgetErr.Error(), false))
+		}
 		commonArgs.journalBusyBudget = budget
 	}
 	if topic, ok := inlineHelpTopic(rest); ok {

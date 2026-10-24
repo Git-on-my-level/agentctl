@@ -150,3 +150,21 @@ func TestJournalBusyBudgetFlagValidatedBeforeCommand(t *testing.T) {
 		t.Fatalf("output=%s", stdout.String())
 	}
 }
+
+func TestMalformedJournalBusyBudgetKeepsDiscoveryWorking(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	a.getenv = func(key string) string {
+		if key == journalBusyBudgetEnv {
+			return "soon"
+		}
+		return ""
+	}
+	if code := a.run(context.Background(), []string{"version"}); code != 0 {
+		t.Fatalf("version exit=%d output=%s", code, stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"recent"}); code != output.ExitCodeFor(output.CodeUsage) || !strings.Contains(stdout.String(), journalBusyBudgetEnv) {
+		t.Fatalf("recent exit=%d output=%s", code, stdout.String())
+	}
+}

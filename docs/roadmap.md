@@ -23,7 +23,10 @@ version may use a screened list; v1 order and membership will not change.
 
 ## Phase 1 — Daemonless local execution: implemented with adapter constraints
 
-- `run`, `recent`, `inbox`, local `attach`, `status`, `events`, `await`, `result`, and `cancel`.
+- `run`, `recent`, `inbox`, local `attach`, `status`, `events`, `await`, `await-any`, `result`, and `cancel`.
+- Label-prefix subscriptions and bounded internal journal-busy retry; stall
+  attention, `delegate --fallback-selector`, and `--retry-of` are specified in
+  [lane fan-in](design/lane-fan-in.md) but not yet implemented.
 - Codex, Cursor, Claude Code, OMP, generic-process, and Multica event adapters.
 - Owner-only journal, normalized source bindings, terminal conflict handling,
   context handles, JSON-first output, and explicit compact text.
