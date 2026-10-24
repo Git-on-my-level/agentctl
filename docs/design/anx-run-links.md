@@ -175,6 +175,8 @@ state-regression-protected, replay-detecting) gains these optional fields:
   "request_key_hash": "sha256:<64 hex host-keyed HMAC>",
   "adapter": "claude-code", "model": "claude-opus-5-5",
   "state": "completed", "liveness": "stale",
+  "cwd": "/Users/david/workspace/agentctl",
+  "repository": {"host": "github.com", "owner": "Git-on-my-level", "name": "agentctl"},
   "started_at": "2026-10-24T06:24:22Z", "ended_at": "2026-10-24T06:49:51Z",
   "card_ref": "card:watch-redesign",
   "outcome": {
@@ -325,7 +327,7 @@ never mark work collected; acknowledgement semantics stay with `result`.
 ## Redaction and egress
 
 No outbound or spooled field may be derived from free text. A fresh document
-is constructed before persistence and again before delivery. The v4 contract
+is constructed before persistence and again before delivery. The v5 contract
 is [anx-registration.schema.json](../../schemas/anx-registration.schema.json).
 Fields belong to exactly these provenance classes:
 
@@ -343,8 +345,9 @@ Fields belong to exactly these provenance classes:
 2. **Known catalog enums.** Harness must be a known canonical harness. Model
    must exactly match the reviewed profile catalog for that harness. Otherwise
    each is `other`. Arbitrary model or harness strings never serialize.
-3. **Authoritatively verified coordinates.** The rules below authorize card
-   and repository fields; format and secret checks alone grant no authority.
+3. **Verified coordinates and permitted disclosure.** Card refs require ANX
+   confirmation. Repository coordinates come from the run directory’s local
+   origin; the working directory comes from the execution journal.
 
 ### Card confirmation
 
@@ -376,29 +379,40 @@ Current native/Multica adapters do not emit this field, so they report only
 enum outcomes until an explicit structured producer supplies evidence. This
 version makes no adapter capability claim for extracting PR/issue evidence.
 
-- PRs/issues carry `kind`, `owner`, `repo`, `number`. Owner/repo must match
-  a **non-empty** `anx.run_links.allowed_orgs` (exact configured owner) **and**
-  the exact owner/repository of the run's CWD `origin` remote. An empty list
-  disables all PR/issue repository evidence; origin alone grants no authority.
-  Origin selects the repository only within an allowed org. It is read only
-  with `git config --local --no-includes --get remote.origin.url`; this runs
-  no SSH, hooks or network and sends no local path. All inherited `GIT_*`
-  environment entries are removed before this lookup, including repository,
-  worktree, common-dir, index, config injection and discovery overrides. Only
-  explicit read-only Git defaults are added. Missing or invalid origin
-  grants nothing. HTTPS and GitHub SSH-form remotes are parsed locally;
-  credentials, ports, query strings and extra paths are rejected.
-- GitHub owner grammar is 1–39 ASCII alphanumerics with single interior
-  hyphens; repo grammar is 1–100 ASCII alphanumerics, `.`, `_`, `-`, excluding
-  dot paths and `.git`/`.wiki` suffixes. Reject every IPv4-like run of four
-  or more dotted decimal groups anywhere in a name, without parsing octets:
-  `999.100.101.102.103` cannot mask a later address. Also reject IP literals
-  and Tailnet/`.ts.net`/`.local` host coordinates even under an allowed org.
+**David’s ruling, 2026-10-24:** disclosing repository names, user information,
+host coordinates and local file paths to ANX is acceptable. Credentials remain
+forbidden. This supersedes the original disclosure restrictions in #104.
+
+- Registrations include `cwd` and `repository: {host, owner, name}` from the
+  run directory's `origin` remote, even without typed outcome evidence.
+  An empty `anx.run_links.allowed_orgs` means **allow any owner**. A non-empty
+  list restricts repository metadata and PR/issue evidence to those owners,
+  case-insensitively, as an opt-in for shared workspaces.
+- PRs/issues carry `kind`, `owner`, `repo`, `number`; their owner/repo must
+  still match the run origin. The repository object's host identifies the
+  remote host. Origin is read with
+  `git config --local --no-includes --get remote.origin.url`; this runs no
+  SSH, hooks or network. All inherited `GIT_*` environment entries are removed,
+  including repository, worktree, common-dir, index, config injection and
+  discovery overrides. Explicit read-only Git defaults are added.
+- URL-form and SCP-style remotes are parsed locally for any host, including
+  private hosts, IP literals and ports. Userinfo (`user:token@`) is always
+  stripped **before** parsing coordinates and never serialized. Missing or
+  malformed origins supply no repository. Query strings, fragments, dot
+  paths and extra path components remain malformed repository coordinates.
+- Owner/repository components have no 39/100-character or GitHub charset
+  limits. Unicode, IP-like dotted-number names, `.wiki` names, Tailnet names
+  and local paths are permitted. Components must remain well-formed (nonempty,
+  valid UTF-8, no control characters or path/URL delimiters). Credential checks
+  still run on every outbound component.
 - PR/issue numbers are positive integers ≤2147483647. Commits are typed
   40-hex SHAs, normalized to lowercase. At most eight evidence entries.
   ANX reconstructs any display URLs; no evidence URL is transmitted.
 - The outbox omits unverified owner/repo fields. The worker recovers typed
   evidence from the journal and checks current org/origin policy at delivery.
+  Registration v5 adds `cwd`/`repository`; v4 spool entries remain deliverable,
+  retaining typed evidence and `head_after` under the same validation and
+  current origin/owner checks. Delivery normalizes their registration to v5.
   Legacy v1–v3 evidence and summaries have no acceptable provenance and are
   discarded. Free-text summaries and their config/schema are absent; a
   summary may return only as a separately reviewed feature. Decision 2 below
@@ -410,20 +424,29 @@ The secret-shape detector grants no authority. It scans credential prefixes
 at **every substring**, including embedded `gh[opsur]_`, `github_pat_`,
 `glpat-`, `sk-`, Slack prefixes, AWS/Google keys and JWT shapes. It checks
 every 24-byte token window for entropy ≥3.5 bits/character, so padding cannot
-dilute a token. Length limits apply per field. Exact validated cryptographic
+dilute a token. Disclosed paths check entropy per path component, so joining
+ordinary directory names does not invent a credential; prefix/JWT checks
+still scan the entire field. Repository and path fields have no disclosure
+length cap; typed IDs/enums retain their bounds. Exact validated cryptographic
 types skip entropy rejection; real dictionary IDs are checked per word after
 the exact generator parser succeeds, avoiding token-like word boundaries.
 
-Dropped fields record only `egress_error_code`: 1001 secret shape, 1002
+A credential match drops only the matching optional field, preserving other
+repository components, the working directory and lifecycle metadata. Invalid
+required typed evidence entries are dropped as entries. Dropped fields record
+only `egress_error_code`: 1001 secret shape, 1002
 length, 1003 format, 1004 missing authority. Required identity rejection drops
 the registration and writes a bounded value-free `{class: egress_rejected,
 code: <number>}` receipt. Spool and status errors are closed class enums plus
-numeric codes, never upstream messages, paths, prompts or result text.
+numeric codes, never upstream messages, prompts or result text.
 `agentctl anx status` shows a workspace alias only if it passes the same
 1–64 lowercase-alphanumeric/hyphen grammar and secret check as delivery;
-otherwise it shows `[redacted]`. Its `spool` field is only `present` or
-`absent`, with `pending_count` and `dead_letter_count`; no configured path
-is printed in JSON or text. Status remains read-only.
+otherwise it shows `[redacted]`. Status prints the configured `spool_dir`
+when it passes the per-token credential and well-formedness checks, otherwise
+`[redacted]`. Its `spool` field remains `present` or `absent`, with
+`pending_count` and `dead_letter_count`. JSON and text have the same policy.
+Status remains read-only. Prompt, transcript and answer text never go out.
+
 
 ### Current delivery transport and ANX-side gaps
 

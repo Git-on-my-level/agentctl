@@ -83,14 +83,19 @@ func TestANXSecurityDetachedCommandLatency(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Start and terminal each schedule a worker. Observing only the first
+		// retry lets TempDir cleanup race the worker writing the other phase.
+		allRetried := len(pending) == 2
 		for _, entry := range pending {
-			if entry.Attempts > 0 {
-				if entry.LastError != "anx_protocol_error" {
-					t.Fatalf("unexpected error class: %s", entry.LastError)
-				}
-				t.Logf("command returned in %s; detached retry recorded", latency)
-				return
+			if entry.Attempts == 0 {
+				allRetried = false
+			} else if entry.LastError != "anx_protocol_error" {
+				t.Fatalf("unexpected error class: %s", entry.LastError)
 			}
+		}
+		if allRetried {
+			t.Logf("command returned in %s; detached retries recorded", latency)
+			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

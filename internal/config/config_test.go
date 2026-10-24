@@ -182,10 +182,10 @@ func TestRunLinksSummaryConfigurationRemoved(t *testing.T) {
 }
 
 func TestRunLinksAllowedOrganizations(t *testing.T) {
-	if err := (RunLinks{AllowedOrgs: []string{"Git-on-my-level", "omi"}}).Validate(); err != nil {
+	if err := (RunLinks{AllowedOrgs: []string{"Git-on-my-level", "omi", "o_x", "100.101.102.103", strings.Repeat("o", 101)}}).Validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, org := range []string{"", "*", "o/r", "o--r", "-org", "org-", strings.Repeat("o", 40), "100.101.102.103"} {
+	for _, org := range []string{"", ".", "..", "o/r", "o\\r", "o?token", "org\n"} {
 		if (RunLinks{AllowedOrgs: []string{org}}).Validate() == nil {
 			t.Fatal("invalid organization accepted")
 		}

@@ -261,8 +261,8 @@ func TestANXStatusAndFlushCommands(t *testing.T) {
 	if strings.Contains(stdout.String(), `"card:watch-redesign"`) || !strings.Contains(stdout.String(), id) || !strings.Contains(stdout.String(), `"pending"`) {
 		t.Fatalf("status output missing pending entry: %s", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), `"workspace_alias":"anx"`) || !strings.Contains(stdout.String(), `"spool":"present"`) || !strings.Contains(stdout.String(), `"pending_count":1`) || strings.Contains(stdout.String(), `"spool_dir"`) {
-		t.Fatal("status must show safe alias and presence/counts without a path")
+	if !strings.Contains(stdout.String(), `"workspace_alias":"anx"`) || !strings.Contains(stdout.String(), `"spool":"present"`) || !strings.Contains(stdout.String(), `"pending_count":1`) || !strings.Contains(stdout.String(), `"spool_dir":`) {
+		t.Fatal("status must show safe alias, checked path and presence/counts")
 	}
 	if len(readAnxCalls(t, log)) != 0 {
 		t.Fatal("anx status must not deliver anything")

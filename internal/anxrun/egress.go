@@ -103,6 +103,31 @@ func Allowlisted(r Registration, catalog []route.ModelRecord, verified ...Verifi
 			out.EgressErrorCode = code
 		}
 	}
+	if code := disclosureCode(r.CWD); code == 0 {
+		out.CWD = r.CWD
+	} else {
+		reject(code)
+	}
+	// Only the locally resolved origin supplies repository coordinates. Never
+	// trust a repository object from a legacy or edited outbox entry.
+	if origin := policy.Origin; origin != nil && policy.allowsOwner(origin.Owner) {
+		repo := &Repository{}
+		for _, field := range []struct {
+			source string
+			target *string
+		}{
+			{origin.Host, &repo.Host}, {origin.Owner, &repo.Owner}, {origin.Name, &repo.Name},
+		} {
+			if code := disclosureCode(field.source); code == 0 {
+				*field.target = field.source
+			} else {
+				reject(code)
+			}
+		}
+		if *repo != (Repository{}) {
+			out.Repository = repo
+		}
+	}
 	for _, field := range []struct {
 		source *time.Time
 		target **time.Time
@@ -176,6 +201,9 @@ func Allowlisted(r Registration, catalog []route.ModelRecord, verified ...Verifi
 		}
 	}
 	if o := r.Outcome; o != nil {
+		// v4 introduced explicit typed evidence. v5 adds cwd/repository,
+		// without changing that evidence's provenance or validation rules.
+		evidenceCompatible := r.SchemaVersion == 4 || r.SchemaVersion == RegistrationSchemaVersion
 		out.Outcome = &Outcome{Availability: safeAvailability(o.Availability)}
 		reject(stringCode(o.Availability, 32, false))
 		if o.Failure != nil {
@@ -183,7 +211,7 @@ func Allowlisted(r Registration, catalog []route.ModelRecord, verified ...Verifi
 		}
 		reject(validEgressCode(o.EgressErrorCode))
 		for _, link := range o.Links {
-			if r.SchemaVersion != RegistrationSchemaVersion {
+			if !evidenceCompatible {
 				reject(EgressUnverified)
 				continue
 			}
@@ -203,7 +231,7 @@ func Allowlisted(r Registration, catalog []route.ModelRecord, verified ...Verifi
 			}
 		}
 		var err error
-		if r.SchemaVersion == RegistrationSchemaVersion {
+		if evidenceCompatible {
 			out.Outcome.HeadAfter, err = SanitizeHeadAfter(o.HeadAfter)
 		}
 		if err != nil {

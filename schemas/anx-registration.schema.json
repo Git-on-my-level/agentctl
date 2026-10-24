@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:agentctl:schema:anx-registration:v4",
+  "$id": "urn:agentctl:schema:anx-registration:v5",
   "x-agentctl-docs": "../docs/design/anx-run-links.md#redaction-and-egress",
-  "title": "Authoritatively verified ANX run registration v4",
-  "description": "Generated/catalog metadata only in the outbox. Delivery enriches confirmed canonical ANX card refs and explicitly typed evidence after repository authority checks. No field is derived from result prose, URLs or JSON lines.",
+  "title": "Authoritatively verified ANX run registration v5",
+  "description": "Generated/catalog metadata and credential-checked journal working directory in the outbox. Delivery enriches confirmed canonical ANX card refs, local origin host/owner/name, and explicit typed evidence after optional owner restrictions. No field is derived from result prose or JSON lines. Remote URL userinfo is stripped before parsing.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -23,7 +23,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 4
+      "const": 5
     },
     "phase": {
       "enum": [
@@ -166,15 +166,12 @@
                   "owner": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 39,
-                    "pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"
+                    "description": "Well-formed remote path component with per-token credential checks."
                   },
                   "repo": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 100,
-                    "pattern": "^[A-Za-z0-9_.-]+$",
-                    "description": "Runtime also rejects dot paths, .git/.wiki suffixes and credential/entropy shapes."
+                    "description": "Well-formed remote path component with per-token credential checks."
                   },
                   "number": {
                     "type": "integer",
@@ -199,15 +196,12 @@
                   "owner": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 39,
-                    "pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"
+                    "description": "Well-formed remote path component with per-token credential checks."
                   },
                   "repo": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 100,
-                    "pattern": "^[A-Za-z0-9_.-]+$",
-                    "description": "Runtime also rejects dot paths, .git/.wiki suffixes and credential/entropy shapes."
+                    "description": "Well-formed remote path component with per-token credential checks."
                   },
                   "number": {
                     "type": "integer",
@@ -235,7 +229,7 @@
               }
             ]
           },
-          "description": "Explicit typed outcome evidence only, never extracted from content.text. Runtime requires a non-empty allowed_orgs containing the owner AND exact run-origin owner/repo for PRs/issues; cryptographic commits must be 40-hex."
+          "description": "Explicit typed evidence only. PRs/issues require exact run-origin owner/repo and an allowed owner when allowed_orgs is non-empty. Origin host is in repository.host; commits are 40-hex."
         },
         "head_after": {
           "type": "string",
@@ -287,6 +281,29 @@
         1004
       ],
       "description": "egress_rejected: secret shape, length, format, or unverified authority; never includes the value."
+    },
+    "cwd": {
+      "type": "string",
+      "description": "Run working directory; credential-shaped fields are omitted."
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "description": "Run CWD origin, parsed after stripping userinfo. Any remote host is permitted. Credential-shaped components are omitted independently."
     }
   }
 }

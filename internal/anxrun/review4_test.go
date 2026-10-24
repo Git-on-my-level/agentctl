@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestReview4RepositoryRequiresAllowlistAndOrigin(t *testing.T) {
+func TestRepositoryOriginAndOptionalAllowlist(t *testing.T) {
 	origin := &Repository{Owner: "Git-on-my-level", Name: "agentctl"}
 	for name, policy := range map[string]Verification{
 		"empty":          {Origin: origin},
@@ -41,31 +41,8 @@ func TestReview4RepositoryRequiresAllowlistAndOrigin(t *testing.T) {
 			if err := json.Unmarshal([]byte(body.Event.Payload.Text), &got); err != nil {
 				t.Fatal(err)
 			}
-			if (len(got.Outcome.Links) == 1) != (name == "allowed-origin") {
+			if (len(got.Outcome.Links) == 1) != (name == "allowed-origin" || name == "empty") {
 				t.Fatal("repository authority bypass")
-			}
-		})
-	}
-}
-
-func TestReview4OverlappingIPv4RepoRejected(t *testing.T) {
-	for _, repo := range []string{"999.100.101.102.103", "prefix999.100.101.102.103suffix", "9999.100.101.102.103", "999.999.999.999"} {
-		t.Run(repo, func(t *testing.T) {
-			if ParseOrigin("https://github.com/Git-on-my-level/"+repo+".git") != nil {
-				t.Error("dotted-number origin accepted")
-			}
-			r := testRegistration("exec-a", PhaseTerminal, 1)
-			r.Outcome = &Outcome{Availability: AvailabilityStored, Links: []Link{{Kind: LinkKindPR, Owner: "Git-on-my-level", Repo: repo, Number: 104}}}
-			policy := Verification{AllowedOrgs: []string{"Git-on-my-level"}, Origin: &Repository{Owner: "Git-on-my-level", Name: repo}, Cards: map[string]ConfirmedCard{"card:watch-redesign": {Ref: "card:watch-redesign", ThreadID: "thread-test"}}}
-			runner := &fakeRunner{}
-			sender := &CLISender{options: CLIOptions{Verification: &policy}, run: runner.run}
-			if err := sender.Send(context.Background(), r); err != nil {
-				t.Fatal(err)
-			}
-			for _, body := range runner.stdins {
-				if strings.Contains(body, repo) {
-					t.Error("dotted-number repo transmitted")
-				}
 			}
 		})
 	}

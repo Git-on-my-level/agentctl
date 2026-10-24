@@ -2,10 +2,11 @@
 
 This is documentation for a future reviewed agentctl-config bundle change.
 No agentctl-config repository or installed config is modified by this PR.
-The agentctl runtime defaults `allowed_orgs` to an empty list, disabling all
-PR/issue repository evidence while retaining lifecycle registration.
+Under David’s 2026-10-24 ruling, the runtime default `allowed_orgs: []`
+allows any owner. Repository/user information and local paths may be disclosed;
+credentials, prompt, transcript and answer text remain excluded.
 
-For this repository, a proposed bundle setting is:
+For a shared workspace that opts into an owner restriction, a proposed setting is:
 
 ```json
 "anx": {
@@ -17,9 +18,10 @@ For this repository, a proposed bundle setting is:
 }
 ```
 
-Review organization names separately for each workspace before adopting
-this proposal. Do not infer an allowed owner from a Git remote. An allowed
-owner is necessary, and the run CWD's exact local GitHub origin must also
-match the evidence owner and repository. Missing origin or an empty list
-drops PR/issue evidence. Typed commit SHAs do not carry repo coordinates.
-See [configuration](configuration.md#agent-nexus-run-links) for field bounds.
+A non-empty list restricts origin repository metadata and typed PR/issue
+evidence to the listed owners. PR/issue evidence must also match the run CWD's
+local origin owner/repository on any host. Missing origin drops repository
+metadata and PR/issue evidence. An empty list permits every origin owner;
+it does not disable evidence. URL userinfo is stripped before parsing and
+all outbound fields retain credential checks. Typed commit SHAs carry no
+repo coordinates. See [configuration](configuration.md#agent-nexus-run-links).

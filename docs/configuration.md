@@ -146,23 +146,28 @@ ANX credentials — authentication and workspace resolution stay with the `anx`
 CLI's own credential store. Free-text summary support is absent; the former
 `summary_max_bytes` option is no longer accepted.
 `flush_timeout_seconds` bounds detached delivery; it never delays a run return. `spool_dir` overrides the default
-`<state dir>/anx-run-links` outbox. `allowed_orgs` is an explicit reviewed GitHub
-organization allowlist (at most 64 names). Typed PR/issue evidence requires
-both an allowed owner and the exact GitHub owner/repository in the run CWD's
-local `origin` config. The runtime default is empty, which sends no PR/issue
-repository evidence even when an origin exists. Origin selects a repo within
-an allowed org; it never adds owners to the allowlist. Git lookup clears all
-inherited `GIT_*` overrides. Repository names use `[A-Za-z0-9._-]`, are at
-most 100 characters and cannot contain IPv4-like dotted-number runs or
-Tailnet coordinates. Suggested reviewed bundle settings are documented only
-in [the agentctl-config proposal](agentctl-config-run-links.md).
-Result text/JSON lines are never parsed as evidence. Card refs require a fresh
-ANX workspace catalog confirmation in the delivery batch. The section is advisory for standalone
-use: without it, labeled runs still register with the defaults above.
-`agentctl anx status` emits only validated workspace aliases (`[redacted]`
-otherwise), spool `present`/`absent`, and pending/dead-letter counts; it never
-prints a spool path. JSON uses `spool`, `pending_count` and `dead_letter_count`
-in place of the former `spool_dir` field.
+`<state dir>/anx-run-links` outbox. `allowed_orgs` is an optional owner
+restriction (at most 64 names): empty, the runtime default, allows any owner;
+a non-empty list restricts repository metadata and typed PR/issue evidence
+to those owners. PR/issue evidence must also match the run CWD's local
+`origin` owner/repository. Registrations send `cwd` and origin
+`repository: {host, owner, name}` for any remote host. URL userinfo is stripped
+before parsing. Git lookup clears all inherited `GIT_*` overrides. Repository
+components need only be well-formed; there is no GitHub charset, 100-character,
+IP-like-name or Tailnet-name restriction. Each outbound field still passes
+credential detection; only a matching field is omitted.
+This follows David's 2026-10-24 ruling permitting repository, user and local
+path disclosure. Suggested shared-workspace restrictions are documented in
+[the agentctl-config proposal](agentctl-config-run-links.md).
+Registration v5 adds `cwd` and `repository`; existing v4 spool entries remain
+deliverable with their typed evidence under the same validation and origin checks.
+Result text/JSON lines are never parsed as evidence. Prompt, transcript and
+answer text never go out. Card refs require a fresh ANX workspace catalog
+confirmation in the delivery batch. Without this section, labeled runs still
+register with these defaults.
+`agentctl anx status` emits validated workspace aliases (`[redacted]`
+otherwise), a credential-checked `spool_dir` path (`[redacted]` on a match),
+spool `present`/`absent`, and pending/dead-letter counts. It remains read-only.
 
 ## Profile selection
 

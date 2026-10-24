@@ -9,7 +9,7 @@ import (
 
 // RegistrationSchemaVersion versions the spooled registration document. The
 // ANX-side bridge can consume the same shape when the core run fields land.
-const RegistrationSchemaVersion = 4
+const RegistrationSchemaVersion = 5
 
 // Phase distinguishes the two registration points for one execution.
 type Phase string
@@ -59,16 +59,18 @@ type Registration struct {
 	DurableID     string `json:"durable_id"`
 	// RequestKey is transient local input, excluded from every JSON encoding.
 	// Enqueue replaces it with a host-keyed HMAC before persistence.
-	RequestKey     string     `json:"-"`
-	RequestKeyHash string     `json:"request_key_hash,omitempty"`
-	Adapter        string     `json:"adapter"`
-	Model          string     `json:"model,omitempty"`
-	State          string     `json:"state"`
-	Liveness       string     `json:"liveness"`
-	Labels         []string   `json:"-"`
-	CardRefs       []string   `json:"card_refs,omitempty"`
-	StartedAt      *time.Time `json:"started_at,omitempty"`
-	EndedAt        *time.Time `json:"ended_at,omitempty"`
+	RequestKey     string      `json:"-"`
+	RequestKeyHash string      `json:"request_key_hash,omitempty"`
+	Adapter        string      `json:"adapter"`
+	Model          string      `json:"model,omitempty"`
+	State          string      `json:"state"`
+	Liveness       string      `json:"liveness"`
+	CWD            string      `json:"cwd,omitempty"`
+	Repository     *Repository `json:"repository,omitempty"`
+	Labels         []string    `json:"-"`
+	CardRefs       []string    `json:"card_refs,omitempty"`
+	StartedAt      *time.Time  `json:"started_at,omitempty"`
+	EndedAt        *time.Time  `json:"ended_at,omitempty"`
 	// ResultCollected mirrors the journal acknowledgement state at build time.
 	ResultCollected bool `json:"result_collected"`
 	// Sequence is the monotonic sessions/participation sequence assigned at
@@ -168,6 +170,9 @@ func BuildStart(execution model.Execution, now time.Time) Registration {
 		BuiltAt:       now.UTC(),
 	}
 	registration.CardRefs, registration.EgressErrorCode = resolveCards(execution.Labels)
+	if execution.CWD != nil {
+		registration.CWD = *execution.CWD
+	}
 	return registration
 }
 

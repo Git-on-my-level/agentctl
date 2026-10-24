@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const SchemaVersion = 1
@@ -261,7 +263,7 @@ func (r RunLinks) Validate() error {
 		return errors.New("allowed_orgs exceeds limit")
 	}
 	for _, org := range r.AllowedOrgs {
-		if len(org) > 39 || !regexp.MustCompile(`^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$`).MatchString(org) {
+		if org == "" || org == "." || org == ".." || !utf8.ValidString(org) || strings.ContainsAny(org, "/\\?#@:") || strings.ContainsFunc(org, unicode.IsControl) {
 			return errors.New("invalid allowed_orgs")
 		}
 	}
