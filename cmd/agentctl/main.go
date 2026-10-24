@@ -197,6 +197,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.capabilitiesCommand(ctx, renderer, commonArgs, rest[1:])
 	case "schema":
 		err = a.schemaCommand(renderer, rest[1:])
+	case "anx":
+		err = a.anxCommand(ctx, renderer, commonArgs, rest[1:])
 	case "examples":
 		err = a.examplesCommand(renderer, rest[1:])
 	default:

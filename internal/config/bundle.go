@@ -29,6 +29,7 @@ type Bundle struct {
 	DefaultProfile string                   `json:"default_profile,omitempty"`
 	Profiles       map[string]BundleProfile `json:"profiles"`
 	Skills         *Skills                  `json:"skills,omitempty"`
+	Anx            *Anx                     `json:"anx,omitempty"`
 }
 
 type BundleProfile struct {
@@ -200,6 +201,13 @@ func applyBundle(base Config, bundle Bundle) (Config, error) {
 		copy := *bundle.Skills
 		result.Skills = &copy
 	}
+	if bundle.Anx != nil {
+		if result.Anx != nil && !reflect.DeepEqual(result.Anx, bundle.Anx) {
+			return Config{}, fmt.Errorf("%w: bundle anx settings would replace user config", ErrConflict)
+		}
+		copy := *bundle.Anx
+		result.Anx = &copy
+	}
 	if err := result.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -240,7 +248,7 @@ func (b Bundle) Validate() error {
 	if len(b.Profiles) == 0 {
 		return errors.New("config bundle requires at least one profile")
 	}
-	config := Config{SchemaVersion: SchemaVersion, DefaultProfile: b.DefaultProfile, Profiles: make(map[string]Profile, len(b.Profiles)), Skills: b.Skills}
+	config := Config{SchemaVersion: SchemaVersion, DefaultProfile: b.DefaultProfile, Profiles: make(map[string]Profile, len(b.Profiles)), Skills: b.Skills, Anx: b.Anx}
 	for name, profile := range b.Profiles {
 		config.Profiles[name] = profile.profile()
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
 	"testing"
@@ -53,6 +54,8 @@ func TestCommitCancellationWritesOutcomeAndTerminalEventAtomically(t *testing.T)
 
 func TestFinalizeResultConvergesOnExistingTerminalOutcome(t *testing.T) {
 	now := time.Date(2026, 8, 13, 3, 0, 0, 0, time.UTC)
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
 	journal, err := store.Open(filepath.Join(testutil.TempDir(t), "state", "journal.db"), store.Options{Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +70,7 @@ func TestFinalizeResultConvergesOnExistingTerminalOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	completed := adapter.Result{Success: true, State: adapter.StateCompleted, Content: "late result", ContentType: "text/plain"}
-	stored, err := finalizeResultConverging(context.Background(), journal, execution, completed, now.Add(2*time.Second), false)
+	stored, err := a.finalizeResultConverging(context.Background(), common{}, journal, execution, completed, now.Add(2*time.Second), false)
 	if err != nil || stored.ID != cancelled.ID || stored.State != model.StateCancelled {
 		t.Fatalf("stored=%#v err=%v", stored, err)
 	}

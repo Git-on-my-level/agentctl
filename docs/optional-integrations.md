@@ -91,20 +91,57 @@ unavailable for snapshot-only executions.
 
 ## Agent Nexus
 
-Agent Nexus (ANX) can mirror agentctl executions for display. Add an ANX card
-reference as an execution label using the agentctl-safe form
-`anx.card.<card-slug>` (for example, `--label anx.card.card-123`). The full
-label is a lowercase token of at most 128 characters, leaving up to 119
-characters for the slug. Labels cannot contain the colons in the conceptual
-`anx:card:<ref>` notation. Configure a subscription filtered to those labels
-with a `command` destination that runs `anx runs ingest`. The destination
-receives the callback envelope on stdin according to the existing command
-destination contract.
+Agent Nexus (ANX) can link agentctl executions to its cards so a card answers
+"which runs worked on me and what did they conclude". Reference an ANX card as
+an execution label using the agentctl-safe form `anx.card.<card-slug>` (for
+example, `--label anx.card.watch-redesign` or the equivalent sugar
+`delegate --anx-card card:watch-redesign` / `run --anx-card watch-redesign`;
+the label remains the recorded contract). The full label is a lowercase token
+of at most 128 characters, leaving up to 119 characters for the slug. Labels
+cannot contain the colons in the conceptual `anx:card:<ref>` notation.
+
+Executions that carry such a label are registered with ANX automatically,
+off the critical path. Registration is best-effort and never blocks, delays,
+or fails a run:
+
+- At launch, a `running` registration is spooled locally; launch never waits
+  on ANX.
+- At terminal state, agentctl reads the stored outcome through the journal's
+  read-only outcome accessor — never through `agentctl result`, which
+  acknowledges collection — builds a deterministic, redacted outcome summary
+  (no secrets, environment values, local paths, or Tailnet hosts; capped by
+  `anx.run_links.summary_max_bytes`), and upserts it. An uncollected run stays
+  unreconciled for its parent.
+- Deliveries go through the configured `anx` CLI as a subprocess against its
+  public sessions and participation API, keyed by the delegate request key and
+  the durable ID `agentctl://<origin_host_id>/<exec-id>`. They are idempotent;
+  the raw native session id never leaves the host, only the
+  `agentctl identity` v1 correlator does.
+- When ANX is unreachable, registrations spool in the bounded owner-only
+  outbox under `<state dir>/anx-run-links` and flush later with backoff.
+  Fatal outcomes dead-letter with a reason.
+
+`agentctl anx status` (read-only) reports the effective mode, pending spool
+entries, and dead letters with reasons such as `card_unresolved` or
+`anx_auth_required`. `agentctl anx flush` retries delivery now. Configure the
+integration through the optional `anx.run_links` config section (default
+`labeled`; see [configuration](configuration.md)).
+
+Today's public ANX surface accepts the session registration and per-card
+participation. The full run record — outcome summary, links, native session
+fingerprint, transcript locator, supersedes chain — is carried in the spooled
+registration document for the ANX-side runs extension; a registration whose
+execution recorded no native session dead-letters honestly with
+`no_native_session_binding` until that extension ships. See
+[the ANX run-links design](design/anx-run-links.md).
 
 ANX credentials belong only in the ANX command's own credential store and
-environment. agentctl neither reads nor forwards them. ANX mirrors run data for
-display; a completed run never implies that its task or card was accepted.
-Acceptance remains owned by the relevant task authority.
+environment. agentctl neither reads nor forwards them. A registered run
+outcome is evidence, never proof that its task or card was accepted.
+Acceptance remains owned by the relevant task authority. A subscription with
+a `command` destination that runs `anx runs ingest` (filtered to those labels)
+remains available as an alternative event-driven bridge; both routes are
+idempotent.
 
 ## Network and fleet tools
 

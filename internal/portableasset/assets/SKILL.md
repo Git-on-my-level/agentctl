@@ -622,3 +622,26 @@ overrides. Provider-backed success and resume are not verified on the audit host
 resume is degraded and interrupt steering unavailable. Do not add `--run-budget`
 from help alone: the installed gateway rejected it. `recent --summary` includes
 `by_model` from recorded resolved models, with `unknown` otherwise.
+
+## ANX run links: label work to a card
+
+When a run works on an Agent Nexus card, label it with the typed label
+`anx.card.<slug>` (or pass `--anx-card card:<slug>` on `delegate`/`run`, which
+adds the same label). Labeled runs register with ANX automatically,
+best-effort, and never block or fail: a `running` registration spools at
+launch, and at terminal state agentctl reads the stored outcome through the
+journal's read-only accessor (never `agentctl result`, which acknowledges
+collection), redacts it deterministically, and upserts it keyed by the
+delegate request key and the durable ID `agentctl://<origin_host_id>/<exec-id>`.
+
+If ANX is unreachable, registrations spool under `<state dir>/anx-run-links`
+and retry with backoff. Check and force delivery with:
+
+```bash
+agentctl anx status   # pending spool, dead letters with reasons (read-only)
+agentctl anx flush    # retry delivery now
+```
+
+A registered outcome is evidence for the card, never acceptance. The raw
+native session id never leaves the host; only the `agentctl identity` v1
+correlator is registered.

@@ -9,6 +9,7 @@
     "schema_version": { "const": 1 },
     "default_profile": { "type": "string", "minLength": 1 },
     "skills": { "$ref": "#/$defs/skills" },
+    "anx": { "$ref": "#/$defs/anx" },
     "profiles": {
       "type": "object",
       "minProperties": 1,
@@ -16,6 +17,27 @@
     }
   },
   "$defs": {
+    "anx": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run_links": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Advisory Agent Nexus run-link registration. agentctl reads no ANX credentials; the reviewed anx CLI owns authentication and workspace resolution.",
+          "properties": {
+            "default": { "enum": ["labeled", "all", "off"] },
+            "workspace_alias": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+            "executable": { "type": "string", "minLength": 1, "maxLength": 1024 },
+            "base_url": { "type": "string", "format": "uri", "description": "HTTPS, or HTTP on an explicit loopback host. Never hard-coded; passed through to the anx CLI." },
+            "config_dir": { "type": "string", "minLength": 1, "maxLength": 1024 },
+            "summary_max_bytes": { "type": "integer", "minimum": 1, "maximum": 2048 },
+            "spool_dir": { "type": "string", "minLength": 1, "maxLength": 1024 },
+            "flush_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 60 }
+          }
+        }
+      }
+    },
     "skills": {
       "type": "object",
       "additionalProperties": false,

@@ -111,6 +111,8 @@ func TestStatusRecentProgressExportIsReadOnly(t *testing.T) {
 func TestNativeProgressWritersExcludeHeartbeats(t *testing.T) {
 	ctx := context.Background()
 	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
 	journal, err := store.Open(filepath.Join(testutil.TempDir(t), "state", "journal.db"), store.Options{Clock: func() time.Time { return at }})
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +151,7 @@ func TestNativeProgressWritersExcludeHeartbeats(t *testing.T) {
 	}
 	assertProgress(progressed)
 	finished := at.Add(5 * time.Second)
-	execution, err = finalizeResultConverging(ctx, journal, execution, adapter.Result{State: adapter.StateCompleted, Success: true, Content: "answer", ContentType: "text/plain"}, finished, false)
+	execution, err = a.finalizeResultConverging(ctx, common{}, journal, execution, adapter.Result{State: adapter.StateCompleted, Success: true, Content: "answer", ContentType: "text/plain"}, finished, false)
 	if err != nil {
 		t.Fatal(err)
 	}
