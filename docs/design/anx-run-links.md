@@ -465,17 +465,16 @@ and reconstructible even after the origin host deletes its local copy. A
 carry-forward round registers a new run superseding Lane A, visible on the
 same card.
 
-## Open questions for David
+## Decisions (David, 2026-10-24)
 
-1. **Backup scope and host keying.** Which fleet hosts run the archive job
-   today (only m5-mbp verified locally), and is `hostname -s` unique across
-   them — two "Davids-MacBook-Pro" Macs would merge in the archive tree. May
-   the index additionally key rows by agentctl `origin_host_id`?
-2. **Runs-roster visibility.** Are `native_session`/`transcript` fields (and
-   the roster generally) acceptable as workspace-member-visible, or should
-   they be restricted to the owning principal plus human operators?
-3. **Collector coverage order.** Add ZCode first (needed for GLM lanes like
-   Lane A) — confirmed? Cursor/Devin/OMP later or never?
-4. **Retention.** Keep "archive forever" once outcomes exist, or should
-   `label=agent` transcript revisions become deletable after a bound (the
-   labels were collected for exactly this)?
+1. **Host keying:** the fingerprint index keys rows by agentctl `origin_host_id` in addition to `hostname -s`, because hostnames can collide across Macs. Confirm which hosts run `session-archive-daily` by reading each host's Hermes cron config through hostctl, not ssh.
+2. **Roster visibility:** workspace members see the redacted outcome summary and PR/commit links. `native_session` and the transcript locator are visible only to the owning principal and human operators.
+3. **Collector order:** add ZCode first (it covers the GLM lanes), then Cursor. Defer Devin. Skip OMP permanently (retired 2026-09-25).
+4. **Retention:** archive forever for now. Revisit in about 3 months with measured size. If a bound is adopted later, `label=agent` revisions become deletable only after it (for example 180 days).
+
+## Implementation steps (one PR each)
+
+1. ZCode session collector for `session-archive-daily`. This touches the Hermes and fleet hosts, so it is owned by the Hermes owner, with David's approval.
+2. Fingerprint index plus a `session-archive-find` helper over the existing manifests, keyed by `origin_host_id` and hostname.
+3. agentctl run registration: outcome schema, redaction, an idempotent upsert keyed by the delegate request key, spooling while ANX is unreachable, and default-on for runs that carry an `anx.card.*` label.
+4. ANX: a runs view on `work context` and `runs list --card`, with the visibility rules from decision 2.
