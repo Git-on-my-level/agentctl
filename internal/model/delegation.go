@@ -16,9 +16,13 @@ type DelegationBinding struct {
 	Continuation        *FollowUpContinuation `json:"continuation,omitempty"`
 	RequestSHA256       string                `json:"request_sha256"`
 	ConfigurationSHA256 string                `json:"configuration_sha256"`
-	Requested           json.RawMessage       `json:"requested"`
-	Resolved            DelegationTarget      `json:"resolved"`
-	Defaulted           []string              `json:"defaulted"`
+	// RequestKey is the raw delegate request key, the stable retry key. It is
+	// recorded verbatim so run-link registrations can key on it without
+	// re-deriving the idempotency digest. Empty on legacy records.
+	RequestKey string           `json:"request_key,omitempty"`
+	Requested  json.RawMessage  `json:"requested"`
+	Resolved   DelegationTarget `json:"resolved"`
+	Defaulted  []string         `json:"defaulted"`
 }
 
 // FollowUpContinuation records provenance only, never carried text or instructions.
@@ -75,6 +79,9 @@ type DelegationTarget struct {
 func (b DelegationBinding) Validate() error {
 	if !hashPattern.MatchString(b.RequestSHA256) || !hashPattern.MatchString(b.ConfigurationSHA256) {
 		return errors.New("invalid delegation digest")
+	}
+	if b.RequestKey != "" && (utf8.RuneCountInString(b.RequestKey) > 256 || !utf8.ValidString(b.RequestKey) || strings.IndexFunc(b.RequestKey, unicode.IsControl) >= 0) {
+		return errors.New("invalid delegation request key")
 	}
 	if len(b.Requested) == 0 || len(b.Requested) > 65536 || !json.Valid(b.Requested) || b.Requested[0] != '{' {
 		return errors.New("invalid delegation selector")

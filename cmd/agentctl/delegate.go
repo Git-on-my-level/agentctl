@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
+	"github.com/Git-on-my-level/agentctl/internal/anxrun"
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/delegation"
@@ -56,7 +57,7 @@ func parseDelegate(args []string) (delegateOptions, *output.Error) {
 			opts.contentOnly = true
 		case "--prompt-stdin":
 			opts.promptStdin = true
-		case "--request-file", "--prompt-file", "--cwd", "--authority", "--timeout", "--label", "--require-result-source", "--min-result-bytes":
+		case "--request-file", "--prompt-file", "--cwd", "--authority", "--timeout", "--label", "--anx-card", "--require-result-source", "--min-result-bytes":
 			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
 				return opts, delegateError(output.CodeUsage, "delegate_missing_flag_value", "delegate flag requires a nonempty value").WithDetail("flag", flag)
 			}
@@ -82,6 +83,17 @@ func parseDelegate(args []string) (delegateOptions, *output.Error) {
 					return opts, problem
 				}
 				opts.labels = append(opts.labels, value)
+			case "--anx-card":
+				// Sugar for adding the anx.card.<slug> label; the label stays
+				// the recorded contract.
+				label, err := anxrun.ParseCardOverride(value)
+				if err != nil {
+					return opts, delegateError(output.CodeUsage, "delegate_invalid_anx_card", "--anx-card must be card:<slug> or <slug>; the anx.card.<slug> label is the recorded contract").WithDetail("flag", flag)
+				}
+				if problem := rejectExactLabel("delegate", label, opts.labels); problem != nil {
+					return opts, problem
+				}
+				opts.labels = append(opts.labels, label)
 			case "--require-result-source":
 				opts.requireSource = value
 			case "--min-result-bytes":
@@ -377,7 +389,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	if access == "" {
 		defaulted = append(defaulted, "settings.access")
 	}
-	binding := &model.DelegationBinding{RequestSHA256: inputDigest, ConfigurationSHA256: configDigest, Requested: requested, NativePlan: &model.DelegationNativePlan{Env: append([]string(nil), recipe.Env...), Argv: append([]string(nil), recipe.Argv...), PromptDelivery: recipe.PromptDelivery, Permissions: recipe.Permissions},
+	binding := &model.DelegationBinding{RequestSHA256: inputDigest, ConfigurationSHA256: configDigest, Requested: requested, RequestKey: strings.TrimSpace(request.RequestKey), NativePlan: &model.DelegationNativePlan{Env: append([]string(nil), recipe.Env...), Argv: append([]string(nil), recipe.Argv...), PromptDelivery: recipe.PromptDelivery, Permissions: recipe.Permissions},
 		Resolved: model.DelegationTarget{Harness: selected.Harness, Family: selected.Family, Version: selected.Version, Model: selected.Model, Host: host, Authority: model.AuthorityNative,
 			Settings: model.DelegationSettings{Speed: selected.Speed, Effort: selected.Effort, Access: resolvedAccess(access)}}, Defaulted: defaulted}
 	prompt.Delivery = recipe.PromptDelivery

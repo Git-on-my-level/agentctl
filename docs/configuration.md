@@ -119,6 +119,35 @@ is implied by a model alias, and neither rewrites expert `run` argv. See [struct
 for the request schema, deterministic defaults, and replay contract. Upgrade the
 binary before applying config fields an older version does not recognize.
 
+## Agent Nexus run links
+
+The top-level optional `anx.run_links` section configures how agentctl
+registers labeled executions with Agent Nexus (see
+[optional integrations](optional-integrations.md)):
+
+```json
+"anx": {
+  "run_links": {
+    "default": "labeled",
+    "workspace_alias": "anx",
+    "executable": "anx",
+    "flush_timeout_seconds": 10
+  }
+}
+```
+
+`default` accepts `labeled` (the default and zero-config behavior: register
+runs carrying an `anx.card.<slug>` label), `all` (also register unlabeled
+runs; these park as `card_unresolved` until ANX supports card-independent
+run records), and `off`. `workspace_alias`, `base_url`, and `config_dir` are passed
+explicitly to the `anx` CLI; agentctl never hard-codes a base URL and reads no
+ANX credentials — authentication and workspace resolution stay with the `anx`
+CLI's own credential store. Free-text summary support is absent; the former
+`summary_max_bytes` option is no longer accepted.
+`flush_timeout_seconds` bounds detached delivery; it never delays a run return. `spool_dir` overrides the default
+`<state dir>/anx-run-links` outbox. The section is advisory for standalone
+use: without it, labeled runs still register with the defaults above.
+
 ## Profile selection
 
 `--profile <name>` selects an exact named profile. If it is omitted, the

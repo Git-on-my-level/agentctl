@@ -317,7 +317,7 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 	if info, statErr := os.Stat(*source.CWD); statErr != nil || !info.IsDir() {
 		return continueError(output.CodeInvalidState, "continue_cwd_missing", "the execution's working directory no longer exists; follow-up turns run where the original ran", source)
 	}
-	binding := &model.DelegationBinding{Continuation: continuation, RequestSHA256: inputDigest, ConfigurationSHA256: source.Delegation.ConfigurationSHA256, Requested: append(json.RawMessage(nil), source.Delegation.Requested...),
+	binding := &model.DelegationBinding{Continuation: continuation, RequestSHA256: inputDigest, ConfigurationSHA256: source.Delegation.ConfigurationSHA256, Requested: append(json.RawMessage(nil), source.Delegation.Requested...), RequestKey: strings.TrimSpace(requestKey),
 		Resolved: source.Delegation.Resolved, Defaulted: append([]string(nil), source.Delegation.Defaulted...),
 		NativePlan: &model.DelegationNativePlan{Env: append([]string(nil), plan.Env...), Argv: argv, PromptDelivery: plan.PromptDelivery, Permissions: plan.Permissions, RecipeArgv: append([]string(nil), recipe...)}}
 	prompt.Delivery = plan.PromptDelivery
@@ -455,9 +455,23 @@ func (a *app) markContinuedOne(c common, source, continuation ids.ExecutionID) {
 	}
 	now := a.now().UTC()
 	if current.NativeRecoveryParked() {
-		current, err = finalizeResultConverging(context.Background(), journal, current,
+		current, err = a.finalizeResultConverging(context.Background(), c, journal, current,
 			adapter.Result{State: adapter.StateCancelled, Error: "parked turn recovered by a native continuation"}, now, false)
 		if err != nil {
+			return
+		}
+		// The cancelled turn's run link registers after this write handle is
+		// released; the deferred close above runs first only at return, so
+		// close explicitly here and skip the later writes on failure.
+		journal.Close()
+		a.anxRegisterTerminal(c, current.ID)
+		journal, problem = a.openWrite(c)
+		if problem != nil {
+			return
+		}
+		defer journal.Close()
+		current, err = journal.GetExecution(context.Background(), source)
+		if err != nil || current.SupersededBy != nil {
 			return
 		}
 	}

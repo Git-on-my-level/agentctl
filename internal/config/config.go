@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -26,6 +27,28 @@ type Config struct {
 	Profiles       map[string]Profile `json:"profiles,omitempty"`
 	Skills         *Skills            `json:"skills,omitempty"`
 	Bootstrap      *Bootstrap         `json:"bootstrap,omitempty"`
+	Anx            *Anx               `json:"anx,omitempty"`
+}
+
+// Anx groups optional Agent Nexus integration settings. agentctl reads no ANX
+// credentials; the section only configures how the reviewed `anx` CLI is
+// invoked and which runs opt into run links.
+type Anx struct {
+	RunLinks *RunLinks `json:"run_links,omitempty"`
+}
+
+// RunLinks configures ANX run-link registration for labeled executions.
+// Default "labeled" registers runs carrying an anx.card.<slug> label —
+// zero-config for the documented convention. "all" also registers unlabeled
+// runs; "off" disables registration entirely.
+type RunLinks struct {
+	Default          string `json:"default,omitempty"`
+	WorkspaceAlias   string `json:"workspace_alias,omitempty"`
+	Executable       string `json:"executable,omitempty"`
+	BaseURL          string `json:"base_url,omitempty"`
+	ConfigDir        string `json:"config_dir,omitempty"`
+	SpoolDir         string `json:"spool_dir,omitempty"`
+	FlushTimeoutSecs int    `json:"flush_timeout_seconds,omitempty"`
 }
 
 // Bootstrap is host-local live-config policy. Git config bundles cannot set
@@ -173,6 +196,11 @@ func (c Config) Validate() error {
 			return fmt.Errorf("bootstrap: %w", err)
 		}
 	}
+	if c.Anx != nil {
+		if err := c.Anx.Validate(); err != nil {
+			return fmt.Errorf("anx: %w", err)
+		}
+	}
 	for name, profile := range c.Profiles {
 		if strings.TrimSpace(name) == "" {
 			return errors.New("profile name cannot be empty")
@@ -214,6 +242,64 @@ func (b Bootstrap) Validate() error {
 		return errors.New("instruction_pointers must be manage or off")
 	}
 }
+
+// RunLinks defaults.
+const (
+	RunLinksDefaultMode = "labeled"
+)
+
+func (a Anx) Validate() error {
+	if a.RunLinks == nil {
+		return nil
+	}
+	return a.RunLinks.Validate()
+}
+
+func (r RunLinks) Validate() error {
+	switch strings.TrimSpace(r.Default) {
+	case "", "labeled", "all", "off":
+	default:
+		return errors.New("default must be labeled, all, or off")
+	}
+	for field, value := range map[string]string{
+		"workspace_alias": r.WorkspaceAlias,
+		"executable":      r.Executable,
+		"base_url":        r.BaseURL,
+		"config_dir":      r.ConfigDir,
+		"spool_dir":       r.SpoolDir,
+	} {
+		if strings.TrimSpace(value) == "" {
+			if value != "" {
+				return fmt.Errorf("%s cannot be blank", field)
+			}
+			continue
+		}
+		if len(value) > 1024 || strings.ContainsAny(value, "\r\n\x00") {
+			return fmt.Errorf("%s exceeds bounds", field)
+		}
+	}
+	if r.WorkspaceAlias != "" && !runLinksTokenPattern.MatchString(r.WorkspaceAlias) {
+		return errors.New("workspace_alias must match ^[a-z0-9][a-z0-9-]{0,63}$")
+	}
+	if r.BaseURL != "" {
+		parsed, err := url.Parse(r.BaseURL)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return errors.New("base_url must be an absolute URL")
+		}
+		if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return errors.New("base_url must not contain credentials, query, or fragment")
+		}
+		if parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopbackHost(parsed.Hostname())) {
+			return errors.New("base_url must use https (http is allowed only for loopback)")
+		}
+	}
+	if r.FlushTimeoutSecs < 0 || r.FlushTimeoutSecs > 60 {
+		return errors.New("flush_timeout_seconds must be between 1 and 60")
+	}
+	return nil
+}
+
+var runLinksTokenPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 func (s Skills) Validate() error {
 	s.Source.Remote = strings.TrimSpace(s.Source.Remote)

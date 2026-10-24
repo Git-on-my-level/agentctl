@@ -134,3 +134,49 @@ func TestMulticaRequiresExactProfileWorkspaceAndAppOrigin(t *testing.T) {
 		}
 	}
 }
+
+func TestRunLinksValidation(t *testing.T) {
+	valid := []RunLinks{
+		{},
+		{Default: "labeled"},
+		{Default: "all"},
+		{Default: "off"},
+		{WorkspaceAlias: "anx"},
+		{BaseURL: "https://anx.example.test"},
+		{BaseURL: "http://127.0.0.1:8080"},
+		{FlushTimeoutSecs: 30},
+		{SpoolDir: "/var/lib/agentctl/anx"},
+	}
+	for i, value := range valid {
+		if err := value.Validate(); err != nil {
+			t.Fatalf("valid case %d rejected: %#v (%v)", i, value, err)
+		}
+	}
+	invalid := []RunLinks{
+		{Default: "sometimes"},
+		{WorkspaceAlias: "Anx"},
+		{WorkspaceAlias: "has space"},
+		{BaseURL: "not a url"},
+		{BaseURL: "https://u:p@anx.example.test"},
+		{BaseURL: "http://anx.example.test"},
+		{BaseURL: "https://anx.example.test/?token=1"},
+		{FlushTimeoutSecs: 61},
+		{Executable: "line\nbreak"},
+	}
+	for i, value := range invalid {
+		if err := value.Validate(); err == nil {
+			t.Fatalf("invalid case %d accepted: %#v", i, value)
+		}
+	}
+}
+
+func TestRunLinksSummaryConfigurationRemoved(t *testing.T) {
+	path := filepath.Join(testutil.TempDir(t), "config.json")
+	raw := `{"schema_version":1,"profiles":{"local":{}},"anx":{"run_links":{"summary_max_bytes":512}}}`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("removed summary option accepted: %v", err)
+	}
+}
