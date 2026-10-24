@@ -97,7 +97,7 @@ an execution label using the agentctl-safe form `anx.card.<card-slug>` (for
 example, `--label anx.card.watch-redesign` or the equivalent sugar
 `delegate --anx-card card:watch-redesign` / `run --anx-card watch-redesign`;
 the label remains the recorded contract). The full label is a lowercase token
-of at most 128 characters, leaving up to 119 characters for the slug. Labels
+with a 1–64 character slug of lowercase letters, digits and hyphens. Labels
 cannot contain the colons in the conceptual `anx:card:<ref>` notation.
 
 Executions that carry such a label are registered with ANX automatically,
@@ -106,34 +106,32 @@ or fails a run:
 
 - At launch, a `running` registration is spooled locally; launch never waits
   on ANX.
-- At terminal state, agentctl reads the stored outcome through the journal's
-  read-only outcome accessor — never through `agentctl result`, which
-  acknowledges collection — builds a deterministic, redacted outcome summary
-  (no secrets, environment values, local paths, or Tailnet hosts; capped by
-  `anx.run_links.summary_max_bytes`), and upserts it. An uncollected run stays
-  unreconciled for its parent.
-- Deliveries go through the configured `anx` CLI as a subprocess against its
-  public sessions and participation API, keyed by the delegate request key and
-  the durable ID `agentctl://<origin_host_id>/<exec-id>`. They are idempotent;
-  the raw native session id never leaves the host, only the
-  `agentctl identity` v1 correlator does.
-- When ANX is unreachable, registrations spool in the bounded owner-only
-  outbox under `<state dir>/anx-run-links` and flush later with backoff.
-  Fatal outcomes dead-letter with a reason.
+- At terminal state, agentctl reads the outcome through the non-acknowledging
+  journal accessor and enqueues a validated registration. A detached worker
+  delivers it; the run's return path never waits on ANX.
+- Egress is allowlisted: validated durable ID, enum state/times, catalog-checked
+  harness/model (`other` otherwise), parsed card ref, strict GitHub PR/issue
+  coordinates and 40-hex SHAs. Labels and raw request keys stay local; a
+  host-keyed HMAC identifies the request on ANX.
+- Summary is off by default. To opt in, emit exactly one `---anx-summary---`
+  / `---end-anx-summary---` block on separate lines. Only that block is
+  considered; any redaction ambiguity drops it entirely. The byte cap is
+  2048 or the smaller `anx.run_links.summary_max_bytes` value.
+- Delivery uses ANX sessions/participation when a native session exists, plus
+  an idempotent card message carrying the complete public run record. Multica
+  and no-session executions still post a record, with honest outcome
+  availability. Fingerprints stay in the principal-private sessions API.
+- The owner-only outbox defaults to `<state dir>/anx-run-links` without config.
+  Detached workers retry on subsequent work-producing invocations. Pending
+  and dead letters are capped at 256; dead letters expire after seven days.
+  Errors contain only class enums and numeric codes.
 
-`agentctl anx status` (read-only) reports the effective mode, pending spool
-entries, and dead letters with reasons such as `card_unresolved` or
-`anx_auth_required`. `agentctl anx flush` retries delivery now. Configure the
-integration through the optional `anx.run_links` config section (default
-`labeled`; see [configuration](configuration.md)).
-
-Today's public ANX surface accepts the session registration and per-card
-participation. The full run record — outcome summary, links, native session
-fingerprint, transcript locator, supersedes chain — is carried in the spooled
-registration document for the ANX-side runs extension; a registration whose
-execution recorded no native session dead-letters honestly with
-`no_native_session_binding` until that extension ships. See
-[the ANX run-links design](design/anx-run-links.md).
+`agentctl anx status` is read-only. `agentctl anx flush` explicitly waits for
+delivery. Configure the optional `anx.run_links` section (default `labeled`;
+see [configuration](configuration.md)). Native runs-roster extensions and
+card-independent unlabeled registration remain ANX-side work; unlabeled
+`default: all` entries park as `card_unresolved` today. See
+[the ANX run-links design](design/anx-run-links.md#redaction-and-egress).
 
 ANX credentials belong only in the ANX command's own credential store and
 environment. agentctl neither reads nor forwards them. A registered run

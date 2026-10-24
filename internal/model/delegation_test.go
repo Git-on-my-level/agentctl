@@ -38,6 +38,21 @@ func TestDelegationBindingRejectsInvalidMetadata(t *testing.T) {
 	}
 }
 
+func TestRequestKeyAcceptsSchemaLimit(t *testing.T) {
+	for _, n := range []int{129, 200, 256} {
+		b := fixtureDelegation()
+		b.RequestKey = strings.Repeat("a", n)
+		if err := b.Validate(); err != nil {
+			t.Fatalf("valid %d-character key rejected: %v", n, err)
+		}
+	}
+	b := fixtureDelegation()
+	b.RequestKey = strings.Repeat("a", 257)
+	if err := b.Validate(); err == nil {
+		t.Fatal("oversized request key accepted")
+	}
+}
+
 func TestContinuationMetadataRejectsFalseSessionClaims(t *testing.T) {
 	for _, continuation := range []*FollowUpContinuation{
 		{Mode: "carry_forward", NativeSessionReused: true, PriorResult: &CarryForwardResult{Source: "assistant", SHA256: "sha256:" + strings.Repeat("c", 64), Bytes: 12}},

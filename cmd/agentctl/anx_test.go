@@ -45,7 +45,8 @@ func fakeAnxScript(t *testing.T) (string, string) {
 	dir := testutil.TempDir(t)
 	log := filepath.Join(dir, "anx-calls.log")
 	script := filepath.Join(dir, "fake-anx")
-	body := "#!/bin/sh\necho \"$*\" >> " + log + "\ncat >> " + log + "\necho '{\"ok\":true,\"result\":{\"session\":{\"id\":\"sess-1\"}}}'\n"
+	body := "#!/bin/sh\necho \"$*\" >> " + log + "\ncat >> " + log + "\ncase \"$*\" in\n *agents.me.get*) echo '{\"ok\":true,\"result\":{\"agent\":{\"actor_id\":\"actor-test\"}}}' ;;\n *cards.get*) echo '{\"ok\":true,\"result\":{\"card\":{\"thread_id\":\"thread-test\"}}}' ;;\n *) echo '{\"ok\":true,\"result\":{\"session\":{\"id\":\"sess-1\"}}}' ;;\nesac\n"
+
 	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -151,6 +152,13 @@ func TestANXRegisterTerminalNeverAcknowledgesCollection(t *testing.T) {
 	journal.Close()
 	if !acks.Unreconciled(execution) {
 		t.Fatal("uncollected run did not stay unreconciled after ANX registration")
+	}
+	// Terminal hooks only enqueue. Explicit delivery preserves collection too.
+	if calls := readAnxCalls(t, log); len(calls) != 0 {
+		t.Fatal("terminal hook invoked ANX synchronously")
+	}
+	if code := a.run(context.Background(), []string{"--config", configPath, "--journal", journalPath, "anx", "flush"}); code != 0 {
+		t.Fatal("flush failed")
 	}
 	// The delivery happened: session + one participation call, both carrying
 	// the card, with no acknowledgement side effects.

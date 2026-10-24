@@ -1,6 +1,6 @@
 # Design: link agentctl runs to ANX cards with durable IDs
 
-Status: design v2 (2026-10-24). Rollout step 3 (agentctl run registration)
+Status: design v3 (2026-10-24). Rollout step 3 (agentctl run registration)
 is implemented in this repository; steps 1–2 and 4–6 remain planned.
 
 ## Problem
@@ -171,18 +171,17 @@ state-regression-protected, replay-detecting) gains these optional fields:
   "launcher": "agentctl",
   "external_id": "exec-calm-pen-slide-adjust-steak-antique",
   "origin_host_id": "host-goose-addict-spray-hawk-lens-horror",
-  "request_key": "watch-redesign-lane-a-1",
+  "request_key_hash": "sha256:<64 hex host-keyed HMAC>",
   "adapter": "claude-code", "model": "claude-opus-5-5",
-  "state": "completed", "liveness": "exited",
-  "labels": ["anx.card.watch-redesign"],
+  "state": "completed", "liveness": "stale",
   "started_at": "2026-10-24T06:24:22Z", "ended_at": "2026-10-24T06:49:51Z",
   "card_ref": "card:watch-redesign",
   "outcome": {
     "availability": "stored",
     "failure": null,
-    "summary": "Redacted final answer, at most 2048 UTF-8 bytes (see Redaction)",
-    "links": [{"kind": "pr", "ref": "https://github.com/.../pull/104"},
-              {"kind": "commit", "ref": "sha256-pinned git sha"}],
+    "summary": "Only an explicit marked summary block, at most 2048 UTF-8 bytes",
+    "links": [{"kind": "pr", "ref": "https://github.com/Git-on-my-level/agentctl/pull/104"},
+              {"kind": "commit", "ref": "0123456789abcdef0123456789abcdef01234567"}],
     "head_after": "<40-hex git HEAD in the launch cwd at terminal, or null>"
   },
   "native_session": {"provider": "claude", "kind": "provider_session_sha256",
@@ -225,8 +224,9 @@ session heartbeat never refreshes participation and vice versa; unchanged.
 | Run identity, outcome summary, links, transcript locator, card link | ANX run record + card `executions` |
 | Card state, acceptance, evidence | ANX card (existing authorities) |
 
-agentctl remains a supervision layer: it adds no ANX credential handling and
-stores nothing new beyond what the journal already records.
+agentctl remains a supervision layer: it adds no ANX credential handling.
+The journal stays authoritative; the bounded outbox stores only allowlisted
+delivery metadata, a local HMAC key and sequence replay indexes.
 
 ## Card resolution
 
@@ -263,8 +263,9 @@ as written above. Precedence 4's `run_links.register_unlabeled` is agentctl's
 
 `delegate` journals the execution (existing). When a card resolves and
 `run_links` is enabled, the ANX-side helper (see Opt-in) registers the run:
-state `running`, harness, host, durable ID halves, `request_key` (the agentctl
-delegate request key — the stable key for retries), and — after the native
+state `running`, catalog-checked harness/model, durable ID halves, and
+`request_key_hash` (a domain-separated host-keyed HMAC of the local delegate
+request key — the raw key stays on the host), and — after the native
 session id is recorded — `anx sessions register` for the native session.
 Registration happens off the critical path: launch never waits on ANX.
 
@@ -272,7 +273,7 @@ Registration happens off the critical path: launch never waits on ANX.
 
 At terminal the helper reads the local journal through a **non-acknowledging**
 path and upserts the terminal record: state, times, failure projection,
-redacted summary, links, `head_after`, `native_session.fingerprint`,
+optional marked summary and strict evidence links, `native_session.fingerprint`,
 `supersedes_external_id`, and — if the backup index is reachable —
 `transcript`. It reads the execution envelope and stored outcome through the
 journal's read-only outcome accessor (`GetOutcome` over a read-only journal
@@ -321,28 +322,90 @@ Every fetch appends one line (principal, fingerprint, digest, relpath, time)
 to `fetches/<host>.ndjson` on the archive host. Fetches never mutate ANX and
 never mark work collected; acknowledgement semantics stay with `result`.
 
-## Redaction
+## Redaction and egress
 
-The summary is derived deterministically from the stored result body (which
-already excludes prompts, reasoning, and tool chatter). No model runs. Rules,
-applied in order, then truncated to 2048 UTF-8 bytes with a trailing `…[truncated]`
-marker:
+Regex redaction is a second layer, not a safe boundary for arbitrary prose.
+agentctl builds a fresh allowlisted document before persistence and validates
+it again immediately before delivery. The v2 JSON contract is published in
+[anx-registration.schema.json](../../schemas/anx-registration.schema.json).
 
-- Drop any line matching credential shapes: `AKIA…`, `sk-…`, `ghp_…`,
-  `xox[bp]-…`, `-----BEGIN … PRIVATE KEY-----`, `Bearer …`, Google
-  `ya29.…`/AIza keys, high-entropy assignments to names containing
-  `token|key|secret|password|credential`.
-- Drop `ENV=VALUE` assignments wholesale (values never negotiated).
-- Replace absolute local paths (`/Users/…`, `/Volumes/…`, `~/…`, `/home/…`)
-  and Tailnet hostnames/IPs with `<path>` / `<host>`.
-- Strip URL query strings (they may carry tokens); keep scheme, host, path.
-- If any rule match is ambiguous (partial overlap with a credential shape),
-  omit the summary entirely with
-  `summary_omitted_reason: "redaction_failed"` — never ship a maybe-leak.
+- Durable identity is `agentctl://<origin_host_id>/<exec-id>`. Both parts
+  pass the real typed six-word ID parser, including the dictionary and
+  type-bound checksum; the URI is reconstructed from those validated parts.
+- State, liveness, phase and outcome availability are enums; times are typed
+  RFC3339 timestamps. Failure projection contains only `execution_failed`
+  plus a retryable boolean, never upstream text.
+- Harness must belong to the known adapter catalog. Model must exactly match
+  the selected profile's reviewed `agent_preferences.preferred` catalog for
+  that harness and pass the bounded model-name format. Otherwise send `other`.
+- Labels never leave the host. Only parsed `card:<slug>` references survive:
+  1–64 lowercase letters/digits/hyphens, starting with a letter/digit, with
+  credential-shaped slugs rejected.
+- Request keys (up to 256 characters) stay local. Before persistence, replace
+  them with `request_key_hash`: HMAC-SHA256 under a random 32-byte, owner-only
+  spool-local key and the domain `agentctl.anx.request-key.v1` followed by NUL.
+  Persist that key across restarts; never transmit it. ANX message idempotency
+  additionally uses a digest of the canonical public payload and card ref.
+- Evidence is limited to `https://github.com/<owner>/<repo>/pull/<number>`,
+  the corresponding `/issues/<number>`, or a bare 40-hex commit SHA, optionally
+  prefixed by `pr:`, `issue:` or `commit:` of the matching kind. Reject
+  credential shapes, userinfo, ports, query strings (even empty `?`), fragments,
+  encoded components and extra paths. At most eight links, each ≤512 bytes.
+- Free-text summary is **off by default**. Only exactly one explicit,
+  line-delimited block in the stored result opts in:
 
-Links pass the same filter plus scheme/host allowlists (`https` git hosts,
-`pr:`/`commit:` refs). `head_after` is a bare 40-hex sha. These rules ship as
-a published fixture-tested function in the ANX CLI, not prose.
+  ```text
+  ---anx-summary---
+  Implemented the fix and passed tests.
+  ---end-anx-summary---
+  ```
+
+  Everything outside that block stays local. Malformed/duplicate markers,
+  credentials/partial credentials, PEM markers/material, assignments (including
+  inline and quoted values), URL credentials/queries, local paths (including
+  backticks), IP addresses (including Tailnet CGNAT), Tailnet names, invalid
+  UTF-8 or ambiguous long tokens omit the whole block with `redaction_failed`.
+  Unmarked results report `not_opted_in`. Only validated GitHub evidence URLs
+  survive in a marked summary. Clean opted-in text is capped at 2048 UTF-8
+  bytes (or the smaller configured limit), never salvaged line by line.
+  Legacy v1 spool summaries lack this opt-in provenance and are omitted.
+- Spool/status diagnostics contain only a closed error-class enum and numeric
+  process code. No messages, paths, raw ANX codes, prompts or transcripts.
+
+Native fingerprints are validated SHA256 correlators and go only to ANX's
+principal-private sessions endpoint. They are omitted from card messages,
+as are transcript locators. Raw native IDs never leave the host.
+
+### Current delivery transport and ANX-side gaps
+
+Terminal hooks enqueue only. A detached worker flushes after enqueue and on
+subsequent work-producing invocations; read-only commands never flush.
+`agentctl anx flush` is the explicit synchronous delivery command.
+The spool defaults beside the journal even when config is absent. Separate
+file locks serialize local sequence allocation/state changes and whole flush
+passes; enqueue never waits on ANX. Snapshot comparison prevents a flush from
+removing or overwriting a payload refreshed during delivery. A durable assigned
+and delivered sequence index preserves each phase's sequence across delivery,
+restarts and replay. Pending and dead letters are bounded to 256 entries;
+dead letters expire after seven days on both enqueue and flush.
+
+Today's ANX API accepts sessions, participants and idempotent `events.create`
+card messages. Delivery registers the private native session and participation
+when available, then posts the allowlisted run record (durable ID, phase,
+terminal state, HMAC request identity, outcome and evidence) to each card's
+backing thread. No-session and Multica runs still post their run record;
+they do not invent a native session. Spool deletion occurs only after every
+required write is acknowledged. Retries use the same event request key and
+public payload; ANX deduplicates `events.create` by actor and request key.
+
+The ANX follow-up PR must extend `/runs` with these fields, enforce state
+regression rules, compose card `executions` and `runs list --card`, link
+private sessions to durable executions, and add transcript reconciliation and
+supersession views. Until then the complete public record lives in card
+messages, not a native runs-roster row. Unlabeled `default: all` registrations
+cannot target a card message yet and park as `card_unresolved`; binding
+resolution and a card-independent run upsert remain ANX-side gaps. This is
+evidence of execution, never card acceptance.
 
 ## Access
 
@@ -364,14 +427,13 @@ model, never card visibility:
 ## Idempotency and failure
 
 - **Stable keys:** the registration attempt is keyed by the agentctl delegate
-  request key plus execution ID; ANX's run upsert dedupes on
+  host-keyed request hash plus durable execution ID; the future ANX run upsert dedupes on
   `(launcher, host_id, external_id)` and rejects state regression. Replays
   are safe and detected (`replayed: true`).
 - **At-least-once:** registrations may duplicate; consumers dedupe. Terminal
   upserts refresh — never regress — state.
 - **ANX unreachable:** the run is unaffected. Registrations spool in the
-  helper's bounded local outbox (the same spool `anx integrations` already
-  uses: retry with backoff, dead-letter with reason) and flush on the next
+  helper's bounded local outbox (retry with backoff, dead-letter with enum/code) and flush on the next
   attempt or bridge tick. Unflushed entries older than a configurable bound
   surface in `anx runs status` — they never block launches, continues, or
   results.
@@ -401,9 +463,9 @@ model, never card visibility:
                        "summary_max_bytes": 2048}}
 ```
 
-  agentctl itself reads no ANX credentials and makes no ANX calls; the
-  section documents fleet intent for the helper and the skill.
-- **Enable surface:** `anx integrations enable run.links` (same family and
+  agentctl reads no ANX credentials; the detached helper invokes the public
+  ANX CLI, which owns authentication and endpoint resolution.
+- **Planned ANX enable surface:** `anx integrations enable run.links` (same family and
   spool machinery as `context.inject`), which creates the agentctl
   subscription (kinds `started` + `terminal`, `command` destination →
   `anx runs ingest`) and the reconcile tick. `anx integrations status
@@ -422,7 +484,7 @@ model, never card visibility:
 2. **Backup index + find helper:** incremental builder after segment commit,
    one-time backfill over existing committed segments (no rewrites),
    `session-archive-find`, fetch log.
-3. **ANX core + CLI run fields:** `origin_host_id`, `request_key`, `outcome`,
+3. **ANX core + CLI run fields:** `origin_host_id`, `request_key_hash`, `outcome`,
    `native_session`, `transcript`, `supersedes_external_id` on `POST /runs`
    (nullable columns; no migration), roster filters, principal-scoped
    projection, `work context` runs section, card `executions` writer.

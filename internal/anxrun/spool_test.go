@@ -2,12 +2,16 @@ package anxrun
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 )
 
 func testSpool(t *testing.T) *Spool {
@@ -20,8 +24,18 @@ func testSpool(t *testing.T) *Spool {
 }
 
 func testRegistration(executionID string, phase Phase, sequence int) Registration {
+	executionID = fixtureExecID(executionID)
 	return Registration{SchemaVersion: RegistrationSchemaVersion, Phase: phase, Launcher: "agentctl", ExternalID: executionID, OriginHostID: "host-goose-addict-spray-hawk-lens-horror", DurableID: "agentctl://host-goose-addict-spray-hawk-lens-horror/" + executionID, State: StateRunning, Liveness: LivenessAlive, Labels: []string{"anx.card.watch-redesign"}, CardRefs: []string{"card:watch-redesign"}, Sequence: sequence,
 		NativeSession: &NativeSession{Provider: "claude", Kind: NativeSessionIDKind, Fingerprint: "sha256:" + fmt.Sprintf("%064d", 7)}}
+}
+
+func fixtureExecID(value string) string {
+	if _, err := ids.ParseExecutionID(value); err == nil {
+		return value
+	}
+	digest := sha256.Sum256([]byte(value))
+	id, _ := ids.FromPayload(ids.TypeExecution, binary.BigEndian.Uint64(digest[:8])&((1<<60)-1))
+	return id.String()
 }
 
 // recordingSender fakes delivery outcomes per attempt.
@@ -232,7 +246,7 @@ func TestSpoolOverflowDeadLettersOldest(t *testing.T) {
 		t.Fatalf("pending = %d, want 2", len(pending))
 	}
 	dead, _ := spool.ListDead()
-	if len(dead) != 1 || dead[0].ExecutionID != "exec-0" || dead[0].LastError != "spool_full" {
+	if len(dead) != 1 || dead[0].ExecutionID != fixtureExecID("exec-0") || dead[0].LastError != "spool_full" {
 		t.Fatalf("oldest not dead-lettered: %#v", dead)
 	}
 }

@@ -164,6 +164,7 @@
         "defaulted"
       ],
       "properties": {
+        "request_key": {"type": "string", "maxLength": 256},
         "continuation": {"$ref": "continue-result.schema.json#/properties/continuation"},
         "request_sha256": {
           "type": "string",

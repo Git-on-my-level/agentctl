@@ -139,11 +139,13 @@ registers labeled executions with Agent Nexus (see
 
 `default` accepts `labeled` (the default and zero-config behavior: register
 runs carrying an `anx.card.<slug>` label), `all` (also register unlabeled
-runs), and `off`. `workspace_alias`, `base_url`, and `config_dir` are passed
+runs; these park as `card_unresolved` until ANX supports card-independent
+run records), and `off`. `workspace_alias`, `base_url`, and `config_dir` are passed
 explicitly to the `anx` CLI; agentctl never hard-codes a base URL and reads no
 ANX credentials — authentication and workspace resolution stay with the `anx`
 CLI's own credential store. `summary_max_bytes` bounds the redacted outcome
-summary (1–2048). `spool_dir` overrides the default
+summary (1–2048), which is off unless an explicit marked summary block opts in.
+`flush_timeout_seconds` bounds detached delivery; it never delays a run return. `spool_dir` overrides the default
 `<state dir>/anx-run-links` outbox. The section is advisory for standalone
 use: without it, labeled runs still register with the defaults above.
 

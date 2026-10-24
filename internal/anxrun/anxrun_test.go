@@ -36,7 +36,7 @@ func TestNativeSessionFingerprintMatchesIdentityV1(t *testing.T) {
 }
 
 func TestCanonicalProvider(t *testing.T) {
-	for input, want := range map[string]string{"claude-code": "claude", "generic-process": "generic", "codex": "codex", "zcode": "zcode", "hermes": "hermes"} {
+	for input, want := range map[string]string{"claude-code": "claude", "generic-process": "generic-process", "codex": "codex", "zcode": "zcode", "hermes": "hermes"} {
 		if got := CanonicalProvider(input); got != want {
 			t.Fatalf("CanonicalProvider(%q) = %q, want %q", input, got, want)
 		}
@@ -84,7 +84,7 @@ func TestBuildStartAndTerminal(t *testing.T) {
 	if start.RequestKey != "watch-redesign-lane-a-1" {
 		t.Fatalf("request key = %q", start.RequestKey)
 	}
-	if start.Model != "claude-opus-5-5" {
+	if start.Model != "other" {
 		t.Fatalf("model = %q", start.Model)
 	}
 	if len(start.CardRefs) != 1 || start.CardRefs[0] != "card:watch-redesign" {
@@ -109,7 +109,7 @@ func TestBuildStartAndTerminal(t *testing.T) {
 	if done.ResultCollected {
 		t.Fatal("uncollected result reported collected")
 	}
-	if done.Outcome == nil || done.Outcome.Summary == "" || len(done.Outcome.Links) != 1 || done.Outcome.Links[0].Kind != LinkKindCommit {
+	if done.Outcome == nil || done.Outcome.Summary != "" || len(done.Outcome.Links) != 1 || done.Outcome.Links[0].Kind != LinkKindCommit {
 		t.Fatalf("outcome projection = %#v", done.Outcome)
 	}
 	if done.EndedAt == nil || !done.EndedAt.Equal(*terminal.TerminalAt) {

@@ -80,7 +80,7 @@ func (b DelegationBinding) Validate() error {
 	if !hashPattern.MatchString(b.RequestSHA256) || !hashPattern.MatchString(b.ConfigurationSHA256) {
 		return errors.New("invalid delegation digest")
 	}
-	if b.RequestKey != "" && (utf8.RuneCountInString(b.RequestKey) > 128 || !utf8.ValidString(b.RequestKey) || strings.IndexFunc(b.RequestKey, unicode.IsControl) >= 0) {
+	if b.RequestKey != "" && (utf8.RuneCountInString(b.RequestKey) > 256 || !utf8.ValidString(b.RequestKey) || strings.IndexFunc(b.RequestKey, unicode.IsControl) >= 0) {
 		return errors.New("invalid delegation request key")
 	}
 	if len(b.Requested) == 0 || len(b.Requested) > 65536 || !json.Valid(b.Requested) || b.Requested[0] != '{' {

@@ -50,6 +50,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 		t.Fatalf("schema list failed: %s", stdout.String())
 	}
 	want := map[string]string{
+		"anx-registration":     "schemas/anx-registration.schema.json",
 		"adapter-manifest":     "schemas/adapter-manifest.schema.json",
 		"callback-envelope":    "schemas/callback-envelope.schema.json",
 		"config-bundle":        "schemas/config-bundle.schema.json",
@@ -84,7 +85,11 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 	}
 	root := schemaRepositoryRoot(t)
 	for _, item := range document.Result.Schemas {
-		if item.Version != 1 || want[item.Name] != item.File {
+		expectedVersion := 1
+		if item.Name == "anx-registration" {
+			expectedVersion = 2
+		}
+		if item.Version != expectedVersion || want[item.Name] != item.File {
 			t.Fatalf("unexpected schema listing item: %#v", item)
 		}
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(item.File))); err != nil {

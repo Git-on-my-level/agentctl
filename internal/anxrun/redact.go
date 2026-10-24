@@ -2,7 +2,6 @@ package anxrun
 
 import (
 	"fmt"
-	"net/url"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -19,7 +18,7 @@ const DefaultSummaryMaxBytes = 2048
 const truncationMarker = "…[truncated]"
 
 // credentialPatterns match whole shapes that must never survive into a
-// shareable summary. A line containing any of them is dropped.
+// shareable summary. Any match drops the entire opted-in summary.
 var credentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`AKIA[0-9A-Z]{16}`),
 	regexp.MustCompile(`sk-[A-Za-z0-9_-]{16,}`),
@@ -43,37 +42,12 @@ var sensitiveAssignmentPattern = regexp.MustCompile(`(?i)\b[a-z0-9_-]*(token|key
 // but if one survives line-wise redaction the whole summary is omitted:
 // never ship a maybe-leak.
 var ambiguousCredentialPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\b(?:sk-|ghp_|github_pat_|xox[bp]-|ya29\.|AKIA)[A-Za-z0-9_-]+`),
 	regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{8,}`),
 	regexp.MustCompile(`\bghp_[A-Za-z0-9]{16,}`),
 	regexp.MustCompile(`\bAKIA[0-9A-Z]{8,}`),
 	regexp.MustCompile(`\bya29\.[A-Za-z0-9_-]{8,}`),
 }
-
-// envAssignmentPattern matches wholesale ENV=VALUE assignment lines. Values
-// are never negotiated into a shareable summary.
-var envAssignmentPattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*=\S*$`)
-
-// pathDelim anchors a path so `(/Users/x)` or `=/home/y` are matched whole
-// while keeping the delimiter out of the replacement.
-const pathDelim = `(^|[\s"'(\[=,])`
-
-// absolutePathPattern matches absolute local paths under the common local
-// roots (/Users, /Volumes, /home, and friends).
-var absolutePathPattern = regexp.MustCompile(pathDelim + `(/(?:Users|Volumes|home|private|tmp|var|opt|mnt)/[^\s"'()\[\]]*)`)
-
-// tildePathPattern matches a ~ or ~user relative path reference.
-var tildePathPattern = regexp.MustCompile(pathDelim + `(~[A-Za-z0-9_.-]*/[^\s"'()\[\]]*)`)
-
-// tailnetHostPattern matches *.ts.net hostnames; privateIPPattern matches
-// private-use and loopback IPv4 addresses used on the fleet Tailnet.
-var (
-	tailnetHostPattern = regexp.MustCompile(`\b(?:[a-z0-9-]+\.)+ts\.net\b`)
-	privateIPPattern   = regexp.MustCompile(`\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|127\.0\.0\.1)\b`)
-)
-
-// urlQueryPattern matches the query string of an http(s) URL; query strings
-// may carry tokens, so only scheme, host, and path survive.
-var urlQueryPattern = regexp.MustCompile(`(https?://[^\s?]+)\?[^\s]+`)
 
 // Redacted is the deterministic result of summarizing a stored result body.
 // Exactly one of Summary or OmittedReason is nonempty; both empty means the
@@ -83,69 +57,76 @@ type Redacted struct {
 	OmittedReason string
 }
 
-// RedactSummary derives the shareable summary from a stored result body.
-// Rules are applied in order, then the result is truncated to maxBytes
-// UTF-8 bytes with a trailing truncation marker:
-//
-//  1. Drop any line matching a credential shape, a high-entropy secret-name
-//     assignment, or an ENV=VALUE assignment.
-//  2. Replace absolute and ~-relative local paths with <path>, Tailnet
-//     hostnames and private IPs with <host>, and strip URL query strings.
-//  3. If any credential shape still matches after replacement — an ambiguous
-//     partial overlap — the whole summary is omitted with redaction_failed.
-func RedactSummary(text string, maxBytes int) Redacted {
-	if maxBytes <= 0 {
-		maxBytes = DefaultSummaryMaxBytes
-	}
-	if strings.TrimSpace(text) == "" {
-		return Redacted{}
+// MarkedSummary is the only free-text opt-in. Exactly one complete,
+// line-delimited block is accepted. Everything outside it stays local.
+func MarkedSummary(text string, maxBytes int) Redacted {
+	const begin, end = "---anx-summary---", "---end-anx-summary---"
+	if strings.Count(text, begin) != 1 || strings.Count(text, end) != 1 {
+		return Redacted{OmittedReason: "not_opted_in"}
 	}
 	lines := strings.Split(text, "\n")
-	kept := make([]string, 0, len(lines))
+	inside, finished := false, false
+	var block []string
 	for _, line := range lines {
-		if dropLine(line) {
-			continue
+		switch line {
+		case begin:
+			if finished {
+				return Redacted{OmittedReason: SummaryOmittedRedactionFailed}
+			}
+			inside = true
+		case end:
+			if !inside {
+				return Redacted{OmittedReason: SummaryOmittedRedactionFailed}
+			}
+			inside, finished = false, true
+		default:
+			if inside {
+				block = append(block, line)
+			}
 		}
-		kept = append(kept, replaceSensitive(line))
 	}
-	joined := strings.Trim(strings.Join(kept, "\n"), "\n")
-	for _, pattern := range credentialPatterns {
-		if pattern.MatchString(joined) {
-			return Redacted{OmittedReason: SummaryOmittedRedactionFailed}
-		}
-	}
-	if sensitiveAssignmentPattern.MatchString(joined) {
+	if !finished || inside {
 		return Redacted{OmittedReason: SummaryOmittedRedactionFailed}
 	}
-	for _, pattern := range ambiguousCredentialPatterns {
-		if pattern.MatchString(joined) {
+	return RedactSummary(strings.Join(block, "\n"), maxBytes)
+}
+
+// RedactSummary is a conservative second layer, never the egress boundary.
+// Any credential, assignment, URL userinfo, PEM material, path, host or
+// ambiguous token drops the entire opted-in block, including multiline keys.
+func RedactSummary(text string, maxBytes int) Redacted {
+	if maxBytes <= 0 || maxBytes > DefaultSummaryMaxBytes {
+		maxBytes = DefaultSummaryMaxBytes
+	}
+	scan := text
+	for _, candidate := range summaryURLPattern.FindAllString(text, -1) {
+		if _, ok := SanitizeLink(candidate); !ok {
 			return Redacted{OmittedReason: SummaryOmittedRedactionFailed}
 		}
+		scan = strings.ReplaceAll(scan, candidate, "<evidence>")
 	}
-	return Redacted{Summary: truncateUTF8(joined, maxBytes)}
+	if !utf8.ValidString(text) || sensitiveText(text) || ambiguousSummary.MatchString(scan) || localPathPattern.MatchString(scan) {
+		return Redacted{OmittedReason: SummaryOmittedRedactionFailed}
+	}
+	return Redacted{Summary: truncateUTF8(strings.TrimSpace(text), maxBytes)}
 }
 
-// dropLine reports whether a whole line must not survive redaction.
-func dropLine(line string) bool {
-	for _, pattern := range credentialPatterns {
-		if pattern.MatchString(line) {
-			return true
+var summaryURLPattern = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^\s]+`)
+
+var ambiguousSecretAssignment = regexp.MustCompile(`(?i)\b[a-z0-9_-]*(?:token|key|secret|password|credential)[a-z0-9_-]*\s*[:=]|\bbearer\s+\S+`)
+var localPathPattern = regexp.MustCompile("(?:^|[\\s`\"'(\\[=,])/(?:[^/\\s][^\\s]*)|~[A-Za-z0-9_.-]*/|(?i)(?:fd7a:|fe80:|::1\\b)")
+
+var ambiguousSummary = regexp.MustCompile("(?i)(-----|[A-Za-z_][A-Za-z0-9_]*\\s*=|https?://[^\\s]*[@?#]|(?:/Users/|/Volumes/|/home/|/private/|/tmp/|/var/|/opt/|/mnt/|~/)|[a-z0-9.-]+\\.ts\\.net|\\b(?:[0-9]{1,3}\\.){3}[0-9]{1,3}\\b|[A-Za-z0-9+/=_-]{32,})")
+
+func sensitiveText(text string) bool {
+	for _, patterns := range [][]*regexp.Regexp{credentialPatterns, ambiguousCredentialPatterns} {
+		for _, p := range patterns {
+			if p.MatchString(text) {
+				return true
+			}
 		}
 	}
-	if sensitiveAssignmentPattern.MatchString(line) {
-		return true
-	}
-	return envAssignmentPattern.MatchString(strings.TrimSpace(line))
-}
-
-// replaceSensitive rewrites paths, hosts, and URL queries in one line.
-func replaceSensitive(line string) string {
-	line = urlQueryPattern.ReplaceAllString(line, "$1")
-	line = tildePathPattern.ReplaceAllString(line, "${1}<path>")
-	line = absolutePathPattern.ReplaceAllString(line, "${1}<path>")
-	line = privateIPPattern.ReplaceAllString(line, "<host>")
-	line = tailnetHostPattern.ReplaceAllString(line, "<host>")
-	return line
+	return sensitiveAssignmentPattern.MatchString(text) || ambiguousSecretAssignment.MatchString(text)
 }
 
 // truncateUTF8 bounds value to maxBytes without splitting a rune and appends
@@ -155,22 +136,23 @@ func truncateUTF8(value string, maxBytes int) string {
 		return value
 	}
 	budget := maxBytes - len(truncationMarker)
+	marker := truncationMarker
 	if budget < 0 {
-		budget = 0
+		budget = maxBytes
+		marker = ""
 	}
 	cut := value[:budget]
 	for !utf8.ValidString(cut) && len(cut) > 0 {
 		cut = cut[:len(cut)-1]
 	}
-	return cut + truncationMarker
+	return cut + marker
 }
 
-// Link allowlists. Links pass the same redaction filter plus a scheme/host
-// allowlist (https git hosts) or a pr:/commit:/issue: ref form.
+// Evidence is limited to GitHub PR/issue coordinates and 40-hex commits.
 var (
-	gitOIDPattern  = regexp.MustCompile(`^[a-f0-9]{40}(?:[a-f0-9]{24})?$`)
-	gitHostPattern = regexp.MustCompile(`^(?:github\.com|gitlab\.com|bitbucket\.org|[\w-]+\.forgejo\.[a-z]+|[\w-]+\.gitea\.[a-z]+)$`)
-	linkRefPattern = regexp.MustCompile(`^(pr|commit|issue):(.+)$`)
+	gitOIDPattern    = regexp.MustCompile(`^[a-fA-F0-9]{40}$`)
+	linkRefPattern   = regexp.MustCompile(`^(pr|commit|issue):(.+)$`)
+	githubRefPattern = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9][A-Za-z0-9-]{0,38})/([A-Za-z0-9_.-]{1,100})/(pull|issues)/([1-9][0-9]{0,9})$`)
 )
 
 // LinkKind enumerates shareable link kinds.
@@ -195,41 +177,32 @@ const (
 )
 
 // SanitizeLink validates one candidate evidence reference against the link
-// allowlist. Accepted forms are `pr:`/`issue:` with an https git-host URL,
-// `commit:` with a bare git object id, and a bare https git-host URL.
+// allowlist: GitHub owner/repo/pull|issues/number only, or a 40-hex SHA.
+// No credentials, queries (including empty ?), fragments, ports, or extra paths.
 func SanitizeLink(ref string) (Link, bool) {
 	ref = strings.TrimSpace(ref)
-	if ref == "" || len(ref) > MaxLinkRef {
+	if len(ref) > MaxLinkRef || sensitiveText(ref) {
 		return Link{}, false
 	}
+	kind := ""
 	if match := linkRefPattern.FindStringSubmatch(ref); match != nil {
-		kind, rest := match[1], strings.TrimSpace(match[2])
-		switch kind {
-		case LinkKindPR, LinkKindIssue:
-			link, ok := SanitizeLink(rest)
-			if !ok || link.Kind != LinkKindURL {
-				return Link{}, false
-			}
-			return Link{Kind: kind, Ref: rest}, true
-		case LinkKindCommit:
-			if !gitOIDPattern.MatchString(rest) {
-				return Link{}, false
-			}
-			return Link{Kind: kind, Ref: rest}, true
-		}
+		kind, ref = match[1], strings.TrimSpace(match[2])
+	}
+	if gitOIDPattern.MatchString(ref) && (kind == "" || kind == LinkKindCommit) {
+		return Link{Kind: LinkKindCommit, Ref: strings.ToLower(ref)}, true
+	}
+	match := githubRefPattern.FindStringSubmatch(ref)
+	if match == nil || match[2] == "." || match[2] == ".." || strings.HasSuffix(match[1], "-") {
 		return Link{}, false
 	}
-	parsed, err := url.Parse(ref)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+	want := LinkKindPR
+	if match[3] == "issues" {
+		want = LinkKindIssue
+	}
+	if kind != "" && kind != want {
 		return Link{}, false
 	}
-	if !gitHostPattern.MatchString(parsed.Hostname()) {
-		return Link{}, false
-	}
-	if strings.ContainsAny(ref, "<>\"' ") {
-		return Link{}, false
-	}
-	return Link{Kind: LinkKindURL, Ref: ref}, true
+	return Link{Kind: want, Ref: ref}, true
 }
 
 // ExtractLinks derives bounded, deduplicated evidence links from a stored
@@ -276,7 +249,7 @@ func ExtractLinks(text string) []Link {
 }
 
 // headAfterPattern is a bare 40-hex git object id.
-var headAfterPattern = regexp.MustCompile(`^[a-f0-9]{40}$`)
+var headAfterPattern = regexp.MustCompile(`^[a-fA-F0-9]{40}$`)
 
 // SanitizeHeadAfter accepts a bare 40-hex git object id or empty.
 func SanitizeHeadAfter(value string) (string, error) {
@@ -287,5 +260,5 @@ func SanitizeHeadAfter(value string) (string, error) {
 	if !headAfterPattern.MatchString(value) {
 		return "", fmt.Errorf("head_after must be a bare 40-hex sha")
 	}
-	return value, nil
+	return strings.ToLower(value), nil
 }

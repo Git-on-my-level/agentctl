@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Git-on-my-level/agentctl/internal/anxrun"
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
@@ -33,6 +34,7 @@ const (
 )
 
 type app struct {
+	startANXWorker  func(common) error
 	stdout, stderr  io.Writer
 	stdin           io.Reader
 	stdinIsTerminal func() bool
@@ -63,6 +65,7 @@ func newApp() *app {
 		info, err := os.Stdin.Stat()
 		return err == nil && info.Mode()&os.ModeCharDevice != 0
 	}, getenv: os.Getenv, now: time.Now}
+	a.startANXWorker = startANXWorker
 	a.updateNotice = func(ctx context.Context, currentVersion string, c common) *output.Warning {
 		statePath, policyPath, err := updatecheck.DefaultPaths(a.getenv)
 		if err != nil {
@@ -115,6 +118,13 @@ func (a *app) run(ctx context.Context, args []string) int {
 			renderer = renderer.WithWarnings(*warning)
 		}
 	}
+	if invocationAllowsAutomaticMaintenance(rest) {
+		if settings, ok := a.anxSettings(commonArgs); ok && settings.Mode != "off" {
+			if _, present, err := anxrun.OpenSpoolIfPresent(settings.SpoolDir); err == nil && present {
+				a.scheduleANXFlush(commonArgs)
+			}
+		}
+	}
 	if len(rest) == 0 {
 		return a.help(renderer, "")
 	}
@@ -123,6 +133,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 	}
 	var err *output.Error
 	switch rest[0] {
+	case "_anx-flush-worker":
+		return a.anxFlushWorker(ctx, commonArgs)
 	case "_update-worker":
 		return a.updateWorker(ctx, commonArgs)
 	case "_update-installed":

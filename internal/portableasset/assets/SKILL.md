@@ -631,11 +631,23 @@ adds the same label). Labeled runs register with ANX automatically,
 best-effort, and never block or fail: a `running` registration spools at
 launch, and at terminal state agentctl reads the stored outcome through the
 journal's read-only accessor (never `agentctl result`, which acknowledges
-collection), redacts it deterministically, and upserts it keyed by the
-delegate request key and the durable ID `agentctl://<origin_host_id>/<exec-id>`.
+collection) and enqueues an allowlisted record. A detached worker registers
+sessions/participation where available and an idempotent card message containing
+the durable ID `agentctl://<origin_host_id>/<exec-id>`, state, outcome and strict
+GitHub PR/issue or 40-hex commit evidence. Models must match the reviewed catalog
+or become `other`. Labels and raw request keys stay local; only the parsed card
+ref and a host-keyed request hash leave the host. Slugs are 1–64 lowercase
+letters/digits/hyphens with credential shapes rejected.
+
+Free-text summary is off by default. Only an explicit block delimited by
+`---anx-summary---` and `---end-anx-summary---` on separate lines opts in;
+ambiguous content drops the whole block. Never include secrets or private
+context in an opted-in block. Native fingerprints remain principal-private;
+Multica and no-session runs still register without inventing sessions.
 
 If ANX is unreachable, registrations spool under `<state dir>/anx-run-links`
-and retry with backoff. Check and force delivery with:
+and retry with backoff in detached workers on subsequent work. Errors are
+class enums plus numeric codes; dead letters expire after seven days. Check and force delivery with:
 
 ```bash
 agentctl anx status   # pending spool, dead letters with reasons (read-only)

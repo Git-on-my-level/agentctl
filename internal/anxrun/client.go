@@ -3,13 +3,18 @@ package anxrun
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/route"
 )
 
 // CLISender delivers registrations through the configured `anx` executable.
@@ -18,11 +23,8 @@ import (
 // agentctl passes only the explicit workspace alias and optional base
 // URL/config directory from its own reviewed config.
 //
-// Today's public surface (verified against `anx help sessions register` and
-// `anx help work participants register`, 2026-10-24) accepts the native
-// session registration and per-card participation. The run record itself
-// (outcome, links, transcript locator, supersedes) rides in the registration
-// document for the ANX-side runs extension; see docs/design/anx-run-links.md.
+// Sessions and participation are private/session metadata; an idempotent
+// card message carries the public run record until ANX extends /runs.
 type CLISender struct {
 	options CLIOptions
 	// run is injectable for tests; production uses runAnxProcess.
@@ -31,6 +33,7 @@ type CLISender struct {
 
 // CLIOptions configure the anx subprocess.
 type CLIOptions struct {
+	Catalog []route.ModelRecord
 	// Executable defaults to "anx" (resolved on PATH).
 	Executable string
 	// WorkspaceAlias defaults to "anx". Never a hard-coded URL.
@@ -62,21 +65,40 @@ func NewCLISender(options CLIOptions) *CLISender {
 
 // SendError classifies delivery failures for spool retry decisions.
 type SendError struct {
+	NumericCode int
 	// Code is the ANX error code when the CLI reported one.
 	Code string
 	// Fatal marks errors that retrying cannot fix.
 	Fatal bool
 	// Reason is the dead-letter reason when Fatal.
 	Reason string
-	// Detail is a bounded, secret-free description.
+	// Detail is local-only legacy input; never persisted, printed or sent.
 	Detail string
 }
 
 func (e *SendError) Error() string {
-	if e.Code != "" {
-		return fmt.Sprintf("anx delivery failed: %s: %s", e.Code, e.Detail)
+	class, code := ErrorClass(e)
+	return fmt.Sprintf("%s:%d", class, code)
+}
+
+// ErrorClass is the complete diagnostic egress surface: enum + numeric code.
+// Neither subprocess text nor arbitrary ANX code/message strings survive.
+func ErrorClass(err error) (string, int) {
+	var e *SendError
+	if errors.As(err, &e) {
+		class := "anx_unavailable"
+		if e.Code == "protocol_error" {
+			class = "anx_protocol_error"
+		}
+		if e.Fatal {
+			class = classifyDeadReason(e)
+		}
+		return sanitizeReason(class), e.NumericCode
 	}
-	return fmt.Sprintf("anx delivery failed: %s", e.Detail)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "anx_timeout", 0
+	}
+	return "anx_delivery_failed", 0
 }
 
 // Dead-letter reasons surfaced by `agentctl anx status`.
@@ -85,7 +107,6 @@ const (
 	ReasonRejected       = "anx_rejected"
 	ReasonCardUnresolved = "card_unresolved"
 	ReasonConflict       = "anx_conflict"
-	ReasonNoSession      = "no_native_session_binding"
 )
 
 // retryableSendError reports whether a failed delivery should be retried.
@@ -102,7 +123,7 @@ func classifyDeadReason(err error) string {
 	var sendErr *SendError
 	if errors.As(err, &sendErr) {
 		if sendErr.Reason != "" {
-			return sendErr.Reason
+			return sanitizeReason(sendErr.Reason)
 		}
 		if sendErr.Code != "" {
 			return reasonForCode(sendErr.Code)
@@ -111,56 +132,95 @@ func classifyDeadReason(err error) string {
 	return "anx_delivery_failed"
 }
 
-// Send delivers one registration through the anx CLI: the native session
-// registration first, then participation for every resolved card. Delivery is
-// idempotent: ANX upserts on (principal, provider, native session) plus the
-// monotonic sequence carried in the registration.
+// Send succeeds only after ANX acknowledges every required write. Partial
+// delivery is safe to replay; spool deletion is owned by Flush afterwards.
 func (s *CLISender) Send(ctx context.Context, registration Registration) error {
-	if registration.NativeSession == nil {
-		// Nothing on today's public surface is addressable without a native
-		// session; the run-record extension (ANX side) closes this gap.
-		return &SendError{Fatal: true, Reason: ReasonNoSession, Detail: "registration carries no native session binding"}
+	r, err := Allowlisted(registration, s.options.Catalog)
+	if err != nil {
+		return &SendError{Fatal: true, Reason: ReasonRejected}
+	}
+	if len(r.CardRefs) == 0 {
+		return &SendError{Fatal: true, Reason: ReasonCardUnresolved}
 	}
 	activity := "active"
-	if registration.Phase == PhaseTerminal || terminalANXState(registration.State) {
+	if r.Phase == PhaseTerminal || terminalANXState(r.State) {
 		activity = "idle"
 	}
-	sessionBody, err := json.Marshal(map[string]any{
-		"provider":               registration.NativeSession.Provider,
-		"native_session_id":      registration.NativeSession.Fingerprint,
-		"native_session_id_kind": registration.NativeSession.Kind,
-		"activity":               activity,
-		"sequence":               registration.Sequence,
-		"host_scope":             registration.OriginHostID,
-		"capabilities":           map[string]string{"resume": "unknown", "history": "unknown", "logs": "unknown"},
-	})
-	if err != nil {
-		return &SendError{Fatal: true, Reason: ReasonRejected, Detail: "encode sessions body"}
+	// Native session metadata goes only to the principal-private sessions API.
+	// Multica and generic/no-session runs still register their public run record.
+	if r.NativeSession != nil {
+		body, _ := json.Marshal(map[string]any{
+			"provider": r.NativeSession.Provider, "native_session_id": r.NativeSession.Fingerprint,
+			"native_session_id_kind": r.NativeSession.Kind, "activity": activity,
+			"sequence": r.Sequence, "host_scope": r.OriginHostID,
+			"capabilities": map[string]string{"resume": "unknown", "history": "unknown", "logs": "unknown"},
+		})
+		sessionID, err := s.invoke(ctx, "sessions.register", nil, body)
+		if err != nil {
+			return err
+		}
+		if !serverCoordinate.MatchString(sessionID) {
+			return &SendError{Code: "protocol_error"}
+		}
+		for _, card := range r.CardRefs {
+			body, _ := json.Marshal(map[string]any{"activity": activity, "sequence": r.Sequence, "session_id": sessionID})
+			if _, err := s.invoke(ctx, "work.participants.register", map[string]string{"card_ref": card}, body); err != nil {
+				return err
+			}
+		}
 	}
-	sessionID, err := s.invoke(ctx, "sessions.register", nil, sessionBody)
+	identity, err := s.invokeResult(ctx, "agents.me.get", nil, nil)
 	if err != nil {
 		return err
 	}
-	// Participation references the registered session. The response shape is
-	// principal-scoped; fall back to the stable fingerprint identity.
-	if sessionID == "" {
-		sessionID = registration.NativeSession.Fingerprint
+	var me struct {
+		Agent struct {
+			ActorID string `json:"actor_id"`
+		} `json:"agent"`
 	}
-	for _, cardRef := range registration.CardRefs {
-		body, err := json.Marshal(map[string]any{
-			"activity":   activity,
-			"sequence":   registration.Sequence,
-			"session_id": sessionID,
-		})
+	if json.Unmarshal(identity, &me) != nil || !serverCoordinate.MatchString(me.Agent.ActorID) {
+		return &SendError{Code: "protocol_error"}
+	}
+	// A stable structured card message is today's public transport for run
+	// identity/state/outcome/evidence. Native transcript coordinates stay private.
+	r.NativeSession = nil
+	r.BuiltAt = time.Time{}
+	for _, card := range r.CardRefs {
+		result, err := s.invokeResult(ctx, "cards.get", map[string]string{"card_id": card}, nil)
 		if err != nil {
-			return &SendError{Fatal: true, Reason: ReasonRejected, Detail: "encode participants body"}
+			return err
 		}
-		if _, err := s.invoke(ctx, "work.participants.register", map[string]string{"card_ref": cardRef}, body); err != nil {
+		var target struct {
+			Card struct {
+				ThreadID string `json:"thread_id"`
+			} `json:"card"`
+		}
+		if json.Unmarshal(result, &target) != nil || !serverCoordinate.MatchString(target.Card.ThreadID) {
+			return &SendError{Code: "protocol_error"}
+		}
+		text, _ := json.Marshal(r)
+		// Stable across retries/re-enqueues of the same payload, including a
+		// crash after ANX committed but before local acknowledgement.
+		digest := sha256.Sum256(append([]byte(card+"\x00"), text...))
+		body, _ := json.Marshal(map[string]any{
+			"actor_id": me.Agent.ActorID, "request_key": "agentctl-run-" + hex.EncodeToString(digest[:]),
+			"event": map[string]any{
+				"type": "message_posted", "actor_id": me.Agent.ActorID,
+				"thread_id": target.Card.ThreadID, "thread_ref": "thread:" + target.Card.ThreadID,
+				"refs":       []string{card, "thread:" + target.Card.ThreadID},
+				"summary":    r.DurableID + " " + string(r.Phase) + " " + r.State,
+				"payload":    map[string]any{"kind": "card_message", "subject_ref": card, "subject_kind": "card", "text": string(text)},
+				"provenance": map[string]any{"sources": []string{"inferred"}},
+			},
+		})
+		if _, err := s.invokeResult(ctx, "events.create", nil, body); err != nil {
 			return err
 		}
 	}
 	return nil
 }
+
+var serverCoordinate = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 func terminalANXState(state string) bool {
 	switch state {
@@ -173,39 +233,73 @@ func terminalANXState(state string) bool {
 // invoke runs one anx api call with a JSON body on stdin and returns the
 // session id when the response carries one.
 func (s *CLISender) invoke(ctx context.Context, commandID string, params map[string]string, body []byte) (string, error) {
-	argv := []string{s.options.Executable, "--json", "--workspace", s.options.WorkspaceAlias}
-	if s.options.BaseURL != "" {
-		argv = append(argv, "--base-url", s.options.BaseURL)
+	result, err := s.invokeResult(ctx, commandID, params, body)
+	if err != nil {
+		return "", err
 	}
-	if s.options.ConfigDir != "" {
-		argv = append(argv, "--config-dir", s.options.ConfigDir)
+	return sessionIDFromResult(result), nil
+}
+
+func (s *CLISender) invokeResult(ctx context.Context, commandID string, params map[string]string, body []byte) (json.RawMessage, error) {
+	options := s.options.normalized()
+	argv := []string{options.Executable, "--json", "--workspace", options.WorkspaceAlias}
+	if options.BaseURL != "" {
+		argv = append(argv, "--base-url", options.BaseURL)
 	}
-	argv = append(argv, "--timeout", s.options.Timeout.String(), "api", commandID)
+	if options.ConfigDir != "" {
+		argv = append(argv, "--config-dir", options.ConfigDir)
+	}
+	argv = append(argv, "--timeout", options.Timeout.String(), "api", commandID)
 	for _, key := range sortedKeys(params) {
 		argv = append(argv, "--param", key+"="+params[key])
 	}
-	argv = append(argv, "--json-body", "-")
+	if body != nil {
+		argv = append(argv, "--json-body", "-")
+	}
 	run := s.run
 	if run == nil {
 		run = runAnxProcess
 	}
-	ctx, cancel := context.WithTimeout(ctx, s.options.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, options.Timeout)
 	defer cancel()
-	stdout, err := run(ctx, argv, body)
-	if err != nil {
-		var sendErr *SendError
-		if errors.As(err, &sendErr) {
-			return "", sendErr
-		}
-		if errors.Is(err, exec.ErrNotFound) {
-			return "", &SendError{Detail: "anx executable not found on PATH"}
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			return "", &SendError{Detail: "anx invocation timed out"}
-		}
-		return "", &SendError{Detail: boundedString(err.Error(), 200)}
+	stdout, runErr := run(ctx, argv, body)
+	var envelope anxEnvelope
+	parseErr := json.Unmarshal(bytes.TrimSpace(stdout), &envelope)
+	if parseErr == nil && !envelope.OK && envelope.Error != nil {
+		code := envelope.Error.Code
+		return nil, &SendError{Code: knownANXCode(code), Fatal: fatalANXCode(code), Reason: reasonForCode(code), NumericCode: processCode(runErr)}
 	}
-	return parseSessionID(stdout)
+	if runErr != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, context.DeadlineExceeded
+		}
+		return nil, &SendError{NumericCode: processCode(runErr)}
+	}
+	if parseErr != nil || !envelope.OK {
+		return nil, &SendError{Code: "protocol_error"}
+	}
+	return envelope.Result, nil
+}
+
+func processCode(err error) int {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode()
+	}
+	var send *SendError
+	if errors.As(err, &send) {
+		return send.NumericCode
+	}
+	return 0
+}
+
+func knownANXCode(code string) string {
+	switch code {
+	case "auth_required", "invalid_token", "forbidden", "invalid_request", "not_found", "conflict", "host_revoked", "run_identity_conflict", "run_state_regression", "sessions_unavailable", "quota_exceeded":
+		return code
+	default:
+		return "unknown"
+	}
 }
 
 // anxEnvelope is the CLI's --json output envelope.
@@ -216,26 +310,10 @@ type anxEnvelope struct {
 }
 
 type anxError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code string `json:"code"`
 }
 
-// parseSessionID extracts the registered session identity from a successful
-// sessions.register response, tolerating additional fields.
-func parseSessionID(stdout []byte) (string, error) {
-	var envelope anxEnvelope
-	if err := json.Unmarshal(bytes.TrimSpace(stdout), &envelope); err != nil {
-		return "", &SendError{Detail: "anx returned a non-JSON envelope"}
-	}
-	if !envelope.OK {
-		code := ""
-		detail := "anx reported failure"
-		if envelope.Error != nil {
-			code = envelope.Error.Code
-			detail = boundedString(envelope.Error.Message, 200)
-		}
-		return "", &SendError{Code: code, Detail: detail, Fatal: fatalANXCode(code), Reason: reasonForCode(code)}
-	}
+func sessionIDFromResult(raw json.RawMessage) string {
 	var result struct {
 		Session *struct {
 			ID string `json:"id"`
@@ -243,21 +321,21 @@ func parseSessionID(stdout []byte) (string, error) {
 		ID        string `json:"id"`
 		SessionID string `json:"session_id"`
 	}
-	_ = json.Unmarshal(envelope.Result, &result)
+	_ = json.Unmarshal(raw, &result)
 	switch {
 	case result.Session != nil && result.Session.ID != "":
-		return result.Session.ID, nil
+		return result.Session.ID
 	case result.ID != "":
-		return result.ID, nil
+		return result.ID
 	default:
-		return result.SessionID, nil
+		return result.SessionID
 	}
 }
 
 // fatalANXCode reports whether an ANX error code cannot be fixed by retrying.
 func fatalANXCode(code string) bool {
 	switch code {
-	case "auth_required", "invalid_token", "forbidden", "invalid_request", "not_found", "conflict", "host_revoked", "run_identity_conflict":
+	case "auth_required", "invalid_token", "forbidden", "invalid_request", "not_found", "conflict", "host_revoked", "run_identity_conflict", "run_state_regression", "idempotency_conflict":
 		return true
 	}
 	return false
@@ -270,7 +348,7 @@ func reasonForCode(code string) string {
 		return ReasonAuthRequired
 	case "not_found":
 		return ReasonCardUnresolved
-	case "conflict", "run_identity_conflict":
+	case "conflict", "run_identity_conflict", "run_state_regression", "idempotency_conflict":
 		return ReasonConflict
 	default:
 		return ReasonRejected
@@ -290,13 +368,6 @@ func sortedKeys(values map[string]string) []string {
 	return keys
 }
 
-func boundedString(value string, limit int) string {
-	if len(value) <= limit {
-		return value
-	}
-	return value[:limit]
-}
-
 // runAnxProcess executes the anx subprocess with the body on stdin.
 func runAnxProcess(ctx context.Context, argv []string, stdin []byte) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
@@ -305,14 +376,9 @@ func runAnxProcess(ctx context.Context, argv []string, stdin []byte) ([]byte, er
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &bytes.Buffer{}
-	if err := cmd.Run(); err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return nil, ctx.Err()
-		}
-		if errors.Is(err, exec.ErrNotFound) {
-			return nil, err
-		}
-		return stdout.Bytes(), &SendError{Detail: boundedString(fmt.Sprintf("%s exited: %v", argv[0], err), 200)}
+	err := cmd.Run()
+	if ctx.Err() != nil {
+		return stdout.Bytes(), ctx.Err()
 	}
-	return stdout.Bytes(), nil
+	return stdout.Bytes(), err
 }

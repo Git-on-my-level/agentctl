@@ -10,7 +10,7 @@ import (
 // RegistrationSchemaVersion versions the spooled registration document. The
 // ANX-side runs-ingest v2 bridge (design rollout step 4) consumes the same
 // shape when the core run fields land.
-const RegistrationSchemaVersion = 1
+const RegistrationSchemaVersion = 2
 
 // Phase distinguishes the two registration points for one execution.
 type Phase string
@@ -58,17 +58,18 @@ type Registration struct {
 	ExternalID    string `json:"external_id"`
 	OriginHostID  string `json:"origin_host_id"`
 	DurableID     string `json:"durable_id"`
-	// RequestKey is the raw agentctl delegate request key. The registration
-	// attempt is keyed by this plus the durable ID.
-	RequestKey string     `json:"request_key,omitempty"`
-	Adapter    string     `json:"adapter"`
-	Model      string     `json:"model,omitempty"`
-	State      string     `json:"state"`
-	Liveness   string     `json:"liveness"`
-	Labels     []string   `json:"labels"`
-	CardRefs   []string   `json:"card_refs,omitempty"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
-	EndedAt    *time.Time `json:"ended_at,omitempty"`
+	// RequestKey is transient local input, excluded from every JSON encoding.
+	// Enqueue replaces it with a host-keyed HMAC before persistence.
+	RequestKey     string     `json:"-"`
+	RequestKeyHash string     `json:"request_key_hash,omitempty"`
+	Adapter        string     `json:"adapter"`
+	Model          string     `json:"model,omitempty"`
+	State          string     `json:"state"`
+	Liveness       string     `json:"liveness"`
+	Labels         []string   `json:"-"`
+	CardRefs       []string   `json:"card_refs,omitempty"`
+	StartedAt      *time.Time `json:"started_at,omitempty"`
+	EndedAt        *time.Time `json:"ended_at,omitempty"`
 	// ResultCollected mirrors the journal acknowledgement state at build time.
 	ResultCollected bool `json:"result_collected"`
 	// Sequence is the monotonic sessions/participation sequence assigned at
@@ -160,26 +161,23 @@ func BuildStart(execution model.Execution, now time.Time) Registration {
 		OriginHostID:  execution.OriginHostID.String(),
 		DurableID:     fmt.Sprintf("agentctl://%s/%s", execution.OriginHostID, execution.ID),
 		RequestKey:    delegationRequestKey(execution),
-		Adapter:       execution.Adapter,
-		Model:         delegationModel(execution),
+		Adapter:       safeHarness(execution.Adapter),
+		Model:         "other",
 		State:         ANXState(execution.State),
 		Liveness:      ANXLiveness(execution.Liveness),
-		Labels:        append([]string(nil), execution.Labels...),
+
 		CardRefs:      ResolveCards(execution.Labels),
 		StartedAt:     execution.StartedAt,
 		NativeSession: nativeSession(execution),
 		BuiltAt:       now.UTC(),
-	}
-	if registration.Labels == nil {
-		registration.Labels = []string{}
 	}
 	return registration
 }
 
 // BuildTerminal builds the PhaseTerminal registration for one execution and
 // its stored outcome. The outcome is read through the journal's read-only
-// accessor; the availability and failure projection come from it verbatim and
-// the summary passes RedactSummary.
+// accessor. Only allowlisted metadata/evidence and an explicitly opted-in
+// summary block can leave the host.
 func BuildTerminal(execution model.Execution, outcome *model.Outcome, resultCollected bool, now time.Time) Registration {
 	registration := BuildStart(execution, now)
 	registration.Phase = PhaseTerminal
@@ -192,6 +190,8 @@ func BuildTerminal(execution model.Execution, outcome *model.Outcome, resultColl
 	}
 	if outcome != nil {
 		registration.Outcome = ProjectOutcome(*outcome, DefaultSummaryMaxBytes)
+	} else {
+		registration.Outcome = &Outcome{Availability: AvailabilityUnavailableAtSource}
 	}
 	return registration
 }
@@ -199,12 +199,12 @@ func BuildTerminal(execution model.Execution, outcome *model.Outcome, resultColl
 // ProjectOutcome builds the redacted outcome block from a stored journal
 // outcome. Deterministic: the same outcome and bound always project equally.
 func ProjectOutcome(outcome model.Outcome, maxBytes int) *Outcome {
-	projected := &Outcome{Availability: string(outcome.Availability)}
+	projected := &Outcome{Availability: safeAvailability(string(outcome.Availability))}
 	if outcome.Failure != nil {
-		projected.Failure = &FailureProjection{Code: outcome.Failure.Code, Kind: outcome.Failure.Kind, Retryable: outcome.Failure.Retryable}
+		projected.Failure = &FailureProjection{Code: "execution_failed", Retryable: outcome.Failure.Retryable}
 	}
 	if outcome.Content != nil {
-		redacted := RedactSummary(outcome.Content.Text, maxBytes)
+		redacted := MarkedSummary(outcome.Content.Text, maxBytes)
 		projected.Summary = redacted.Summary
 		projected.SummaryOmittedReason = redacted.OmittedReason
 		projected.Links = ExtractLinks(outcome.Content.Text)

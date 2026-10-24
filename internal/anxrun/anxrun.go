@@ -38,14 +38,12 @@ func NativeSessionFingerprint(provider, nativeSessionID string) string {
 }
 
 // CanonicalProvider maps an agentctl adapter name onto the identity-report
-// canonical provider id (claude-code -> claude, generic-process -> generic),
+// canonical provider id (claude-code -> claude),
 // matching the normalization used by `agentctl identity`.
 func CanonicalProvider(adapterName string) string {
 	switch adapterName {
 	case "claude-code":
 		return "claude"
-	case "generic-process":
-		return "generic"
 	default:
 		return adapterName
 	}

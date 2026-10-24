@@ -17,12 +17,12 @@ const cardRefPrefix = "card:"
 
 // cardSlugPattern bounds the card slug carried in an anx.card.<slug> label.
 // It accepts the same character class as agentctl execution labels.
-var cardSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,127}$`)
+var cardSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 // ParseCardSlug validates one card slug (without prefix).
 func ParseCardSlug(slug string) error {
-	if !cardSlugPattern.MatchString(slug) {
-		return fmt.Errorf("card slug must match ^[a-z0-9][a-z0-9_.-]{0,127}$")
+	if !cardSlugPattern.MatchString(slug) || sensitiveText(slug) {
+		return fmt.Errorf("card slug must be 1-64 lowercase letters, digits or hyphens without credential shapes")
 	}
 	return nil
 }
