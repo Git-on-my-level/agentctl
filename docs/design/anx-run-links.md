@@ -1,6 +1,7 @@
 # Design: link agentctl runs to ANX cards with durable IDs
 
-Status: draft (2026-10-24). No implementation yet.
+Status: design v2 (2026-10-24). Rollout step 3 (agentctl run registration)
+is implemented in this repository; steps 1–2 and 4–6 remain planned.
 
 ## Problem
 
@@ -119,11 +120,19 @@ working; `host_id` there remains the *ANX-enrolled* host while
 Transcripts are keyed by native session, not execution, because one native
 session spans follow-up turns and may pre/post-date any single execution. The
 key is the `agentctl identity` v1 correlator, which ANX's sessions API already
-types as `native_session_id_kind: provider_session_sha256`:
+types as `native_session_id_kind: provider_session_sha256`. The formula appends
+a NUL byte after **every** component, including the final native session ID —
+exactly as `internal/adapter/types.go`'s `Fingerprint` and
+[identity](../identity.md) define it:
 
 ```text
-sha256("agentctl.identity.v1\0" || "native_session\0" || provider || 0x00 || native_session_id)
+sha256("agentctl.identity.v1\0" || "native_session\0" || provider || 0x00 || native_session_id || 0x00)
 ```
+
+Implementations must not re-derive this formula; they call
+`adapter.Fingerprint("agentctl.identity.v1", "native_session", provider,
+native_session_id)` so the backup index and `agentctl identity` can never
+diverge.
 
 `provider` uses the identity-report canonical provider id (`claude`, `codex`,
 `hermes`, `zcode`); the backup index maps its harness names onto the same ids.
@@ -241,6 +250,13 @@ Labels stay the operator-facing, typed, LLM-friendly contract; directory
 bindings are fallback convenience. Nothing here authorizes mutation: card
 links are metadata.
 
+Implementation note for step 3 (this repo): agentctl implements precedence 1
+(`--anx-card` sugar on `delegate`/`run`, recorded as the label) and 2 (labels).
+Precedence 3 (directory/session bindings) lives in ANX's own integration
+config, which agentctl must not read; the ANX-side helper resolves it, exactly
+as written above. Precedence 4's `run_links.register_unlabeled` is agentctl's
+`anx.run_links.default: "all"`.
+
 ## Flows
 
 ### Start
@@ -254,11 +270,17 @@ Registration happens off the critical path: launch never waits on ANX.
 
 ### Finish
 
-At terminal the helper reads the local journal (`agentctl status`/`result`,
-exactly as `anx runs ingest` does today) and upserts the terminal record:
-state, times, failure projection, redacted summary, links, `head_after`,
-`native_session.fingerprint`, `supersedes_external_id`, and — if the backup
-index is reachable — `transcript`. Because the backup runs daily, the
+At terminal the helper reads the local journal through a **non-acknowledging**
+path and upserts the terminal record: state, times, failure projection,
+redacted summary, links, `head_after`, `native_session.fingerprint`,
+`supersedes_external_id`, and — if the backup index is reachable —
+`transcript`. It reads the execution envelope and stored outcome through the
+journal's read-only outcome accessor (`GetOutcome` over a read-only journal
+handle), never through `agentctl result` or `agentctl await`: a successful
+dereference of those commands acknowledges collection and would hide the
+terminal work from the parent's inbox (`recent --unreconciled`). A background
+helper must never acknowledge collection; acknowledgement semantics stay with
+the parent's explicit `result`/`await` call. Because the backup runs daily, the
 transcript locator is normally confirmed the next day by a reconcile pass
 that re-checks the index for fingerprints still `pending`; `status` stays
 honest (`pending`, not guessed) until then.
