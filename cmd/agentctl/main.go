@@ -1520,6 +1520,10 @@ func attentionAuthorityWarning(e model.Execution) output.Warning {
 	if e.SourceState != nil && *e.SourceState != "" {
 		details["source_state"] = *e.SourceState
 	}
+	if nativeApprovalAttention(e) {
+		details["diagnostic_code"] = "native_approval_required"
+		details["repair_action"] = "Cancel this execution, review the native permission policy, then retry with a new request key. No unattended approval channel is available."
+	}
 	message := "the native session for this execution requires a human decision; agentctl cannot answer a permission, approval, authentication, or input prompt on its behalf"
 	if e.Authority == model.AuthorityMultica {
 		message = "the bound Multica issue requires a human decision; agentctl observes the attention but never decides it"
@@ -1542,9 +1546,16 @@ func attentionDecisionPrecondition(e model.Execution) string {
 	return "resolve the attention in the native session; this wait does not decide it"
 }
 
-// attentionNextActions are the escapes from an attention stop: read-only
-// evidence, a read-only re-check, and the explicit wait that continues through
-// attention. None of them returns attention_required again.
+func nativeApprovalAttention(e model.Execution) bool {
+	if e.Authority != model.AuthorityNative || e.State != model.StateAttention || e.SourceState == nil {
+		return false
+	}
+	state := strings.ToLower(*e.SourceState)
+	return strings.Contains(state, "approval") || strings.Contains(state, "permission")
+}
+
+// attentionNextActions keeps native approval repair explicit; other attention
+// states can be observed again after the authority decides.
 func attentionNextActions(mode output.Mode, e model.Execution) []output.NextAction {
 	if e.NativeRecoveryParked() {
 		return []output.NextAction{
@@ -1556,6 +1567,12 @@ func attentionNextActions(mode output.Mode, e model.Execution) []output.NextActi
 	argv := []string{"agentctl", "await", e.ID.String(), "--output", string(mode), "--no-timeout", "--ignore-attention"}
 	if e.DeadlineAt != nil {
 		argv = []string{"agentctl", "await", e.ID.String(), "--output", string(mode), "--through-execution-deadline", "--ignore-attention"}
+	}
+	if nativeApprovalAttention(e) {
+		return []output.NextAction{
+			{Label: "Read the native approval evidence", Argv: []string{"agentctl", "events", e.ID.String(), "--output", string(mode), "--kind", "attention"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}},
+			{Label: "Cancel the parked run; review permission policy before retrying with a new request key", Argv: []string{"agentctl", "cancel", e.ID.String()}, Mutates: true, SideEffectClass: output.ExternalSideEffect, Preconditions: []string{"caller chooses to abandon this parked native turn"}},
+		}
 	}
 	return []output.NextAction{
 		{Label: "Read the attention evidence", Argv: []string{"agentctl", "events", e.ID.String(), "--output", string(mode), "--kind", "attention"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}},

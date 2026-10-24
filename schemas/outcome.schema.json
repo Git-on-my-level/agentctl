@@ -47,7 +47,7 @@
             "stderr": {
               "type": "object", "additionalProperties": false, "required": ["code", "hash", "bytes"],
               "properties": {
-                "code": {"enum": ["unclassified", "provider_capacity", "workspace_trust_required", "authentication_required", "approval_required", "quota_exceeded", "model_not_found", "executable_not_found", "permission_denied", "network", "invalid_arguments"]},
+                "code": {"enum": ["unclassified", "codex_git_repo_check_required", "provider_capacity", "workspace_trust_required", "authentication_required", "approval_required", "quota_exceeded", "model_not_found", "executable_not_found", "permission_denied", "network", "invalid_arguments"]},
                 "hash": {"type": "string", "pattern": "^sha256:[a-f0-9]{24}$"},
                 "bytes": {"type": "integer", "minimum": 1, "maximum": 8388608}
               }

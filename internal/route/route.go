@@ -24,6 +24,8 @@ func AdapterForModelFamily(family string) (string, error) {
 		return "omp", nil
 	case "openclaw":
 		return "openclaw", nil
+	case "hermes":
+		return "hermes", nil
 	case "opencode":
 		return "opencode", nil
 	case "zcode":

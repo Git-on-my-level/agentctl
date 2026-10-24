@@ -25,10 +25,10 @@ func buildCodex(executable, model, speed, effort, access string, grant bool) (Re
 		argv = append(argv, "-c", codexConfigOverride("model_reasoning_effort", effort))
 	}
 	if access == AccessReadOnly {
-		argv = append(argv, "--sandbox", "read-only")
+		argv = append(argv, "--sandbox", "read-only", "-c", codexConfigOverride("approval_policy", "never"))
 	} else if applyCodingPermissions(access, grant) {
 		argv = append(argv, "--dangerously-bypass-approvals-and-sandbox")
 	}
-	argv = append(argv, "-")
+	argv = append(argv, "--skip-git-repo-check", "-")
 	return Recipe{Argv: argv, PromptDelivery: PromptDeliveryStdin}, nil
 }

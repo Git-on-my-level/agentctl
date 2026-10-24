@@ -598,3 +598,27 @@ native always-ask checks (verified in 0.16.9); it reports `permissions: constrai
 regardless of the coding grant. The label does not change its argv or assert
 sandbox isolation. OMP remains an expert compatibility adapter; current host
 preferences, rather than its presence in the adapter inventory, decide routing.
+
+## Unattended launch audit and Hermes
+
+Codex delegate recipes add `--skip-git-repo-check`; read_only also adds
+`-c approval_policy="never"` so denied tools return inside the native turn.
+Older/expert trust failures report `codex_git_repo_check_required`.
+Native approval/permission attention carries a diagnostic and repair action:
+inspect attention evidence, cancel the parked run if appropriate, review native
+policy, and retry with a new request key. Waiting cannot approve a native prompt.
+Claude auto and ZCode yolo retain native checks; their complete headless approval
+behavior is unknown. Do not infer broader grants from their permission labels.
+
+Configured Hermes preferences support exact models (for example
+`{"harness":"hermes","model":"glm-5.3-flash"}`). The recipe uses
+`hermes chat --format stream-json --model MODEL --query-file -` with managed
+stdin closed after the query. Reasoning maps to `--reasoning`; service speed
+and read_only are refused. The coding grant adds `--yolo`, with permissions
+still constrained. Only successful terminal `result.text` is an answer;
+text deltas, tool output, stderr and late failed process exits are not answers.
+Continuation uses `--resume` without model, reasoning, yolo or other creation
+overrides. Provider-backed success and resume are not verified on the audit host;
+resume is degraded and interrupt steering unavailable. Do not add `--run-budget`
+from help alone: the installed gateway rejected it. `recent --summary` includes
+`by_model` from recorded resolved models, with `unknown` otherwise.

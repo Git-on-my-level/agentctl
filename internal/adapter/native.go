@@ -311,8 +311,30 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 	p.ingestObservationLocked(obs)
 }
 
+func nativePolicyFamily(name string) bool {
+	switch name {
+	case "codex", "cursor", "claude-code", "omp", "openclaw", "opencode", "zcode", "devin", "hermes", "generic-process":
+		return true
+	default:
+		return false
+	}
+}
+
 // ingestObservationLocked is ingestObservation for a caller holding p.mu.
 func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
+	if nativePolicyFamily(p.ref.Adapter) && obs.State == StateAttention {
+		kind, _ := obs.Data["attention_kind"].(string)
+		if kind == "approval" || kind == "permission" {
+			if obs.Data == nil {
+				obs.Data = map[string]any{}
+			}
+			if _, exists := obs.Data["diagnostic_code"]; !exists {
+				obs.Data["diagnostic_code"] = "native_approval_required"
+			}
+			obs.Data["repair_action"] = "Native permission policy needs intervention: cancel this execution, review the harness policy, then retry with a new request key; agentctl cannot approve a parked native prompt."
+		}
+	}
+
 	if obs.SessionID != "" {
 		// The session id replaces the launch binding's opaque id. The PID
 		// recorded on launchIdentity stays the process the launcher started,
@@ -500,9 +522,9 @@ func (p *processRecord) finish(err error) {
 		}
 		p.exitCode = &code
 	}
-	// OpenClaw may print a JSON answer before a later local-run failure. The
+	// One-shot adapters may print a JSON answer before a later process failure. The
 	// owned process exit is authoritative for this one-shot command.
-	if p.parser != nil && p.parser.Name() == "openclaw-json" && p.result != nil {
+	if p.parser != nil && (p.parser.Name() == "openclaw-json" || p.parser.Name() == "hermes-stream-json") && p.result != nil {
 		p.result.ExitCode = p.exitCode
 		if p.cancelled || (p.exitCode != nil && *p.exitCode != 0) {
 			p.result.Success = false
@@ -516,7 +538,7 @@ func (p *processRecord) finish(err error) {
 				p.result.Error = "native process cancelled"
 			} else {
 				p.result.State = StateFailed
-				p.result.Error = firstNonEmpty(p.stderrDiagnostic.Message(), p.result.Error, "OpenClaw agent exited unsuccessfully")
+				p.result.Error = firstNonEmpty(p.stderrDiagnostic.Message(), p.result.Error, "native agent exited unsuccessfully")
 			}
 		}
 	}

@@ -398,13 +398,25 @@ authentication; a local run can fail with an OAuth refresh error.
   `orphaned` and `result_extraction_failed`, with empty stored content. A
   non-zero exit is `failed` and `native_execution_failed`; unstructured stdout
   is not stored.
-- `hermes -z` follows that second pattern. Its oneshot mode prints a plain
-  final answer and exits 0 when the turn produced text, 1 when it completed
-  without text, 2 when the turn failed, and 130 when interrupted. It does not
-  emit the terminal JSON record this adapter requires. A report file the
-  process writes on disk is outside the result contract, so agentctl cannot
-  know that the work succeeded. Exit 0 therefore stays `orphaned`; a non-zero
-  exit stays `failed` with no stored content.
+- Legacy Hermes plain-text launches through this generic adapter cannot prove an
+  answer. Use the reviewed `hermes` adapter and `chat --format stream-json`
+  with a managed stdin query instead.
+
+### Hermes
+
+The native adapter uses JSONL from `hermes chat --format stream-json
+--query-file -`. Stdin reaches EOF after one UTF-8 query. Only terminal
+`result.text` with explicit zero `exit_code`, no error, and process exit 0
+becomes a stored answer. Deltas, tool results, stderr and incomplete output
+never count. The real gateway failure fixture pins the observed event shape;
+success records are synthesized from the inspected installed emitter contract.
+The exact configured model is passed through; `--reasoning` is optional, and
+`--yolo` requires the coding grant and still reports constrained permissions.
+Read-only access and explicit service speed fail closed. Native continuation
+strips creation overrides and passes `--resume` only with transport/query flags.
+It is degraded because provider-backed continuation is not verified on the audit
+host. Interrupt steering is unavailable. See the [approval audit](unattended-approvals.md)
+for evidence and limitations.
 
 ## Adapter manifests
 

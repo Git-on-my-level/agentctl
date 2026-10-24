@@ -261,11 +261,7 @@ func doctorAdapterSelection(explicit, configured, detected []string) []string {
 		return uniqueAdapterNames(explicit)
 	}
 	selected := append([]string(nil), configured...)
-	for _, name := range detected {
-		if name != "hermes" {
-			selected = append(selected, name)
-		}
-	}
+	selected = append(selected, detected...)
 	return uniqueAdapterNames(selected)
 }
 

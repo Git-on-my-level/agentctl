@@ -333,6 +333,9 @@ func (c *devinACP) serve(p *processRecord, stdout io.Reader) {
 // ValidateInvocationPrompt runs before native probing, journaling, or exec.
 // ACP text must retain exactly the bytes admitted by the caller's digest.
 func ValidateInvocationPrompt(adapterName string, argv []string, delivery string, prompt []byte) error {
+	if adapterName == "hermes" {
+		return validateHermesPrompt(delivery, prompt)
+	}
 	if adapterName != "devin" || !isDevinACP(argv) {
 		return nil
 	}

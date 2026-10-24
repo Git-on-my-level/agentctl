@@ -57,6 +57,7 @@ sessions.
 | Codex | `codex` |
 | Cursor | `cursor-agent` |
 | Devin | `devin` |
+| Hermes | `hermes` |
 | ZCode | `zcode` |
 | OMP | `omp` |
 | OpenClaw | `openclaw` |

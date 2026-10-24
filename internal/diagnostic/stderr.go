@@ -34,17 +34,18 @@ func NetworkFailure(message string) bool {
 }
 
 var messages = map[string]string{
-	"unclassified":             "native execution failed",
-	"provider_capacity":        "Selected model is at capacity. Please try a different model.",
-	"workspace_trust_required": "workspace trust required",
-	"authentication_required":  "authentication required",
-	"approval_required":        "approval required",
-	"quota_exceeded":           "quota or rate limit exceeded",
-	"model_not_found":          "model not found",
-	"executable_not_found":     "executable not found",
-	"permission_denied":        "permission denied",
-	"network":                  "network connection failed",
-	"invalid_arguments":        "invalid native command arguments",
+	"codex_git_repo_check_required": "Codex requires a trusted Git directory; add --skip-git-repo-check or use the current delegate recipe",
+	"unclassified":                  "native execution failed",
+	"provider_capacity":             "Selected model is at capacity. Please try a different model.",
+	"workspace_trust_required":      "workspace trust required",
+	"authentication_required":       "authentication required",
+	"approval_required":             "approval required",
+	"quota_exceeded":                "quota or rate limit exceeded",
+	"model_not_found":               "model not found",
+	"executable_not_found":          "executable not found",
+	"permission_denied":             "permission denied",
+	"network":                       "network connection failed",
+	"invalid_arguments":             "invalid native command arguments",
 }
 
 // FromStderrLine examines at most 4096 bytes for a fixed allow-listed pattern
@@ -69,6 +70,8 @@ func FromStderrLine(line []byte, harnesses ...string) *Stderr {
 		code = "authentication_required"
 	case harness == "codex" && len(line) <= 4096 && IsCodexCapacity(string(line)):
 		code = "provider_capacity"
+	case harness == "codex" && strings.TrimSpace(string(line)) == "Not inside a trusted directory and --skip-git-repo-check was not specified.":
+		code = "codex_git_repo_check_required"
 	case strings.Contains(text, "workspace") && strings.Contains(text, "trust"):
 		code = "workspace_trust_required"
 	case containsAny(text, "permission denied", "operation not permitted", "access is denied"):
