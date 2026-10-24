@@ -27,6 +27,12 @@ func AuthenticationRequired(message string) bool {
 
 var hashPattern = regexp.MustCompile(`^sha256:[a-f0-9]{24}$`)
 
+// NetworkFailure requires an explicit transport failure, not a generic provider
+// error or bare HTTP status. Authentication classification must run first.
+func NetworkFailure(message string) bool {
+	return containsAny(strings.ToLower(message), "network connection failed", "connection refused", "connection reset", "network is unreachable", "no such host", "temporary failure in name resolution", "tls handshake timeout", "i/o timeout", "econnreset", "econnrefused", "enotfound", "eai_again", "connect etimedout", "connection timed out", "error sending request for url")
+}
+
 var messages = map[string]string{
 	"unclassified":             "native execution failed",
 	"provider_capacity":        "Selected model is at capacity. Please try a different model.",
@@ -71,7 +77,7 @@ func FromStderrLine(line []byte, harnesses ...string) *Stderr {
 		code = "model_not_found"
 	case containsAny(text, "command not found", "executable file not found", "no such file or directory"):
 		code = "executable_not_found"
-	case containsAny(text, "connection refused", "connection reset", "network is unreachable", "no such host", "temporary failure in name resolution", "tls handshake timeout", "i/o timeout"):
+	case NetworkFailure(text):
 		code = "network"
 	case containsAny(text, "unknown flag", "unknown option", "unexpected argument", "unrecognized option"):
 		code = "invalid_arguments"

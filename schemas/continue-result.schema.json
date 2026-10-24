@@ -16,7 +16,7 @@
   "properties": {
     "continues": {
       "type": "string",
-      "description": "The completed source execution, for native resume or an explicit carry-forward round."
+      "description": "The source execution: completed for carry-forward; completed, verified failed, or checkpointed parked for a supported native recovery route."
     },
     "resolved": {
       "$ref": "delegate-result.schema.json#/properties/resolved"

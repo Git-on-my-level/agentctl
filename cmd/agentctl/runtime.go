@@ -39,6 +39,7 @@ type runOptions struct {
 	admit                                    func(model.Execution) *output.Error
 	mutationOverride                         *contracts.MutationKey
 	preparedPrompt                           *promptPayload
+	resumeSession                            string
 	admissionReused                          *bool
 	admissionRecorded                        *bool
 	started                                  func(model.Execution, bool)
@@ -168,6 +169,9 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	probe, err := probeVersion(operationCtx, runtime, adapter.ProbeRequest{Executable: opts.argv[0], Argv: opts.argv, PromptDelivery: promptDelivery, PromptArgs: promptArgs, PromptBytes: len(promptBytes), Profile: profileName})
 	if err != nil {
 		return mapAdapterError("adapter probe failed", err)
+	}
+	if runtime.Name() == "zcode" && containsArg(opts.argv, "--resume") && probe.BackendVersion != "0.17.0" {
+		return output.NewError(output.CodeCapabilityUnavailable, "ZCode session continuation is verified only for CLI 0.17.0", false).WithDetail("diagnostic_code", "continue_zcode_version_unverified")
 	}
 	if problem := requireRunCapability(probe, adapter.CapabilityLaunch); problem != nil {
 		return problem.WithDetail("adapter", runtime.Name())
@@ -333,6 +337,14 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		writeJournal.Close()
 		return mapStoreError("record launched execution", err)
 	}
+	if opts.resumeSession != "" && nativeSessionID(execution) == "" {
+		recordNativeSession(&execution, adapter.SourceRef{OpaqueID: opts.resumeSession})
+		execution, err = writeJournal.UpdateExecution(context.Background(), execution, execution.Revision)
+		if err != nil {
+			writeJournal.Close()
+			return mapStoreError("record resumed native session", err)
+		}
+	}
 	if err := appendSynthetic(context.Background(), writeJournal, execution, model.EventStarted, execution.State, map[string]any{"accepted": true}, "launch"); err != nil {
 		writeJournal.Close()
 		return mapStoreError("record started event", err)
@@ -412,6 +424,16 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			writeJournal, current, openProblem = a.openExecutionWriteOwned(c, execution.ID)
 			if openProblem != nil {
 				return openProblem
+			}
+			if launchCtx.Err() == nil {
+				parked, didPark, parkErr := a.parkNativeFailure(writeJournal, current, result)
+				if parkErr != nil || didPark {
+					writeJournal.Close()
+					if parkErr != nil {
+						return mapStoreError("park native transient failure", parkErr)
+					}
+					return writeExecution(renderer, parked, "run")
+				}
 			}
 			execution, err = finalizeResultConverging(context.Background(), writeJournal, current, result, a.now().UTC(), opts.noStoreResult)
 			writeJournal.Close()
@@ -1253,6 +1275,34 @@ func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c comm
 	if execution.State.Terminal() {
 		return output.NewError(output.CodeInvalidState, "terminal execution cannot be cancelled", false).WithDetail("execution_id", id.String()).WithDetail("state", execution.State)
 	}
+	if execution.NativeRecoveryParked() {
+		journal, problem = a.openWrite(c)
+		if problem != nil {
+			return problem
+		}
+		defer journal.Close()
+		current, err := journal.GetExecution(ctx, id)
+		if err != nil {
+			return mapStoreError("reread parked execution", err)
+		}
+		all, err := journal.ListExecutions(ctx, false)
+		if err != nil {
+			return mapStoreError("read parked lineage", err)
+		}
+		if !current.NativeRecoveryParked() {
+			return output.NewError(output.CodeConflict, "parked execution changed before cancellation", false)
+		}
+		for _, relative := range continuationSuccessors(all, continuationRoot(all, current)) {
+			if relative.ID != id && !relative.State.Terminal() && !relative.NativeRecoveryParked() && !refusedAdmission(relative) {
+				return output.NewError(output.CodeConflict, "a native recovery turn is active; cancel that turn instead", false).WithDetail("running_execution_id", relative.ID.String())
+			}
+		}
+		cancelled, err := commitCancellation(ctx, journal, current, a.now().UTC())
+		if err != nil {
+			return mapStoreError("cancel parked execution", err)
+		}
+		return writeExecution(renderer, cancelled, "cancel")
+	}
 	if execution.Authority == model.AuthorityMultica {
 		return a.cancelMulticaForward(ctx, renderer, c, execution, id)
 	}
@@ -1842,7 +1892,7 @@ func classifyOutcomeFailure(message, diagnosticCode, nativeCode, harness, provid
 		return "executable_not_found", "configuration", "", false
 	case strings.Contains(lower, "permission denied"):
 		return "permission_denied", "permission", "", false
-	case strings.Contains(lower, "network connection failed"):
+	case diagnostic.NetworkFailure(message):
 		return "network", "network", "", true
 	case strings.Contains(lower, "invalid native command arguments"):
 		return "invalid_arguments", "configuration", "", false

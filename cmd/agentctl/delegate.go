@@ -624,8 +624,13 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 }
 
 func delegateExecutionError(code output.Code, message string, execution model.Execution) *output.Error {
-	return delegateError(code, "delegate_"+string(code), message).WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State).
+	problem := delegateError(code, "delegate_"+string(code), message).WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State).
 		WithActions(output.NextAction{Label: "Inspect execution", Argv: []string{"agentctl", "status", execution.ID.String()}, SideEffectClass: output.ReadOnly})
+	if execution.NativeRecoveryParked() {
+		problem.Retryable = true
+		problem.WithDetail("recovery_state", *execution.SourceState).WithActions(output.NextAction{Label: "Plan recovery of the parked native session", Argv: []string{"agentctl", "continue", execution.ID.String(), "--request-key", "<new-key>", "--prompt-file", "<recovery-instruction>", "--plan"}, SideEffectClass: output.ReadOnly, Preconditions: []string{"requires a recorded session and verified failed-turn resume route; reconcile prior tool effects in the recovery instruction"}})
+	}
+	return problem
 }
 
 func (a *app) delegateFailedExecution(ctx context.Context, c common, execution model.Execution) *output.Error {

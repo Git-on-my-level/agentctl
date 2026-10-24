@@ -70,7 +70,7 @@ func TestCarryForwardRoundsFrozenRecipeLineageAndPrivacy(t *testing.T) {
 				t.Fatalf("delegate %d %s", code, out)
 			}
 			first := resultID(t, out)
-			if harness != "cursor" {
+			if harness == "openclaw" {
 				code, refused := f.command(t, "feedback-private-token", "continue", first, "--request-key", "r2", "--prompt-stdin")
 				if code != 5 || !strings.Contains(refused, "continue_route_unavailable") {
 					t.Fatalf("native refusal %d %s", code, refused)

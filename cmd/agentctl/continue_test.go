@@ -271,7 +271,7 @@ func TestContinueRejectsSourcesItCannotContinue(t *testing.T) {
 		t.Fatalf("failed delegate output=%s", out)
 	}
 	code, refused := failed.command(t, "feedback", "continue", doc.Error.Details.ExecutionID, "--request-key", "k", "--prompt-stdin")
-	if code == 0 || !strings.Contains(refused, "continue_source_not_completed") || failed.launches(t) != 1 {
+	if code == 0 || !strings.Contains(refused, "continue_route_unavailable") || failed.launches(t) != 1 {
 		t.Fatalf("failed source exit=%d output=%s", code, refused)
 	}
 

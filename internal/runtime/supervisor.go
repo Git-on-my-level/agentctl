@@ -34,6 +34,9 @@ func (b SupervisorExecutions) ListNonTerminal(ctx context.Context) ([]supervisor
 	}
 	result := make([]supervisor.Execution, 0, len(values))
 	for _, value := range values {
+		if value.NativeRecoveryParked() {
+			continue
+		}
 		result = append(result, supervisor.Execution{ID: value.ID.String(), State: string(value.State), Liveness: string(value.Liveness), Revision: value.Revision, UpdatedAt: value.UpdatedAt})
 	}
 	return result, nil
@@ -55,6 +58,9 @@ func (b SupervisorExecutions) Reprobe(ctx context.Context, minimal supervisor.Ex
 	execution, value, _, ref, err := b.Engine.resolveExecution(ctx, id)
 	if err != nil {
 		return supervisor.ProbeResult{}, err
+	}
+	if execution.NativeRecoveryParked() {
+		return supervisor.ProbeResult{State: string(execution.State), Liveness: string(execution.Liveness), Revision: execution.Revision, ObservedAt: execution.Observation.ObservedAt, Source: string(execution.Observation.Source)}, nil
 	}
 	now := b.Engine.now()
 	if activeNativeRunnerLease(execution, now) {

@@ -316,12 +316,26 @@ agentctl continue <exec-id> --request-key <new-key> --prompt-file "$PWD/feedback
 The native CLI resumes its own session, so the agent keeps the conversation;
 do not restate the whole task. Each turn is a new execution: retain its ID and
 continue from the latest completed turn. It reuses the original delegate's
-recipe, permissions, and working directory. Only a completed delegated
-execution can be continued; a refusal names the reason. Do not hand-write a
+recipe, permissions, and working directory. Native mode also accepts verified
+failed or parked delegated turns with a recorded session and a verified
+failed-turn persistence route; a refusal names the reason. Do not hand-write a
 native resume argv through expert `run` when `continue` is available, and never
 look up a native session id yourself. Use one new request key per turn; a retry
 with the same key and prompt recovers that turn, or launches it if the first
 attempt was refused because another turn was running.
+
+Delegated Codex/ZCode network or explicit provider-capacity failures with a
+recorded native checkpoint park as `attention`/`blocked`, with source state
+`paused_network` or `paused_capacity`, after the child exits. `delegate --wait`
+exits 10 with `retryable=true`; same-key replay returns the pause without
+relaunching. Inspect events, reconcile already-applied tool effects, then plan
+`continue` from the latest parked turn with a new key and recovery instruction.
+There is no automatic prompt/tool replay or provider switch. Missing checkpoints,
+unknown errors, authentication and quota failures are not parked. Cancel can
+close an idle parked execution locally. ZCode coding-session continuation is
+verified only for CLI 0.17.0; its disposable read_only session storage cannot
+resume. ZCode process-interruption steering remains unavailable. Carry-forward
+still requires a completed turn with a verified stored answer.
 
 For a harness with no verified resume route, choose an explicit carry-forward
 round. The same choice is available for resumable harnesses when a fresh session
