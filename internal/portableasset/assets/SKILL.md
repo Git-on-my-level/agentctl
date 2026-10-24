@@ -643,8 +643,9 @@ Run-link fields require generated provenance, catalog membership or an
 authoritative source. Free-text summaries, JSON result lines and result-text
 evidence extraction are absent. Only explicit typed outcome evidence is
 eligible; current adapters do not emit it. PR/issue repositories must match
-configured `anx.run_links.allowed_orgs` or the exact GitHub origin of the run's
-working directory. Numbers must be positive; commits are 40-hex SHAs.
+a non-empty configured `anx.run_links.allowed_orgs` and the exact GitHub
+origin of the run's working directory. Empty allowlists send no repository
+evidence; origin never authorizes an owner. Numbers must be positive; commits are 40-hex SHAs.
 
 Card labels stay local. The outbox contains no candidate refs. Delivery first
 fetches the selected ANX workspace's canonical card catalog, without sending
@@ -660,7 +661,7 @@ and retry with backoff in detached workers on subsequent work. Errors are
 class enums plus numeric codes; dead letters expire after seven days. Check and force delivery with:
 
 ```bash
-agentctl anx status   # pending spool, dead letters with reasons (read-only)
+agentctl anx status   # safe workspace alias, spool presence/counts (read-only)
 agentctl anx flush    # retry delivery now
 ```
 

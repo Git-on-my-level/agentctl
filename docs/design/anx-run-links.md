@@ -1,6 +1,6 @@
 # Design: link agentctl runs to ANX cards with durable IDs
 
-Status: design v5 (2026-10-24). Rollout step 3 (agentctl run registration)
+Status: design v6 (2026-10-24). Rollout step 3 (agentctl run registration)
 is implemented in this repository; steps 1–2 and 4–6 remain planned.
 
 ## Problem
@@ -377,16 +377,23 @@ enum outcomes until an explicit structured producer supplies evidence. This
 version makes no adapter capability claim for extracting PR/issue evidence.
 
 - PRs/issues carry `kind`, `owner`, `repo`, `number`. Owner/repo must match
-  `anx.run_links.allowed_orgs` (exact configured owner), or the exact owner
-  **and** repository of the run's CWD `origin` remote. The latter is read only
+  a **non-empty** `anx.run_links.allowed_orgs` (exact configured owner) **and**
+  the exact owner/repository of the run's CWD `origin` remote. An empty list
+  disables all PR/issue repository evidence; origin alone grants no authority.
+  Origin selects the repository only within an allowed org. It is read only
   with `git config --local --no-includes --get remote.origin.url`; this runs
-  no SSH, hooks or network and sends no local path. Missing or invalid origin
+  no SSH, hooks or network and sends no local path. All inherited `GIT_*`
+  environment entries are removed before this lookup, including repository,
+  worktree, common-dir, index, config injection and discovery overrides. Only
+  explicit read-only Git defaults are added. Missing or invalid origin
   grants nothing. HTTPS and GitHub SSH-form remotes are parsed locally;
   credentials, ports, query strings and extra paths are rejected.
 - GitHub owner grammar is 1–39 ASCII alphanumerics with single interior
   hyphens; repo grammar is 1–100 ASCII alphanumerics, `.`, `_`, `-`, excluding
-  dot paths and `.git`/`.wiki` suffixes. Reject IP literals/substrings and
-  Tailnet/`.ts.net`/`.local` host coordinates even under an allowed org.
+  dot paths and `.git`/`.wiki` suffixes. Reject every IPv4-like run of four
+  or more dotted decimal groups anywhere in a name, without parsing octets:
+  `999.100.101.102.103` cannot mask a later address. Also reject IP literals
+  and Tailnet/`.ts.net`/`.local` host coordinates even under an allowed org.
 - PR/issue numbers are positive integers ≤2147483647. Commits are typed
   40-hex SHAs, normalized to lowercase. At most eight evidence entries.
   ANX reconstructs any display URLs; no evidence URL is transmitted.
@@ -412,6 +419,11 @@ length, 1003 format, 1004 missing authority. Required identity rejection drops
 the registration and writes a bounded value-free `{class: egress_rejected,
 code: <number>}` receipt. Spool and status errors are closed class enums plus
 numeric codes, never upstream messages, paths, prompts or result text.
+`agentctl anx status` shows a workspace alias only if it passes the same
+1–64 lowercase-alphanumeric/hyphen grammar and secret check as delivery;
+otherwise it shows `[redacted]`. Its `spool` field is only `present` or
+`absent`, with `pending_count` and `dead_letter_count`; no configured path
+is printed in JSON or text. Status remains read-only.
 
 ### Current delivery transport and ANX-side gaps
 
@@ -424,8 +436,10 @@ passes; enqueue never waits on ANX. A contending worker waits for the flush
 lock, then takes a fresh snapshot, so a terminal enqueue after the owner
 snapshot cannot lose its wakeup. Lock waiting is separate from each ANX call
 timeout and respects cancellation. Each ANX subprocess gets a separate process
-group. Cancellation/timeout kills that group, and inherited stdout/stderr
-draining has a 250 ms deadline. Flush releases its lock immediately after canceled cleanup, before any
+group. Every exit (success, error or cancellation/timeout) terminates the
+owned group, including descendants left after the parent has exited.
+Inherited stdout/stderr draining has a 250 ms deadline before final group
+cleanup; cancellation/timeout kills the group immediately. Flush releases its lock immediately after canceled cleanup, before any
 best-effort retry accounting; state-lock contention cannot extend the
 cleanup bound. Escaped descendants cannot keep pipes or the flush lock open.
 On Windows this optional transport fails closed until equivalent job/group
@@ -508,12 +522,15 @@ model, never card visibility:
 - **Default:** enabled for executions that carry an `anx.card.*` label —
   zero-config, matches today's documented convention. Unlabeled runs are not
   registered.
-- **`agentctl-config`** (reviewed bundle) gains a small advisory section:
+- **`agentctl-config`** (reviewed bundle) can adopt a small advisory section:
 
 ```json
 "anx": {"run_links": {"default": "labeled", "workspace_alias": "anx"}}
 ```
 
+  The runtime default for `allowed_orgs` remains empty. Suggested bundle
+  settings belong to [the agentctl-config proposal](../agentctl-config-run-links.md);
+  this implementation changes no agentctl-config checkout or installed config.
   agentctl reads no ANX credentials; the detached helper invokes the public
   ANX CLI, which owns authentication and endpoint resolution.
 - **Planned ANX enable surface:** `anx integrations enable run.links` (same family and

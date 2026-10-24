@@ -43,7 +43,7 @@ func fixtureResolve(original Registration) func(context.Context, Registration) (
 	return func(_ context.Context, r Registration) (Registration, *Repository, error) {
 		r.CardRefs = original.CardRefs
 		r.Outcome = original.Outcome
-		return r, nil, nil
+		return r, &Repository{Owner: "o", Name: "r"}, nil
 	}
 }
 
@@ -130,6 +130,7 @@ func TestCLISenderNoSessionStillRegistersRun(t *testing.T) {
 	registration.NativeSession = nil
 	registration.State = StateCompleted
 	registration.Outcome = &Outcome{Availability: AvailabilityUnavailableAtSource, Links: []Link{{Kind: LinkKindPR, Owner: "o", Repo: "r", Number: 104}}}
+	sender.Resolve = fixtureResolve(registration)
 	if err := sender.Send(context.Background(), registration); err != nil {
 		t.Fatal(err)
 	}

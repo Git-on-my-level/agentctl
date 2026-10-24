@@ -235,7 +235,7 @@
               }
             ]
           },
-          "description": "Explicit typed outcome evidence only, never extracted from content.text. Runtime requires allowed_orgs or exact run-origin owner/repo for PRs/issues; cryptographic commits must be 40-hex."
+          "description": "Explicit typed outcome evidence only, never extracted from content.text. Runtime requires a non-empty allowed_orgs containing the owner AND exact run-origin owner/repo for PRs/issues; cryptographic commits must be 40-hex."
         },
         "head_after": {
           "type": "string",

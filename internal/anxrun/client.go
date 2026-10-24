@@ -277,7 +277,7 @@ func (s *CLISender) invoke(ctx context.Context, commandID string, params map[str
 
 func (s *CLISender) invokeResult(ctx context.Context, commandID string, params map[string]string, body []byte) (json.RawMessage, error) {
 	options := s.options.normalized()
-	if code := stringCode(options.WorkspaceAlias, 64, false); code != 0 {
+	if code := workspaceAliasCode(options.WorkspaceAlias); code != 0 {
 		return nil, egressError(code)
 	}
 	argv := []string{options.Executable, "--json", "--workspace", options.WorkspaceAlias}
@@ -329,6 +329,22 @@ func (s *CLISender) invokeResult(ctx context.Context, commandID string, params m
 		return nil, &SendError{Code: "protocol_error"}
 	}
 	return envelope.Result, nil
+}
+
+var workspaceAliasPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+
+// ValidWorkspaceAlias is shared by delivery and status: configuration strings
+// may be printed only after both the exact grammar and secret-shape check.
+func ValidWorkspaceAlias(value string) bool { return workspaceAliasCode(value) == 0 }
+
+func workspaceAliasCode(value string) int {
+	if code := stringCode(value, 64, false); code != 0 {
+		return code
+	}
+	if !workspaceAliasPattern.MatchString(value) {
+		return EgressFormat
+	}
+	return 0
 }
 
 func processCode(err error) int {
@@ -424,6 +440,9 @@ func runAnxProcess(ctx context.Context, argv []string, stdin []byte) ([]byte, er
 	if err := isolateANXProcess(cmd); err != nil {
 		return nil, err
 	}
+	// Parent success, error and pipe-drain expiry all end ownership of this
+	// group. Context cancellation alone cannot clean up after a reaped parent.
+	defer terminateANXProcessGroup(cmd)
 	cmd.WaitDelay = 250 * time.Millisecond
 	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Env = os.Environ()

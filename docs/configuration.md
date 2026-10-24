@@ -130,7 +130,7 @@ registers labeled executions with Agent Nexus (see
   "run_links": {
     "default": "labeled",
     "workspace_alias": "anx",
-    "allowed_orgs": ["Git-on-my-level"],
+    "allowed_orgs": [],
     "executable": "anx",
     "flush_timeout_seconds": 10
   }
@@ -147,12 +147,22 @@ CLI's own credential store. Free-text summary support is absent; the former
 `summary_max_bytes` option is no longer accepted.
 `flush_timeout_seconds` bounds detached delivery; it never delays a run return. `spool_dir` overrides the default
 `<state dir>/anx-run-links` outbox. `allowed_orgs` is an explicit reviewed GitHub
-organization allowlist (at most 64 names). Typed PR/issue evidence must match
-one of those owners or the exact GitHub owner/repo in the run CWD's local
-`origin` config. The default empty list grants only exact-origin authority.
+organization allowlist (at most 64 names). Typed PR/issue evidence requires
+both an allowed owner and the exact GitHub owner/repository in the run CWD's
+local `origin` config. The runtime default is empty, which sends no PR/issue
+repository evidence even when an origin exists. Origin selects a repo within
+an allowed org; it never adds owners to the allowlist. Git lookup clears all
+inherited `GIT_*` overrides. Repository names use `[A-Za-z0-9._-]`, are at
+most 100 characters and cannot contain IPv4-like dotted-number runs or
+Tailnet coordinates. Suggested reviewed bundle settings are documented only
+in [the agentctl-config proposal](agentctl-config-run-links.md).
 Result text/JSON lines are never parsed as evidence. Card refs require a fresh
 ANX workspace catalog confirmation in the delivery batch. The section is advisory for standalone
 use: without it, labeled runs still register with the defaults above.
+`agentctl anx status` emits only validated workspace aliases (`[redacted]`
+otherwise), spool `present`/`absent`, and pending/dead-letter counts; it never
+prints a spool path. JSON uses `spool`, `pending_count` and `dead_letter_count`
+in place of the former `spool_dir` field.
 
 ## Profile selection
 

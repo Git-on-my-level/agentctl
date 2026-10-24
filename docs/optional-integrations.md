@@ -115,13 +115,18 @@ or fails a run:
   host-keyed HMAC identifies the request on ANX.
 - Free-text summaries and result-text evidence parsing are absent. Only an
   explicit typed outcome evidence producer can supply refs; current adapters
-  do not. Repository coordinates require `anx.run_links.allowed_orgs` or the
-  run CWD's exact local GitHub origin. IP and Tailnet coordinates are rejected.
+  do not. Repository coordinates require a non-empty
+  `anx.run_links.allowed_orgs` containing the owner and the run CWD's exact
+  local GitHub origin. An empty list disables repository evidence. Git
+  environment overrides are cleared. All IPv4-like dotted-number runs and
+  Tailnet coordinates are rejected.
 - No candidate card ref enters the outbox or outbound lookup. A worker fetches
   the target workspace's canonical card catalog, then matches locally. It
   caches verified coordinates for the batch and fails closed when unavailable.
 - Secret-shape checks run per substring/window as a second layer. ANX
-  subprocesses have process-group cancellation and a 250 ms pipe-drain bound.
+  subprocesses terminate their process group on every exit and have a 250 ms
+  pipe-drain bound. Status prints only safe aliases and spool presence/counts,
+  never configured paths.
 - Delivery uses ANX sessions/participation when a native session exists, plus
   an idempotent card message carrying the complete public run record. Multica
   and no-session executions still post a record. Successful Multica `dispatch`

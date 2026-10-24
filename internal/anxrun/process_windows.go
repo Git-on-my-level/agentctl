@@ -9,3 +9,5 @@ import "os/exec"
 func isolateANXProcess(cmd *exec.Cmd) error {
 	return &SendError{Fatal: true, Reason: ReasonRejected, NumericCode: 125}
 }
+
+func terminateANXProcessGroup(cmd *exec.Cmd) error { return nil }

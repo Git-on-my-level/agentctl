@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -32,19 +33,16 @@ type Verification struct {
 
 const EgressUnverified = 1004
 
-var ipv4Substring = regexp.MustCompile(`[0-9]{1,3}(?:\.[0-9]{1,3}){3}`)
+// Reject the shape, not parsed octets: invalid leading octets must not hide
+// overlapping valid addresses (999.100.101.102.103).
+var ipv4Substring = regexp.MustCompile(`[0-9]+(?:\.[0-9]+){3}`)
 
 func networkCoordinate(value string) bool {
 	lower := strings.ToLower(value)
 	if strings.Contains(lower, ".ts.net") || strings.Contains(lower, ".tailnet.") || strings.HasSuffix(lower, ".local") || net.ParseIP(value) != nil {
 		return true
 	}
-	for _, candidate := range ipv4Substring.FindAllString(value, -1) {
-		if net.ParseIP(candidate) != nil {
-			return true
-		}
-	}
-	return false
+	return ipv4Substring.MatchString(value)
 }
 
 func ValidOrg(value string) bool {
@@ -52,16 +50,16 @@ func ValidOrg(value string) bool {
 }
 
 func (v Verification) repository(link Link) (Link, bool) {
-	if origin := v.Origin; origin != nil && strings.EqualFold(origin.Owner, link.Owner) && strings.EqualFold(origin.Name, link.Repo) {
-		link.Owner, link.Repo = origin.Owner, origin.Name
-		if _, code := validateLink(link); code == 0 {
-			return link, true
-		}
+	origin := v.Origin
+	if origin == nil || !strings.EqualFold(origin.Owner, link.Owner) || !strings.EqualFold(origin.Name, link.Repo) {
+		return Link{}, false
 	}
 	for _, org := range v.AllowedOrgs {
 		if ValidOrg(org) && strings.EqualFold(org, link.Owner) {
-			link.Owner = org
-			return link, true
+			link.Owner, link.Repo = org, origin.Name
+			if safe, code := validateLink(link); code == 0 {
+				return safe, true
+			}
 		}
 	}
 	return Link{}, false
@@ -79,12 +77,26 @@ func OriginRepository(ctx context.Context, cwd string) *Repository {
 	ctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
 	command := exec.CommandContext(ctx, "git", "-C", cwd, "config", "--local", "--no-includes", "--get", "remote.origin.url")
+	command.Env = originGitEnvironment()
 	command.WaitDelay = 100 * time.Millisecond
 	raw, err := command.Output()
 	if err != nil || len(raw) > 512 {
 		return nil
 	}
 	return ParseOrigin(strings.TrimSpace(string(raw)))
+}
+
+// No inherited Git setting may select another repository or inject config.
+// Keep ordinary process settings (PATH, locale), then add read-only defaults.
+func originGitEnvironment() []string {
+	env := make([]string, 0, len(os.Environ())+4)
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if !strings.HasPrefix(strings.ToUpper(key), "GIT_") {
+			env = append(env, entry)
+		}
+	}
+	return append(env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
 }
 
 func ParseOrigin(value string) *Repository {

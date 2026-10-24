@@ -31,7 +31,7 @@
             "allowed_orgs": {
               "type": "array", "maxItems": 64,
               "items": {"type": "string", "maxLength": 39, "pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"},
-              "description": "Reviewed GitHub organization allowlist for typed evidence. Empty by default; exact run-origin owner/repo is also allowed. Never authorizes parsing result text."
+              "description": "Reviewed GitHub organization allowlist for typed evidence. Empty by default disables repo evidence; owner must be allowed and exact run-origin owner/repo must match. Never authorizes parsing result text."
             },
             "executable": { "type": "string", "minLength": 1, "maxLength": 1024 },
             "base_url": { "type": "string", "format": "uri", "description": "HTTPS, or HTTP on an explicit loopback host. Never hard-coded; passed through to the anx CLI." },

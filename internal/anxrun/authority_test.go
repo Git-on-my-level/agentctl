@@ -82,10 +82,11 @@ func TestReview3RepositoryAuthority(t *testing.T) {
 	r.Outcome = &Outcome{Availability: AvailabilityStored, Links: []Link{{Kind: LinkKindPR, Owner: "Git-on-my-level", Repo: "agentctl", Number: 104}}}
 	confirmed := map[string]ConfirmedCard{"card:watch-redesign": {Ref: "card:watch-redesign", ThreadID: "thread-test"}}
 	for name, policy := range map[string]Verification{
-		"none":         {Cards: confirmed},
-		"org":          {Cards: confirmed, AllowedOrgs: []string{"Git-on-my-level"}},
-		"origin":       {Cards: confirmed, Origin: &Repository{Owner: "Git-on-my-level", Name: "agentctl"}},
-		"other-origin": {Cards: confirmed, Origin: &Repository{Owner: "Git-on-my-level", Name: "other"}},
+		"none":           {Cards: confirmed},
+		"org":            {Cards: confirmed, AllowedOrgs: []string{"Git-on-my-level"}},
+		"origin":         {Cards: confirmed, Origin: &Repository{Owner: "Git-on-my-level", Name: "agentctl"}},
+		"allowed-origin": {Cards: confirmed, AllowedOrgs: []string{"Git-on-my-level"}, Origin: &Repository{Owner: "Git-on-my-level", Name: "agentctl"}},
+		"other-origin":   {Cards: confirmed, Origin: &Repository{Owner: "Git-on-my-level", Name: "other"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			runner := &fakeRunner{}
@@ -103,7 +104,7 @@ func TestReview3RepositoryAuthority(t *testing.T) {
 			_ = json.Unmarshal([]byte(runner.stdins[len(runner.stdins)-1]), &body)
 			var got Registration
 			_ = json.Unmarshal([]byte(body.Event.Payload.Text), &got)
-			want := name == "org" || name == "origin"
+			want := name == "allowed-origin"
 			if (len(got.Outcome.Links) == 1) != want {
 				t.Fatalf("repository authority not enforced: %+v", got.Outcome)
 			}
