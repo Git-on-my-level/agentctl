@@ -47,6 +47,19 @@ separator (`two-lane.`, not `two-lane/`). A prefix matches an execution when
 any one of its labels starts with the prefix. Because labels are immutable,
 whether an execution matches never changes.
 
+Launchers should end a family prefix with a separator so it cannot match a
+sibling family. For example, a two-lane launcher labels each lane
+`two-lane.<lane>` (`two-lane.glm`, `two-lane.codex`) and a per-card launcher
+labels `card-<handle>` (`card-x7k2`); a coordinator then waits on
+`--label-prefix two-lane.` or `--label-prefix card-x7k2`. `<lane>` and
+`<handle>` must themselves fit the label pattern: lowercase ASCII letters,
+digits, `_`, `.` and `-` only, and never `/` or uppercase. A launcher that
+derives them from free text (a branch name, a card title) must normalize first
+(`feat/Lane-A` becomes `feat.lane-a`); `run` and `delegate` reject an invalid
+label with exit 2 rather than rewriting it. Note that `card-x7k2` as a prefix
+also matches `card-x7k20`; append a separator (`card-x7k2.`) when handles can
+share a prefix.
+
 ## Journal-busy retry
 
 Commands that create or wait for work absorb journal lock contention instead

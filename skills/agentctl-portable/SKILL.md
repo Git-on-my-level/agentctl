@@ -502,8 +502,9 @@ Delivery is
 at-least-once, so deduplicate by the full event key. A receipt proves delivery,
 not successful work.
 
-For several executions at once, label them with a shared prefix (labels use
-`.`, not `/`) and wake on the first one with
+For several executions at once, label them with a shared prefix (labels are
+lowercase `[a-z0-9_.-]`, never `/`; for example `two-lane.<lane>` or
+`card-<handle>`) and wake on the first one with
 `await-any --label-prefix <prefix> --timeout <duration>`; it exits like `await`
 (0, 9, 10, 11, 12, 13), names the execution in `execution_id` and
 `matched_kind`, and acknowledges only that execution. Loop until

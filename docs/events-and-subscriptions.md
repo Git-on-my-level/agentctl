@@ -166,8 +166,10 @@ queries; reserved query/scope filters fail closed in local fan-out.
 `subscribe create --label-prefix <prefix>` (mutually exclusive with
 `--execution`) matches events appended after creation by existing and future
 executions with any label starting with the prefix; it does not backfill and
-does not auto-expire on a terminal. See
-[lane fan-in](design/lane-fan-in.md#label-prefix-subscribe). `agentctl subscribe create` listens for `terminal`,
+does not auto-expire on a terminal. Labels cannot contain `/` or uppercase;
+use `.` or `-` as separators, for example `two-lane.<lane>` or
+`card-<handle>`. See
+[lane fan-in](design/lane-fan-in.md#labels-and-prefixes). `agentctl subscribe create` listens for `terminal`,
 `attention`, and `artifact` by default: these are the minimum events needed to
 drive a parent agent without subscribing it to progress chatter. `--kind all`
 is an explicit broad subscription for every kind except `acknowledged`, while `--kind <names>` narrows the set.
