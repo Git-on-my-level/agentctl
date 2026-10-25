@@ -156,3 +156,73 @@ func TestPermanentDeliveryFailureIsReported(t *testing.T) {
 		t.Fatalf("health = %+v", health)
 	}
 }
+
+// stallingReprober never answers execution "stuck" until its context ends.
+type stallingReprober struct{ calls []string }
+
+func (r *stallingReprober) Reprobe(ctx context.Context, execution Execution) (ProbeResult, error) {
+	r.calls = append(r.calls, execution.ID)
+	if execution.ID == "stuck" {
+		<-ctx.Done()
+		return ProbeResult{}, ctx.Err()
+	}
+	return ProbeResult{State: "running"}, nil
+}
+
+// A reprobe that never returns is cut off at the recovery budget; delivery
+// still runs in the same cycle and the next cycle starts after the stalled
+// execution.
+func TestStalledReprobeIsBoundedByRecoveryBudget(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(1000, 0)}
+	executions := &fakeExecutions{
+		items:    []Execution{{ID: "stuck", State: "running"}, {ID: "z-after", State: "running"}},
+		results:  map[string]ProbeResult{},
+		applyErr: map[string]error{},
+	}
+	reprober := &stallingReprober{}
+	outbox := &fakeOutbox{entries: map[string]Delivery{"x": {ID: "x"}}}
+	cfg := testConfig(t, clock)
+	cfg.RecoveryBudget = time.Second
+	s, err := New(cfg, Dependencies{Executions: executions, Reprober: reprober, Outbox: outbox, Deliverer: &fakeDeliverer{errors: map[string][]error{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	report, _ := s.RunOnce(context.Background())
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("stalled reprobe held the cycle for %s", elapsed)
+	}
+	if report.Recovery.Deferred != 1 || len(report.Recovery.Failures) != 1 || report.Recovery.Failures[0].ExecutionID != "stuck" {
+		t.Fatalf("recovery = %+v", report.Recovery)
+	}
+	if report.Delivery.Delivered != 1 {
+		t.Fatalf("delivery behind a stalled reprobe = %+v", report.Delivery)
+	}
+	if health := s.Health(); health.State != HealthDegraded || !strings.Contains(health.LastError, "stuck") {
+		t.Fatalf("health = %+v", health)
+	}
+	if _, err := s.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"stuck", "z-after"}; !reflect.DeepEqual(reprober.calls, want) {
+		t.Fatalf("probe calls = %v, want %v (stuck backs off, z-after reached next cycle)", reprober.calls, want)
+	}
+}
+
+// An expired delivery is lost to its receiver: the cycle that dead-letters
+// it is degraded and names it.
+func TestExpiredDeadLetterDegradesHealth(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(100, 0)}
+	outbox := &fakeOutbox{entries: map[string]Delivery{"del-old": {ID: "del-old", ExecutionID: "exec-1", SubscriptionID: "sub-1", Attempts: 3, ExpiresAt: clock.now.Add(-time.Minute)}}}
+	s, err := New(testConfig(t, clock), Dependencies{Outbox: outbox, Deliverer: &fakeDeliverer{errors: map[string][]error{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, _ := s.RunOnce(context.Background())
+	if report.Delivery.DeadLettered != 1 {
+		t.Fatalf("delivery report = %+v", report.Delivery)
+	}
+	if health := s.Health(); health.State != HealthDegraded || !strings.Contains(health.LastDeliveryError, "del-old") || !strings.Contains(health.LastDeliveryError, "expired") {
+		t.Fatalf("health = %+v", health)
+	}
+}

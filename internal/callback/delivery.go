@@ -157,6 +157,22 @@ func PrepareOwnerOnlyFileDestination(path string) error {
 		return fmt.Errorf("invalid event file path")
 	}
 	dir := filepath.Dir(path)
+	// Refuse a symlinked existing ancestor before creating anything, so a
+	// rejected destination never creates directories through a link.
+	existing := dir
+	for {
+		if _, err := os.Lstat(existing); err == nil {
+			break
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			break
+		}
+		existing = parent
+	}
+	if err := ensureNoSymlink(existing); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
