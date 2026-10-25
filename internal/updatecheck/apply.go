@@ -31,6 +31,12 @@ type ApplyOptions struct {
 	Executable     string
 	ReleaseBaseURL string
 	Client         *http.Client
+	// LiveOwners reports how many other agentctl processes currently own executions. A binary replacement while
+	// owners on the old version are live can kill them mid-run (2026-10-25: a v0.16.1 auto-update left a v0.15 owner
+	// failing "record native event" with exit 70), so Apply defers instead. Nil skips the check.
+	LiveOwners func() (int, error)
+	// AllowLiveOwners installs even when LiveOwners reports owners (`agentctl update now --allow-live-owners`).
+	AllowLiveOwners bool
 }
 
 type ApplyResult struct {
@@ -106,6 +112,15 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 		return result, recordApplyError(options.Check.StatePath, "unmanaged_install", err)
 	}
 
+	if options.LiveOwners != nil && !options.AllowLiveOwners {
+		owners, ownersErr := options.LiveOwners()
+		if ownersErr != nil {
+			return result, recordApplyError(options.Check.StatePath, "live_owners_unknown", ownersErr)
+		}
+		if owners > 0 {
+			return result, recordApplyError(options.Check.StatePath, "live_owners_deferred", fmt.Errorf("%d agentctl execution owner processes are running", owners))
+		}
+	}
 	client := options.Client
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
@@ -517,6 +532,10 @@ func safeApplyCause(code string, cause error) string {
 		return "release archive is invalid"
 	case "install_failed":
 		return "packaged installer failed"
+	case "live_owners_deferred":
+		return "deferred: agentctl execution owners are running; retry when they finish"
+	case "live_owners_unknown":
+		return "deferred: running agentctl execution owners could not be counted"
 	default:
 		return "update failed"
 	}
@@ -524,7 +543,7 @@ func safeApplyCause(code string, cause error) string {
 
 func retryableApplyError(code string) bool {
 	switch code {
-	case "release_check_failed", "state_reconcile_failed", "state_record_failed", "state_lock_failed", "state_write_failed", "checksum_download_failed", "archive_download_failed", "staging_failed", "install_failed":
+	case "release_check_failed", "state_reconcile_failed", "state_record_failed", "state_lock_failed", "state_write_failed", "checksum_download_failed", "archive_download_failed", "staging_failed", "install_failed", "live_owners_deferred", "live_owners_unknown":
 		return true
 	default:
 		return false

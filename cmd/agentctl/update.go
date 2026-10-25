@@ -65,7 +65,7 @@ func (a *app) updateWorker(parent context.Context, c common) int {
 	defer cancel()
 	mode, modeErr := updatecheck.ResolveMode(policyPath, a.getenv)
 	if modeErr == nil && mode == updatecheck.ModeAuto {
-		_, _ = updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv}})
+		_, _ = updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv}, LiveOwners: a.liveOwnerCount})
 	}
 	_, _ = a.updateSkillsAutoClean(ctx, c, false)
 	return 0
@@ -77,7 +77,7 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c com
 		return output.Wrap(output.CodeInternal, "resolve update state", false, err).WithDetail("update_error_code", "state_path_invalid").WithDetail("safe_cause", "update state path could not be resolved")
 	}
 	if len(args) == 0 {
-		return output.NewError(output.CodeUsage, "usage: agentctl update status|now|policy auto|notify|off", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl update status|now [--allow-live-owners]|policy auto|notify|off", false)
 	}
 	switch args[0] {
 	case "status":
@@ -112,10 +112,11 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c com
 		_ = renderer.Success(output.Success{Result: map[string]any{"mode": mode, "policy_path": policyPath}, Lines: []output.Line{{Lead: "update", Fields: []output.Field{{Name: "mode", Value: mode}, {Name: "policy_path", Value: policyPath}}}}})
 		return nil
 	case "now":
-		if len(args) != 1 {
-			return output.NewError(output.CodeUsage, "usage: agentctl update now", false)
+		allowLive := len(args) == 2 && args[1] == "--allow-live-owners"
+		if len(args) != 1 && !allowLive {
+			return output.NewError(output.CodeUsage, "usage: agentctl update now [--allow-live-owners]", false)
 		}
-		result, err := updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv, Force: true}})
+		result, err := updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv, Force: true}, LiveOwners: a.liveOwnerCount, AllowLiveOwners: allowLive})
 		if err != nil {
 			return mapUpdateApplyError(err)
 		}
@@ -130,7 +131,7 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c com
 		_ = renderer.Success(output.Success{Result: map[string]any{"binary": result, "skills": skills}, Lines: []output.Line{{Lead: "update.binary", Fields: []output.Field{{Name: "current_version", Value: result.CurrentVersion}, {Name: "installed_version", Value: result.InstalledVersion}, {Name: "updated", Value: result.Updated}}}, {Lead: "update.skills", Fields: []output.Field{{Name: "healthy", Value: skills.Healthy}, {Name: "applied", Value: skills.Applied}, {Name: "conflicts", Value: skills.Conflicts}}}}})
 		return nil
 	default:
-		return output.NewError(output.CodeUsage, "usage: agentctl update status|now|policy auto|notify|off", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl update status|now [--allow-live-owners]|policy auto|notify|off", false)
 	}
 }
 
@@ -249,4 +250,12 @@ func (a *app) updateSkillsAutoClean(ctx context.Context, c common, force bool) (
 		return skillpack.Report{}, err
 	}
 	return skillpack.ReconcileAutoClean(skillpack.Options{Source: skillpack.SourceFromHubStatus(updated.Status), Home: home, DetectedHarnesses: detected})
+}
+
+// liveOwnerCount counts other agentctl execution owners on this host; tests replace a.liveOwners.
+func (a *app) liveOwnerCount() (int, error) {
+	if a.liveOwners != nil {
+		return a.liveOwners()
+	}
+	return liveOwnerProcesses()
 }
