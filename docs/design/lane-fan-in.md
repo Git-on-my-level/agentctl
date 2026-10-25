@@ -111,8 +111,11 @@ Exactly one of `--execution` and `--label-prefix` is required (exit 2).
 
 ### Matching
 
-Each poll (one second apart) reads one journal snapshot. A candidate matches
-when:
+Each poll (one second apart) reads one journal snapshot: the read-only handle
+holds the journal's shared lock for the whole scan, which excludes every
+writer, so candidates, acknowledgements and attention events agree. A busy
+journal is retried within the busy budget but never past `--timeout`. A
+candidate matches when:
 
 - **terminal**: its state is `completed`, `failed`, `cancelled`, or
   `orphaned`. In label mode a terminal that is already acknowledged, or that
@@ -121,7 +124,8 @@ when:
   like `await` (level-triggered); drop it from the list or pass `--since` to
   move past it. `trigger_at` is `terminal_at`.
 - **attention**: its state is `attention`. `trigger_at` is the
-  `observed_at` of its newest journaled attention event, or `updated_at` when
+  `observed_at` of its most recently journaled attention event (read newest
+  first, so history length does not bound it), or `updated_at` when
   the authority recorded none.
 - **integrity**: its observation integrity is `conflicted`, whatever its
   state. Reported as `matched_kind: integrity`; `trigger_at` is

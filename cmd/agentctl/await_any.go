@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
@@ -19,13 +18,12 @@ import (
 // returns the first one that needs the caller. See docs/design/lane-fan-in.md.
 
 const (
-	awaitAnyPollInterval   = time.Second
-	awaitAnyMaxExecutions  = 256
-	awaitAnyKindTerminal   = "terminal"
-	awaitAnyKindAttention  = "attention"
-	awaitAnyKindStall      = "stall"
-	awaitAnyKindIntegrity  = "integrity"
-	awaitAnyAttentionPages = 50
+	awaitAnyPollInterval  = time.Second
+	awaitAnyMaxExecutions = 256
+	awaitAnyKindTerminal  = "terminal"
+	awaitAnyKindAttention = "attention"
+	awaitAnyKindStall     = "stall"
+	awaitAnyKindIntegrity = "integrity"
 )
 
 type awaitAnyOptions struct {
@@ -201,8 +199,19 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 		if ctx.Err() != nil {
 			return cancelled()
 		}
-		matches, watched, problem := a.awaitAnyScan(ctx, c, options)
+		scanCtx, cancelScan := a.waitOpenContext(ctx, deadline)
+		matches, watched, problem := a.awaitAnyScan(scanCtx, c, options)
+		scanExpired := scanCtx.Err() != nil
+		cancelScan()
 		if problem != nil {
+			if ctx.Err() != nil {
+				return cancelled()
+			}
+			if !deadline.IsZero() && scanExpired {
+				// A busy journal must not hold the wait past --timeout.
+				return a.fail(renderer, output.NewError(output.CodeTimeout, "await-any deadline elapsed while the journal was busy", true).
+					WithDetail("selector", options.selector()).WithDetail("kinds", options.kindList()).WithDetail("watched", 0))
+			}
 			return a.fail(renderer, problem)
 		}
 		if len(matches) > 0 {
@@ -224,8 +233,12 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 
 // awaitAnyScan reads one journal snapshot and returns matches ordered by
 // trigger time, then execution ID, so the choice is deterministic.
+//
+// The read-only handle holds bbolt's shared file lock until Close, and every
+// writer needs the exclusive lock, so the separate read transactions below
+// all observe the same committed journal state.
 func (a *app) awaitAnyScan(ctx context.Context, c common, options awaitAnyOptions) ([]awaitAnyMatch, int, *output.Error) {
-	journal, problem := a.openRead(c)
+	journal, problem := a.openReadContext(ctx, c)
 	if problem != nil {
 		return nil, 0, problem
 	}
@@ -325,30 +338,19 @@ func awaitAnyClassify(ctx context.Context, journal *store.Journal, options await
 }
 
 // latestAttentionAt returns the journal observation time of the newest
-// attention event, falling back to the envelope update time when the
-// authority recorded attention without a journaled event.
+// (most recently appended) attention event, falling back to the envelope
+// update time when the authority recorded attention without a journaled
+// event. It reads backwards from the newest event, so history length does
+// not bound it.
 func latestAttentionAt(ctx context.Context, journal *store.Journal, execution model.Execution) (time.Time, error) {
-	latest := time.Time{}
-	var after uint64
-	for page := 0; page < awaitAnyAttentionPages; page++ {
-		events, err := journal.ListEvents(ctx, execution.ID, contracts.EventQuery{AfterSequence: after, Limit: 1000})
-		if err != nil {
-			return time.Time{}, err
-		}
-		for _, event := range events {
-			if event.Kind == model.EventAttention && event.ObservedAt.After(latest) {
-				latest = event.ObservedAt
-			}
-			after = event.Sequence
-		}
-		if len(events) < 1000 {
-			break
-		}
+	event, found, err := journal.LatestEventOfKind(ctx, execution.ID, model.EventAttention)
+	if err != nil {
+		return time.Time{}, err
 	}
-	if latest.IsZero() {
-		latest = execution.UpdatedAt
+	if !found {
+		return execution.UpdatedAt.UTC(), nil
 	}
-	return latest.UTC(), nil
+	return event.ObservedAt.UTC(), nil
 }
 
 func awaitAnyDetails(problem *output.Error, options awaitAnyOptions, match awaitAnyMatch, pending, watched int, acknowledged bool) *output.Error {

@@ -116,6 +116,10 @@ func openJournalWithBusyBudget(ctx context.Context, path string, options store.O
 			return nil, err
 		}
 		remaining := time.Until(deadline)
+		if attempt > 1 && remaining <= 0 {
+			// The last backoff consumed the budget; never open after it.
+			return nil, &journalBusyError{attempts: attempt - 1, waited: time.Since(start), budget: budget, err: lastErr}
+		}
 		if ctxDeadline, ok := ctx.Deadline(); ok {
 			if until := time.Until(ctxDeadline); until <= 0 {
 				return nil, context.DeadlineExceeded
@@ -133,8 +137,9 @@ func openJournalWithBusyBudget(ctx context.Context, path string, options store.O
 		if remaining > 0 && remaining < lockTimeout {
 			lockTimeout = remaining
 		}
-		if lockTimeout < 10*time.Millisecond {
-			lockTimeout = 10 * time.Millisecond
+		if lockTimeout < time.Millisecond {
+			// bbolt treats a zero timeout as "wait forever".
+			lockTimeout = time.Millisecond
 		}
 		openOptions := options
 		openOptions.LockTimeout = lockTimeout

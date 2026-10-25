@@ -1187,8 +1187,16 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		if ctx.Err() != nil {
 			return a.fail(renderer, output.Wrap(output.CodeExecutionCancelled, "await cancelled", false, ctx.Err()).WithDetail("execution_id", id.String()))
 		}
-		journal, openErr := a.openRead(c)
+		openCtx, cancelOpen := a.waitOpenContext(ctx, deadline)
+		journal, openErr := a.openReadContext(openCtx, c)
+		cancelOpen()
 		if openErr != nil {
+			if ctx.Err() != nil {
+				return a.fail(renderer, output.Wrap(output.CodeExecutionCancelled, "await cancelled", false, ctx.Err()).WithDetail("execution_id", id.String()))
+			}
+			if !deadline.IsZero() && openCtx.Err() != nil {
+				return a.fail(renderer, output.NewError(output.CodeTimeout, "await deadline elapsed while the journal was busy", true).WithDetail("execution_id", id.String()))
+			}
 			return a.fail(renderer, openErr)
 		}
 		execution, err := journal.GetExecution(ctx, id)
@@ -1336,19 +1344,39 @@ func (a *app) journalPath(c common) (string, error) {
 	return store.DefaultPath()
 }
 func (a *app) openRead(c common) (*store.Journal, *output.Error) {
+	return a.openReadContext(context.Background(), c)
+}
+
+// openReadContext bounds busy-journal retries by ctx: cancellation or the
+// caller's deadline ends the retry loop instead of the full busy budget.
+func (a *app) openReadContext(ctx context.Context, c common) (*store.Journal, *output.Error) {
 	path, err := a.journalPath(c)
 	if err != nil {
 		return nil, output.Wrap(output.CodeInternal, "resolve journal path", false, err)
 	}
-	journal, err := openJournalWithBusyBudget(context.Background(), path, store.Options{ReadOnly: true}, false, c.journalBusyBudget)
+	journal, err := openJournalWithBusyBudget(ctx, path, store.Options{ReadOnly: true}, false, c.journalBusyBudget)
 	if err != nil {
 		return nil, mapStoreError("open journal", err)
 	}
 	return journal, nil
 }
 
+// waitOpenContext derives the context for one journal open inside a wait
+// loop, so a busy journal cannot hold a wait past its own deadline. The
+// remaining time comes from a.now so injected clocks stay consistent.
+func (a *app) waitOpenContext(ctx context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
+	if deadline.IsZero() {
+		return ctx, func() {}
+	}
+	remaining := deadline.Sub(a.now())
+	if remaining <= 0 {
+		remaining = time.Millisecond
+	}
+	return context.WithTimeout(ctx, remaining)
+}
+
 func (a *app) acknowledgeExecution(ctx context.Context, c common, id ids.ExecutionID, source string) *output.Error {
-	journal, problem := a.openWrite(c)
+	journal, problem := a.openWriteContext(ctx, c)
 	if problem != nil {
 		return problem
 	}

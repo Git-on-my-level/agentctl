@@ -1489,11 +1489,16 @@ func (a *app) resolveProfile(c common) (string, config.Profile, *output.Error) {
 	return name, profile, nil
 }
 func (a *app) openWrite(c common) (*store.Journal, *output.Error) {
+	return a.openWriteContext(context.Background(), c)
+}
+
+// openWriteContext is openWrite with busy retries bounded by ctx.
+func (a *app) openWriteContext(ctx context.Context, c common) (*store.Journal, *output.Error) {
 	path, err := a.journalPath(c)
 	if err != nil {
 		return nil, output.Wrap(output.CodeInternal, "resolve journal path", false, err)
 	}
-	journal, err := openJournalWithBusyBudget(context.Background(), path, store.Options{}, false, c.journalBusyBudget)
+	journal, err := openJournalWithBusyBudget(ctx, path, store.Options{}, false, c.journalBusyBudget)
 	if err != nil {
 		return nil, mapStoreError("open journal", err)
 	}

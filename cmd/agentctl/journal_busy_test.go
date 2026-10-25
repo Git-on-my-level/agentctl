@@ -65,7 +65,7 @@ func TestJournalBusyBudgetExhaustionIsTypedJournalBusy(t *testing.T) {
 		t.Fatalf("error=%v want ErrBusy", err)
 	}
 	var busy *journalBusyError
-	if !errors.As(err, &busy) || busy.attempts < 2 || busy.budget != 400*time.Millisecond {
+	if !errors.As(err, &busy) || busy.attempts < 1 || busy.budget != 400*time.Millisecond || busy.waited < 400*time.Millisecond {
 		t.Fatalf("missing retry accounting: %#v", err)
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
@@ -166,5 +166,31 @@ func TestMalformedJournalBusyBudgetKeepsDiscoveryWorking(t *testing.T) {
 	stdout.Reset()
 	if code := a.run(context.Background(), []string{"recent"}); code != output.ExitCodeFor(output.CodeUsage) || !strings.Contains(stdout.String(), journalBusyBudgetEnv) {
 		t.Fatalf("recent exit=%d output=%s", code, stdout.String())
+	}
+}
+
+// After the final backoff consumes the budget no further open is attempted,
+// so a writer releasing just after the budget cannot turn exhaustion into a
+// late success (or a further full lock wait).
+func TestJournalBusyBudgetDoesNotOpenAfterBudget(t *testing.T) {
+	path, holder := holdJournal(t)
+	const budget = 150 * time.Millisecond
+	original := journalBusySleep
+	t.Cleanup(func() { journalBusySleep = original })
+	start := time.Now()
+	journalBusySleep = func(ctx context.Context, delay time.Duration) error {
+		time.Sleep(delay)
+		if time.Since(start) >= budget {
+			_ = holder.Close()
+		}
+		return nil
+	}
+	journal, err := openJournalWithBusyBudget(context.Background(), path, store.Options{}, false, budget)
+	if err == nil {
+		_ = journal.Close()
+		t.Fatal("open succeeded after the busy budget elapsed")
+	}
+	if !errors.Is(err, store.ErrBusy) {
+		t.Fatalf("error=%v want ErrBusy", err)
 	}
 }

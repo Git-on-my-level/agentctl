@@ -326,3 +326,31 @@ func TestTerminalCannotReturnToRunning(t *testing.T) {
 		t.Fatalf("terminal regression err=%v", err)
 	}
 }
+
+func TestLatestEventOfKindReadsNewestFirst(t *testing.T) {
+	ctx := context.Background()
+	journal, _, now := openTestJournal(t)
+	execution, _, err := journal.CreateExecution(ctx, sampleExecution(now), contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := journal.LatestEventOfKind(ctx, execution.ID, model.EventAttention); err != nil || found {
+		t.Fatalf("empty history found=%v err=%v", found, err)
+	}
+	var want model.Event
+	for i, kind := range []model.EventKind{model.EventAttention, model.EventProgress, model.EventAttention, model.EventProgress} {
+		key, projection := semanticEvent(t, execution.Adapter, map[string]any{"n": i})
+		event := model.Event{ExecutionID: execution.ID, Authority: execution.Authority, Adapter: execution.Adapter, Ordering: model.OrderingObservation, Kind: kind, ObservedAt: now.Add(time.Duration(i) * time.Minute), DedupeKey: key, DedupeVersion: 1, Payload: map[string]any{}}
+		stored, _, err := journal.AppendEvent(ctx, event, projection)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if kind == model.EventAttention {
+			want = stored
+		}
+	}
+	got, found, err := journal.LatestEventOfKind(ctx, execution.ID, model.EventAttention)
+	if err != nil || !found || got.ID != want.ID || got.Sequence != 3 {
+		t.Fatalf("latest attention=%+v found=%v err=%v want sequence 3 %s", got, found, err, want.ID)
+	}
+}

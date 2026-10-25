@@ -279,3 +279,33 @@ func TestAwaitAnyUsageErrors(t *testing.T) {
 		}
 	}
 }
+
+// A busy journal must not hold await-any (or await) past --timeout even
+// though the default busy budget for wait commands is 120s.
+func TestAwaitAnyTimeoutBoundsBusyJournal(t *testing.T) {
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
+	source := completedRun(t, journalPath, "lane.busy")
+	holder, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	start := time.Now()
+	code, doc, out := awaitAny(t, journalPath, "--label-prefix", "lane.", "--timeout", "1s")
+	if code != output.ExitCodeFor(output.CodeTimeout) || doc.Error.Code != string(output.CodeTimeout) {
+		t.Fatalf("await-any under a held journal exit=%d output=%s", code, out)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("await-any ignored --timeout while the journal was busy: %s", elapsed)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	start = time.Now()
+	code = a.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "await", source, "--timeout", "1s"})
+	if code != output.ExitCodeFor(output.CodeTimeout) {
+		t.Fatalf("await under a held journal exit=%d output=%s", code, stdout.String())
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("await ignored --timeout while the journal was busy: %s", elapsed)
+	}
+}
