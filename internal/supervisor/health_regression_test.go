@@ -226,3 +226,48 @@ func TestExpiredDeadLetterDegradesHealth(t *testing.T) {
 		t.Fatalf("health = %+v", health)
 	}
 }
+
+// A failed execution that a later budget-limited pass does not revisit stays
+// unresolved: health must not flip back to healthy without a successful probe.
+func TestUnrevisitedProbeFailureKeepsHealthDegraded(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(1000, 0)}
+	executions := &fakeExecutions{
+		items:    []Execution{{ID: "a", State: "running"}, {ID: "b", State: "running"}, {ID: "c", State: "running"}, {ID: "d", State: "running"}},
+		results:  map[string]ProbeResult{},
+		applyErr: map[string]error{},
+	}
+	probe := &slowReprober{clock: clock, cost: 20 * time.Second}
+	failing := &failingFirst{inner: probe, fail: "a"}
+	cfg := testConfig(t, clock)
+	cfg.RecoveryBudget = 30 * time.Second
+	s, err := New(cfg, Dependencies{Executions: executions, Reprober: failing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RunOnce(context.Background()); err != nil { // probes a (fails), b; defers c, d
+		t.Fatal(err)
+	}
+	report, err := s.RunOnce(context.Background()) // probes c, d; defers a and b
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Recovery.Failures) != 0 || report.Recovery.Deferred != 2 {
+		t.Fatalf("second pass = %+v, want no fresh failures and a, b deferred", report.Recovery)
+	}
+	if health := s.Health(); health.State != HealthDegraded {
+		t.Fatalf("health with an unresolved reprobe failure = %+v", health)
+	}
+}
+
+type failingFirst struct {
+	inner *slowReprober
+	fail  string
+}
+
+func (f *failingFirst) Reprobe(ctx context.Context, execution Execution) (ProbeResult, error) {
+	result, _ := f.inner.Reprobe(ctx, execution)
+	if execution.ID == f.fail {
+		return ProbeResult{}, errors.New("authority unavailable")
+	}
+	return result, nil
+}

@@ -499,7 +499,9 @@ func (s *Supervisor) RunOnce(ctx context.Context) (report CycleReport, runErr er
 	s.health.LastCycleRecoveryDeferred = recovery.Deferred
 	s.health.RetryingDeliveries = delivery.Retrying
 	// A dead letter is a delivery lost to its receiver: degraded for the cycle.
-	if len(recovery.Failures) > 0 || len(delivery.Failures) > 0 || delivery.Retrying > 0 || delivery.DeadLettered > 0 {
+	// An execution whose last reprobe failed stays unresolved (probeRetries)
+	// until a probe succeeds, even when a budget-limited pass did not reach it.
+	if len(recovery.Failures) > 0 || len(delivery.Failures) > 0 || delivery.Retrying > 0 || delivery.DeadLettered > 0 || len(s.probeRetries) > 0 {
 		s.health.State = HealthDegraded
 	} else {
 		// A fully clean cycle is recovery: a stale error must not keep
