@@ -298,10 +298,12 @@ func TestRecoveryDefersInsteadOfCuttingOffSlowProbes(t *testing.T) {
 		results:  map[string]ProbeResult{},
 		applyErr: map[string]error{},
 	}
-	reprober := &timedReprober{cost: 150 * time.Millisecond}
+	// a: 0-400ms; b starts with ~600ms left (>= floor) and ends ~200ms before
+	// the budget; c would start with ~200ms left (< floor) and is deferred.
+	reprober := &timedReprober{cost: 400 * time.Millisecond}
 	cfg := testConfig(t, RealClock{})
-	cfg.RecoveryBudget = 400 * time.Millisecond
-	cfg.RecoveryProbeFloor = 200 * time.Millisecond
+	cfg.RecoveryBudget = time.Second
+	cfg.RecoveryProbeFloor = 300 * time.Millisecond
 	s, err := New(cfg, Dependencies{Executions: executions, Reprober: reprober})
 	if err != nil {
 		t.Fatal(err)
