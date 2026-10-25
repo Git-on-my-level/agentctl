@@ -20,7 +20,7 @@ func TestOwnerSubcommand(t *testing.T) {
 		"":                                                           "",
 	}
 	for command, want := range cases {
-		if got := ownerSubcommand(command); got != want {
+		if got := ownerSubcommand(command, map[string]bool{"agentctl": true}); got != want {
 			t.Errorf("ownerSubcommand(%q) = %q, want %q", command, got, want)
 		}
 	}
@@ -28,7 +28,17 @@ func TestOwnerSubcommand(t *testing.T) {
 
 func TestCountOwnerProcessesExcludesSelf(t *testing.T) {
 	ps := []byte("  101 /Users/x/.local/bin/agentctl delegate --wait\n  102 agentctl supervisor run\n  103 agentctl _delegate-worker\n  104 agentctl delegate --wait\n  junk\n")
-	if got := countOwnerProcesses(ps, 104); got != 2 {
+	if got := countOwnerProcesses(ps, 104, map[string]bool{"agentctl": true}); got != 2 {
 		t.Fatalf("count = %d, want 2 (101, 103; 104 is self)", got)
+	}
+}
+
+func TestOwnerSubcommandCustomInstalledName(t *testing.T) {
+	names := map[string]bool{"agentctl": true, "agentctl-custom": true}
+	if got := ownerSubcommand("/opt/x/bin/agentctl-custom delegate --wait", names); got != "delegate" {
+		t.Fatalf("custom-named owner not recognized: %q", got)
+	}
+	if got := ownerSubcommand("/opt/x/bin/other delegate", names); got != "" {
+		t.Fatalf("unrelated binary counted: %q", got)
 	}
 }

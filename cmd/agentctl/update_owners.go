@@ -21,9 +21,11 @@ var ownerSubcommands = map[string]bool{"delegate": true, "run": true, "fanout": 
 var valueGlobalFlags = map[string]bool{"--output": true, "--profile": true, "--context-file": true, "--config": true, "--config-bundle": true, "--journal": true, "--journal-busy-budget": true}
 
 // ownerSubcommand returns the subcommand of an agentctl command line when it owns an execution, else "".
-func ownerSubcommand(command string) string {
+// names are the binary basenames that count as agentctl: "agentctl" plus the running executable's own name, since a
+// managed install may use a custom name.
+func ownerSubcommand(command string, names map[string]bool) string {
 	fields := strings.Fields(command)
-	if len(fields) == 0 || filepath.Base(fields[0]) != "agentctl" {
+	if len(fields) == 0 || !names[filepath.Base(fields[0])] {
 		return ""
 	}
 	for i := 1; i < len(fields); i++ {
@@ -43,7 +45,7 @@ func ownerSubcommand(command string) string {
 }
 
 // countOwnerProcesses parses `ps -axo pid=,command=` output and counts execution owners other than self.
-func countOwnerProcesses(psOutput []byte, self int) int {
+func countOwnerProcesses(psOutput []byte, self int, names map[string]bool) int {
 	count := 0
 	scanner := bufio.NewScanner(bytes.NewReader(psOutput))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -57,7 +59,7 @@ func countOwnerProcesses(psOutput []byte, self int) int {
 		if err != nil || pid == self {
 			continue
 		}
-		if ownerSubcommand(strings.TrimSpace(command)) != "" {
+		if ownerSubcommand(strings.TrimSpace(command), names) != "" {
 			count++
 		}
 	}
@@ -72,5 +74,14 @@ func liveOwnerProcesses() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return countOwnerProcesses(out, os.Getpid()), nil
+	return countOwnerProcesses(out, os.Getpid(), agentctlNames()), nil
+}
+
+// agentctlNames is "agentctl" plus this executable's basename (a managed install may be named differently).
+func agentctlNames() map[string]bool {
+	names := map[string]bool{"agentctl": true}
+	if executable, err := os.Executable(); err == nil {
+		names[filepath.Base(executable)] = true
+	}
+	return names
 }
