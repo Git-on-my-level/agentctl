@@ -714,3 +714,37 @@ An older nonterminal event cannot replace a newer observation during CAS retry;
 any additional progress evidence is retained monotonically without changing that
 newer state, liveness or observation. Unapplied terminal events still terminalize
 nonterminal rows. Superseded events allow the page cursor to advance safely.
+
+### Native owner errors and targeted orphan recovery
+
+A native event write failure returns `execution_unknown` (exit 13), with
+`diagnostic_code=native_event_write_failed`, `execution_id`, `event_kind`,
+`event_sequence`, and content-free `journal_operation` and `journal_error_class` fields. The owner cancels
+and reaps its child before returning and commits the actual terminal result.
+The error includes `child_reaped`, `terminal_recorded`, and `state` when this
+succeeds. A permanently unwritable journal reports `terminal_recorded=false`;
+it cannot promise a durable terminal record. No automatic prompt replay occurs.
+
+Failed delegate waits include `native_exit_code` when a child actually ran, and
+`failure.code`, `failure.kind`, and the allowlisted first-stderr-line diagnostic
+(`code`, SHA-256 fingerprint, byte count). Arbitrary stderr text is never stored.
+A ZCode read-only preparation refusal has code `zcode_read_only_unavailable`
+(or `zcode_read_only_project_config_present` when an existing project config
+blocks isolation) and no child exit code. `result` retains the full normalized outcome.
+
+For a native execution stranded after its owner exited:
+
+```sh
+agentctl cancel exec-... --orphan-if-gone
+```
+
+This explicitly repairs that execution without calling native cancellation.
+Under the journal write lock it checks the journal host, launch identity,
+runner lease, and kernel process evidence. A live PID, active runner lease,
+missing launch identity, foreign host, or unproven absence refuses with
+`invalid_state` (exit 8) and no mutation. Proven absence records
+`orphaned` / `owner_lost` with evidence, meaning the outcome is unknown.
+Repeating the command on a terminal native execution returns the existing state.
+It never forwards repair to Multica; ordinary `cancel` retains its native and
+Multica behavior. The broader `reconcile --plan` / digest-checked `--apply`
+workflow remains available.

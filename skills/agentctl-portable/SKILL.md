@@ -687,3 +687,14 @@ agentctl anx flush    # retry delivery now
 A registered outcome is evidence for the card, never acceptance. The raw
 native session id never leaves the host; only the `agentctl identity` v1
 correlator is registered.
+
+For a stranded native execution whose launcher-recorded process is provably
+gone, `agentctl cancel <execution-id> --orphan-if-gone` repairs that exact row
+without native cancel. It records `orphaned`/`owner_lost` with kernel identity
+evidence. Live processes, active runner leases, foreign hosts, missing launch
+identity, and unproven absence refuse without mutation. Never treat `orphaned`
+as success or failure. Use ordinary `cancel` for live work and Multica authority.
+Native event-write errors reap the child and report `terminal_recorded`; if false,
+the journal needs repair before it can durably represent the result. Delegate
+failures include a native exit code when available and an allowlisted diagnostic
+plus fingerprint of the first stderr line, never arbitrary stderr text.

@@ -72,8 +72,12 @@ func prepareZCodeLaunch(cwd string, argv, env []string) (func(), []string, error
 		return nil, nil, nil
 	}
 	refuse := func(reason string) error {
+		reasonCode := "profile_unavailable"
+		if strings.HasPrefix(reason, "a ZCode project config is present at ") {
+			reasonCode = "project_config_present"
+		}
 		return &AdapterError{Code: ErrCapabilityUnavailable, Message: "zcode read_only profile refused: " + reason, Retryable: false,
-			Details: map[string]any{"diagnostic_code": "zcode_read_only_unavailable", "cwd": cwd}}
+			Details: map[string]any{"diagnostic_code": "zcode_read_only_unavailable", "reason_code": reasonCode, "cwd": cwd}}
 	}
 	if len(argv) < 3 || argv[len(argv)-2] != "--prompt" {
 		return nil, nil, refuse("the prompt must be the final argv value")

@@ -88,7 +88,7 @@ func (a *app) runNative(ctx context.Context, renderer output.Renderer, c common,
 	return a.runNativeOptions(ctx, renderer, c, args, opts)
 }
 
-func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c common, args []string, opts runOptions) *output.Error {
+func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c common, args []string, opts runOptions) (runProblem *output.Error) {
 	caller, callerProblem := a.executionCaller()
 	if callerProblem != nil {
 		return callerProblem
@@ -315,7 +315,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		if launchInterrupted(err) {
 			failureState = adapter.StateCancelled
 		}
-		failed, finalizeErr := a.finalizeResult(context.Background(), c, writeJournal, current, adapter.Result{Success: false, State: failureState, Error: err.Error()}, a.now().UTC(), opts.noStoreResult)
+		failed, finalizeErr := a.finalizeResult(context.Background(), c, writeJournal, current, nativeLaunchFailure(err, failureState), a.now().UTC(), opts.noStoreResult)
 		writeJournal.Close()
 		if finalizeErr != nil {
 			return mapStoreError("record launch failure outcome", finalizeErr)
@@ -326,8 +326,12 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	// Native launches are same-process owned. Any return path must reap the
 	// child, including journal or renderer failures, so foreground fan-out and
 	// lock contention cannot leak a process group.
+	ownedID := execution.ID // later failed journal assignments may return a zero execution
 	defer func() {
-		_ = runtime.Cancel(context.Background(), adapter.CancelRequest{Ref: launch.Session.Ref, Signal: "term", Grace: 5 * time.Second})
+		cancelErr := runtime.Cancel(context.Background(), adapter.CancelRequest{Ref: launch.Session.Ref, Signal: "term", Grace: 5 * time.Second})
+		if runProblem != nil {
+			runProblem = a.settleNativeOwnerError(c, runtime, launch.Session.Ref, ownedID, opts.noStoreResult, runProblem, cancelErr)
+		}
 	}()
 	// This process owns the native child, so it is the only place a steering
 	// request from another agentctl invocation can be applied. The inbox opens
@@ -526,7 +530,11 @@ func (a *app) recordNativeEvents(c common, execution model.Execution, nativeEven
 		if nativeEvent.Kind == "terminal" {
 			continue
 		}
-		updated, appendErr := appendNativeEvent(context.Background(), journal, execution, nativeEvent)
+		writeEvent := a.nativeEventWriter
+		if writeEvent == nil {
+			writeEvent = appendNativeEvent
+		}
+		updated, appendErr := writeEvent(context.Background(), journal, execution, nativeEvent)
 		if errors.Is(appendErr, store.ErrConflict) {
 			latest, reloadErr := journal.GetExecution(context.Background(), execution.ID)
 			if reloadErr != nil {
@@ -536,7 +544,7 @@ func (a *app) recordNativeEvents(c common, execution model.Execution, nativeEven
 				return latest, true, nil
 			}
 			execution = latest
-			updated, appendErr = appendNativeEvent(context.Background(), journal, execution, nativeEvent)
+			updated, appendErr = writeEvent(context.Background(), journal, execution, nativeEvent)
 		}
 		if errors.Is(appendErr, store.ErrTerminalConflict) {
 			latest, reloadErr := journal.GetExecution(context.Background(), execution.ID)
@@ -546,7 +554,10 @@ func (a *app) recordNativeEvents(c common, execution model.Execution, nativeEven
 			return latest, true, nil
 		}
 		if appendErr != nil {
-			return execution, false, mapStoreError("record native event", appendErr)
+			return execution, false, output.Wrap(output.CodeExecutionUnknown, "native event could not be recorded", false, appendErr).
+				WithDetail("diagnostic_code", "native_event_write_failed").WithDetail("execution_id", execution.ID.String()).
+				WithDetail("event_kind", nativeEvent.Kind).WithDetail("event_sequence", nativeEvent.Sequence).
+				WithDetail("journal_error_class", nativeJournalErrorClass(appendErr)).WithDetail("journal_operation", nativeEventWriteStage(appendErr))
 		}
 		execution = updated
 	}
@@ -1283,8 +1294,9 @@ func (a *app) attachNative(ctx context.Context, renderer output.Renderer, c comm
 }
 
 func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
-	if len(args) != 1 {
-		return output.NewError(output.CodeUsage, "usage: agentctl cancel <execution-id>", false)
+	orphanIfGone := len(args) == 2 && args[1] == "--orphan-if-gone"
+	if len(args) != 1 && !orphanIfGone {
+		return output.NewError(output.CodeUsage, "usage: agentctl cancel <execution-id> [--orphan-if-gone]", false)
 	}
 	id, problem := parseExecutionRef(args[0], c)
 	if problem != nil {
@@ -1298,6 +1310,9 @@ func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c comm
 	_ = journal.Close()
 	if err != nil {
 		return mapStoreError("read execution", err)
+	}
+	if orphanIfGone {
+		return a.orphanNativeIfGone(ctx, renderer, c, execution.ID)
 	}
 	if execution.State.Terminal() {
 		return output.NewError(output.CodeInvalidState, "terminal execution cannot be cancelled", false).WithDetail("execution_id", id.String()).WithDetail("state", execution.State)
@@ -1784,17 +1799,18 @@ func buildOutcome(execution model.Execution, result adapter.Result, now time.Tim
 			raw := firstNonEmptyString(result.Error, failureMessageGeneric)
 			code, kind, category, retryable := classifyOutcomeFailure(raw, diagnosticCode, nativeCode, execution.Adapter, stringData(result.Data, "failure_category"))
 			structured, _ := result.Data["failure_structured"].(bool)
-			if execution.Adapter == "zcode" && structured && category == "" && kind == "unknown" {
-				// A structured provider error with no recognized classifier still
-				// gets a visible, bounded generic provider reason.
-				kind, category, retryable = "provider", "provider", false
-			}
+
 			stderrDiagnostic, _ := result.Data["stderr_diagnostic"].(*diagnostic.Stderr)
 			if stderrDiagnostic != nil && stderrDiagnostic.Validate() != nil {
 				stderrDiagnostic = nil
 			}
 			if stderrDiagnostic != nil && code == "native_execution_failed" && category == "" && nativeCode == "" {
 				code, kind, category, retryable = classifyOutcomeFailure(stderrDiagnostic.Message(), stderrDiagnostic.Code, "", execution.Adapter, "")
+			}
+			if execution.Adapter == "zcode" && structured && category == "" && kind == "unknown" {
+				// A structured provider error with no recognized classifier still
+				// gets a visible, bounded generic provider reason.
+				kind, category, retryable = "provider", "provider", false
 			}
 			message := allowlistedFailureMessage(model.OutcomeFailure{Code: code, Category: category, Source: execution.Adapter, NativeCode: nativeCode, Message: raw})
 			message, _ = boundedOutcomeText(message, model.NativeFailureMessageLimit)
@@ -1846,6 +1862,14 @@ func allowlistedFailureMessage(failure model.OutcomeFailure) string {
 		return zcodeCapacityFailureMessage(failure.Message)
 	}
 	switch failure.Code {
+	case "native_event_write_failed":
+		return "native event recording failed; child reaped"
+	case "native_owner_failed":
+		return "native owner failed; child reaped"
+	case "zcode_read_only_project_config_present":
+		return "ZCode read_only launch refused: project configuration or concurrent read_only launch present"
+	case "zcode_read_only_unavailable":
+		return "ZCode read_only launch refused before process start; inspect launch error details"
 	case "provider_capacity":
 		return failureMessageCapacity
 	case "workspace_trust_required":
@@ -1925,6 +1949,12 @@ func withAllowlistedFailure(outcome model.Outcome) model.Outcome {
 func stringData(data map[string]any, key string) string { value, _ := data[key].(string); return value }
 
 func classifyOutcomeFailure(message, diagnosticCode, nativeCode, harness, providerCategory string) (string, string, string, bool) {
+	switch diagnosticCode {
+	case "native_event_write_failed", "native_owner_failed":
+		return diagnosticCode, "observation", "", false
+	case "zcode_read_only_unavailable", "zcode_read_only_project_config_present":
+		return diagnosticCode, "configuration", "", false
+	}
 	if harness == "codex" && (diagnosticCode == "codex_git_repo_check_required" || message == (&diagnostic.Stderr{Code: "codex_git_repo_check_required"}).Message()) {
 		return "codex_git_repo_check_required", "configuration", "", false
 	}
@@ -2022,7 +2052,7 @@ func appendNativeEvent(ctx context.Context, journal *store.Journal, execution mo
 	projection := map[string]any{"authority_scope": execution.Authority, "source_fingerprint": sourceRef(execution).Fingerprint, "kind": kind, "source_state": native.SourceState, "source_position": native.Cursor, "state": state, "payload": payload}
 	key, canonical, err := callback.SemanticDedupeKey(execution.Adapter, 1, projection)
 	if err != nil {
-		return model.Execution{}, err
+		return model.Execution{}, &nativeEventWriteError{stage: "semantic_projection", cause: err}
 	}
 	observedAt := native.ObservedAt
 	if observedAt.IsZero() {
@@ -2055,7 +2085,10 @@ func appendNativeEvent(ctx context.Context, journal *store.Journal, execution mo
 	next.UpdatedAt = observedAt
 	next.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: observedAt, FreshForSeconds: &freshFor}
 	stored, _, _, err := journal.CommitObservedEvent(ctx, next, execution.Revision, event, canonical)
-	return stored, err
+	if err != nil {
+		return stored, &nativeEventWriteError{stage: "commit_observed_event", cause: err}
+	}
+	return stored, nil
 }
 func safeNativePayload(input map[string]any) map[string]any {
 	output := map[string]any{}

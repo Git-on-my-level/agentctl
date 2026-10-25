@@ -663,6 +663,9 @@ func (a *app) delegateFailedExecution(ctx context.Context, c common, execution m
 	if err != nil {
 		return problem
 	}
+	if outcome.NativeExitCode != nil {
+		problem.WithDetail("native_exit_code", *outcome.NativeExitCode)
+	}
 	if view := projectNativeFailure(outcome.Failure); view != nil {
 		problem.Retryable = outcome.Failure.Retryable
 		problem.WithDetail("failure", view)

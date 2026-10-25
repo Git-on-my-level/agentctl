@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Git-on-my-level/agentctl/internal/adapter"
 	"github.com/Git-on-my-level/agentctl/internal/anxrun"
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
@@ -34,6 +35,9 @@ const (
 )
 
 type app struct {
+	// nativeEventWriter injects storage faults in lifecycle tests; nil uses the journal.
+	nativeEventWriter func(context.Context, *store.Journal, model.Execution, adapter.Event) (model.Execution, error)
+
 	startANXWorker  func(common) error
 	stdout, stderr  io.Writer
 	stdin           io.Reader
@@ -1546,6 +1550,8 @@ func writeExecutionReported(renderer output.Renderer, e model.Execution, operati
 }
 
 type nativeFailureView struct {
+	Code       string             `json:"code"`
+	Kind       string             `json:"kind"`
 	Stderr     *diagnostic.Stderr `json:"stderr,omitempty"`
 	Category   string             `json:"category,omitempty"`
 	Message    string             `json:"message"`
@@ -1564,7 +1570,7 @@ func projectNativeFailure(failure *model.OutcomeFailure) *nativeFailureView {
 	if message == "" {
 		return nil
 	}
-	return &nativeFailureView{Stderr: failure.Stderr, Category: failure.Category, Message: message, NativeCode: failure.NativeCode, Retryable: failure.Retryable}
+	return &nativeFailureView{Code: failure.Code, Kind: failure.Kind, Stderr: failure.Stderr, Category: failure.Category, Message: message, NativeCode: failure.NativeCode, Retryable: failure.Retryable}
 }
 
 type reportedExecution struct {

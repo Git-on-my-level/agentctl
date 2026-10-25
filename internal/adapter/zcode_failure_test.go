@@ -82,3 +82,18 @@ func TestZCodeFailureClassifierRecognizesHTTP429(t *testing.T) {
 		t.Fatalf("diagnostic=%#v", diagnostic)
 	}
 }
+
+func TestZCodeProcessExitOverridesEarlierSuccess(t *testing.T) {
+	record := &processRecord{parser: zcodeParser{}, done: make(chan struct{}), ref: SourceRef{Adapter: "zcode", Kind: "zcode_session"}}
+	record.ingest([]byte(`{"sessionId":"s1","turnId":"t1","response":"premature answer"}`), false)
+	if record.result == nil || !record.result.Success {
+		t.Fatal("fixture did not establish earlier success")
+	}
+	record.ingest([]byte("unknown option --secret-value"), true)
+	code := 23
+	record.exitCode = &code
+	record.finish(nil)
+	if record.result.State != StateFailed || record.result.Success || record.result.Content != "" || record.result.ExitCode == nil || *record.result.ExitCode != 23 {
+		t.Fatalf("%+v", record.result)
+	}
+}
