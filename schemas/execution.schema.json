@@ -28,6 +28,19 @@
     "observation"
   ],
   "properties": {
+    "failure": {
+      "type": "object",
+      "required": ["code", "kind", "message", "retryable"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "message": {"type": "string", "maxLength": 4096},
+        "retryable": {"type": "boolean"},
+        "category": {"type": "string"},
+        "native_code": {"type": "string"},
+        "stderr": {"$ref": "outcome.schema.json#/properties/failure/allOf/0/properties/stderr"}
+      }
+    },
     "caller": {
       "type": "object",
       "additionalProperties": false,

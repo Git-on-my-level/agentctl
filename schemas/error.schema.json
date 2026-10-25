@@ -53,7 +53,14 @@
         "exit_code": {
           "enum": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 70]
         },
-        "details": {"type": "object", "properties": {"replayed": {"const": true}, "reused": {"type": "boolean"}, "continuation": {"$ref": "continue-result.schema.json#/properties/continuation"}}},
+        "details": {"type": "object", "properties": {
+          "native_exit_code": {"type": "integer"},
+          "failure": {"$ref": "execution.schema.json#/properties/failure"},
+          "child_reaped": {"type": "boolean"},
+          "terminal_recorded": {"type": "boolean"},
+          "journal_operation": {"enum": ["append_native_event", "semantic_projection", "commit_observed_event"]},
+          "journal_error_class": {"enum": ["event_validation", "busy", "conflict", "corrupt", "permission", "write"]},
+          "replayed": {"const": true}, "reused": {"type": "boolean"}, "continuation": {"$ref": "continue-result.schema.json#/properties/continuation"}}},
         "next_actions": {
           "type": "array",
           "items": {"$ref": "#/$defs/next_action"}

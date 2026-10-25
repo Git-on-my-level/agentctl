@@ -32,6 +32,7 @@ var (
 	ErrCorrupt          = errors.New("journal corruption")
 	ErrTerminalConflict = errors.New("contradictory terminal event")
 	ErrBusy             = errors.New("journal busy")
+	ErrEventValidation  = errors.New("event validation failed")
 )
 
 var (
@@ -479,14 +480,14 @@ func (j *Journal) AppendEvent(ctx context.Context, event model.Event, canonicalP
 func validateEventProjection(event model.Event, canonicalProjection []byte) error {
 	var projectionValue any
 	if err := json.Unmarshal(canonicalProjection, &projectionValue); err != nil {
-		return fmt.Errorf("canonical semantic projection: %w", err)
+		return fmt.Errorf("%w: canonical semantic projection: %v", ErrEventValidation, err)
 	}
 	if err := model.ValidateBoundedMetadata(projectionValue, 64*1024); err != nil {
-		return fmt.Errorf("canonical semantic projection: %w", err)
+		return fmt.Errorf("%w: canonical semantic projection: %v", ErrEventValidation, err)
 	}
 	expectedKey, normalizedProjection, err := callback.SemanticDedupeKey(event.Adapter, uint32(event.DedupeVersion), projectionValue)
 	if err != nil {
-		return fmt.Errorf("canonical semantic projection: %w", err)
+		return fmt.Errorf("%w: canonical semantic projection: %v", ErrEventValidation, err)
 	}
 	if !bytes.Equal(normalizedProjection, canonicalProjection) {
 		return fmt.Errorf("%w: semantic projection is not canonical JSON", ErrConflict)
@@ -565,7 +566,7 @@ func (j *Journal) appendEventTx(tx *bbolt.Tx, event model.Event, canonicalProjec
 		return model.Event{}, false, ErrTerminalConflict
 	}
 	if err := event.Validate(); err != nil {
-		return model.Event{}, false, fmt.Errorf("event validation: %w", err)
+		return model.Event{}, false, fmt.Errorf("%w: event validation: %v", ErrEventValidation, err)
 	}
 	stored := storedEvent{Event: event, Projection: append([]byte(nil), canonicalProjection...)}
 	encoded, err := json.Marshal(stored)

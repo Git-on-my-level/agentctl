@@ -524,7 +524,7 @@ func (p *processRecord) finish(err error) {
 	}
 	// One-shot adapters may print a JSON answer before a later process failure. The
 	// owned process exit is authoritative for this one-shot command.
-	if p.parser != nil && (p.parser.Name() == "openclaw-json" || p.parser.Name() == "hermes-stream-json") && p.result != nil {
+	if p.parser != nil && (p.parser.Name() == "openclaw-json" || p.parser.Name() == "hermes-stream-json" || p.parser.Name() == "zcode-json") && p.result != nil {
 		p.result.ExitCode = p.exitCode
 		if p.cancelled || (p.exitCode != nil && *p.exitCode != 0) {
 			p.result.Success = false
