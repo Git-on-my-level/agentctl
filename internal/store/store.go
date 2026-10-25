@@ -422,6 +422,11 @@ func (j *Journal) ListExecutions(ctx context.Context, nonTerminalOnly bool) ([]m
 	values := []model.Execution{}
 	err := j.db.View(func(tx *bbolt.Tx) error {
 		return tx.Bucket(bExecutions).ForEach(func(_, raw []byte) error {
+			// A large journal must not hold a cancelled or timed-out caller
+			// (and its shared lock) for the whole enumeration.
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			var value model.Execution
 			if err := decodeExecution(tx, raw, &value); err != nil {
 				return corrupt(err)

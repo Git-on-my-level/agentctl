@@ -206,6 +206,11 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 		matches, watched, opened, problem := a.awaitAnyScan(scanCtx, c, options)
 		scanExpired := scanCtx.Err() != nil
 		cancelScan()
+		if problem == nil && scanExpired && !deadline.IsZero() && ctx.Err() == nil {
+			// The scan outlasted its deadline grace: report the timeout
+			// rather than a match found after it.
+			problem = output.NewError(output.CodeTimeout, "await-any scan exceeded its deadline", true)
+		}
 		if problem != nil {
 			if ctx.Err() != nil {
 				return cancelled()
