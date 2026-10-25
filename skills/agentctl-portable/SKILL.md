@@ -128,7 +128,9 @@ native command, or scrape private harness state.
 ## Structured delegation: default for new agents
 
 Read `agentctl help delegate` before `run`. Translate the user's explicit constraints into a
-request; leave everything else absent. “grok” means `{"family":"grok"}`;
+request; leave everything else absent. The selector must include at least
+`family` or `model`; an empty selector is refused during parsing with
+`delegate_invalid_request`, before resolution or launch. “grok” means `{"family":"grok"}`;
 “cursor grok 4.6” means `{"harness":"cursor","family":"grok","version":"4.6"}`.
 Other word orders produce the same constraints. Never guess a version or native
 slug from memory. Add explicit speed/effort under `settings` when requested.
@@ -306,7 +308,10 @@ agentctl recent --unreconciled
 ```
 
 To send review feedback or the next step to an agent that has finished, use a
-follow-up turn instead of a new delegation. Read `agentctl help continue`:
+follow-up turn instead of a new delegation. Only executions launched by
+`delegate` (and their follow-up turns) have the recorded launch plan that
+`continue` needs. Expert `run` executions are refused with
+`continue_launch_plan_missing`. Read `agentctl help continue`:
 
 ```bash
 agentctl continue <exec-id> --request-key <new-key> --prompt-file "$PWD/feedback.md" --plan
@@ -640,7 +645,10 @@ from help alone: the installed gateway rejected it. `recent --summary` includes
 
 When a run works on an Agent Nexus card, label it with the typed label
 `anx.card.<slug>` (or pass `--anx-card card:<slug>` on `delegate`/`run`, which
-adds the same label). Labeled runs register with ANX automatically,
+adds the same label). If `--anx-card` rejects a ref that the ANX CLI confirms,
+use `--label anx.card.<slug>` for that confirmed card: it records the same
+contract. Registration still requires canonical ANX catalog confirmation.
+Labeled runs register with ANX automatically,
 best-effort, and never block or fail: a `running` registration spools at
 launch, and at terminal state agentctl reads the stored outcome through the
 journal's read-only accessor (never `agentctl result`, which acknowledges
