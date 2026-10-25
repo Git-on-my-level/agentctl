@@ -222,8 +222,12 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	if err := operationCtx.Err(); err != nil {
 		return interruptedRunError(err, model.Execution{})
 	}
-	journal, problem := a.openWrite(c)
+	// A busy journal must not hold run past its --timeout or a signal.
+	journal, problem := a.openWriteContext(operationCtx, c)
 	if problem != nil {
+		if err := operationCtx.Err(); err != nil {
+			return interruptedRunError(err, model.Execution{})
+		}
 		return problem
 	}
 	now := a.now().UTC()
