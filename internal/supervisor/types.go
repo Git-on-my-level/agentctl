@@ -357,8 +357,11 @@ type Config struct {
 	// executions cannot hold back callback delivery or other executions'
 	// recovery; the remainder rotates into the next cycle.
 	RecoveryBudget time.Duration
-	Clock          Clock
-	TailnetHook    TailnetHookConfig
+	// RecoveryProbeFloor is the least budget a reprobe is started with (capped
+	// at RecoveryBudget); with less left the pass defers to the next cycle.
+	RecoveryProbeFloor time.Duration
+	Clock              Clock
+	TailnetHook        TailnetHookConfig
 }
 
 // DefaultConfig returns conservative local-only defaults.  Tailnet HTTP is
@@ -372,6 +375,7 @@ func DefaultConfig() Config {
 		RetryMax:              5 * time.Minute,
 		ShutdownTimeout:       10 * time.Second,
 		RecoveryBudget:        30 * time.Second,
+		RecoveryProbeFloor:    10 * time.Second,
 		Clock:                 RealClock{},
 	}
 }

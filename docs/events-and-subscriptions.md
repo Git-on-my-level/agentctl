@@ -231,7 +231,9 @@ delivery is retrying or a delivery was dead-lettered in the last cycle.
 Reprobe errors name their execution in `last_error`; a fully clean cycle
 clears `last_error` and returns health to `healthy` (`last_error_at` keeps
 when the latest error happened). Each cycle's reprobe pass is bounded (30s by
-default); executions it did not reach are counted in
+default). A probe starts only with at least 10s of that budget left and is cut
+off at the budget; a probe that hits it is reported as stalled for its
+execution and not applied. Executions the pass did not reach are counted in
 `last_cycle_recovery_deferred` and examined first by the next cycle, so a slow
 authority never holds back delivery or other executions.
 
