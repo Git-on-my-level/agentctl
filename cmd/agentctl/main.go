@@ -44,6 +44,8 @@ type app struct {
 	// nil and reads the kernel process table; tests inject a deterministic proof.
 	processProof func(processIdentity) processProof
 	updateNotice func(context.Context, string, common) *output.Warning
+	// liveOwners overrides the host process scan that defers binary updates while execution owners run.
+	liveOwners func() (int, error)
 	// supervisorHealthProbe overrides the owner-only supervisor status RPC that
 	// doctor folds into its readiness report. Production leaves it nil and
 	// dials the socket; tests inject a bounded fake health response.

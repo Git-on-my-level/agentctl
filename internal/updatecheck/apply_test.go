@@ -430,3 +430,89 @@ func releaseArchive(t *testing.T, root string, binary []byte) []byte {
 	}
 	return result.Bytes()
 }
+
+func TestApplyDefersWhileExecutionOwnersAreLive(t *testing.T) {
+	prefix := testutil.TempDir(t)
+	executable := filepath.Join(prefix, "bin", "agentctl")
+	oldBinary := []byte("#!/bin/sh\nexit 0\n")
+	writeManagedInstall(t, prefix, executable, oldBinary)
+	downloads := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/latest" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": "v0.3.4"})
+			return
+		}
+		downloads++
+		http.NotFound(w, request)
+	}))
+	defer server.Close()
+	statePath := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
+	options := ApplyOptions{Check: Options{CurrentVersion: "v0.3.3", StatePath: statePath, Endpoint: server.URL + "/latest", Client: server.Client(), Getenv: func(string) string { return "" }}, Executable: executable, ReleaseBaseURL: server.URL, Client: server.Client(),
+		LiveOwners: func() (int, error) { return 2, nil }}
+	_, err := Apply(context.Background(), options)
+	var applyError *ApplyError
+	if !errors.As(err, &applyError) || applyError.Code != "live_owners_deferred" || !applyError.Retryable {
+		t.Fatalf("err=%v apply error=%#v", err, applyError)
+	}
+	if downloads != 0 {
+		t.Fatalf("deferred update downloaded %d release files", downloads)
+	}
+	if installed, _ := os.ReadFile(executable); !bytes.Equal(installed, oldBinary) {
+		t.Fatalf("deferred update changed the executable")
+	}
+	state, err := readState(statePath)
+	if err != nil || state.CheckedOn != "" || state.LastErrorCode != "live_owners_deferred" {
+		t.Fatalf("state=%#v err=%v: a deferral must stay due for a later retry", state, err)
+	}
+
+	options.LiveOwners = func() (int, error) { return 0, errors.New("ps failed") }
+	_, err = Apply(context.Background(), options)
+	if !errors.As(err, &applyError) || applyError.Code != "live_owners_unknown" {
+		t.Fatalf("unknown owner count must defer, got %v", err)
+	}
+
+	options.LiveOwners = func() (int, error) { return 2, nil }
+	options.AllowLiveOwners = true
+	_, err = Apply(context.Background(), options)
+	if errors.As(err, &applyError) && strings.HasPrefix(applyError.Code, "live_owners") {
+		t.Fatalf("--allow-live-owners must proceed past the owner check, got %v", err)
+	}
+	if downloads == 0 {
+		t.Fatalf("allowed update never reached the download")
+	}
+}
+
+func TestApplyRechecksOwnersImmediatelyBeforeInstall(t *testing.T) {
+	prefix := testutil.TempDir(t)
+	executable := filepath.Join(prefix, "bin", "agentctl")
+	oldBinary := []byte("#!/bin/sh\nexit 0\n")
+	writeManagedInstall(t, prefix, executable, oldBinary)
+	archiveName := fmt.Sprintf("agentctl_v0.3.4_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	archive := releaseArchive(t, strings.TrimSuffix(archiveName, ".tar.gz"), []byte("#!/bin/sh\nprintf new\n"))
+	digest := sha256.Sum256(archive)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.URL.Path == "/latest":
+			_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": "v0.3.4"})
+		case strings.HasSuffix(request.URL.Path, "/SHA256SUMS"):
+			fmt.Fprintf(w, "%s  %s\n", hex.EncodeToString(digest[:]), archiveName)
+		case strings.HasSuffix(request.URL.Path, "/"+archiveName):
+			_, _ = w.Write(archive)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	statePath := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
+	calls := 0
+	// No owners when the update starts; one starts while the archive downloads.
+	owners := func() (int, error) { calls++; return map[bool]int{true: 0, false: 1}[calls == 1], nil }
+	_, err := Apply(context.Background(), ApplyOptions{Check: Options{CurrentVersion: "v0.3.3", StatePath: statePath, Endpoint: server.URL + "/latest", Client: server.Client(), Getenv: func(string) string { return "" }}, Executable: executable, ReleaseBaseURL: server.URL, Client: server.Client(), LiveOwners: owners})
+	var applyError *ApplyError
+	if !errors.As(err, &applyError) || applyError.Code != "live_owners_deferred" || calls != 2 {
+		t.Fatalf("err=%v calls=%d", err, calls)
+	}
+	if installed, _ := os.ReadFile(executable); !bytes.Equal(installed, oldBinary) {
+		t.Fatal("an owner that started mid-download was overwritten")
+	}
+}

@@ -69,11 +69,9 @@ func TestReview4ANXStatusConfigurationPrivacy(t *testing.T) {
 
 func TestANXStatusDisclosesSafeConfiguration(t *testing.T) {
 	for _, format := range []string{"json", "text"} {
-		root, err := os.MkdirTemp(os.TempDir(), "status-")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = os.RemoveAll(root) })
+		// A short /tmp root: macOS TMPDIR sits under the /var symlink and has a random component
+		// (e.g. 4wd8xf9s0z175zhynpxrt4g80000gn) that disclosure redaction correctly treats as high-entropy.
+		root := testutil.SocketDir(t)
 		spoolPath := filepath.Join(root, "david", "private-spool")
 		configPath := filepath.Join(root, "config.json")
 		doc := map[string]any{"schema_version": 1, "anx": map[string]any{"run_links": map[string]any{"workspace_alias": "shared-work", "spool_dir": spoolPath}}}

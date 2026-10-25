@@ -31,6 +31,12 @@ type ApplyOptions struct {
 	Executable     string
 	ReleaseBaseURL string
 	Client         *http.Client
+	// LiveOwners reports how many other agentctl processes currently own executions. A binary replacement while
+	// owners on the old version are live can kill them mid-run (2026-10-25: a v0.16.1 auto-update left a v0.15 owner
+	// failing "record native event" with exit 70), so Apply defers instead. Nil skips the check.
+	LiveOwners func() (int, error)
+	// AllowLiveOwners installs even when LiveOwners reports owners (`agentctl update now --allow-live-owners`).
+	AllowLiveOwners bool
 }
 
 type ApplyResult struct {
@@ -106,6 +112,9 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 		return result, recordApplyError(options.Check.StatePath, "unmanaged_install", err)
 	}
 
+	if err := checkLiveOwners(options); err != nil {
+		return result, err
+	}
 	client := options.Client
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
@@ -149,6 +158,10 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	if !regularExecutable(binary) || !regularExecutable(installer) {
 		return result, recordApplyError(options.Check.StatePath, "archive_invalid", errors.New("release archive omitted executable binary or installer"))
 	}
+	// Owners can start during the downloads; check again immediately before the binary is replaced.
+	if err := checkLiveOwners(options); err != nil {
+		return result, err
+	}
 	command := exec.CommandContext(ctx, installer, "--binary", binary, "--prefix", prefix, "--name", filepath.Base(executable))
 	command.Env = replaceEnvironment(os.Environ(), "AGENTCTL_UPDATE_MODE", "off")
 	var output boundedBuffer
@@ -166,6 +179,21 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 // ReconcileInstalledVersion records the running binary after a manual install
 // or before an explicit release check. Clearing installed_at avoids attributing
 // the previous binary's install time to this one.
+// checkLiveOwners defers the update while other agentctl execution owners run, unless AllowLiveOwners.
+func checkLiveOwners(options ApplyOptions) error {
+	if options.LiveOwners == nil || options.AllowLiveOwners {
+		return nil
+	}
+	owners, err := options.LiveOwners()
+	if err != nil {
+		return recordApplyError(options.Check.StatePath, "live_owners_unknown", err)
+	}
+	if owners > 0 {
+		return recordApplyError(options.Check.StatePath, "live_owners_deferred", fmt.Errorf("%d agentctl execution owner processes are running", owners))
+	}
+	return nil
+}
+
 func ReconcileInstalledVersion(path, current string) error {
 	if _, valid := parseVersion(current); !valid {
 		return nil
@@ -517,6 +545,10 @@ func safeApplyCause(code string, cause error) string {
 		return "release archive is invalid"
 	case "install_failed":
 		return "packaged installer failed"
+	case "live_owners_deferred":
+		return "deferred: agentctl execution owners are running; retry when they finish"
+	case "live_owners_unknown":
+		return "deferred: running agentctl execution owners could not be counted"
 	default:
 		return "update failed"
 	}
@@ -524,7 +556,7 @@ func safeApplyCause(code string, cause error) string {
 
 func retryableApplyError(code string) bool {
 	switch code {
-	case "release_check_failed", "state_reconcile_failed", "state_record_failed", "state_lock_failed", "state_write_failed", "checksum_download_failed", "archive_download_failed", "staging_failed", "install_failed":
+	case "release_check_failed", "state_reconcile_failed", "state_record_failed", "state_lock_failed", "state_write_failed", "checksum_download_failed", "archive_download_failed", "staging_failed", "install_failed", "live_owners_deferred", "live_owners_unknown":
 		return true
 	default:
 		return false
