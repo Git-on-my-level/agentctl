@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,7 +72,7 @@ func TestZCodeInstantExitClassifiesFirstStderr(t *testing.T) {
 }
 
 func TestZCodePrelaunchRefusalClassified(t *testing.T) {
-	for _, reason := range []string{"", "project_config_present"} {
+	for _, reason := range []string{"", adapter.ZCodeReasonProjectConfigPresent} {
 		result := nativeLaunchFailure(&adapter.AdapterError{Code: adapter.ErrCapabilityUnavailable, Message: "zcode read_only profile refused: private directory", Details: map[string]any{"diagnostic_code": "zcode_read_only_unavailable", "reason_code": reason}}, adapter.StateFailed)
 		e := model.Execution{Adapter: "zcode", State: model.StateFailed}
 		outcome := buildOutcome(e, result, time.Now(), false)
@@ -87,34 +88,40 @@ func TestZCodePrelaunchRefusalClassified(t *testing.T) {
 
 func TestZCodeOrphanRepairGoneAndRefusesAlive(t *testing.T) {
 	for _, state := range []string{"gone", "alive", "unproven"} {
-		t.Run(state, func(t *testing.T) {
-			gone := state == "gone"
-			world := seedReconcileWorld(t)
-			journal, err := store.Open(world.path, store.Options{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			world.gone = mustCreateRunning(t, journal, "zcode", "zcode_session", "4242", world.now.Add(-48*time.Hour), nil)
-			if err := journal.Close(); err != nil {
-				t.Fatal(err)
-			}
-			var stdout, stderr bytes.Buffer
-			a := testApp(&stdout, &stderr)
-			a.now = func() time.Time { return world.now }
-			a.processProof = func(id processIdentity) processProof {
-				return processProof{Gone: gone, Alive: state == "alive", Present: !gone, Proof: map[string]string{"gone": "pid_absent", "alive": "pid_alive", "unproven": "start_unproven"}[state]}
-			}
-			code := a.run(context.Background(), []string{"--journal", world.path, "cancel", world.gone.ID.String(), "--orphan-if-gone"})
-			if gone {
-				if code != 0 || !strings.Contains(stdout.String(), `"state":"orphaned"`) || !strings.Contains(stdout.String(), "owner_lost") {
-					t.Fatalf("code=%d %s", code, stdout.String())
+		for _, flagFirst := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/flagFirst=%t", state, flagFirst), func(t *testing.T) {
+				gone := state == "gone"
+				world := seedReconcileWorld(t)
+				journal, err := store.Open(world.path, store.Options{})
+				if err != nil {
+					t.Fatal(err)
 				}
-			} else {
-				if code != output.ExitCodeFor(output.CodeInvalidState) {
-					t.Fatalf("code=%d %s", code, stdout.String())
+				world.gone = mustCreateRunning(t, journal, "zcode", "zcode_session", "4242", world.now.Add(-48*time.Hour), nil)
+				if err := journal.Close(); err != nil {
+					t.Fatal(err)
 				}
-				assertUntouched(t, world.path, world.gone)
-			}
-		})
+				var stdout, stderr bytes.Buffer
+				a := testApp(&stdout, &stderr)
+				a.now = func() time.Time { return world.now }
+				a.processProof = func(id processIdentity) processProof {
+					return processProof{Gone: gone, Alive: state == "alive", Present: !gone, Proof: map[string]string{"gone": "pid_absent", "alive": "pid_alive", "unproven": "start_unproven"}[state]}
+				}
+				args := []string{world.gone.ID.String(), "--orphan-if-gone"}
+				if flagFirst {
+					args = []string{"--orphan-if-gone", world.gone.ID.String()}
+				}
+				code := a.run(context.Background(), append([]string{"--journal", world.path, "cancel"}, args...))
+				if gone {
+					if code != 0 || !strings.Contains(stdout.String(), `"state":"orphaned"`) || !strings.Contains(stdout.String(), "owner_lost") {
+						t.Fatalf("code=%d %s", code, stdout.String())
+					}
+				} else {
+					if code != output.ExitCodeFor(output.CodeInvalidState) {
+						t.Fatalf("code=%d %s", code, stdout.String())
+					}
+					assertUntouched(t, world.path, world.gone)
+				}
+			})
+		}
 	}
 }

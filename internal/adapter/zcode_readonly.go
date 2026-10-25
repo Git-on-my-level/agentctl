@@ -19,6 +19,10 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/launchrecipe"
 )
 
+// ZCodeReasonProjectConfigPresent identifies a read-only launch refused because
+// project configuration could override the reviewed profile.
+const ZCodeReasonProjectConfigPresent = "project_config_present"
+
 // zcodeReadOnlyVersions are the ZCode CLI versions whose read-only surface was
 // reviewed. A new version can add a tool or change config semantics, so any
 // other version refuses rather than inherit the read_only label.
@@ -74,7 +78,7 @@ func prepareZCodeLaunch(cwd string, argv, env []string) (func(), []string, error
 	refuse := func(reason string) error {
 		reasonCode := "profile_unavailable"
 		if strings.HasPrefix(reason, "a ZCode project config is present at ") {
-			reasonCode = "project_config_present"
+			reasonCode = ZCodeReasonProjectConfigPresent
 		}
 		return &AdapterError{Code: ErrCapabilityUnavailable, Message: "zcode read_only profile refused: " + reason, Retryable: false,
 			Details: map[string]any{"diagnostic_code": "zcode_read_only_unavailable", "reason_code": reasonCode, "cwd": cwd}}
