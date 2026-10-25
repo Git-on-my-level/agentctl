@@ -155,6 +155,10 @@ func openJournalWithBusyBudget(ctx context.Context, path string, options store.O
 			return nil, err
 		}
 		lastErr = err
+		if err := ctx.Err(); err != nil {
+			// Cancellation or the caller's deadline wins over "busy".
+			return nil, err
+		}
 		remaining = time.Until(deadline)
 		if remaining <= 0 {
 			return nil, &journalBusyError{attempts: attempt, waited: time.Since(start), budget: budget, err: lastErr}

@@ -1189,12 +1189,15 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		}
 		openCtx, cancelOpen := a.waitOpenContext(ctx, deadline)
 		journal, openErr := a.openReadContext(openCtx, c)
+		// Classify by whether the open's own deadline expired, captured before
+		// cancelOpen makes every context report cancelled.
+		openExpired := openCtx.Err() != nil
 		cancelOpen()
 		if openErr != nil {
 			if ctx.Err() != nil {
 				return a.fail(renderer, output.Wrap(output.CodeExecutionCancelled, "await cancelled", false, ctx.Err()).WithDetail("execution_id", id.String()))
 			}
-			if !deadline.IsZero() && openCtx.Err() != nil {
+			if !deadline.IsZero() && openExpired {
 				return a.fail(renderer, output.NewError(output.CodeTimeout, "await deadline elapsed while the journal was busy", true).WithDetail("execution_id", id.String()))
 			}
 			return a.fail(renderer, openErr)
@@ -1421,6 +1424,16 @@ func openJournalWithRetryLoop(ctx context.Context, path string, options store.Op
 			}
 			if openOptions.LockTimeout == 0 || openOptions.LockTimeout > lockTimeout {
 				openOptions.LockTimeout = lockTimeout
+			}
+		} else if deadline, ok := ctx.Deadline(); ok {
+			// Even the legacy two-attempt open (busy budget 0) must not wait on
+			// the lock past the caller's deadline.
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return nil, context.DeadlineExceeded
+			}
+			if openOptions.LockTimeout == 0 || openOptions.LockTimeout > remaining {
+				openOptions.LockTimeout = remaining
 			}
 		}
 		journal, openErr := store.Open(path, openOptions)

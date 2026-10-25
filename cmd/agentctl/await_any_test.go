@@ -309,3 +309,31 @@ func TestAwaitAnyTimeoutBoundsBusyJournal(t *testing.T) {
 		t.Fatalf("await ignored --timeout while the journal was busy: %s", elapsed)
 	}
 }
+
+// With the legacy two-attempt open (busy budget 0) a held journal still cannot
+// keep await or await-any past --timeout: each lock wait is capped by the
+// caller's deadline instead of bbolt's default lock timeout.
+func TestAwaitTimeoutBoundsBusyJournalWithZeroBudget(t *testing.T) {
+	journalPath := filepath.Join(testutil.TempDir(t), "state", "journal.db")
+	source := completedRun(t, journalPath, "lane.busy0")
+	holder, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	for _, args := range [][]string{
+		{"await", source, "--timeout", "1s"},
+		{"await-any", "--label-prefix", "lane.", "--timeout", "1s"},
+	} {
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		start := time.Now()
+		code := a.run(context.Background(), append([]string{"--output", "json", "--journal", journalPath, "--journal-busy-budget", "0"}, args...))
+		if code != output.ExitCodeFor(output.CodeTimeout) {
+			t.Fatalf("%v under a held journal exit=%d output=%s", args, code, stdout.String())
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Fatalf("%v with busy budget 0 ignored --timeout: %s", args, elapsed)
+		}
+	}
+}
