@@ -33,13 +33,16 @@ type probeRetry struct {
 
 type Supervisor struct {
 	probeRetries map[string]probeRetry
-	startMu      sync.Mutex
-	stateLock    *os.File
-	mu           sync.RWMutex
-	cycle        sync.Mutex
-	cfg          Config
-	deps         Dependencies
-	health       Health
+	// recoveryAfter is the last execution ID a budget-limited recovery pass
+	// examined; the next pass resumes after it so every execution is reached.
+	recoveryAfter string
+	startMu       sync.Mutex
+	stateLock     *os.File
+	mu            sync.RWMutex
+	cycle         sync.Mutex
+	cfg           Config
+	deps          Dependencies
+	health        Health
 
 	running        bool
 	stopping       bool
@@ -102,6 +105,9 @@ func normalizeConfig(cfg Config) Config {
 	}
 	if cfg.ShutdownTimeout == 0 {
 		cfg.ShutdownTimeout = defaults.ShutdownTimeout
+	}
+	if cfg.RecoveryBudget == 0 {
+		cfg.RecoveryBudget = defaults.RecoveryBudget
 	}
 	if cfg.Clock == nil {
 		cfg.Clock = defaults.Clock
@@ -428,6 +434,7 @@ func (s *Supervisor) abortStartup(err error) {
 	s.stopping = true
 	s.health.State = HealthStopping
 	s.health.LastError = boundedError(err)
+	s.health.LastErrorAt = s.cfg.Clock.Now()
 	ln, stop, done := s.ln, s.stop, s.done
 	shutdownDone := s.shutdownDone
 	s.ln = nil
@@ -489,10 +496,21 @@ func (s *Supervisor) RunOnce(ctx context.Context) (report CycleReport, runErr er
 	s.health.LastOutboxAt = now
 	s.health.LastCycleReprobeErrors = len(recovery.Failures)
 	s.health.LastCycleDeliveryErrors = len(delivery.Failures)
-	if len(recovery.Failures) > 0 || len(delivery.Failures) > 0 {
+	s.health.LastCycleRecoveryDeferred = recovery.Deferred
+	s.health.RetryingDeliveries = delivery.Retrying
+	// A dead letter is a delivery lost to its receiver: degraded for the cycle.
+	// An execution whose last reprobe failed stays unresolved (probeRetries)
+	// until a probe succeeds, even when a budget-limited pass did not reach it.
+	if len(recovery.Failures) > 0 || len(delivery.Failures) > 0 || delivery.Retrying > 0 || delivery.DeadLettered > 0 || len(s.probeRetries) > 0 {
 		s.health.State = HealthDegraded
-	} else if s.health.State == HealthStarting || s.health.State == HealthDegraded {
-		s.health.State = HealthHealthy
+	} else {
+		// A fully clean cycle is recovery: a stale error must not keep
+		// describing a supervisor that is now working.
+		s.health.LastError = ""
+		s.health.LastDeliveryError = ""
+		if s.health.State == HealthStarting || s.health.State == HealthDegraded {
+			s.health.State = HealthHealthy
+		}
 	}
 	s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -526,6 +544,17 @@ func (s *Supervisor) recoverWith(ctx context.Context, deps Dependencies) Recover
 	}
 	sort.Slice(nonTerminal, func(i, j int) bool { return nonTerminal[i].ID < nonTerminal[j].ID })
 	report.Examined = len(nonTerminal)
+	// Resume after the execution a previous budget-limited pass stopped at,
+	// wrapping around, so a slow prefix of the ID order cannot starve the rest.
+	if s.recoveryAfter != "" {
+		start := sort.Search(len(nonTerminal), func(i int) bool { return nonTerminal[i].ID > s.recoveryAfter })
+		rotated := make([]Execution, 0, len(nonTerminal))
+		rotated = append(rotated, nonTerminal[start:]...)
+		rotated = append(rotated, nonTerminal[:start]...)
+		nonTerminal = rotated
+		s.recoveryAfter = ""
+	}
+	budgetStart := s.cfg.Clock.Now()
 	live := make(map[string]bool, len(nonTerminal))
 	for _, execution := range nonTerminal {
 		live[execution.ID] = true
@@ -535,7 +564,12 @@ func (s *Supervisor) recoverWith(ctx context.Context, deps Dependencies) Recover
 			delete(s.probeRetries, id)
 		}
 	}
-	for _, execution := range nonTerminal {
+	for index, execution := range nonTerminal {
+		if s.cfg.RecoveryBudget > 0 && index > 0 && s.cfg.Clock.Now().Sub(budgetStart) >= s.cfg.RecoveryBudget {
+			report.Deferred = len(nonTerminal) - index
+			s.recoveryAfter = nonTerminal[index-1].ID
+			break
+		}
 		retry := s.probeRetries[execution.ID]
 		if retry.revision == execution.Revision && s.cfg.Clock.Now().Before(retry.next) {
 			report.Failures = append(report.Failures, RecoveryFailure{ExecutionID: execution.ID, Error: retry.diagnostic})
@@ -545,7 +579,37 @@ func (s *Supervisor) recoverWith(ctx context.Context, deps Dependencies) Recover
 			report.Failures = append(report.Failures, RecoveryFailure{ExecutionID: execution.ID, Error: boundedError(err)})
 			break
 		}
-		result, err := deps.Reprober.Reprobe(ctx, execution)
+		probeCtx, cancelProbe := ctx, context.CancelFunc(func() {})
+		if s.cfg.RecoveryBudget > 0 {
+			// One stalled reprobe must not hold the cycle (and delivery) past
+			// the recovery budget.
+			remaining := s.cfg.RecoveryBudget - s.cfg.Clock.Now().Sub(budgetStart)
+			if remaining < time.Second {
+				remaining = time.Second
+			}
+			probeCtx, cancelProbe = context.WithTimeout(ctx, remaining)
+		}
+		result, err := deps.Reprober.Reprobe(probeCtx, execution)
+		budgetExpired := probeCtx.Err() != nil && ctx.Err() == nil
+		cancelProbe()
+		if err != nil && budgetExpired {
+			// Record the stall (with the usual probe backoff), then defer the
+			// rest to the next cycle, which resumes after this execution.
+			if retry.revision != execution.Revision {
+				retry = probeRetry{revision: execution.Revision}
+			}
+			if retry.attempts < 5 {
+				retry.attempts++
+			}
+			retry.next = s.cfg.Clock.Now().Add(time.Duration(1<<retry.attempts) * 5 * time.Second)
+			retry.diagnostic = "reprobe exceeded the cycle recovery budget"
+			s.probeRetries[execution.ID] = retry
+			report.Failures = append(report.Failures, RecoveryFailure{ExecutionID: execution.ID, Error: "reprobe exceeded the cycle recovery budget: " + boundedError(err)})
+			s.recordError(fmt.Errorf("reprobe execution %s exceeded the cycle recovery budget: %w", execution.ID, err))
+			report.Deferred = len(nonTerminal) - index - 1
+			s.recoveryAfter = execution.ID
+			break
+		}
 		if err != nil {
 			if retry.revision != execution.Revision {
 				retry = probeRetry{revision: execution.Revision}
@@ -557,7 +621,7 @@ func (s *Supervisor) recoverWith(ctx context.Context, deps Dependencies) Recover
 			retry.diagnostic = boundedError(err)
 			s.probeRetries[execution.ID] = retry
 			report.Failures = append(report.Failures, RecoveryFailure{ExecutionID: execution.ID, Error: boundedError(err)})
-			s.recordError(err)
+			s.recordError(fmt.Errorf("reprobe execution %s: %w", execution.ID, err))
 			continue
 		}
 		delete(s.probeRetries, execution.ID)
@@ -567,7 +631,7 @@ func (s *Supervisor) recoverWith(ctx context.Context, deps Dependencies) Recover
 		}
 		if err := deps.Executions.ApplyProbe(ctx, execution.ID, result); err != nil {
 			report.Failures = append(report.Failures, RecoveryFailure{ExecutionID: execution.ID, Error: boundedError(err)})
-			s.recordError(err)
+			s.recordError(fmt.Errorf("apply probe for execution %s: %w", execution.ID, err))
 			continue
 		}
 		report.Applied++
@@ -599,26 +663,24 @@ func (s *Supervisor) drainOutboxWith(ctx context.Context, deps Dependencies) Del
 	for _, entry := range entries {
 		if report.Attempted >= s.cfg.MaxDeliveriesPerCycle {
 			report.Skipped++
+			if entry.Attempts > 0 {
+				report.Retrying++
+			}
 			continue
 		}
 		if !entry.ExpiresAt.IsZero() && !now.Before(entry.ExpiresAt) {
-			report.DeadLettered++
-			if err := deps.Outbox.DeadLetter(ctx, entry.ID, "expired"); err != nil {
-				report.Failures = append(report.Failures, DeliveryFailure{DeliveryID: entry.ID, Attempt: entry.Attempts, Action: "dead_letter", Error: boundedError(err)})
-				s.recordError(err)
-			}
+			s.deadLetter(ctx, deps, &report, entry, entry.Attempts, "expired", errors.New("expired before delivery"))
 			continue
 		}
 		if !entry.NextAttemptAt.IsZero() && entry.NextAttemptAt.After(now) {
 			report.Skipped++
+			if entry.Attempts > 0 {
+				report.Retrying++
+			}
 			continue
 		}
 		if entry.ExpiresAt.IsZero() && entry.Attempts >= s.cfg.MaxDeliveryAttempts && !entry.AttemptInFlight {
-			report.DeadLettered++
-			if err := deps.Outbox.DeadLetter(ctx, entry.ID, "retry limit exceeded"); err != nil {
-				report.Failures = append(report.Failures, DeliveryFailure{DeliveryID: entry.ID, Attempt: entry.Attempts, Action: "dead_letter", Error: boundedError(err)})
-				s.recordError(err)
-			}
+			s.deadLetter(ctx, deps, &report, entry, entry.Attempts, "retry limit exceeded", errors.New("retry limit exceeded"))
 			continue
 		}
 		attempt := entry.Attempts + 1
@@ -641,11 +703,7 @@ func (s *Supervisor) drainOutboxWith(ctx context.Context, deps Dependencies) Del
 				attempt = entry.Attempts
 				beganAttempt = true
 				if entry.ExpiresAt.IsZero() && entry.Attempts > s.cfg.MaxDeliveryAttempts {
-					report.DeadLettered++
-					if deadErr := deps.Outbox.DeadLetter(ctx, entry.ID, "retry limit exceeded"); deadErr != nil {
-						report.Failures = append(report.Failures, DeliveryFailure{DeliveryID: entry.ID, Attempt: entry.Attempts, Action: "dead_letter", Error: boundedError(deadErr)})
-						s.recordError(deadErr)
-					}
+					s.deadLetter(ctx, deps, &report, entry, entry.Attempts, "retry limit exceeded", errors.New("retry limit exceeded"))
 					continue
 				}
 			}
@@ -665,18 +723,18 @@ func (s *Supervisor) drainOutboxWith(ctx context.Context, deps Dependencies) Del
 		}
 		retryable := classifyDeliveryError(err)
 		if !retryable || entry.ExpiresAt.IsZero() && attempt >= s.cfg.MaxDeliveryAttempts {
-			report.DeadLettered++
 			reason := boundedError(err)
 			if !retryable {
 				reason = "permanent: " + reason
 			}
-			if dlErr := deps.Outbox.DeadLetter(ctx, entry.ID, reason); dlErr != nil {
-				report.Failures = append(report.Failures, DeliveryFailure{DeliveryID: entry.ID, Attempt: attempt, Action: "dead_letter", Error: boundedError(dlErr)})
-				s.recordError(dlErr)
-			}
+			// The transport failure itself is this cycle's delivery failure.
+			report.Failures = append(report.Failures, DeliveryFailure{DeliveryID: entry.ID, Attempt: attempt, Action: "deliver", Error: reason})
+			s.deadLetter(ctx, deps, &report, entry, attempt, reason, err)
 			continue
 		}
 		report.Retried++
+		report.Retrying++
+		s.recordDeliveryError(entry, attempt, err)
 		next := now.Add(backoff(s.cfg.RetryBase, s.cfg.RetryMax, attempt))
 		if retryErr := deps.Outbox.Retry(ctx, entry.ID, next, boundedError(err)); retryErr != nil {
 			report.Failures = append(report.Failures, DeliveryFailure{DeliveryID: entry.ID, Attempt: attempt, Action: "retry", Error: boundedError(retryErr)})
@@ -734,7 +792,32 @@ func (s *Supervisor) recordError(err error) {
 	}
 	s.mu.Lock()
 	s.health.LastError = boundedError(err)
+	s.health.LastErrorAt = s.cfg.Clock.Now()
 	s.health.State = HealthDegraded
+	s.mu.Unlock()
+}
+
+// deadLetter moves one delivery to the dead-letter store. It counts the
+// delivery as dead-lettered only once that write succeeds (otherwise it stays
+// pending) and records the loss, naming delivery, subscription and execution.
+func (s *Supervisor) deadLetter(ctx context.Context, deps Dependencies, report *DeliveryReport, entry Delivery, attempt int, reason string, cause error) {
+	if err := deps.Outbox.DeadLetter(ctx, entry.ID, reason); err != nil {
+		report.Failures = append(report.Failures, DeliveryFailure{DeliveryID: entry.ID, Attempt: attempt, Action: "dead_letter", Error: boundedError(err)})
+		s.recordError(fmt.Errorf("dead-letter delivery %s (subscription %s, execution %s): %w", entry.ID, entry.SubscriptionID, entry.ExecutionID, err))
+		return
+	}
+	report.DeadLettered++
+	s.recordDeliveryError(entry, attempt, fmt.Errorf("dead-lettered (%s): %w", reason, cause))
+}
+
+// recordDeliveryError keeps the most recent transport failure, naming the
+// delivery, subscription and execution so an operator can find and fix the
+// destination without reading the journal.
+func (s *Supervisor) recordDeliveryError(entry Delivery, attempt int, err error) {
+	described := fmt.Errorf("delivery %s (subscription %s, execution %s) attempt %d: %w", entry.ID, entry.SubscriptionID, entry.ExecutionID, attempt, err)
+	s.recordError(described)
+	s.mu.Lock()
+	s.health.LastDeliveryError = boundedError(described)
 	s.mu.Unlock()
 }
 
@@ -742,6 +825,7 @@ func (s *Supervisor) setFailed(err error) {
 	s.mu.Lock()
 	s.health.State = HealthFailed
 	s.health.LastError = boundedError(err)
+	s.health.LastErrorAt = s.cfg.Clock.Now()
 	s.mu.Unlock()
 }
 

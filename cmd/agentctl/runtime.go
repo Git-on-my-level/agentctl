@@ -2043,7 +2043,12 @@ func appendNativeEvent(ctx context.Context, journal *store.Journal, execution mo
 	case model.StateStarting, model.StateRunning:
 		next.Liveness = model.LivenessAlive
 	}
-	if kind != model.EventHealth && (next.State != execution.State || !sameSourceState(next.SourceState, execution.SourceState)) {
+	// Repeated same-state events are heartbeats, except activity-source
+	// observations: each one is new agent activity. Without that exception a
+	// silent-stdout native run (zcode) froze progress_at at its first activity
+	// event and looked stalled to watchers for the rest of the run.
+	activity := kind == model.EventProgress && adapter.IsActivityObservation(native.SourceState)
+	if kind != model.EventHealth && (activity || next.State != execution.State || !sameSourceState(next.SourceState, execution.SourceState)) {
 		next.RecordProgress(observedAt)
 	}
 	freshFor := int(nativeEventFreshness / time.Second)

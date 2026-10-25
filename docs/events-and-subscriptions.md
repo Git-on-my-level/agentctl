@@ -174,6 +174,11 @@ use `.` or `-` as separators, for example `two-lane.<lane>` or
 drive a parent agent without subscribing it to progress chatter. `--kind all`
 is an explicit broad subscription for every kind except `acknowledged`, while `--kind <names>` narrows the set.
 `acknowledged` is delivered only when the filter lists that kind.
+An exact-execution subscription is level-triggered for terminal state: when
+the execution is already terminal at creation and the filter includes
+`terminal`, its recorded terminal event is enqueued in the creating
+transaction, so a subscription made just after the run ended still fires.
+Label-prefix subscriptions stay forward-only.
 `--authority direct` is normalized to the stored native authority; display
 labels are insufficient authority identifiers.
 
@@ -210,6 +215,25 @@ unix            Local Unix socket
 webhook         Signed HTTP request with retry/outbox
 command         Explicit argv receiving an owner-only event file path
 ```
+
+A `file` target's directory must be owner-only (mode `0700`), because the
+events can carry result references. `subscribe create` creates a missing
+directory `0700` and rejects an existing group- or world-accessible one with
+a `chmod 700 <dir>` remedy, instead of accepting a destination that the
+supervisor could never write. Shared launcher directories (for example a
+`lead-wait/` directory created with the default umask) need `chmod 700` first.
+
+The supervisor reports delivery trouble in `agentctl supervisor status`:
+`retrying_deliveries` counts pending deliveries whose destination has failed at
+least once, `last_delivery_error` names the delivery, subscription and
+execution with the transport error, and health stays `degraded` while any
+delivery is retrying or a delivery was dead-lettered in the last cycle.
+Reprobe errors name their execution in `last_error`; a fully clean cycle
+clears `last_error` and returns health to `healthy` (`last_error_at` keeps
+when the latest error happened). Each cycle's reprobe pass is bounded (30s by
+default); executions it did not reach are counted in
+`last_cycle_recovery_deferred` and examined first by the next cycle, so a slow
+authority never holds back delivery or other executions.
 
 Harness-specific callbacks are plugins over these primitives. The core journal
 contains credential references, never platform credentials. `command` does no

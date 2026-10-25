@@ -87,6 +87,9 @@ func (j *Journal) PutSubscription(ctx context.Context, value subscription.Subscr
 		if err := bucket.Put(key, raw); err != nil {
 			return err
 		}
+		if err := enqueueTerminalBackfillTx(tx, value, now, j.generator); err != nil {
+			return err
+		}
 		result = value
 		return nil
 	})

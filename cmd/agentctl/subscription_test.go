@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Git-on-my-level/agentctl/internal/output"
@@ -56,7 +57,8 @@ func TestSubscribeCreateNormalizesDirectAuthorityAndRejectsUnknown(t *testing.T)
 func TestSubscribeLabelPrefixDeliversFutureLabeledExecutions(t *testing.T) {
 	root := testutil.TempDir(t)
 	journalPath := filepath.Join(root, "state", "journal.db")
-	destination := filepath.Join(root, "events.ndjson")
+	// Delivery needs an owner-only directory; create makes a missing one 0700.
+	destination := filepath.Join(root, "events", "events.ndjson")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	for _, test := range []struct {
@@ -102,5 +104,35 @@ func TestSubscribeLabelPrefixDeliversFutureLabeledExecutions(t *testing.T) {
 	}
 	if len(pending) != 1 || pending[0].SubscriptionID != value.ID || pending[0].ExecutionID != matching {
 		t.Fatalf("pending deliveries=%#v", pending)
+	}
+}
+
+// A file destination in a group- or world-readable directory can never be
+// delivered (delivery requires an owner-only directory), so create refuses it
+// up front instead of retrying silently until the subscription expires.
+func TestSubscribeCreateRejectsNonOwnerOnlyFileDirectory(t *testing.T) {
+	root := testutil.TempDir(t)
+	journalPath := filepath.Join(root, "state", "journal.db")
+	shared := filepath.Join(root, "shared")
+	if err := os.Mkdir(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	code := a.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "subscribe", "create", "--label-prefix", "lane.", "--destination", "file", "--target", filepath.Join(shared, "events.ndjson")})
+	if code != output.ExitCodeFor(output.CodeUsage) || !strings.Contains(stdout.String(), "owner-only") || !strings.Contains(stdout.String(), "chmod 700 "+shared) {
+		t.Fatalf("non-owner-only directory exit=%d output=%s", code, stdout.String())
+	}
+	fresh := filepath.Join(root, "fresh", "nested")
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "subscribe", "create", "--label-prefix", "lane.", "--destination", "file", "--target", filepath.Join(fresh, "events.ndjson")}); code != 0 {
+		t.Fatalf("missing directory exit=%d output=%s", code, stdout.String())
+	}
+	info, err := os.Stat(fresh)
+	if err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("created destination directory mode=%v err=%v", info, err)
 	}
 }

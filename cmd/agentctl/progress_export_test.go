@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -156,4 +157,35 @@ func TestNativeProgressWritersExcludeHeartbeats(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertProgress(finished)
+}
+
+// Activity-source observations repeat one source state but each is new agent
+// activity, so every one advances progress_at (a silent-stdout run otherwise
+// looks frozen after its first activity event).
+func TestNativeActivityObservationsKeepAdvancingProgress(t *testing.T) {
+	ctx := context.Background()
+	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	journal, err := store.Open(filepath.Join(testutil.TempDir(t), "state", "journal.db"), store.Options{Clock: func() time.Time { return at }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	execution, _, err := journal.CreateExecution(ctx, model.Execution{Authority: model.AuthorityNative, Mode: model.ModeDirect, Adapter: "generic-process", Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, Capabilities: model.CapabilitySnapshot{NegotiatedAt: at, AdapterVersion: "test"}, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: at}}, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err = applySession(journal, execution, adapter.Session{State: adapter.StateRunning, Liveness: adapter.LivenessAlive, Observation: adapter.Observation{ObservedAt: at}}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		observed := at.Add(time.Duration(i) * 15 * time.Second)
+		execution, err = appendNativeEvent(ctx, journal, execution, adapter.Event{Kind: "progress", State: adapter.StateRunning, SourceState: "zcode.activity.observed", Cursor: fmt.Sprint(i), ObservedAt: observed, Payload: map[string]any{"family": "zcode", "activity_events": i}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if execution.ProgressAt == nil || !execution.ProgressAt.Equal(observed) {
+			t.Fatalf("activity %d: progress=%v want=%s", i, execution.ProgressAt, observed)
+		}
+	}
 }

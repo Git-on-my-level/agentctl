@@ -85,7 +85,9 @@ func wrapError(operation, adapterName string, err error) error {
 		}
 		return &Error{Code: code, Operation: operation, Adapter: adapterName, Message: bounded(ae.Message, 512), Retryable: ae.Retryable, Cause: err}
 	}
-	return &Error{Code: CodeInternal, Operation: operation, Adapter: adapterName, Message: fmt.Sprintf("%s failed", operation), Cause: err}
+	// Keep the bounded cause: "get_execution failed" alone hides whether the
+	// journal was busy, corrupt or missing the record.
+	return &Error{Code: CodeInternal, Operation: operation, Adapter: adapterName, Message: fmt.Sprintf("%s failed: %s", operation, bounded(err.Error(), 256)), Cause: err}
 }
 
 func bounded(value string, limit int) string {

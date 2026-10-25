@@ -74,38 +74,83 @@ func enqueueMatchingSubscriptionsTx(tx *bbolt.Tx, event *model.Event, canonicalP
 		if !matchesScope || !matchesEventKind(record.Subscription, event) {
 			return nil
 		}
-		expires := record.Subscription.ExpiresAt
-		if expires.IsZero() {
-			expires = now.Add(defaultDeliveryTTL)
-		}
-		dedupe := deliveryDedupeKey(record.Subscription.ID, event.DedupeKey)
-		if existing := tx.Bucket(bOutboxDedupe); existing != nil && existing.Get([]byte(dedupe)) != nil {
-			// Existing delivery is authoritative. AppendEvent retries are
-			// expected to converge without allocating a new delivery ID.
-			return nil
-		}
-		if _, err := ensureJournalBucket(tx, bOutbox); err != nil {
-			return err
-		}
-		deliveryID, err := newDeliveryID(tx, generator)
-		if err != nil {
-			return err
-		}
-		nonceSum := sha256.Sum256([]byte("agentctl-callback-nonce-v1\x00" + deliveryID))
-		nonce := hex.EncodeToString(nonceSum[:])
-		eventBody, err := callback.NewEnvelope(deliveryID, record.Subscription.ID, event.ID.String(), event.DedupeKey, nonce, 1, now, expires, event)
-		if err != nil {
-			return err
-		}
-		payload, err := eventBody.CanonicalBody()
-		if err != nil {
-			return err
-		}
-		_, _, err = enqueueDeliveryTx(tx, DeliveryRequest{DeliveryID: deliveryID, ExecutionID: event.ExecutionID.String(), SubscriptionID: record.Subscription.ID, EventID: event.ID.String(), EventDedupeKey: event.DedupeKey, Payload: payload, CreatedAt: now, NextAttemptAt: now, ExpiresAt: expires}, now, generator)
-		return err
+		return enqueueSubscriptionEventTx(tx, record.Subscription, event, now, generator)
 	})
 	if err != nil {
 		return err
+	}
+	return nil
+}
+
+// enqueueSubscriptionEventTx enqueues one deduplicated delivery of event for
+// one already-matched subscription.
+func enqueueSubscriptionEventTx(tx *bbolt.Tx, value subscription.Subscription, event *model.Event, now time.Time, generator ids.Generator) error {
+	expires := value.ExpiresAt
+	if expires.IsZero() {
+		expires = now.Add(defaultDeliveryTTL)
+	}
+	dedupe := deliveryDedupeKey(value.ID, event.DedupeKey)
+	if existing := tx.Bucket(bOutboxDedupe); existing != nil && existing.Get([]byte(dedupe)) != nil {
+		// Existing delivery is authoritative. AppendEvent retries are
+		// expected to converge without allocating a new delivery ID.
+		return nil
+	}
+	if _, err := ensureJournalBucket(tx, bOutbox); err != nil {
+		return err
+	}
+	if _, err := ensureJournalBucket(tx, bOutboxDedupe); err != nil {
+		return err
+	}
+	deliveryID, err := newDeliveryID(tx, generator)
+	if err != nil {
+		return err
+	}
+	nonceSum := sha256.Sum256([]byte("agentctl-callback-nonce-v1\x00" + deliveryID))
+	nonce := hex.EncodeToString(nonceSum[:])
+	eventBody, err := callback.NewEnvelope(deliveryID, value.ID, event.ID.String(), event.DedupeKey, nonce, 1, now, expires, event)
+	if err != nil {
+		return err
+	}
+	payload, err := eventBody.CanonicalBody()
+	if err != nil {
+		return err
+	}
+	_, _, err = enqueueDeliveryTx(tx, DeliveryRequest{DeliveryID: deliveryID, ExecutionID: event.ExecutionID.String(), SubscriptionID: value.ID, EventID: event.ID.String(), EventDedupeKey: event.DedupeKey, Payload: payload, CreatedAt: now, NextAttemptAt: now, ExpiresAt: expires}, now, generator)
+	return err
+}
+
+// enqueueTerminalBackfillTx makes an exact-execution subscription level-
+// triggered for terminal state: when a named execution is already terminal at
+// creation, its recorded terminal event is enqueued in the creating
+// transaction. Without it a subscription made moments after the execution
+// ended waits forever, because fan-out only runs when an event is appended.
+// Label-prefix and authority scopes stay forward-only (no backfill).
+func enqueueTerminalBackfillTx(tx *bbolt.Tx, value subscription.Subscription, now time.Time, generator ids.Generator) error {
+	terminals := tx.Bucket(bTerminal)
+	events := tx.Bucket(bEvents)
+	if terminals == nil || events == nil || len(value.Filter.ExecutionIDs) == 0 {
+		return nil
+	}
+	for _, raw := range value.Filter.ExecutionIDs {
+		eventID := terminals.Get([]byte(strings.TrimSpace(raw)))
+		if eventID == nil {
+			continue
+		}
+		encoded := events.Get(eventID)
+		if encoded == nil {
+			return fmt.Errorf("%w: terminal event %s for execution %s is missing", ErrCorrupt, eventID, raw)
+		}
+		var stored storedEvent
+		if err := json.Unmarshal(encoded, &stored); err != nil {
+			return corrupt(err)
+		}
+		event := stored.Event
+		if !matchesEvent(value, &event, now, func() []string { return executionLabelsTx(tx, event.ExecutionID) }) {
+			continue
+		}
+		if err := enqueueSubscriptionEventTx(tx, value, &event, now, generator); err != nil {
+			return fmt.Errorf("backfill terminal event for execution %s: %w", raw, err)
+		}
 	}
 	return nil
 }

@@ -147,6 +147,41 @@ func WriteOwnerOnlyEvent(dir string, event any) (string, error) {
 }
 
 // AppendOwnerOnlyFile appends one NDJSON event, creating the file securely.
+// PrepareOwnerOnlyFileDestination checks, at subscription time, the parent
+// directory a file destination will append to: it is created owner-only when
+// missing, and an existing directory must already be owner-only. Delivery
+// enforces the same rule, so a destination that fails here would otherwise
+// retry until its subscription expires without ever writing a line.
+func PrepareOwnerOnlyFileDestination(path string) error {
+	if path == "" || filepath.Clean(path) != path {
+		return fmt.Errorf("invalid event file path")
+	}
+	dir := filepath.Dir(path)
+	// Refuse a symlinked existing ancestor before creating anything, so a
+	// rejected destination never creates directories through a link.
+	existing := dir
+	for {
+		if _, err := os.Lstat(existing); err == nil {
+			break
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			break
+		}
+		existing = parent
+	}
+	if err := ensureNoSymlink(existing); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := ensureNoSymlink(dir); err != nil {
+		return err
+	}
+	return ensureOwnerOnlyDir(dir)
+}
+
 func AppendOwnerOnlyFile(path string, event any) error {
 	if path == "" || filepath.Clean(path) != path {
 		return fmt.Errorf("invalid event file path")
