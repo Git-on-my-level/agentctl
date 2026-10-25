@@ -183,7 +183,7 @@ func TestLongRunningSupervisorReleasesJournalBetweenCycles(t *testing.T) {
 	mutationApp := testApp(mutationOut, mutationErr)
 	mutationDone := make(chan int, 1)
 	go func() {
-		mutationDone <- mutationApp.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "subscribe", "create", "--execution", seedDoc.Result.ID.String(), "--kind", "terminal", "--destination", "file", "--target", filepath.Join(root, "callback.ndjson")})
+		mutationDone <- mutationApp.run(context.Background(), []string{"--output", "json", "--journal", journalPath, "subscribe", "create", "--execution", seedDoc.Result.ID.String(), "--kind", "terminal", "--destination", "file", "--target", filepath.Join(root, "callbacks", "callback.ndjson")})
 	}()
 	select {
 	case code := <-mutationDone:

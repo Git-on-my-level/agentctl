@@ -229,6 +229,13 @@ func (a *app) subscribeCreate(ctx context.Context, renderer output.Renderer, c c
 	default:
 		return output.NewError(output.CodeUsage, "persistent destination must be file, unix, webhook, or command", false)
 	}
+	if destination.Kind == callback.DestinationFile {
+		if err := callback.PrepareOwnerOnlyFileDestination(destination.Path); err != nil {
+			dir := filepath.Dir(destination.Path)
+			return output.Wrap(output.CodeUsage, "file destination directory must be owner-only (mode 0700); delivery would never succeed", false, err).
+				WithDetail("directory", dir).WithDetail("remedy", "chmod 700 "+dir+" or choose a target in an owner-only directory")
+		}
+	}
 	if destination.Kind == callback.DestinationUnix {
 		if problem := unixSocketPathProblem(destination.Path); problem != nil {
 			return problem

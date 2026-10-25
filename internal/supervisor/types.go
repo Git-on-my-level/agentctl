@@ -221,7 +221,19 @@ type Health struct {
 	PendingDeliveries       int         `json:"pending_deliveries"`
 	LastCycleReprobeErrors  int         `json:"last_cycle_reprobe_errors"`
 	LastCycleDeliveryErrors int         `json:"last_cycle_delivery_errors"`
-	LastError               string      `json:"last_error,omitempty"`
+	// RetryingDeliveries counts pending deliveries whose transport has failed
+	// at least once (retried this cycle or waiting out a backoff). A non-zero
+	// value keeps health degraded: a destination that never accepts would
+	// otherwise retry until its subscription expires without any signal.
+	RetryingDeliveries int `json:"retrying_deliveries"`
+	// LastCycleRecoveryDeferred counts executions the last cycle left for the
+	// next one because its recovery budget ran out.
+	LastCycleRecoveryDeferred int `json:"last_cycle_recovery_deferred"`
+	// LastError names the execution or delivery it concerns. A fully clean
+	// cycle clears it; LastErrorAt keeps when the most recent error happened.
+	LastError         string    `json:"last_error,omitempty"`
+	LastErrorAt       time.Time `json:"last_error_at,omitempty"`
+	LastDeliveryError string    `json:"last_delivery_error,omitempty"`
 }
 
 // Status is the complete bounded service projection returned by status RPC.
@@ -244,9 +256,12 @@ type RecoveryFailure struct {
 
 // RecoveryReport records one deterministic recovery pass.
 type RecoveryReport struct {
-	Examined int               `json:"examined"`
-	Probed   int               `json:"probed"`
-	Applied  int               `json:"applied"`
+	Examined int `json:"examined"`
+	Probed   int `json:"probed"`
+	Applied  int `json:"applied"`
+	// Deferred executions were not probed because the cycle's recovery budget
+	// ran out; the next cycle starts after the last one examined.
+	Deferred int               `json:"deferred,omitempty"`
 	Failures []RecoveryFailure `json:"failures,omitempty"`
 }
 
@@ -260,7 +275,10 @@ type DeliveryFailure struct {
 
 // DeliveryReport records one bounded outbox drain pass.
 type DeliveryReport struct {
-	Examined     int               `json:"examined"`
+	Examined int `json:"examined"`
+	// Retrying counts pending entries with at least one failed attempt that
+	// were neither delivered nor dead-lettered by this pass.
+	Retrying     int               `json:"retrying,omitempty"`
 	Attempted    int               `json:"attempted"`
 	Delivered    int               `json:"delivered"`
 	Retried      int               `json:"retried"`
@@ -335,8 +353,12 @@ type Config struct {
 	RetryBase             time.Duration
 	RetryMax              time.Duration
 	ShutdownTimeout       time.Duration
-	Clock                 Clock
-	TailnetHook           TailnetHookConfig
+	// RecoveryBudget bounds the reprobe pass of one cycle so slow or failing
+	// executions cannot hold back callback delivery or other executions'
+	// recovery; the remainder rotates into the next cycle.
+	RecoveryBudget time.Duration
+	Clock          Clock
+	TailnetHook    TailnetHookConfig
 }
 
 // DefaultConfig returns conservative local-only defaults.  Tailnet HTTP is
@@ -349,6 +371,7 @@ func DefaultConfig() Config {
 		RetryBase:             time.Second,
 		RetryMax:              5 * time.Minute,
 		ShutdownTimeout:       10 * time.Second,
+		RecoveryBudget:        30 * time.Second,
 		Clock:                 RealClock{},
 	}
 }

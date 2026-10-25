@@ -36,6 +36,14 @@ var (
 
 const activitySourceState = "activity.observed"
 
+// IsActivityObservation reports whether a native event's source state comes
+// from an activity source. Each such event is new agent activity (it carries
+// a growing count), so it advances progress even though its source state
+// repeats; other repeated same-state events are treated as heartbeats.
+func IsActivityObservation(sourceState string) bool {
+	return strings.HasSuffix(sourceState, "."+activitySourceState)
+}
+
 // watchActivity turns growth of an activity source into bounded progress
 // observations until the process record finishes. Every emitted event carries
 // the cumulative count, so successive observations are distinct journal events

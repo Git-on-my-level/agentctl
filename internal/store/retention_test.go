@@ -177,6 +177,9 @@ func TestCleanupProtectsActiveSubscriptionAndOutboxReceipt(t *testing.T) {
 	activeProtected := seedTerminalForRetention(t, journal, now.Add(-96*time.Hour), contracts.MutationKey{})
 	active := durableTestSubscription(durableTestID(ids.TypeSubscription, 990))
 	active.Filter.ExecutionIDs = []string{activeProtected.ID.String()}
+	// Attention only: an all-kinds subscription to this already-terminal
+	// execution would backfill its terminal delivery.
+	active.Filter.Kinds = []string{string(model.EventAttention)}
 	if _, _, err := journal.PutSubscription(ctx, active); err != nil {
 		t.Fatal(err)
 	}
