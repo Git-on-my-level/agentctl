@@ -1361,6 +1361,12 @@ func (a *app) openReadContext(ctx context.Context, c common) (*store.Journal, *o
 	return journal, nil
 }
 
+// waitOpenFloor is the least time one journal open inside a wait loop gets.
+// The final poll at a wait's deadline must still be able to open an idle
+// journal (open itself takes milliseconds, more under -race), so a busy
+// journal can overrun --timeout by at most this much, never by the budget.
+const waitOpenFloor = 500 * time.Millisecond
+
 // waitOpenContext derives the context for one journal open inside a wait
 // loop, so a busy journal cannot hold a wait past its own deadline. The
 // remaining time comes from a.now so injected clocks stay consistent.
@@ -1369,8 +1375,8 @@ func (a *app) waitOpenContext(ctx context.Context, deadline time.Time) (context.
 		return ctx, func() {}
 	}
 	remaining := deadline.Sub(a.now())
-	if remaining <= 0 {
-		remaining = time.Millisecond
+	if remaining < waitOpenFloor {
+		remaining = waitOpenFloor
 	}
 	return context.WithTimeout(ctx, remaining)
 }

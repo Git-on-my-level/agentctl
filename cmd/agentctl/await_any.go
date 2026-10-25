@@ -195,25 +195,27 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 	cancelled := func() int {
 		return a.fail(renderer, output.Wrap(output.CodeExecutionCancelled, "await-any cancelled", false, ctx.Err()).WithDetail("selector", options.selector()))
 	}
+	lastWatched := 0
 	for {
 		if ctx.Err() != nil {
 			return cancelled()
 		}
-		scanCtx, cancelScan := a.waitOpenContext(ctx, deadline)
-		matches, watched, problem := a.awaitAnyScan(scanCtx, c, options)
-		scanExpired := scanCtx.Err() != nil
-		cancelScan()
+		openCtx, cancelOpen := a.waitOpenContext(ctx, deadline)
+		matches, watched, problem := a.awaitAnyScan(ctx, openCtx, c, options)
+		openExpired := openCtx.Err() != nil
+		cancelOpen()
 		if problem != nil {
 			if ctx.Err() != nil {
 				return cancelled()
 			}
-			if !deadline.IsZero() && scanExpired {
+			if !deadline.IsZero() && openExpired {
 				// A busy journal must not hold the wait past --timeout.
 				return a.fail(renderer, output.NewError(output.CodeTimeout, "await-any deadline elapsed while the journal was busy", true).
-					WithDetail("selector", options.selector()).WithDetail("kinds", options.kindList()).WithDetail("watched", 0))
+					WithDetail("selector", options.selector()).WithDetail("kinds", options.kindList()).WithDetail("watched", lastWatched))
 			}
 			return a.fail(renderer, problem)
 		}
+		lastWatched = watched
 		if len(matches) > 0 {
 			return a.deliverAwaitAny(ctx, renderer, c, options, matches[0], len(matches)-1, watched)
 		}
@@ -221,7 +223,13 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 			return a.fail(renderer, output.NewError(output.CodeTimeout, "await-any deadline elapsed", true).
 				WithDetail("selector", options.selector()).WithDetail("kinds", options.kindList()).WithDetail("watched", watched))
 		}
-		timer := time.NewTimer(awaitAnyPollInterval)
+		pause := awaitAnyPollInterval
+		if !deadline.IsZero() {
+			if remaining := deadline.Sub(a.now()); remaining < pause {
+				pause = remaining
+			}
+		}
+		timer := time.NewTimer(pause)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -236,9 +244,11 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 //
 // The read-only handle holds bbolt's shared file lock until Close, and every
 // writer needs the exclusive lock, so the separate read transactions below
-// all observe the same committed journal state.
-func (a *app) awaitAnyScan(ctx context.Context, c common, options awaitAnyOptions) ([]awaitAnyMatch, int, *output.Error) {
-	journal, problem := a.openReadContext(ctx, c)
+// all observe the same committed journal state. openCtx bounds only the
+// busy-journal open; the reads use ctx so a deadline reached mid-scan is not
+// misreported as journal contention.
+func (a *app) awaitAnyScan(ctx, openCtx context.Context, c common, options awaitAnyOptions) ([]awaitAnyMatch, int, *output.Error) {
+	journal, problem := a.openReadContext(openCtx, c)
 	if problem != nil {
 		return nil, 0, problem
 	}
