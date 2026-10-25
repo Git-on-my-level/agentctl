@@ -271,3 +271,70 @@ func (f *failingFirst) Reprobe(ctx context.Context, execution Execution) (ProbeR
 	}
 	return result, nil
 }
+
+// timedReprober takes a fixed real time per probe and honours its context.
+type timedReprober struct {
+	cost  time.Duration
+	calls []string
+}
+
+func (r *timedReprober) Reprobe(ctx context.Context, execution Execution) (ProbeResult, error) {
+	r.calls = append(r.calls, execution.ID)
+	select {
+	case <-time.After(r.cost):
+		return ProbeResult{State: "running"}, nil
+	case <-ctx.Done():
+		// Like a runtime adapter that maps its own timeout to "unreachable".
+		return ProbeResult{State: "running", Liveness: "unreachable"}, nil
+	}
+}
+
+// A healthy but slow authority must not be cut off by the tail of the budget
+// and reported as stalled: with less than the probe floor left, the pass
+// defers instead of starting a probe it cannot finish.
+func TestRecoveryDefersInsteadOfCuttingOffSlowProbes(t *testing.T) {
+	executions := &fakeExecutions{
+		items:    []Execution{{ID: "a", State: "running"}, {ID: "b", State: "running"}, {ID: "c", State: "running"}},
+		results:  map[string]ProbeResult{},
+		applyErr: map[string]error{},
+	}
+	reprober := &timedReprober{cost: 150 * time.Millisecond}
+	cfg := testConfig(t, RealClock{})
+	cfg.RecoveryBudget = 400 * time.Millisecond
+	cfg.RecoveryProbeFloor = 200 * time.Millisecond
+	s, err := New(cfg, Dependencies{Executions: executions, Reprober: reprober})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, _ := s.RunOnce(context.Background())
+	if len(report.Recovery.Failures) != 0 || report.Recovery.Applied != 2 || report.Recovery.Deferred != 1 {
+		t.Fatalf("recovery = %+v, want a and b applied, c deferred, no failures", report.Recovery)
+	}
+	if health := s.Health(); health.State == HealthDegraded {
+		t.Fatalf("health = %+v", health)
+	}
+}
+
+// A probe that returns a result only after its deadline is a stall: the
+// result is not applied.
+func TestLateProbeResultIsNotApplied(t *testing.T) {
+	executions := &fakeExecutions{
+		items:    []Execution{{ID: "slow", State: "running"}},
+		results:  map[string]ProbeResult{},
+		applyErr: map[string]error{},
+	}
+	reprober := &timedReprober{cost: time.Hour}
+	cfg := testConfig(t, RealClock{})
+	cfg.RecoveryBudget = 100 * time.Millisecond
+	s, err := New(cfg, Dependencies{Executions: executions, Reprober: reprober})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, _ := s.RunOnce(context.Background())
+	if report.Recovery.Applied != 0 || len(report.Recovery.Failures) != 1 || len(executions.probes) != 0 {
+		t.Fatalf("recovery = %+v applied=%v, want the late result discarded", report.Recovery, executions.probes)
+	}
+	if health := s.Health(); health.State != HealthDegraded || !strings.Contains(health.LastError, "slow") {
+		t.Fatalf("health = %+v", health)
+	}
+}

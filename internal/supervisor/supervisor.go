@@ -109,6 +109,9 @@ func normalizeConfig(cfg Config) Config {
 	if cfg.RecoveryBudget == 0 {
 		cfg.RecoveryBudget = defaults.RecoveryBudget
 	}
+	if cfg.RecoveryProbeFloor == 0 {
+		cfg.RecoveryProbeFloor = defaults.RecoveryProbeFloor
+	}
 	if cfg.Clock == nil {
 		cfg.Clock = defaults.Clock
 	}
@@ -564,8 +567,15 @@ func (s *Supervisor) recoverWith(ctx context.Context, deps Dependencies) Recover
 			delete(s.probeRetries, id)
 		}
 	}
+	// A probe is started only with at least probeFloor of budget left, so a
+	// healthy-but-slow authority is never cut off by the budget's tail and
+	// misreported as stalled; the rest rotates into the next cycle.
+	probeFloor := s.cfg.RecoveryProbeFloor
+	if s.cfg.RecoveryBudget > 0 && probeFloor > s.cfg.RecoveryBudget {
+		probeFloor = s.cfg.RecoveryBudget
+	}
 	for index, execution := range nonTerminal {
-		if s.cfg.RecoveryBudget > 0 && index > 0 && s.cfg.Clock.Now().Sub(budgetStart) >= s.cfg.RecoveryBudget {
+		if s.cfg.RecoveryBudget > 0 && index > 0 && s.cfg.RecoveryBudget-s.cfg.Clock.Now().Sub(budgetStart) < probeFloor {
 			report.Deferred = len(nonTerminal) - index
 			s.recoveryAfter = nonTerminal[index-1].ID
 			break
@@ -584,15 +594,21 @@ func (s *Supervisor) recoverWith(ctx context.Context, deps Dependencies) Recover
 			// One stalled reprobe must not hold the cycle (and delivery) past
 			// the recovery budget.
 			remaining := s.cfg.RecoveryBudget - s.cfg.Clock.Now().Sub(budgetStart)
-			if remaining < time.Second {
-				remaining = time.Second
+			if remaining < probeFloor {
+				remaining = probeFloor
 			}
 			probeCtx, cancelProbe = context.WithTimeout(ctx, remaining)
 		}
 		result, err := deps.Reprober.Reprobe(probeCtx, execution)
 		budgetExpired := probeCtx.Err() != nil && ctx.Err() == nil
 		cancelProbe()
-		if err != nil && budgetExpired {
+		if budgetExpired {
+			// Even a result returned after the deadline (an adapter may map
+			// its own timeout to "unreachable") is not applied: the probe
+			// stalled, so record it and defer.
+			if err == nil {
+				err = context.DeadlineExceeded
+			}
 			// Record the stall (with the usual probe backoff), then defer the
 			// rest to the next cycle, which resumes after this execution.
 			if retry.revision != execution.Revision {
