@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
@@ -11,6 +12,9 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
 )
+
+const nativeOwnerCancelGrace = 5 * time.Second
+const nativeOwnerSettleTimeout = nativeOwnerCancelGrace + time.Second
 
 type nativeEventWriteError struct {
 	stage string
@@ -53,7 +57,7 @@ func nativeLaunchFailure(err error, state adapter.State) adapter.Result {
 	var ae *adapter.AdapterError
 	if errors.As(err, &ae) && ae.Details["diagnostic_code"] == "zcode_read_only_unavailable" {
 		code := "zcode_read_only_unavailable"
-		if ae.Details["reason_code"] == "project_config_present" {
+		if ae.Details["reason_code"] == adapter.ZCodeReasonProjectConfigPresent {
 			code = "zcode_read_only_project_config_present"
 		}
 		if result.Data == nil {
@@ -73,9 +77,28 @@ func (a *app) settleNativeOwnerError(c common, runtime adapter.Adapter, ref adap
 	if cancelErr != nil {
 		return problem.WithDetail("cleanup", "unproven").WithDetail("terminal_recorded", false)
 	}
-	result, err := runtime.Wait(context.Background(), ref)
-	if err != nil || !terminalAdapterState(result.State) {
+	ctx, cancel := context.WithTimeout(context.Background(), nativeOwnerSettleTimeout)
+	defer cancel()
+	type waitResult struct {
+		result adapter.Result
+		err    error
+	}
+	// Some adapters finish reaping even after context cancellation. Bound the
+	// owner response independently; the buffered channel lets a late Wait exit.
+	finished := make(chan waitResult, 1)
+	go func() {
+		result, err := runtime.Wait(ctx, ref)
+		finished <- waitResult{result, err}
+	}()
+	var result adapter.Result
+	select {
+	case <-ctx.Done():
 		return problem.WithDetail("cleanup", "result_unavailable").WithDetail("terminal_recorded", false)
+	case waited := <-finished:
+		if ctx.Err() != nil || waited.err != nil || !terminalAdapterState(waited.result.State) {
+			return problem.WithDetail("cleanup", "result_unavailable").WithDetail("terminal_recorded", false)
+		}
+		result = waited.result
 	}
 	problem.WithDetail("child_reaped", true)
 	if result.State == adapter.StateCancelled {

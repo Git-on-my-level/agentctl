@@ -356,3 +356,17 @@ func mustWrite(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestZCodeReadOnlyProjectConfigReason(t *testing.T) {
+	dir := canonicalTemp(t)
+	mustWrite(t, filepath.Join(dir, "zcode.json"), `{}`)
+	release, _, err := prepareZCodeLaunch(dir, readOnlyArgv("hi"), readOnlyEnv)
+	refusal(t, release, err)
+	var ae *AdapterError
+	if !errors.As(err, &ae) || ae.Details["reason_code"] != ZCodeReasonProjectConfigPresent {
+		t.Fatalf("project config reason: %+v", err)
+	}
+	if ZCodeReasonProjectConfigPresent != "project_config_present" {
+		t.Fatal("project config reason wire value changed")
+	}
+}

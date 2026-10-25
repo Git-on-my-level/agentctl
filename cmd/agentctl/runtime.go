@@ -328,7 +328,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	// lock contention cannot leak a process group.
 	ownedID := execution.ID // later failed journal assignments may return a zero execution
 	defer func() {
-		cancelErr := runtime.Cancel(context.Background(), adapter.CancelRequest{Ref: launch.Session.Ref, Signal: "term", Grace: 5 * time.Second})
+		cancelErr := runtime.Cancel(context.Background(), adapter.CancelRequest{Ref: launch.Session.Ref, Signal: "term", Grace: nativeOwnerCancelGrace})
 		if runProblem != nil {
 			runProblem = a.settleNativeOwnerError(c, runtime, launch.Session.Ref, ownedID, opts.noStoreResult, runProblem, cancelErr)
 		}
@@ -1294,8 +1294,11 @@ func (a *app) attachNative(ctx context.Context, renderer output.Renderer, c comm
 }
 
 func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
+	if len(args) == 2 && args[0] == "--orphan-if-gone" {
+		args = []string{args[1], args[0]}
+	}
 	orphanIfGone := len(args) == 2 && args[1] == "--orphan-if-gone"
-	if len(args) != 1 && !orphanIfGone {
+	if (len(args) != 1 && !orphanIfGone) || strings.HasPrefix(args[0], "-") {
 		return output.NewError(output.CodeUsage, "usage: agentctl cancel <execution-id> [--orphan-if-gone]", false)
 	}
 	id, problem := parseExecutionRef(args[0], c)
