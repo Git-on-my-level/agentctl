@@ -75,3 +75,27 @@ func TestRotationStopsOldOnlyAfterDurableReplacement(t *testing.T) {
 		t.Fatalf("bad rotation: old=%+v new=%+v rotation=%+v", oldAfter, newAfter, rotation)
 	}
 }
+
+func TestLabelPrefixFilterValidation(t *testing.T) {
+	normalized, err := EventFilter{LabelPrefix: " lane. "}.Normalize()
+	if err != nil || normalized.LabelPrefix != "lane." {
+		t.Fatalf("normalized=%#v err=%v", normalized, err)
+	}
+	for _, filter := range []EventFilter{
+		{LabelPrefix: "Lane"},
+		{LabelPrefix: "lane/"},
+		{LabelPrefix: "lane.", ExecutionIDs: []string{"exec-a"}},
+	} {
+		if _, err := filter.Normalize(); err == nil {
+			t.Fatalf("invalid filter accepted: %#v", filter)
+		}
+	}
+	a, err := EventFilter{LabelPrefix: "lane."}.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := EventFilter{LabelPrefix: "lane.a"}.Digest()
+	if err != nil || a == b {
+		t.Fatalf("label prefix is not part of the filter digest: %s %s %v", a, b, err)
+	}
+}

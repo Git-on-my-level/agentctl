@@ -422,6 +422,11 @@ func (j *Journal) ListExecutions(ctx context.Context, nonTerminalOnly bool) ([]m
 	values := []model.Execution{}
 	err := j.db.View(func(tx *bbolt.Tx) error {
 		return tx.Bucket(bExecutions).ForEach(func(_, raw []byte) error {
+			// A large journal must not hold a cancelled or timed-out caller
+			// (and its shared lock) for the whole enumeration.
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			var value model.Execution
 			if err := decodeExecution(tx, raw, &value); err != nil {
 				return corrupt(err)
@@ -435,6 +440,10 @@ func (j *Journal) ListExecutions(ctx context.Context, nonTerminalOnly bool) ([]m
 			return nil
 		})
 	})
+	if err != nil {
+		// Do not sort a partial (cancelled or corrupt) listing.
+		return nil, err
+	}
 	sort.Slice(values, func(a, b int) bool {
 		if values[a].CreatedAt.Equal(values[b].CreatedAt) {
 			return values[a].ID.String() < values[b].ID.String()
@@ -831,6 +840,45 @@ func (j *Journal) ListEvents(ctx context.Context, executionID ids.ExecutionID, q
 		return nil
 	})
 	return events, err
+}
+
+// LatestEventOfKind returns the most recently appended event of kind for
+// one execution, scanning the per-execution index from its newest entry.
+func (j *Journal) LatestEventOfKind(ctx context.Context, executionID ids.ExecutionID, kind model.EventKind) (model.Event, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return model.Event{}, false, err
+	}
+	var result model.Event
+	found := false
+	err := j.db.View(func(tx *bbolt.Tx) error {
+		if tx.Bucket(bExecutions).Get([]byte(executionID.String())) == nil {
+			return ErrNotFound
+		}
+		nested := tx.Bucket(bEventsByExecution).Bucket([]byte(executionID.String()))
+		if nested == nil {
+			return nil
+		}
+		cursor := nested.Cursor()
+		for _, eventID := cursor.Last(); eventID != nil; _, eventID = cursor.Prev() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			raw := tx.Bucket(bEvents).Get(eventID)
+			if raw == nil {
+				return fmt.Errorf("%w: event index target missing", ErrCorrupt)
+			}
+			var stored storedEvent
+			if err := json.Unmarshal(raw, &stored); err != nil {
+				return corrupt(err)
+			}
+			if stored.Event.Kind == kind {
+				result, found = stored.Event, true
+				return nil
+			}
+		}
+		return nil
+	})
+	return result, found, err
 }
 
 type storedEvent struct {

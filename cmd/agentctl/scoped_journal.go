@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
@@ -13,10 +14,15 @@ import (
 // scopedJournal never retains a process-wide bbolt lock across adapter calls.
 // Each mutation still uses the store's atomic CAS/event-deduplication contract.
 // Engine reads are snapshots: a later mutation must tolerate a newer revision.
-type scopedJournal struct{ path string }
+// busyBudget, when positive, retries lock contention within the caller's
+// context; zero keeps the historical two short attempts.
+type scopedJournal struct {
+	path       string
+	busyBudget time.Duration
+}
 
 func (s scopedJournal) with(ctx context.Context, readOnly bool, fn func(*store.Journal) error) error {
-	j, err := openJournalWithRetryContext(ctx, s.path, store.Options{ReadOnly: readOnly})
+	j, err := openJournalWithBusyBudget(ctx, s.path, store.Options{ReadOnly: readOnly}, true, s.busyBudget)
 	if err != nil {
 		return err
 	}

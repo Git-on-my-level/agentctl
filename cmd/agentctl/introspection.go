@@ -157,6 +157,7 @@ func (a *app) schemaCommand(renderer output.Renderer, args []string) *output.Err
 	schemas := []map[string]any{
 		{"name": "anx-registration", "version": 4, "file": "schemas/anx-registration.schema.json"},
 		{"name": "adapter-manifest", "version": 1, "file": "schemas/adapter-manifest.schema.json"},
+		{"name": "await-any-result", "version": 1, "file": "schemas/await-any-result.schema.json"},
 		{"name": "callback-envelope", "version": 1, "file": "schemas/callback-envelope.schema.json"},
 		{"name": "config-bundle", "version": 1, "file": "schemas/config-bundle.schema.json"},
 		{"name": "context-result", "version": 1, "file": "schemas/context-result.schema.json"},

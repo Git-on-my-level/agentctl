@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentctl:schema:await-any-result:v1",
+  "x-agentctl-docs": "../docs/design/lane-fan-in.md#await-any",
+  "title": "agentctl await-any success result v1",
+  "description": "Success document for a completed match. Failed, cancelled, orphaned, attention, integrity, and timeout outcomes use the error envelope with the same keys in error.details.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "execution_id",
+    "state",
+    "adapter",
+    "matched_kind",
+    "trigger_at",
+    "pending_matches",
+    "watched",
+    "selector",
+    "acknowledged",
+    "labels"
+  ],
+  "properties": {
+    "execution_id": {
+      "type": "string",
+      "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
+    },
+    "state": {"const": "completed"},
+    "adapter": {"type": "string", "minLength": 1},
+    "labels": {
+      "anyOf": [
+        {"type": "null"},
+        {"type": "array", "items": {"type": "string"}, "maxItems": 16}
+      ]
+    },
+    "matched_kind": {"const": "terminal", "description": "Success is only emitted for a completed terminal match; attention, integrity, and future stall matches use the error envelope."},
+    "trigger_at": {"type": "string", "format": "date-time"},
+    "pending_matches": {"type": "integer", "minimum": 0},
+    "watched": {"type": "integer", "minimum": 0},
+    "selector": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "label_prefix": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,127}$"},
+        "execution_ids": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"},
+          "minItems": 1,
+          "maxItems": 256,
+          "uniqueItems": true
+        }
+      },
+      "oneOf": [
+        {"required": ["label_prefix"]},
+        {"required": ["execution_ids"]}
+      ]
+    },
+    "acknowledged": {"type": "boolean", "description": "Collection acknowledgement was requested for this terminal. The stamp is written after the document; a failed stamp is reported on stderr and leaves the execution unreconciled."}
+  }
+}

@@ -222,8 +222,12 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	if err := operationCtx.Err(); err != nil {
 		return interruptedRunError(err, model.Execution{})
 	}
-	journal, problem := a.openWrite(c)
+	// A busy journal must not hold run past its --timeout or a signal.
+	journal, problem := a.openWriteContext(operationCtx, c)
 	if problem != nil {
+		if err := operationCtx.Err(); err != nil {
+			return interruptedRunError(err, model.Execution{})
+		}
 		return problem
 	}
 	now := a.now().UTC()
@@ -1489,11 +1493,16 @@ func (a *app) resolveProfile(c common) (string, config.Profile, *output.Error) {
 	return name, profile, nil
 }
 func (a *app) openWrite(c common) (*store.Journal, *output.Error) {
+	return a.openWriteContext(context.Background(), c)
+}
+
+// openWriteContext is openWrite with busy retries bounded by ctx.
+func (a *app) openWriteContext(ctx context.Context, c common) (*store.Journal, *output.Error) {
 	path, err := a.journalPath(c)
 	if err != nil {
 		return nil, output.Wrap(output.CodeInternal, "resolve journal path", false, err)
 	}
-	journal, err := openJournalWithRetry(path, store.Options{})
+	journal, err := openJournalWithBusyBudget(ctx, path, store.Options{}, false, c.journalBusyBudget)
 	if err != nil {
 		return nil, mapStoreError("open journal", err)
 	}

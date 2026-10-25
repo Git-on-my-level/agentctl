@@ -19,7 +19,17 @@ consume the relevant global selector:
 --context-file <path>
 --config <path>
 --journal <path>
+--journal-busy-budget <duration>
 ```
+
+`--journal-busy-budget` (or `AGENTCTL_JOURNAL_BUSY_BUDGET`) bounds how long a
+command absorbs journal lock contention with jittered exponential backoff
+before it returns `journal_busy` (exit 6). `run`, `delegate`, `dispatch`,
+`continue`, `await`, and `await-any` default to `120s`; other commands keep two
+short attempts. `0` restores two attempts everywhere; the maximum is `30m`.
+An exhausted budget reports `busy_attempts`, `busy_waited_ms`, and
+`busy_budget_ms` in the error details. See
+[lane fan-in](design/lane-fan-in.md#journal-busy-retry).
 
 The canonical spelling places these global flags before the command. A
 subcommand may own the same word for another purpose, notably

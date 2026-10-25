@@ -159,10 +159,17 @@ its delivery cursor only after destination acknowledgement.
 
 ## Subscriptions
 
-A subscription binds an exact execution ID, event kinds, destination, expiry,
-retry policy, optional coordinator execution, and a delivery cursor. The
-current CLI intentionally does not create broad authority queries; reserved
-query/scope filters fail closed in local fan-out. `agentctl subscribe create` listens for `terminal`,
+A subscription binds an exact execution ID or a label prefix, event kinds,
+destination, expiry, retry policy, optional coordinator execution, and a
+delivery cursor. The current CLI intentionally does not create broad authority
+queries; reserved query/scope filters fail closed in local fan-out.
+`subscribe create --label-prefix <prefix>` (mutually exclusive with
+`--execution`) matches events appended after creation by existing and future
+executions with any label starting with the prefix; it does not backfill and
+does not auto-expire on a terminal. Labels cannot contain `/` or uppercase;
+use `.` or `-` as separators, for example `two-lane.<lane>` or
+`card-<handle>`. See
+[lane fan-in](design/lane-fan-in.md#labels-and-prefixes). `agentctl subscribe create` listens for `terminal`,
 `attention`, and `artifact` by default: these are the minimum events needed to
 drive a parent agent without subscribing it to progress chatter. `--kind all`
 is an explicit broad subscription for every kind except `acknowledged`, while `--kind <names>` narrows the set.
@@ -275,6 +282,11 @@ delivery, never task success. Await stops on actionable `attention` by default
 and returns `attention_required` with the execution's next action. A caller
 that intentionally wants to continue waiting uses `--ignore-attention`; a
 different bounded wait uses `--timeout <duration>`.
+
+`agentctl await-any (--execution ID ... | --label-prefix P)` is the fan-in
+form: it returns the first execution that is terminal or needs attention, with
+the same exit codes as `await`, and acknowledges only the execution it
+returns. See [lane fan-in](design/lane-fan-in.md#await-any).
 
 Without a managed supervisor, retry and polling continue only while the
 owning `run`, detached delegate owner, or `await` remains alive.

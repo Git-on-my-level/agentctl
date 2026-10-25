@@ -443,7 +443,9 @@ func stopSubscriptionAfterTerminalAckTx(tx *bbolt.Tx, item DeliveryRecord, ackno
 	if err := json.Unmarshal(raw, &record); err != nil {
 		return corrupt(err)
 	}
-	if !record.Subscription.AutoExpireOnTerminal || record.Subscription.State != subscription.StateActive {
+	// A label-prefix subscription spans many executions; one terminal never
+	// ends it. It stops by TTL or explicit cancel.
+	if !record.Subscription.AutoExpireOnTerminal || record.Subscription.State != subscription.StateActive || record.Subscription.Filter.LabelPrefix != "" {
 		return nil
 	}
 	record.Subscription.State = subscription.StateStopped

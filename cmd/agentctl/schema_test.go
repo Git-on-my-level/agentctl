@@ -52,6 +52,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 	want := map[string]string{
 		"anx-registration":     "schemas/anx-registration.schema.json",
 		"adapter-manifest":     "schemas/adapter-manifest.schema.json",
+		"await-any-result":     "schemas/await-any-result.schema.json",
 		"callback-envelope":    "schemas/callback-envelope.schema.json",
 		"config-bundle":        "schemas/config-bundle.schema.json",
 		"context-result":       "schemas/context-result.schema.json",
@@ -106,6 +107,7 @@ func TestNewSchemaDocumentsDeclareDraftAndRequiredShape(t *testing.T) {
 	root := schemaRepositoryRoot(t)
 	expected := map[string][]string{
 		"identity-report.schema.json":   {"schema_version", "provider", "native_session", "execution", "environment", "capabilities", "harnesses"},
+		"await-any-result.schema.json":  {"execution_id", "state", "adapter", "matched_kind", "trigger_at", "pending_matches", "watched", "selector", "acknowledged"},
 		"callback-envelope.schema.json": {"schema_version", "delivery_id", "subscription_id", "event_id", "event_dedupe_key", "attempt", "sent_at", "expires_at", "nonce", "event"},
 		"context-result.schema.json":    {"bundle_revision", "matches"},
 		"continue-result.schema.json":   {"continues", "resolved", "request_sha256", "reused", "continuation"},

@@ -549,8 +549,11 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 			return delegateExecutionError(output.CodeTimeout, "stopped waiting for delegated execution", execution)
 		case <-time.After(250 * time.Millisecond):
 		}
-		journal, problem := a.openRead(c)
+		journal, problem := a.openReadContext(ctx, c)
 		if problem != nil {
+			if ctx.Err() != nil {
+				return delegateExecutionError(output.CodeTimeout, "stopped waiting for delegated execution", execution)
+			}
 			return problem.WithDetail("execution_id", execution.ID.String())
 		}
 		latest, err := journal.GetExecution(ctx, execution.ID)
