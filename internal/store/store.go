@@ -440,6 +440,10 @@ func (j *Journal) ListExecutions(ctx context.Context, nonTerminalOnly bool) ([]m
 			return nil
 		})
 	})
+	if err != nil {
+		// Do not sort a partial (cancelled or corrupt) listing.
+		return nil, err
+	}
 	sort.Slice(values, func(a, b int) bool {
 		if values[a].CreatedAt.Equal(values[b].CreatedAt) {
 			return values[a].ID.String() < values[b].ID.String()
