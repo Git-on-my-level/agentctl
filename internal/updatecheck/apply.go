@@ -112,14 +112,8 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 		return result, recordApplyError(options.Check.StatePath, "unmanaged_install", err)
 	}
 
-	if options.LiveOwners != nil && !options.AllowLiveOwners {
-		owners, ownersErr := options.LiveOwners()
-		if ownersErr != nil {
-			return result, recordApplyError(options.Check.StatePath, "live_owners_unknown", ownersErr)
-		}
-		if owners > 0 {
-			return result, recordApplyError(options.Check.StatePath, "live_owners_deferred", fmt.Errorf("%d agentctl execution owner processes are running", owners))
-		}
+	if err := checkLiveOwners(options); err != nil {
+		return result, err
 	}
 	client := options.Client
 	if client == nil {
@@ -164,6 +158,10 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	if !regularExecutable(binary) || !regularExecutable(installer) {
 		return result, recordApplyError(options.Check.StatePath, "archive_invalid", errors.New("release archive omitted executable binary or installer"))
 	}
+	// Owners can start during the downloads; check again immediately before the binary is replaced.
+	if err := checkLiveOwners(options); err != nil {
+		return result, err
+	}
 	command := exec.CommandContext(ctx, installer, "--binary", binary, "--prefix", prefix, "--name", filepath.Base(executable))
 	command.Env = replaceEnvironment(os.Environ(), "AGENTCTL_UPDATE_MODE", "off")
 	var output boundedBuffer
@@ -181,6 +179,21 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 // ReconcileInstalledVersion records the running binary after a manual install
 // or before an explicit release check. Clearing installed_at avoids attributing
 // the previous binary's install time to this one.
+// checkLiveOwners defers the update while other agentctl execution owners run, unless AllowLiveOwners.
+func checkLiveOwners(options ApplyOptions) error {
+	if options.LiveOwners == nil || options.AllowLiveOwners {
+		return nil
+	}
+	owners, err := options.LiveOwners()
+	if err != nil {
+		return recordApplyError(options.Check.StatePath, "live_owners_unknown", err)
+	}
+	if owners > 0 {
+		return recordApplyError(options.Check.StatePath, "live_owners_deferred", fmt.Errorf("%d agentctl execution owner processes are running", owners))
+	}
+	return nil
+}
+
 func ReconcileInstalledVersion(path, current string) error {
 	if _, valid := parseVersion(current); !valid {
 		return nil

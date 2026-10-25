@@ -14,10 +14,11 @@ import (
 
 // ownerSubcommands are the agentctl invocations that own an execution for its lifetime. A binary or journal change
 // under them can fail their next journal write, so updates wait for them (2026-10-25 m5 incident).
-var ownerSubcommands = map[string]bool{"delegate": true, "run": true, "fanout": true, "continue": true, "_delegate-worker": true}
+// dispatch and promote write the journal after remote work, so they count too.
+var ownerSubcommands = map[string]bool{"delegate": true, "run": true, "fanout": true, "continue": true, "dispatch": true, "promote": true, "_delegate-worker": true}
 
 // valueGlobalFlags take a separate value argument before the subcommand.
-var valueGlobalFlags = map[string]bool{"--output": true, "--profile": true, "--context-file": true, "--config": true, "--config-bundle": true, "--journal": true}
+var valueGlobalFlags = map[string]bool{"--output": true, "--profile": true, "--context-file": true, "--config": true, "--config-bundle": true, "--journal": true, "--journal-busy-budget": true}
 
 // ownerSubcommand returns the subcommand of an agentctl command line when it owns an execution, else "".
 func ownerSubcommand(command string) string {
