@@ -326,10 +326,11 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	// Native launches are same-process owned. Any return path must reap the
 	// child, including journal or renderer failures, so foreground fan-out and
 	// lock contention cannot leak a process group.
+	ownedID := execution.ID // later failed journal assignments may return a zero execution
 	defer func() {
 		cancelErr := runtime.Cancel(context.Background(), adapter.CancelRequest{Ref: launch.Session.Ref, Signal: "term", Grace: 5 * time.Second})
 		if runProblem != nil {
-			runProblem = a.settleNativeOwnerError(c, runtime, launch.Session.Ref, execution, opts.noStoreResult, runProblem, cancelErr)
+			runProblem = a.settleNativeOwnerError(c, runtime, launch.Session.Ref, ownedID, opts.noStoreResult, runProblem, cancelErr)
 		}
 	}()
 	// This process owns the native child, so it is the only place a steering

@@ -68,8 +68,8 @@ func nativeLaunchFailure(err error, state adapter.State) adapter.Result {
 // terminalize on every owner error, including a failed event write. A permanently
 // unwritable journal cannot be repaired here: report that explicitly, with the
 // execution id, rather than asserting that a terminal state was recorded.
-func (a *app) settleNativeOwnerError(c common, runtime adapter.Adapter, ref adapter.SourceRef, execution model.Execution, noStore bool, problem *output.Error, cancelErr error) *output.Error {
-	problem.WithDetail("execution_id", execution.ID.String())
+func (a *app) settleNativeOwnerError(c common, runtime adapter.Adapter, ref adapter.SourceRef, id ids.ExecutionID, noStore bool, problem *output.Error, cancelErr error) *output.Error {
+	problem.WithDetail("execution_id", id.String())
 	if cancelErr != nil {
 		return problem.WithDetail("cleanup", "unproven").WithDetail("terminal_recorded", false)
 	}
@@ -89,7 +89,7 @@ func (a *app) settleNativeOwnerError(c common, runtime adapter.Adapter, ref adap
 		}
 		result.Data["diagnostic_code"] = code
 	}
-	journal, current, openProblem := a.openExecutionWriteOwned(c, execution.ID)
+	journal, current, openProblem := a.openExecutionWriteOwned(c, id)
 	if openProblem != nil {
 		return problem.WithDetail("terminal_recorded", false).WithDetail("terminal_write_error", openProblem.Code)
 	}
