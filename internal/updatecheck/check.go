@@ -45,20 +45,29 @@ type Options struct {
 	Getenv         func(string) string
 }
 
+// PendingApply is a durable, pinned install request. WaitingOn contains process
+// identities (pid:N), not execution ids: the guard also covers remote dispatches.
+type PendingApply struct {
+	Version   string   `json:"version"`
+	Explicit  bool     `json:"explicit"`
+	WaitingOn []string `json:"waiting_on"`
+}
+
 type cacheState struct {
-	LastErrorRollback string    `json:"last_error_rollback,omitempty"`
-	LastErrorStage    string    `json:"last_error_stage,omitempty"`
-	LastErrorExitCode int       `json:"last_error_exit_code,omitempty"`
-	SchemaVersion     int       `json:"schema_version"`
-	LastAttemptAt     time.Time `json:"last_attempt_at,omitempty"`
-	CheckedOn         string    `json:"checked_on,omitempty"`
-	LatestVersion     string    `json:"latest_version,omitempty"`
-	ReleaseURL        string    `json:"release_url,omitempty"`
-	NotifiedOn        string    `json:"notified_on,omitempty"`
-	InstalledVersion  string    `json:"installed_version,omitempty"`
-	InstalledAt       time.Time `json:"installed_at,omitzero"`
-	LastErrorCode     string    `json:"last_error_code,omitempty"`
-	LastErrorAt       time.Time `json:"last_error_at,omitempty"`
+	Pending           *PendingApply `json:"pending,omitempty"`
+	LastErrorRollback string        `json:"last_error_rollback,omitempty"`
+	LastErrorStage    string        `json:"last_error_stage,omitempty"`
+	LastErrorExitCode int           `json:"last_error_exit_code,omitempty"`
+	SchemaVersion     int           `json:"schema_version"`
+	LastAttemptAt     time.Time     `json:"last_attempt_at,omitempty"`
+	CheckedOn         string        `json:"checked_on,omitempty"`
+	LatestVersion     string        `json:"latest_version,omitempty"`
+	ReleaseURL        string        `json:"release_url,omitempty"`
+	NotifiedOn        string        `json:"notified_on,omitempty"`
+	InstalledVersion  string        `json:"installed_version,omitempty"`
+	InstalledAt       time.Time     `json:"installed_at,omitzero"`
+	LastErrorCode     string        `json:"last_error_code,omitempty"`
+	LastErrorAt       time.Time     `json:"last_error_at,omitempty"`
 }
 
 type releaseDocument struct {

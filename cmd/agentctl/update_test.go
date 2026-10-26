@@ -253,3 +253,34 @@ func TestUpdateStatusAndDoctorSkipDevBuildWithoutStaleLatest(t *testing.T) {
 		t.Fatalf("doctor update projection: %s", stdout.String())
 	}
 }
+
+func TestUpdateStatusShowsPendingOwnersReadOnly(t *testing.T) {
+	root := testutil.TempDir(t)
+	t.Setenv("XDG_STATE_HOME", root)
+	statePath, _, err := updatecheck.DefaultPaths(os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"schema_version":1,"pending":{"version":"v0.99.0","explicit":true,"waiting_on":["pid:1"]}}`)
+	if err := os.WriteFile(statePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range []string{"json", "text"} {
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		a.getenv = os.Getenv
+		a.liveOwners = func() ([]string, error) { return []string{"pid:101", "pid:202"}, nil }
+		if code := a.run(context.Background(), []string{"--output", format, "update", "status"}); code != 0 {
+			t.Fatalf("%d %s", code, stdout.String())
+		}
+		if !strings.Contains(stdout.String(), "v0.99.0") || !strings.Contains(stdout.String(), "pid:202") {
+			t.Fatalf("missing pending details: %s", stdout.String())
+		}
+		if got := mustReadFile(t, statePath); !bytes.Equal(got, data) {
+			t.Fatal("status mutated pending state")
+		}
+	}
+}

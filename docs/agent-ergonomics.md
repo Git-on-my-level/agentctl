@@ -151,6 +151,32 @@ override the stored `auto`, `notify`, or `off` policy for a process; the legacy
 a hard-off compatibility path. `agentctl update status` is read-only and
 `agentctl update now` explicitly performs a foreground check and managed update.
 
+If execution owners are live, installation returns retryable conflict
+`live_owners_deferred` and records `binary.pending` in update status:
+`{"version":"v0.16.3","explicit":true,"waiting_on":["pid:123"]}`.
+`waiting_on` identifies host processes, including native owners and remote
+`dispatch`/`promote` invocations, rather than journal execution ids. Status
+refreshes this list from the process table without writing state; on scan
+failure it retains the recorded list. `live_owners_unknown` also defers safely.
+
+After each work-creating invocation (and detached native worker) finishes and
+releases its execution and journal, it synchronously retries a pending install.
+The update worker can retry it too. Both owner checks remain in place, including
+the check immediately before installation. A pending retry bypasses discovery
+backoff and installs only the recorded release, never a newly discovered tag.
+Under `notify`, only an explicit `update now` request can resume; `off` pauses
+pending requests. Successful installation clears the request; failures retain it.
+No idle timer is added: if the last owner predates this behavior, the next
+work-creating invocation must finish (or `update now` must be retried). Read-only
+commands, help and plans never apply updates. This behavior is shared by direct
+native execution and Multica-backed work; Multica remains the task authority.
+
+The installer replaces the binary by rename, preserving existing executable
+images. That alone does not prove mixed-version journal and supervisor access
+safe: PR #110's post-update fatal journal-write incident lost the underlying
+error detail. Pending apply therefore preserves #110's conservative owner guard
+rather than assuming immutable binaries alone solve that incident.
+
 ## Error contract
 
 Errors include:

@@ -44,9 +44,9 @@ func ownerSubcommand(command string, names map[string]bool) string {
 	return ""
 }
 
-// countOwnerProcesses parses `ps -axo pid=,command=` output and counts execution owners other than self.
-func countOwnerProcesses(psOutput []byte, self int, names map[string]bool) int {
-	count := 0
+// ownerProcessIDs parses `ps -axo pid=,command=` and identifies owners other than self.
+func ownerProcessIDs(psOutput []byte, self int, names map[string]bool) []string {
+	owners := []string{}
 	scanner := bufio.NewScanner(bytes.NewReader(psOutput))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -60,21 +60,21 @@ func countOwnerProcesses(psOutput []byte, self int, names map[string]bool) int {
 			continue
 		}
 		if ownerSubcommand(strings.TrimSpace(command), names) != "" {
-			count++
+			owners = append(owners, "pid:"+strconv.Itoa(pid))
 		}
 	}
-	return count
+	return owners
 }
 
 // liveOwnerProcesses counts running agentctl execution owners on this host.
-func liveOwnerProcesses() (int, error) {
+func liveOwnerProcessIDs() ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,command=").Output()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return countOwnerProcesses(out, os.Getpid(), agentctlNames()), nil
+	return ownerProcessIDs(out, os.Getpid(), agentctlNames()), nil
 }
 
 // agentctlNames is "agentctl" plus this executable's basename (a managed install may be named differently).
@@ -84,4 +84,8 @@ func agentctlNames() map[string]bool {
 		names[filepath.Base(executable)] = true
 	}
 	return names
+}
+
+func countOwnerProcesses(out []byte, self int, names map[string]bool) int {
+	return len(ownerProcessIDs(out, self, names))
 }
