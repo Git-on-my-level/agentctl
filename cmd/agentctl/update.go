@@ -64,8 +64,32 @@ func (a *app) updateWorker(parent context.Context, c common) int {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 	mode, modeErr := updatecheck.ResolveMode(policyPath, a.getenv)
-	if modeErr == nil && mode == updatecheck.ModeAuto {
-		_, _ = updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv}, LiveOwners: a.liveOwnerCount})
+	initialStatus, initialErr := updatecheck.ReadStatus(statePath, policyPath, a.getenv)
+	hadPending := initialErr == nil && initialStatus.Pending != nil
+	// Only the detached worker waits for draining owners or competing applies.
+	// A short bounded retry also lets the spawning owner exit before the scan.
+	for modeErr == nil {
+		result, resumeErr := updatecheck.Resume(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv}, OwnerIDs: a.liveOwnerIDs}, mode)
+		if result.Updated {
+			return 0
+		}
+		var failure *updatecheck.ApplyError
+		if !errors.As(resumeErr, &failure) || failure.Code != "live_owners_deferred" {
+			break
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return 0
+		case <-timer.C:
+		}
+		mode, modeErr = updatecheck.ResolveMode(policyPath, a.getenv)
+	}
+
+	status, statusErr := updatecheck.ReadStatus(statePath, policyPath, a.getenv)
+	if modeErr == nil && mode == updatecheck.ModeAuto && !hadPending && statusErr == nil && status.Pending == nil {
+		_, _ = updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv}, OwnerIDs: a.liveOwnerIDs})
 	}
 	_, _ = a.updateSkillsAutoClean(ctx, c, false)
 	return 0
@@ -89,6 +113,12 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c com
 			return output.Wrap(output.CodeInternal, "read update status", false, err).WithDetail("update_error_code", "status_unavailable").WithDetail("safe_cause", "update status could not be read")
 		}
 		status = projectUpdateStatus(status, version)
+		if status.Pending != nil {
+			owners, scanErr := a.liveOwnerIDs()
+			if scanErr == nil {
+				status.Pending.WaitingOn = owners
+			}
+		}
 		skills := a.skillsUpdateStatus(ctx, c)
 		observed := map[string]any{"version": version, "bookkeeping_matches": status.InstalledVersion == version}
 		if path, err := os.Executable(); err == nil {
@@ -99,7 +129,7 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c com
 		if skill, err := portableasset.Skill(); err == nil {
 			observed["expected_portable_skill_sha256"] = skill.Digest
 		}
-		_ = renderer.Success(output.Success{Result: map[string]any{"binary": status, "skills": skills, "observed_binary": observed, "compatibility_actions": []output.NextAction{{Label: "Inspect installed portable skills", Argv: []string{"agentctl", "bootstrap", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}, {Label: "Inspect running supervisor", Argv: []string{"agentctl", "supervisor", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}}}, Lines: []output.Line{{Lead: "update.binary", Fields: []output.Field{{Name: "mode", Value: status.Mode}, {Name: "update_check", Value: status.UpdateCheck}, {Name: "checked_on", Value: status.CheckedOn}, {Name: "latest_version", Value: status.LatestVersion}, {Name: "installed_version", Value: status.InstalledVersion}}}, {Lead: "update.skills", Fields: []output.Field{{Name: "policy", Value: skills["policy"]}, {Name: "configured", Value: skills["configured"]}, {Name: "checked_on", Value: skills["checked_on"]}, {Name: "healthy", Value: skills["healthy"]}}}}})
+		_ = renderer.Success(output.Success{Result: map[string]any{"binary": status, "skills": skills, "observed_binary": observed, "compatibility_actions": []output.NextAction{{Label: "Inspect installed portable skills", Argv: []string{"agentctl", "bootstrap", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}, {Label: "Inspect running supervisor", Argv: []string{"agentctl", "supervisor", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}}}, Lines: []output.Line{{Lead: "update.binary", Fields: []output.Field{{Name: "pending", Value: status.Pending}, {Name: "mode", Value: status.Mode}, {Name: "update_check", Value: status.UpdateCheck}, {Name: "checked_on", Value: status.CheckedOn}, {Name: "latest_version", Value: status.LatestVersion}, {Name: "installed_version", Value: status.InstalledVersion}}}, {Lead: "update.skills", Fields: []output.Field{{Name: "policy", Value: skills["policy"]}, {Name: "configured", Value: skills["configured"]}, {Name: "checked_on", Value: skills["checked_on"]}, {Name: "healthy", Value: skills["healthy"]}}}}})
 		return nil
 	case "policy":
 		if len(args) != 2 {
@@ -116,7 +146,7 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c com
 		if len(args) != 1 && !allowLive {
 			return output.NewError(output.CodeUsage, "usage: agentctl update now [--allow-live-owners]", false)
 		}
-		result, err := updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv, Force: true}, LiveOwners: a.liveOwnerCount, AllowLiveOwners: allowLive})
+		result, err := updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv, Force: true}, AllowLiveOwners: allowLive, Explicit: true, OwnerIDs: a.liveOwnerIDs})
 		if err != nil {
 			return mapUpdateApplyError(err)
 		}
@@ -252,10 +282,27 @@ func (a *app) updateSkillsAutoClean(ctx context.Context, c common, force bool) (
 	return skillpack.ReconcileAutoClean(skillpack.Options{Source: skillpack.SourceFromHubStatus(updated.Status), Home: home, DetectedHarnesses: detected})
 }
 
-// liveOwnerCount counts other agentctl execution owners on this host; tests replace a.liveOwners.
-func (a *app) liveOwnerCount() (int, error) {
+func (a *app) liveOwnerIDs() ([]string, error) {
 	if a.liveOwners != nil {
 		return a.liveOwners()
 	}
-	return liveOwnerProcesses()
+	return liveOwnerProcessIDs()
+}
+
+// Called after work releases its journal and ownership. The no-pending path
+// only reads local state; downloads and drain/lock waits belong to the worker.
+func (a *app) resumePendingUpdate(c common) {
+	statePath, policyPath, err := updatecheck.DefaultPaths(a.getenv)
+	if err != nil {
+		return
+	}
+	status, err := updatecheck.ReadStatus(statePath, policyPath, a.getenv)
+	if err != nil || status.Pending == nil || status.Mode == updatecheck.ModeOff || (status.Mode != updatecheck.ModeAuto && !status.Pending.Explicit) {
+		return
+	}
+	start := a.startUpdateWorker
+	if start == nil {
+		start = startUpdateWorker
+	}
+	_ = start(c)
 }

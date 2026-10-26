@@ -147,19 +147,20 @@ func Due(options Options) bool {
 }
 
 type Status struct {
-	LastErrorRollback string `json:"last_error_rollback,omitempty"`
-	LastErrorStage    string `json:"last_error_stage,omitempty"`
-	LastErrorExitCode int    `json:"last_error_exit_code,omitempty"`
-	Mode              Mode   `json:"mode"`
-	StatePath         string `json:"state_path"`
-	PolicyPath        string `json:"policy_path"`
-	CheckedOn         string `json:"checked_on,omitempty"`
-	LatestVersion     string `json:"latest_version,omitempty"`
-	UpdateCheck       string `json:"update_check,omitempty"`
-	InstalledVersion  string `json:"installed_version,omitempty"`
-	InstalledAt       string `json:"installed_at,omitempty"`
-	LastErrorCode     string `json:"last_error_code,omitempty"`
-	LastErrorAt       string `json:"last_error_at,omitempty"`
+	Pending           *PendingApply `json:"pending,omitempty"`
+	LastErrorRollback string        `json:"last_error_rollback,omitempty"`
+	LastErrorStage    string        `json:"last_error_stage,omitempty"`
+	LastErrorExitCode int           `json:"last_error_exit_code,omitempty"`
+	Mode              Mode          `json:"mode"`
+	StatePath         string        `json:"state_path"`
+	PolicyPath        string        `json:"policy_path"`
+	CheckedOn         string        `json:"checked_on,omitempty"`
+	LatestVersion     string        `json:"latest_version,omitempty"`
+	UpdateCheck       string        `json:"update_check,omitempty"`
+	InstalledVersion  string        `json:"installed_version,omitempty"`
+	InstalledAt       string        `json:"installed_at,omitempty"`
+	LastErrorCode     string        `json:"last_error_code,omitempty"`
+	LastErrorAt       string        `json:"last_error_at,omitempty"`
 }
 
 func ReadStatus(statePath, policyPath string, getenv func(string) string) (Status, error) {
@@ -175,6 +176,7 @@ func ReadStatus(statePath, policyPath string, getenv func(string) string) (Statu
 	if err != nil {
 		return Status{}, err
 	}
+	result.Pending = state.Pending
 	result.CheckedOn = state.CheckedOn
 	result.LatestVersion = state.LatestVersion
 	result.InstalledVersion = state.InstalledVersion

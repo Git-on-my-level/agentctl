@@ -31,10 +31,14 @@ type ApplyOptions struct {
 	Executable     string
 	ReleaseBaseURL string
 	Client         *http.Client
-	// LiveOwners reports how many other agentctl processes currently own executions. A binary replacement while
-	// owners on the old version are live can kill them mid-run (2026-10-25: a v0.16.1 auto-update left a v0.15 owner
-	// failing "record native event" with exit 70), so Apply defers instead. Nil skips the check.
-	LiveOwners func() (int, error)
+	// LiveOwners reports other execution owners. #110 observed a fatal journal
+	// write after an upgrade; the precise cause was lost. Keep its conservative
+	// guard rather than assuming mixed-version journal/service access is safe.
+	LiveOwners    func() (int, error)
+	OwnerIDs      func() ([]string, error)
+	Explicit      bool
+	resumePending bool
+	resumeMode    Mode
 	// AllowLiveOwners installs even when LiveOwners reports owners (`agentctl update now --allow-live-owners`).
 	AllowLiveOwners bool
 }
@@ -61,6 +65,30 @@ func (e *ApplyError) Unwrap() error { return e.Cause }
 // owned by the packaged agentctl installer.
 func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	result := ApplyResult{CurrentVersion: options.Check.CurrentVersion}
+	if _, valid := parseVersion(options.Check.CurrentVersion); !valid || options.Check.StatePath == "" {
+		return result, nil
+	}
+	// Serialize the entire transaction, including intent and installer execution.
+	release, acquired, lockErr := acquireLock(options.Check.StatePath+".apply-lock", time.Now().UTC())
+	if lockErr != nil || !acquired {
+		return result, recordApplyError(options.Check.StatePath, "state_lock_failed", errors.Join(errUpdateCheckBusy, lockErr))
+	}
+	defer release()
+	var pending *PendingApply
+	if options.resumePending {
+		state, err := readState(options.Check.StatePath)
+		if errors.Is(err, os.ErrNotExist) {
+			return result, nil
+		}
+		if err != nil {
+			return result, err
+		}
+		pending = state.Pending
+		if pending == nil || options.resumeMode == ModeOff || (options.resumeMode != ModeAuto && !pending.Explicit) {
+			return result, nil
+		}
+	}
+
 	if _, valid := parseVersion(options.Check.CurrentVersion); valid && options.Check.StatePath != "" {
 		executable := options.Executable
 		if executable == "" {
@@ -79,7 +107,21 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 		}
 	}
 	options.Check.DiscoveryOnly = true
-	notice, err := Check(ctx, options.Check)
+	var notice *Notice
+	var err error
+	if pending != nil {
+		target, valid := parseVersion(pending.Version)
+		current, currentValid := parseVersion(options.Check.CurrentVersion)
+		if !valid || !currentValid {
+			return result, errors.New("invalid pending update version")
+		}
+		if !target.greaterThan(current) {
+			return result, recordInstalled(options.Check.StatePath, options.Check.CurrentVersion)
+		}
+		notice = &Notice{LatestVersion: pending.Version}
+	} else {
+		notice, err = Check(ctx, options.Check)
+	}
 	if err != nil {
 		code := "release_check_failed"
 		var checkFailure *checkError
@@ -112,6 +154,9 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 		return result, recordApplyError(options.Check.StatePath, "unmanaged_install", err)
 	}
 
+	if err := recordPending(options, version); err != nil {
+		return result, recordApplyError(options.Check.StatePath, "state_record_failed", err)
+	}
 	if err := checkLiveOwners(options); err != nil {
 		return result, err
 	}
@@ -176,15 +221,29 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	return result, nil
 }
 
-// ReconcileInstalledVersion records the running binary after a manual install
-// or before an explicit release check. Clearing installed_at avoids attributing
-// the previous binary's install time to this one.
 // checkLiveOwners defers the update while other agentctl execution owners run, unless AllowLiveOwners.
 func checkLiveOwners(options ApplyOptions) error {
-	if options.LiveOwners == nil || options.AllowLiveOwners {
+	if (options.LiveOwners == nil && options.OwnerIDs == nil) || options.AllowLiveOwners {
 		return nil
 	}
-	owners, err := options.LiveOwners()
+	var owners int
+	var err error
+	if options.OwnerIDs != nil {
+		var ownerIDs []string
+		ownerIDs, err = options.OwnerIDs()
+		owners = len(ownerIDs)
+		if err == nil {
+			if writeErr := mutateApplyState(options.Check.StatePath, func(state *cacheState) {
+				if state.Pending != nil {
+					state.Pending.WaitingOn = ownerIDs
+				}
+			}); writeErr != nil {
+				return recordApplyError(options.Check.StatePath, "state_record_failed", writeErr)
+			}
+		}
+	} else {
+		owners, err = options.LiveOwners()
+	}
 	if err != nil {
 		return recordApplyError(options.Check.StatePath, "live_owners_unknown", err)
 	}
@@ -194,6 +253,7 @@ func checkLiveOwners(options ApplyOptions) error {
 	return nil
 }
 
+// ReconcileInstalledVersion records the running binary after a manual install.
 func ReconcileInstalledVersion(path, current string) error {
 	if _, valid := parseVersion(current); !valid {
 		return nil
@@ -467,14 +527,12 @@ func replaceEnvironment(environment []string, name, value string) []string {
 }
 
 func recordInstalled(path, installed string) error {
-	state, err := readState(path)
-	if err != nil {
-		return err
-	}
-	state.InstalledVersion = installed
-	state.InstalledAt = time.Now().UTC()
-	clearUpdateFailure(&state)
-	return writeState(path, state)
+	return mutateApplyState(path, func(state *cacheState) {
+		state.InstalledVersion = installed
+		state.InstalledAt = time.Now().UTC()
+		state.Pending = nil
+		clearUpdateFailure(state)
+	})
 }
 
 func recordApplyError(path, code string, cause error) error {
@@ -483,12 +541,11 @@ func recordApplyError(path, code string, cause error) error {
 	if code == "state_lock_failed" {
 		return &ApplyError{Code: code, Stage: stage, ExitCode: exitCode, Retryable: retryable, SafeCause: safeApplyCause(code, cause), Cause: cause}
 	}
-	state, err := readState(path)
 	var install *installerFailure
 	if errors.As(cause, &install) {
 		stage, exitCode = install.stage, install.exitCode
 	}
-	if err == nil {
+	err := mutateApplyState(path, func(state *cacheState) {
 		state.LastErrorCode = code
 		state.LastErrorStage, state.LastErrorExitCode = stage, exitCode
 		state.LastErrorRollback = ""
@@ -500,8 +557,7 @@ func recordApplyError(path, code string, cause error) error {
 			state.CheckedOn = ""
 			state.LastAttemptAt = state.LastErrorAt
 		}
-		err = writeState(path, state)
-	}
+	})
 	return &ApplyError{Code: code, Stage: stage, ExitCode: exitCode, Retryable: retryable, SafeCause: safeApplyCause(code, cause), Cause: errors.Join(cause, err)}
 }
 
@@ -604,4 +660,69 @@ func installerDiagnostic(err error, text string) error {
 		}
 	}
 	return d
+}
+
+// State mutations share discovery's lock so a concurrent notify check cannot
+// overwrite the pending request with an older snapshot.
+func mutateApplyState(path string, mutate func(*cacheState)) error {
+	release, acquired, err := acquireLock(path+".lock", time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return errUpdateCheckBusy
+	}
+	defer release()
+	state, err := readState(path)
+	if err != nil {
+		return err
+	}
+	mutate(&state)
+	return writeState(path, state)
+}
+
+func recordPending(options ApplyOptions, version string) error {
+	return mutateApplyState(options.Check.StatePath, func(state *cacheState) {
+		explicit := options.Explicit
+		if state.Pending != nil && state.Pending.Version == version {
+			explicit = explicit || state.Pending.Explicit
+		}
+		state.Pending = &PendingApply{Version: version, Explicit: explicit, WaitingOn: []string{}}
+	})
+}
+
+// Resume replays only a recorded request. Notify permits explicit requests;
+// off pauses them. It never discovers or authorizes a different release.
+func Resume(ctx context.Context, options ApplyOptions, mode Mode) (ApplyResult, error) {
+	if updateCheckDisabled(options.Check.Getenv) {
+		return ApplyResult{}, nil
+	}
+	state, err := readState(options.Check.StatePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return ApplyResult{}, nil
+	}
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	if state.Pending == nil || mode == ModeOff || (mode != ModeAuto && !state.Pending.Explicit) {
+		return ApplyResult{}, nil
+	}
+	options.resumePending = true
+	options.resumeMode = mode
+	for {
+		result, err := Apply(ctx, options)
+		var failure *ApplyError
+		if !errors.As(err, &failure) || (failure.Code != "state_lock_failed" && !errors.Is(err, errUpdateCheckBusy)) {
+			return result, err
+		}
+		// A finishing owner's worker must not discard its last retry just because
+		// another worker is still applying or deferring on a stale owner scan.
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return result, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }

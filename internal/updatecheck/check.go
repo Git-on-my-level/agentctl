@@ -45,20 +45,29 @@ type Options struct {
 	Getenv         func(string) string
 }
 
+// PendingApply is a durable, pinned install request. WaitingOn contains process
+// identities (pid:N), not execution ids: the guard also covers remote dispatches.
+type PendingApply struct {
+	Version   string   `json:"version"`
+	Explicit  bool     `json:"explicit"`
+	WaitingOn []string `json:"waiting_on"`
+}
+
 type cacheState struct {
-	LastErrorRollback string    `json:"last_error_rollback,omitempty"`
-	LastErrorStage    string    `json:"last_error_stage,omitempty"`
-	LastErrorExitCode int       `json:"last_error_exit_code,omitempty"`
-	SchemaVersion     int       `json:"schema_version"`
-	LastAttemptAt     time.Time `json:"last_attempt_at,omitempty"`
-	CheckedOn         string    `json:"checked_on,omitempty"`
-	LatestVersion     string    `json:"latest_version,omitempty"`
-	ReleaseURL        string    `json:"release_url,omitempty"`
-	NotifiedOn        string    `json:"notified_on,omitempty"`
-	InstalledVersion  string    `json:"installed_version,omitempty"`
-	InstalledAt       time.Time `json:"installed_at,omitzero"`
-	LastErrorCode     string    `json:"last_error_code,omitempty"`
-	LastErrorAt       time.Time `json:"last_error_at,omitempty"`
+	Pending           *PendingApply `json:"pending,omitempty"`
+	LastErrorRollback string        `json:"last_error_rollback,omitempty"`
+	LastErrorStage    string        `json:"last_error_stage,omitempty"`
+	LastErrorExitCode int           `json:"last_error_exit_code,omitempty"`
+	SchemaVersion     int           `json:"schema_version"`
+	LastAttemptAt     time.Time     `json:"last_attempt_at,omitempty"`
+	CheckedOn         string        `json:"checked_on,omitempty"`
+	LatestVersion     string        `json:"latest_version,omitempty"`
+	ReleaseURL        string        `json:"release_url,omitempty"`
+	NotifiedOn        string        `json:"notified_on,omitempty"`
+	InstalledVersion  string        `json:"installed_version,omitempty"`
+	InstalledAt       time.Time     `json:"installed_at,omitzero"`
+	LastErrorCode     string        `json:"last_error_code,omitempty"`
+	LastErrorAt       time.Time     `json:"last_error_at,omitempty"`
 }
 
 type releaseDocument struct {
@@ -129,11 +138,11 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 		return nil, classifyCheckError("state_read_failed", stateErr)
 	}
 	if state.CheckedOn == today && !options.Force {
-		notice, err := cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
+		notice, err := cachedNoticeLocked(options.StatePath, state, current, today, options.DiscoveryOnly)
 		return notice, classifyCheckError("state_write_failed", err)
 	}
 	if !options.Force && !state.LastAttemptAt.IsZero() && now.Sub(state.LastAttemptAt) < retryInterval {
-		notice, err := cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
+		notice, err := cachedNoticeLocked(options.StatePath, state, current, today, options.DiscoveryOnly)
 		return notice, classifyCheckError("state_write_failed", err)
 	}
 
@@ -142,7 +151,7 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 	latest, fetchErr := fetchLatest(ctx, options)
 	if fetchErr != nil {
 		writeErr := writeState(options.StatePath, state)
-		notice, noticeErr := cachedNotice(options.StatePath, state, current, today, options.DiscoveryOnly)
+		notice, noticeErr := cachedNoticeLocked(options.StatePath, state, current, today, options.DiscoveryOnly)
 		return notice, classifyCheckError("release_check_failed", errors.Join(fetchErr, writeErr, noticeErr))
 	}
 	state.CheckedOn = today
@@ -162,7 +171,30 @@ func Check(ctx context.Context, options Options) (*Notice, error) {
 	return nil, classifyCheckError("state_write_failed", writeState(options.StatePath, state))
 }
 
-func cachedNotice(path string, state cacheState, current semanticVersion, today string, discoveryOnly bool) (*Notice, error) {
+// A cached fast-path snapshot may precede a concurrent apply. Before updating
+// notification bookkeeping, acquire discovery's lock and read the latest state.
+func cachedNotice(path string, snapshot cacheState, current semanticVersion, today string, discoveryOnly bool) (*Notice, error) {
+	if discoveryOnly {
+		return cachedNoticeLocked(path, snapshot, current, today, true)
+	}
+	release, acquired, err := acquireLock(path+".lock", time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	if !acquired {
+		// Another invocation owns notification/bookkeeping.
+		return nil, nil
+	}
+	defer release()
+	state, err := readState(path)
+	if err != nil {
+		return nil, err
+	}
+	return cachedNoticeLocked(path, state, current, today, false)
+}
+
+// Caller holds .lock whenever discoveryOnly is false.
+func cachedNoticeLocked(path string, state cacheState, current semanticVersion, today string, discoveryOnly bool) (*Notice, error) {
 	latest, valid := parseVersion(state.LatestVersion)
 	if !valid || !latest.greaterThan(current) || (!discoveryOnly && state.NotifiedOn == today) {
 		return nil, nil
@@ -311,6 +343,8 @@ func readState(path string) (cacheState, error) {
 	return state, nil
 }
 
+// writeState commits a snapshot. Production callers hold path+".lock" and
+// read that snapshot under the lock before modifying it; tests may seed fixtures.
 func writeState(path string, state cacheState) error {
 	root := filepath.Dir(path)
 	if err := ensurePrivateRoot(root); err != nil {

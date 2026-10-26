@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/testutil"
 	"github.com/Git-on-my-level/agentctl/internal/updatecheck"
@@ -252,4 +253,85 @@ func TestUpdateStatusAndDoctorSkipDevBuildWithoutStaleLatest(t *testing.T) {
 	if !strings.Contains(stdout.String(), `"update_check":"skipped_dev_build"`) || strings.Contains(stdout.String(), "v0.10.2") {
 		t.Fatalf("doctor update projection: %s", stdout.String())
 	}
+}
+
+func TestUpdateStatusShowsPendingOwnersReadOnly(t *testing.T) {
+	root := testutil.TempDir(t)
+	t.Setenv("XDG_STATE_HOME", root)
+	statePath, _, err := updatecheck.DefaultPaths(os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"schema_version":1,"pending":{"version":"v0.99.0","explicit":true,"waiting_on":["pid:1"]}}`)
+	if err := os.WriteFile(statePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range []string{"json", "text"} {
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		a.getenv = os.Getenv
+		a.liveOwners = func() ([]string, error) { return []string{"pid:101", "pid:202"}, nil }
+		if code := a.run(context.Background(), []string{"--output", format, "update", "status"}); code != 0 {
+			t.Fatalf("%d %s", code, stdout.String())
+		}
+		if !strings.Contains(stdout.String(), "v0.99.0") || !strings.Contains(stdout.String(), "pid:202") {
+			t.Fatalf("missing pending details: %s", stdout.String())
+		}
+		if got := mustReadFile(t, statePath); !bytes.Equal(got, data) {
+			t.Fatal("status mutated pending state")
+		}
+	}
+}
+
+func TestInvocationHandsOffPendingWithoutWaitingForInstall(t *testing.T) {
+	root := testutil.TempDir(t)
+	t.Setenv("XDG_STATE_HOME", root)
+	t.Setenv("AGENTCTL_UPDATE_MODE", "notify")
+	path, _, _ := updatecheck.DefaultPaths(os.Getenv)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"schema_version":1,"pending":{"version":"v0.99.0","explicit":true,"waiting_on":[]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	a.getenv = os.Getenv
+	started, finish, installed := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	a.startUpdateWorker = func(common) error {
+		close(started)
+		go func() { <-finish; close(installed) }()
+		return nil
+	}
+	returned := make(chan struct{})
+	go func() { a.run(context.Background(), []string{"dispatch"}); close(returned) }()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		close(finish)
+		<-returned
+		t.Fatal("invocation waited for pending install")
+	}
+	select {
+	case <-started:
+	default:
+		close(finish)
+		t.Fatal("pending installation was not handed off to worker")
+	}
+	select {
+	case <-installed:
+		t.Fatal("install completed before being released")
+	default:
+	}
+	close(finish)
+	<-installed
+	// With no pending request even spawning the worker is unnecessary.
+	if err := os.WriteFile(path, []byte(`{"schema_version":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a.startUpdateWorker = func(common) error { t.Fatal("worker spawned without pending request"); return nil }
+	a.resumePendingUpdate(common{})
 }
