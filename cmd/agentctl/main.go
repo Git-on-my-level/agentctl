@@ -38,12 +38,13 @@ type app struct {
 	// nativeEventWriter injects storage faults in lifecycle tests; nil uses the journal.
 	nativeEventWriter func(context.Context, *store.Journal, model.Execution, adapter.Event) (model.Execution, error)
 
-	startANXWorker  func(common) error
-	stdout, stderr  io.Writer
-	stdin           io.Reader
-	stdinIsTerminal func() bool
-	getenv          func(string) string
-	now             func() time.Time
+	startUpdateWorker func(common) error
+	startANXWorker    func(common) error
+	stdout, stderr    io.Writer
+	stdin             io.Reader
+	stdinIsTerminal   func() bool
+	getenv            func(string) string
+	now               func() time.Time
 	// processProof overrides host process-identity checks. Production leaves it
 	// nil and reads the kernel process table; tests inject a deterministic proof.
 	processProof func(processIdentity) processProof
@@ -114,7 +115,7 @@ func updateCheckStatePath(_ common) (string, error) {
 
 func (a *app) run(ctx context.Context, args []string) int {
 	if len(args) == 1 && args[0] == "_delegate-worker" {
-		defer a.resumePendingUpdate(ctx)
+		defer a.resumePendingUpdate(common{})
 		return a.detachedNativeWorker(ctx)
 	}
 	commonArgs, rest, parseErr := a.parseCommon(args)
@@ -123,7 +124,7 @@ func (a *app) run(ctx context.Context, args []string) int {
 		return a.fail(renderer, output.NewError(output.CodeUsage, parseErr.Error(), false))
 	}
 	if invocationAllowsAutomaticMaintenance(rest) {
-		defer a.resumePendingUpdate(ctx)
+		defer a.resumePendingUpdate(commonArgs)
 	}
 	internalUpdateWorker := len(rest) > 0 && rest[0] == "_update-worker"
 	updateCommand := len(rest) > 0 && rest[0] == "update"

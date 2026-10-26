@@ -64,14 +64,31 @@ func (a *app) updateWorker(parent context.Context, c common) int {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 	mode, modeErr := updatecheck.ResolveMode(policyPath, a.getenv)
-	if modeErr == nil {
-		result, _ := updatecheck.Resume(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv}, OwnerIDs: a.liveOwnerIDs}, mode)
+	initialStatus, initialErr := updatecheck.ReadStatus(statePath, policyPath, a.getenv)
+	hadPending := initialErr == nil && initialStatus.Pending != nil
+	// Only the detached worker waits for draining owners or competing applies.
+	// A short bounded retry also lets the spawning owner exit before the scan.
+	for modeErr == nil {
+		result, resumeErr := updatecheck.Resume(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv}, OwnerIDs: a.liveOwnerIDs}, mode)
 		if result.Updated {
 			return 0
 		}
+		var failure *updatecheck.ApplyError
+		if !errors.As(resumeErr, &failure) || failure.Code != "live_owners_deferred" {
+			break
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return 0
+		case <-timer.C:
+		}
+		mode, modeErr = updatecheck.ResolveMode(policyPath, a.getenv)
 	}
+
 	status, statusErr := updatecheck.ReadStatus(statePath, policyPath, a.getenv)
-	if modeErr == nil && mode == updatecheck.ModeAuto && statusErr == nil && status.Pending == nil {
+	if modeErr == nil && mode == updatecheck.ModeAuto && !hadPending && statusErr == nil && status.Pending == nil {
 		_, _ = updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv}, OwnerIDs: a.liveOwnerIDs})
 	}
 	_, _ = a.updateSkillsAutoClean(ctx, c, false)
@@ -272,21 +289,20 @@ func (a *app) liveOwnerIDs() ([]string, error) {
 	return liveOwnerProcessIDs()
 }
 
-// Called after the invocation has released its journal and execution ownership.
-// Synchronous completion avoids abandoning a pending apply when this process exits.
-func (a *app) resumePendingUpdate(parent context.Context) {
+// Called after work releases its journal and ownership. The no-pending path
+// only reads local state; downloads and drain/lock waits belong to the worker.
+func (a *app) resumePendingUpdate(c common) {
 	statePath, policyPath, err := updatecheck.DefaultPaths(a.getenv)
 	if err != nil {
 		return
 	}
-	mode, err := updatecheck.ResolveMode(policyPath, a.getenv)
-	if err != nil {
+	status, err := updatecheck.ReadStatus(statePath, policyPath, a.getenv)
+	if err != nil || status.Pending == nil || status.Mode == updatecheck.ModeOff || (status.Mode != updatecheck.ModeAuto && !status.Pending.Explicit) {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 2*time.Minute)
-	defer cancel()
-	_, _ = updatecheck.Resume(ctx, updatecheck.ApplyOptions{
-		Check:    updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv},
-		OwnerIDs: a.liveOwnerIDs,
-	}, mode)
+	start := a.startUpdateWorker
+	if start == nil {
+		start = startUpdateWorker
+	}
+	_ = start(c)
 }

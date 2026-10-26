@@ -160,13 +160,20 @@ refreshes this list from the process table without writing state; on scan
 failure it retains the recorded list. `live_owners_unknown` also defers safely.
 
 After each work-creating invocation (and detached native worker) finishes and
-releases its execution and journal, it synchronously retries a pending install.
-The update worker can retry it too. Both owner checks remain in place, including
+releases its execution and journal, it reads pending state and hands eligible
+requests to the existing detached update worker. The invocation returns after
+spawning; it never waits for downloads, installation, or owner/apply-lock drains.
+With no pending request the completion path only reads local state. The worker
+keeps a contended resume alive until it acquires the apply lock and re-reads the
+request. It retries live-owner deferrals once per second within its two-minute
+budget, allowing spawning owners to exit and concurrent completions to converge.
+Timeouts leave the pending request intact for the next worker. Both owner checks
+remain in place, including
 the check immediately before installation. A pending retry bypasses discovery
 backoff and installs only the recorded release, never a newly discovered tag.
 Under `notify`, only an explicit `update now` request can resume; `off` pauses
 pending requests. Successful installation clears the request; failures retain it.
-No idle timer is added: if the last owner predates this behavior, the next
+No persistent updater timer is added: if the last owner predates this behavior, the next
 work-creating invocation must finish (or `update now` must be retried). Read-only
 commands, help and plans never apply updates. This behavior is shared by direct
 native execution and Multica-backed work; Multica remains the task authority.

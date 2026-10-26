@@ -709,5 +709,20 @@ func Resume(ctx context.Context, options ApplyOptions, mode Mode) (ApplyResult, 
 	}
 	options.resumePending = true
 	options.resumeMode = mode
-	return Apply(ctx, options)
+	for {
+		result, err := Apply(ctx, options)
+		var failure *ApplyError
+		if !errors.As(err, &failure) || (failure.Code != "state_lock_failed" && !errors.Is(err, errUpdateCheckBusy)) {
+			return result, err
+		}
+		// A finishing owner's worker must not discard its last retry just because
+		// another worker is still applying or deferring on a stale owner scan.
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return result, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
