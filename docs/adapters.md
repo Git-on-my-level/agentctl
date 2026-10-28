@@ -377,10 +377,12 @@ branch or PR, not in the local worktree.
 
 The cloud relay can answer `session/prompt` with `end_turn` before it delivers
 the turn's final assistant message, so a successful cloud turn settles: the
-client keeps reading for up to 20 seconds and ends at the first trailing
-`agent_message_chunk` (Devin cloud messages arrive whole). If none arrives the
-turn keeps whatever answer it had, and an empty one is reported as
-`native_answer_missing` rather than success. The `app.devin.ai/sessions/<id>`
+client keeps reading for up to 20 seconds, and once a trailing
+`agent_message_chunk` arrives it ends after two quiet seconds, so a message
+split across chunks is kept whole. If no trailing message arrives the turn keeps
+the answer it already had; a turn with no answer at all fails with
+`acp_answer_missing` instead of completing. A cancellation recorded during the
+settle window ends the turn as cancelled. The `app.devin.ai/sessions/<id>`
 link from the prompt result's `_meta` is recorded as `session_url` on the
 terminal event; any other URL is discarded.
 

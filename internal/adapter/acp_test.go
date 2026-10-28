@@ -206,7 +206,7 @@ func TestACPSettlesForTrailingMessage(t *testing.T) {
 		url                    bool
 	}{
 		{"devin-cloud", "trailing", "Hello world", true},
-		{"devin-cloud", "silent", "", true},
+		{"devin-cloud", "trailing-split", "Hello world", true},
 		{"devin-cloud", "normal", "Hello world", false},
 		// Local Devin does not settle; a late message is not waited for.
 		{"devin", "trailing", "", false},
@@ -230,8 +230,85 @@ func TestACPSettlesForTrailingMessage(t *testing.T) {
 			}
 		})
 	}
+	// Silence after end_turn is not an answer.
+	_, req := acpFixture(t, "silent", false)
+	req.Argv = append(req.Argv, "--cloud")
+	silent, err := NewDevinCloud().Launch(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if silent.Result == nil || silent.Result.Success || silent.Result.State != StateFailed || silent.Result.Data["diagnostic_code"] != "acp_answer_missing" || silent.Result.Data["session_url"] != "https://app.devin.ai/sessions/abc123" {
+		t.Fatalf("silent=%+v", silent.Result)
+	}
 	if url := devinCloudSessionURL([]byte(`{"cognition.ai/session":{"cognition.ai/url":"https://evil.example/sessions/x"}}`)); url != "" {
 		t.Fatalf("accepted %q", url)
+	}
+}
+
+func TestACPCancelDuringSettleIsCancelled(t *testing.T) {
+	withSettle(t, "devin-cloud", 10*time.Second)
+	a, req := acpFixture(t, "settle-cancel", false)
+	a = NewDevinCloud()
+	req.Argv = append(req.Argv, "--cloud")
+	req.StartOnly = true
+	got, err := a.Launch(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Wait until end_turn has been received and the turn is settling.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		events, _ := a.Events(context.Background(), EventsRequest{Ref: got.Session.Ref})
+		data, _ := json.Marshal(events)
+		if strings.Contains(string(data), "acp.tool_call") || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := a.Cancel(context.Background(), CancelRequest{Ref: got.Session.Ref, Grace: 200 * time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := a.Result(context.Background(), ResultRequest{Ref: got.Session.Ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != StateCancelled || result.Success {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestACPCancelDuringConfigureSendsNoPrompt(t *testing.T) {
+	a, req := acpFixture(t, "cancel-config", false)
+	marker := filepath.Join(t.TempDir(), "prompted")
+	req.Env = append(req.Env, "ACP_PROMPT_MARKER="+marker)
+	req.Argv = append(req.Argv, acpConfigFlag, "model=gpt-6-luna-medium")
+	req.StartOnly = true
+	got, err := a.Launch(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		events, _ := a.Events(context.Background(), EventsRequest{Ref: got.Session.Ref})
+		data, _ := json.Marshal(events)
+		if strings.Contains(string(data), "acp.session") || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := a.Cancel(context.Background(), CancelRequest{Ref: got.Session.Ref, Grace: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := a.Result(context.Background(), ResultRequest{Ref: got.Session.Ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != StateCancelled || result.Data["diagnostic_code"] != "acp_cancelled" {
+		t.Fatalf("result=%+v", result)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("prompt was sent after cancellation")
 	}
 }
 

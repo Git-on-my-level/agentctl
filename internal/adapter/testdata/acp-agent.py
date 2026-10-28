@@ -21,11 +21,13 @@ def permission():
     if mode=='permission-no-allow': options=options[1:]
     send(dict(id='permission-1',method='session/request_permission',params=dict(sessionId='wrong-session' if mode=='permission-wrong-session' else sid,toolCall=dict(toolCallId='tool-1'),options=options)))
 def finish():
-    if mode in ['trailing','silent']:
+    if mode in ['trailing','trailing-split','silent','settle-cancel']:
         # The cloud relay can answer end_turn before the turn's final message.
         tool()
+        if mode=='settle-cancel': update('Hello world')
         result(prompt_id,dict(stopReason='end_turn',_meta={'cognition.ai/session':{'cognition.ai/url':'https://app.devin.ai/sessions/abc123'}}))
         if mode=='trailing': update('Hello world')
+        if mode=='trailing-split': update('Hello '); update('world')
         return
     if mode=='interleaved':
         update('Checking '); update('now.')
@@ -61,6 +63,8 @@ for line in sys.stdin:
         result(i,{})
     elif method=='session/set_config_option':
         assert v['params']['sessionId']==sid
+        if mode=='cancel-config':
+            held=i; continue
         if config_mode=='reject': send(dict(id=i,error=dict(code=-32602,message='rejected'))); continue
         if config_mode!='ignore': options[v['params']['configId']]=v['params']['value']
         result(i,dict(configOptions=config_options()))
@@ -71,11 +75,19 @@ for line in sys.stdin:
         assert v['params']['sessionId']==sid
         assert v['params']['prompt'][0]['type']=='text'
         if mode in ['cancel','cancel-hang','cancel-permission']: continue
+        if mode=='cancel-config':
+            # A prompt after a recorded cancel is the bug under test.
+            open(os.environ['ACP_PROMPT_MARKER'],'w').write('prompted')
+            continue
         if mode.startswith('permission'): permission()
         elif mode=='fs': send(dict(id='fs-1',method='fs/read_text_file',params=dict(sessionId=sid,path='/secret')))
         else: finish()
     elif method=='session/cancel':
-        if mode=='cancel-hang': continue
+        if mode in ['cancel-hang','settle-cancel']: continue
+        if mode=='cancel-config':
+            options[v['params'].get('configId','model')]='gpt-6-luna-medium'
+            result(held,dict(configOptions=config_options()))
+            continue
         assert 'id' not in v
         if mode=='cancel-permission':
             permission()

@@ -250,6 +250,13 @@ func (c *acpSession) absorbOptions(raw json.RawMessage) bool {
 	return true
 }
 
+const (
+	// acpTrailingQuiet ends a settling turn once a trailing message stops.
+	acpTrailingQuiet = 2 * time.Second
+	// acpDrainBound bounds waiting for the reader after the turn ends.
+	acpDrainBound = 5 * time.Second
+)
+
 type acpPhase int
 
 const (
@@ -262,8 +269,10 @@ const (
 func (c *acpSession) serve(p *processRecord, stdout io.Reader) {
 	defer p.pipes.Done()
 	// A reader goroutine feeds lines so a settling turn can stop on a timer.
-	// serve returns only after the reader has drained stdout to EOF, which the
-	// stdin close below (or the bounded kill) guarantees.
+	// serve waits a bounded time for it to drain stdout to EOF, which the stdin
+	// close below (or the bounded kill) normally guarantees. A helper that
+	// inherited stdout can hold the pipe open past the kill (Windows kills only
+	// the direct process), so the wait never blocks the owner indefinitely.
 	lines := make(chan []byte)
 	stop := make(chan struct{})
 	drained := make(chan struct{})
@@ -285,7 +294,12 @@ func (c *acpSession) serve(p *processRecord, stdout io.Reader) {
 		}
 		readerFailed = scanner.Err() != nil
 	}()
-	defer func() { <-drained }()
+	defer func() {
+		select {
+		case <-drained:
+		case <-time.After(acpDrainBound):
+		}
+	}()
 	defer close(stop)
 	defer func() {
 		c.prompt = nil
@@ -364,7 +378,23 @@ func (c *acpSession) serve(p *processRecord, stdout io.Reader) {
 		phase = acpPrompt
 		prompt := string(c.prompt)
 		c.prompt = nil
-		return next("session/prompt", map[string]any{"sessionId": c.session, "prompt": []any{map[string]any{"type": "text", "text": prompt}}})
+		// Holding p.mu orders this check against cancelRecord, which sets
+		// cancelled under p.mu before its session/cancel goroutine takes p.mu:
+		// either the cancel is seen here, or its notification follows the prompt.
+		p.mu.Lock()
+		if p.cancelled {
+			p.mu.Unlock()
+			fail("acp_cancelled", 0)
+			return false
+		}
+		pending++
+		err := c.request(pending, "session/prompt", map[string]any{"sessionId": c.session, "prompt": []any{map[string]any{"type": "text", "text": prompt}}})
+		p.mu.Unlock()
+		if err != nil {
+			fail("acp_transport_write_failed", 0)
+			return false
+		}
+		return true
 	}
 	loading := c.session != ""
 	denied := false
@@ -378,17 +408,40 @@ func (c *acpSession) serve(p *processRecord, stdout io.Reader) {
 		obs.Content = answer.String()
 		p.ingestObservation(obs)
 	}
+	// finishSettled commits a turn that ended before its trailing message. A
+	// cancellation after end_turn wins, and a turn that never produced an
+	// answer fails: silence after end_turn is not a completed answer.
+	finishSettled := func() {
+		p.mu.Lock()
+		cancelled := p.cancelled
+		p.mu.Unlock()
+		if cancelled {
+			fail("acp_cancelled", 0)
+			return
+		}
+		if answer.Len() == 0 {
+			details := map[string]any{}
+			for _, key := range []string{"session_url", "acp_config"} {
+				if value, ok := settled.Data[key]; ok {
+					details[key] = value
+				}
+			}
+			fail("acp_answer_missing", 0, details)
+			return
+		}
+		finish(*settled)
+	}
 	for {
 		var line []byte
 		select {
 		case next, open := <-lines:
 			if !open {
-				if settled != nil {
-					finish(*settled)
-					return
-				}
 				if readerFailed {
 					fail("acp_invalid_message", 0)
+					return
+				}
+				if settled != nil {
+					finishSettled()
 					return
 				}
 				fail("acp_transport_closed_before_result", 0)
@@ -396,7 +449,7 @@ func (c *acpSession) serve(p *processRecord, stdout io.Reader) {
 			}
 			line = next
 		case <-settleTimer:
-			finish(*settled)
+			finishSettled()
 			return
 		}
 		total += len(line)
@@ -511,9 +564,10 @@ func (c *acpSession) serve(p *processRecord, stdout io.Reader) {
 						answer.WriteString(content.Text)
 					}
 					if settled != nil {
-						// The server's messages are whole; the trailing one ends the turn.
-						finish(*settled)
-						return
+						// A trailing message may arrive in several chunks; the turn
+						// ends once the stream stays quiet for a short window.
+						settleTimer = time.After(acpTrailingQuiet)
+						continue
 					}
 					p.ingestObservation(parsedObservation{Kind: "progress", SourceState: "acp.agent_message", State: StateRunning, Data: map[string]any{"phase": "assistant"}})
 				case "tool_call", "tool_call_update":
