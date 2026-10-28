@@ -60,6 +60,7 @@
         "hermes",
         "zcode",
         "devin",
+        "devin-cloud",
         "generic-process",
         "multica",
         "other"
@@ -257,6 +258,7 @@
             "hermes",
             "zcode",
             "devin",
+            "devin-cloud",
             "generic-process",
             "multica"
           ]

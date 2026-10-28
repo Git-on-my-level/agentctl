@@ -119,6 +119,8 @@ func Build(in Input) (Recipe, error) {
 		recipe, err = buildZCode(in.Executable, model, speed, effort, access)
 	case "devin":
 		recipe, err = buildDevin(in.Executable, model, speed, effort, access, in.UnattendedCodingPermissions)
+	case "devin-cloud":
+		recipe, err = buildDevinCloud(in.Executable, model, speed, effort, access, in.UnattendedCodingPermissions)
 	case "claude-code":
 		recipe, err = buildClaudeCode(in.Executable, model, speed, effort, access, in.UnattendedCodingPermissions)
 	default:
@@ -159,7 +161,7 @@ func requireReviewedAccess(harness, access string) error {
 	switch harness {
 	case "cursor", "codex", "zcode":
 		return nil
-	case "devin":
+	case "devin", "devin-cloud":
 		return fail("access_unavailable", "devin ACP has no verified read-only enforcement mode; omit access or choose another harness")
 	case "claude-code":
 		return fail("access_unavailable", "claude-code has no verified mode that blocks edits and shell writes in --print; read_only access is unavailable")
@@ -219,6 +221,8 @@ func CanonicalHarness(raw string) (string, error) {
 		return "zcode", nil
 	case "devin":
 		return "devin", nil
+	case "devin-cloud":
+		return "devin-cloud", nil
 	case "claude", "claude-code":
 		return "claude-code", nil
 	case "":
@@ -276,7 +280,7 @@ func defaultExecutable(harness string) string {
 		return "opencode"
 	case "zcode":
 		return "zcode"
-	case "devin":
+	case "devin", "devin-cloud":
 		return "devin"
 	case "claude-code":
 		return "claude"

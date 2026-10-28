@@ -18,7 +18,7 @@ func acpFixture(t *testing.T, mode string, grant bool) (Adapter, LaunchRequest) 
 	if err != nil {
 		t.Skip("python3 fixture unavailable")
 	}
-	script, err := filepath.Abs("testdata/devin-acp.py")
+	script, err := filepath.Abs("testdata/acp-agent.py")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,11 +89,190 @@ func TestDevinACP(t *testing.T) {
 		})
 	}
 }
+func TestACPConfigVerification(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode string
+		config     []string
+		diagnostic string
+		want       map[string]any
+	}{
+		{name: "already-current", config: []string{"model=swe-2-high"}, want: map[string]any{"model": "swe-2-high"}},
+		{name: "set-and-read-back", config: []string{"model=gpt-6-luna-medium", "repos=owner/repo"}, want: map[string]any{"model": "gpt-6-luna-medium", "repos": "owner/repo"}},
+		{name: "ignored-set", mode: "ignore", config: []string{"devin_version=devin-swe-2-high"}, diagnostic: "acp_config_unverified"},
+		{name: "rejected-set", mode: "reject", config: []string{"model=gpt-6-luna-medium"}, diagnostic: "acp_config_rejected"},
+		{name: "unknown-option", config: []string{"thought_level=max"}, diagnostic: "acp_config_option_unavailable"},
+		{name: "unlisted-value", config: []string{"model=gemini-4-argon-high"}, diagnostic: "acp_config_value_unavailable"},
+		{name: "options-absent", mode: "absent", config: []string{"model=swe-2-high"}, diagnostic: "acp_config_option_unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, req := acpFixture(t, "normal", false)
+			req.Env = append(req.Env, "ACP_CONFIG_MODE="+tc.mode)
+			for _, pair := range tc.config {
+				req.Argv = append(req.Argv, acpConfigFlag, pair)
+			}
+			got, err := a.Launch(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.diagnostic != "" {
+				if got.Result == nil || got.Result.Success || got.Result.Data["diagnostic_code"] != tc.diagnostic {
+					t.Fatalf("result=%+v", got.Result)
+				}
+				if tc.diagnostic != "acp_config_rejected" {
+					mismatch, _ := got.Result.Data["acp_config_mismatch"].(map[string]any)
+					if mismatch["config_id"] == nil || mismatch["requested"] == nil {
+						t.Fatalf("mismatch=%v", got.Result.Data)
+					}
+				}
+				return
+			}
+			if got.Result == nil || !got.Result.Success || got.Result.Content != "Hello world" {
+				t.Fatalf("result=%+v", got.Result)
+			}
+			if verified, _ := json.Marshal(got.Result.Data["acp_config"]); string(verified) != string(mustJSON(t, tc.want)) {
+				t.Fatalf("acp_config=%s", verified)
+			}
+			events, err := a.Events(context.Background(), EventsRequest{Ref: got.Session.Ref})
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, _ := json.Marshal(events)
+			if !strings.Contains(string(data), `"source_state":"acp.config"`) {
+				t.Fatalf("config event missing: %s", data)
+			}
+		})
+	}
+}
+
+func TestACPConfigFlagsNeverReachNativeArgv(t *testing.T) {
+	argv := []string{"devin", "acp", acpConfigFlag, "model=swe-2-high", acpSessionFlag, "s1", "--model", "swe-2-high"}
+	if got := strings.Join(acpExecArgv(argv), " "); got != "devin acp --model swe-2-high" {
+		t.Fatalf("exec argv=%s", got)
+	}
+	for _, bad := range [][]string{{"devin", "acp", acpConfigFlag, "model"}, {"devin", "acp", acpConfigFlag, "=x"}, {"devin", "acp", acpConfigFlag, "a=1", acpConfigFlag, "a=2"}} {
+		if err := ValidateInvocationPrompt("devin", bad, PromptDeliveryStdin, []byte("task")); err == nil {
+			t.Fatalf("accepted %v", bad)
+		}
+	}
+}
+
+func TestDevinPlacementIsExact(t *testing.T) {
+	for _, tc := range []struct {
+		adapter    string
+		argv       []string
+		diagnostic string
+	}{
+		{"devin", []string{"devin", "acp", "--cloud"}, "devin_cloud_requires_cloud_adapter"},
+		{"devin", []string{"devin", "--cloud", "-p", "x"}, "devin_cloud_requires_cloud_adapter"},
+		{"devin-cloud", []string{"devin", "acp"}, "devin_cloud_requires_acp"},
+		{"devin-cloud", []string{"devin", "--cloud", "-p", "x"}, "devin_cloud_requires_acp"},
+		{"devin", []string{"devin", "acp"}, ""},
+		{"devin-cloud", []string{"devin", "acp", "--cloud"}, ""},
+	} {
+		err := ValidateInvocationPrompt(tc.adapter, tc.argv, PromptDeliveryStdin, []byte("task"))
+		var issue *AdapterError
+		if tc.diagnostic == "" {
+			if err != nil {
+				t.Fatalf("%s %v: %v", tc.adapter, tc.argv, err)
+			}
+			continue
+		}
+		if !errors.As(err, &issue) || issue.Details["diagnostic_code"] != tc.diagnostic {
+			t.Fatalf("%s %v: err=%v", tc.adapter, tc.argv, err)
+		}
+	}
+	if m := NewDevinCloud().Manifest(); m.Placement != PlacementCloud || m.Adapter != "devin-cloud" || m.StructuredOutput.Format != "acp-jsonrpc" {
+		t.Fatalf("cloud manifest=%+v", m)
+	}
+	if m := NewDevin().Manifest(); m.Placement != "" {
+		t.Fatalf("local placement=%q", m.Placement)
+	}
+}
+
+// withSettle shortens one profile's post-end_turn settle window for a test.
+func withSettle(t *testing.T, adapterName string, settle time.Duration) {
+	t.Helper()
+	original := acpProfiles[adapterName]
+	changed := original
+	changed.settle = settle
+	acpProfiles[adapterName] = changed
+	t.Cleanup(func() { acpProfiles[adapterName] = original })
+}
+
+func TestACPSettlesForTrailingMessage(t *testing.T) {
+	withSettle(t, "devin-cloud", 300*time.Millisecond)
+	for _, tc := range []struct {
+		adapter, mode, content string
+		url                    bool
+	}{
+		{"devin-cloud", "trailing", "Hello world", true},
+		{"devin-cloud", "silent", "", true},
+		{"devin-cloud", "normal", "Hello world", false},
+		// Local Devin does not settle; a late message is not waited for.
+		{"devin", "trailing", "", false},
+	} {
+		t.Run(tc.adapter+"-"+tc.mode, func(t *testing.T) {
+			_, req := acpFixture(t, tc.mode, false)
+			a := NewDevin()
+			if tc.adapter == "devin-cloud" {
+				a = NewDevinCloud()
+				req.Argv = append(req.Argv, "--cloud")
+			}
+			got, err := a.Launch(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Result == nil || got.Result.State != StateCompleted || got.Result.Content != tc.content {
+				t.Fatalf("result=%+v", got.Result)
+			}
+			if url, _ := got.Result.Data["session_url"].(string); (url == "https://app.devin.ai/sessions/abc123") != tc.url {
+				t.Fatalf("session_url=%q", url)
+			}
+		})
+	}
+	if url := devinCloudSessionURL([]byte(`{"cognition.ai/session":{"cognition.ai/url":"https://evil.example/sessions/x"}}`)); url != "" {
+		t.Fatalf("accepted %q", url)
+	}
+}
+
+func TestDevinCloudACPFixture(t *testing.T) {
+	withSettle(t, "devin-cloud", 100*time.Millisecond)
+	_, req := acpFixture(t, "normal", false)
+	req.Argv = append(req.Argv, "--cloud", acpConfigFlag, "devin_version=devin-swe-2-high", acpConfigFlag, "repos=owner/repo")
+	a := NewDevinCloud()
+	got, err := a.Launch(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result == nil || !got.Result.Success || got.Session.Ref.OpaqueID != "fixture-session" {
+		t.Fatalf("result=%+v", got.Result)
+	}
+	if verified := got.Result.Data["acp_config"].(map[string]any); verified["devin_version"] != "devin-swe-2-high" || verified["repos"] != "owner/repo" {
+		t.Fatalf("acp_config=%v", verified)
+	}
+	next, err := a.Resume(context.Background(), ResumeRequest{Ref: got.Session.Ref, Argv: req.Argv, PromptDelivery: PromptDeliveryStdin, Prompt: []byte("again"), Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Result == nil || !next.Result.Success || next.Result.Data["acp_config"] == nil {
+		t.Fatalf("continue=%+v", next.Result)
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 func TestDevinACPLoad(t *testing.T) {
 	for _, mode := range []string{"normal", "no-load"} {
 		t.Run(mode, func(t *testing.T) {
 			a, req := acpFixture(t, mode, false)
-			req.Argv = append(req.Argv, devinACPSessionFlag, "fixture-session")
+			req.Argv = append(req.Argv, acpSessionFlag, "fixture-session")
 			got, err := a.Launch(context.Background(), req)
 			if err != nil {
 				t.Fatal(err)

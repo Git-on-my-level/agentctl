@@ -76,6 +76,18 @@ func NewDevin() Adapter {
 	return &devinAdapter{NativeAdapter: base}
 }
 
+// NewDevinCloud drives Devin cloud sessions through the local `devin acp
+// --cloud` relay. The session runs on Devin's machines, so it never owns a
+// local worktree; only the relay process is local.
+func NewDevinCloud() Adapter {
+	bin := resolveDevinBinary()
+	base := newNativeAdapter(nativeConfig{
+		Manifest: devinCloudManifest(), Binary: bin, Parser: devinParser{},
+		LaunchKind: "devin_cloud_session", WholeStdout: true, TransformArgv: rewriteDevinArgv,
+	})
+	return &devinAdapter{NativeAdapter: base}
+}
+
 // NewOpenClaw runs an embedded local agent turn. The gateway-backed ACP bridge
 // is deliberately outside this adapter's authority.
 func NewOpenClaw() Adapter {
@@ -818,6 +830,22 @@ func devinManifest() Manifest {
 	})
 }
 
+func devinCloudManifest() Manifest {
+	m := acpManifest(devinManifest())
+	m.Adapter = "devin-cloud"
+	m.Placement = PlacementCloud
+	// Resume and steering come from the route table under this adapter's name.
+	for i := range m.Capabilities {
+		switch m.Capabilities[i].Name {
+		case CapabilityResume:
+			m.Capabilities[i] = resumeDeclaration(m.Adapter)
+		case CapabilitySteer:
+			m.Capabilities[i] = steerDeclaration(m.Adapter)
+		}
+	}
+	return m
+}
+
 func openclawManifest() Manifest {
 	resultContent := resultContentDecl(CapabilitySupported, "payloads[].text")
 	resultContent.Constraints["required_output_mode"] = "json"
@@ -906,7 +934,7 @@ func baseManifest(name, version, kind, format string, capabilities []CapabilityD
 		executable = "opencode"
 	case "zcode":
 		executable = "zcode"
-	case "devin":
+	case "devin", "devin-cloud":
 		executable = "devin"
 	case "openclaw":
 		executable = "openclaw"
@@ -966,8 +994,9 @@ type InvocationPrompt struct {
 // exact native argv. It performs no filesystem or network access and is safe
 // to use before dependency probing or journal creation.
 func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName, prompts ...InvocationPrompt) Capability {
-	if manifest.Adapter == "devin" && isDevinACP(argv) {
-		manifest = devinACPManifest()
+	profile, isACP := acpInvocation(manifest.Adapter, argv)
+	if isACP && manifest.StructuredOutput.Format != "acp-jsonrpc" {
+		manifest = acpManifest(manifest)
 	}
 	for _, declaration := range manifest.Capabilities {
 		if declaration.Name != name {
@@ -989,12 +1018,12 @@ func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName, 
 				return Capability{Name: name, Status: CapabilityUnavailable, Source: "manifest", SemanticsVersion: declaration.SemanticsVersion, Constraints: constraints, Reason: "Hermes requires chat --format stream-json --query-file - with nonempty managed stdin"}
 			}
 		}
-		if manifest.Adapter == "devin" && isDevinACP(argv) && (name == CapabilityLaunch || name == CapabilityResultContent) {
+		if isACP && (name == CapabilityLaunch || name == CapabilityResultContent) {
 			constraints["required_prompt_delivery"] = PromptDeliveryStdin
 			constraints["requires_nonempty_prompt"] = true
 			if len(prompts) != 1 || prompts[0].Delivery != PromptDeliveryStdin || prompts[0].Bytes <= 0 {
 				constraints["invocation_satisfied"] = false
-				return Capability{Name: name, Status: CapabilityUnavailable, Source: "manifest", SemanticsVersion: declaration.SemanticsVersion, Constraints: constraints, Reason: "Devin ACP requires a nonempty agentctl-managed stdin prompt"}
+				return Capability{Name: name, Status: CapabilityUnavailable, Source: "manifest", SemanticsVersion: declaration.SemanticsVersion, Constraints: constraints, Reason: profile.label + " requires a nonempty agentctl-managed stdin prompt"}
 			}
 		}
 		if declaredReason, ok := constraints["reason"].(string); ok {
@@ -1012,8 +1041,9 @@ func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName, 
 	return Capability{Name: name, Status: CapabilityUnavailable, Source: "manifest", SemanticsVersion: SemanticsVersion, Constraints: map[string]any{}, Reason: "capability is not declared"}
 }
 
-func devinACPManifest() Manifest {
-	m := devinManifest()
+// acpManifest is an adapter manifest as negotiated for an ACP invocation.
+func acpManifest(m Manifest) Manifest {
+	m.Capabilities = append([]CapabilityDeclaration(nil), m.Capabilities...)
 	m.StructuredOutput = StructuredOutputSpec{Format: "acp-jsonrpc", Required: true}
 	for i := range m.Capabilities {
 		if m.Capabilities[i].Name == CapabilityResultContent {

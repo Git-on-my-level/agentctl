@@ -117,7 +117,7 @@ agentctl run -- codex exec --json -m gpt-5.6-sol "task"
 ```
 
 For known executable names, `run` infers the adapter (`codex`, `cursor-agent`,
-`claude`, `devin`, `omp`, `openclaw`, `opencode`, and `zcode`). `--adapter <name>` remains an explicit override when an
+`claude`, `devin`, `devin-cloud`, `omp`, `openclaw`, `opencode`, and `zcode`). `--adapter <name>` remains an explicit override when an
 executable is ambiguous or the caller has a reviewed authority mapping. The
 argv after `--` is preserved through admission; OpenClaw adds an isolated
 local session key at launch.
@@ -255,10 +255,47 @@ meaning.
 - Replace unknown provider stderr with a bounded generic failure reason. Raw
   stderr, request identifiers, and trace identifiers are not stored.
 
+### ACP client
+
+One ACP v1 client (`internal/adapter/acp.go`) drives every adapter whose exact
+invocation selects an ACP server. A reviewed per-adapter profile names how argv
+selects ACP and which explicit plan environment entry grants approval; adding an
+ACP adapter is a profile entry plus live verification, not a new transport.
+Today the profiles are `devin` (`devin acp`) and `devin-cloud`
+(`devin acp --cloud`).
+
+Two agentctl-private argv descriptors are stripped before exec:
+`--agentctl-acp-session <id>` selects `session/load`, and each
+`--agentctl-acp-config <id>=<value>` names a session config option that must
+hold before the prompt. After `session/new` or `session/load` the client reads
+the session's `configOptions` (from the response, or a `config_option_update`
+for a loaded session). For each requested option, in order:
+
+- an option id the session does not list fails with `acp_config_option_unavailable`;
+- a value the option does not list fails with `acp_config_value_unavailable`, so
+  a native fuzzy match never stands in for the configured id;
+- a different current value is sent with `session/set_config_option`, and the
+  response's `currentValue` must then equal the request (`acp_config_unverified`
+  otherwise; a JSON-RPC error is `acp_config_rejected`).
+
+A current value equal to the request is verified as is, even when a loaded
+session no longer lists it (Devin cloud keeps a session's repository but lists
+none after `session/load`). No prompt is sent until every option is verified. The verified values are
+recorded as `acp_config` on an `acp.config` progress event and on the terminal
+event and result; a refusal records `acp_config_mismatch` (`config_id`,
+`requested`, `current`). These are operational identifiers (model and
+repository ids), never prompt or transcript content. A continuation keeps the
+same descriptors, so the loaded session is verified again.
+
 ### Devin
 
-Delegation launches `devin acp --model <configured-model>` as an ACP v1 client
-over newline-delimited JSON-RPC 2.0 stdio. ACP requires a nonempty, valid UTF-8
+Delegation launches `devin acp --model <configured-model>
+--agentctl-acp-config model=<configured-model>` as an ACP v1 client
+over newline-delimited JSON-RPC 2.0 stdio. The configured id must be one of the
+session's `model` option values: Devin resolves `--model` fuzzily (for example
+`gemini-4-argon-high` silently ran `gemini-4-argon-medium`), and verification
+turns that into a refusal. The `devin` adapter refuses any `--cloud` argv
+(`devin_cloud_requires_cloud_adapter`). ACP requires a nonempty, valid UTF-8
 prompt delivered through agentctl-managed stdin. Both plans and launches reject
 argv/stream delivery or missing prompt evidence before any ACP server starts;
 `--no-store-result` and `--allow-missing-result` do not bypass this validation.
@@ -322,6 +359,39 @@ direct native execution, not Multica dispatch or continuation guarantees.
 Expert `run -- devin -p ...` retains the plain-text parser and process-exit
 result behavior. A welcome banner is stripped. Print mode still cannot report
 a session ID or continue. Delegation no longer selects print-mode flags.
+
+### Devin cloud
+
+`devin-cloud` is a separate adapter with manifest `placement: "cloud"`. It runs
+only `devin acp --cloud` (`devin_cloud_requires_acp` otherwise), the local relay
+Devin's own REPL uses to drive a cloud session over ACP. The relay ignores
+`--model`, so the recipe selects the cloud agent through the session's
+`devin_version` config option (for example `devin-swe-2-high`) and never passes
+`--model`. Delegate adds `repos=<owner>/<name>` from the GitHub `origin` of
+`--cwd` (credentials in the URL are discarded); a checkout without a GitHub
+origin fails with `delegate_cloud_repository_unavailable`, and a repository
+not connected to the Devin account fails before the prompt with
+`acp_config_value_unavailable`. The session clones that repository on Devin's
+machines, so the base branch must already be pushed; results land on a remote
+branch or PR, not in the local worktree.
+
+The cloud relay can answer `session/prompt` with `end_turn` before it delivers
+the turn's final assistant message, so a successful cloud turn settles: the
+client keeps reading for up to 20 seconds and ends at the first trailing
+`agent_message_chunk` (Devin cloud messages arrive whole). If none arrives the
+turn keeps whatever answer it had, and an empty one is reported as
+`native_answer_missing` rather than success. The `app.devin.ai/sessions/<id>`
+link from the prompt result's `_meta` is recorded as `session_url` on the
+terminal event; any other URL is discarded.
+
+A cloud execution records no workspace identity, so `workspace owners` never
+counts it. The relay is still an owner-process child: events, cancel, and the
+result follow the same ACP contract as local Devin while that process lives.
+The cloud session survives the relay, and `continue` loads it by id. No route
+or family alias reaches `devin-cloud`; a selector must name the `devin-cloud`
+harness, and a family shared by local and cloud entries is ambiguous. Read-only
+access is refused, and the permission label is `unsupported` because Devin's
+cloud tool policy is provider-owned.
 
 Protocol references: [initialization](https://agentclientprotocol.com/protocol/v1/initialization),
 [session setup](https://agentclientprotocol.com/protocol/v1/session-setup),

@@ -69,7 +69,8 @@ var steerRoutes = map[string]steerRoute{
 	"cursor":      {resume: cursorResumeArgv, unavailable: "cursor-agent does not persist the prompt of a turn that is interrupted, so resuming would continue without the task; cursor-agent acp is not mapped by this adapter"},
 	"omp":         {resume: ompResumeArgv, unavailable: "omp does not persist a session that is interrupted during its first turn, so interrupt_resume is unverified; its --mode rpc steer command is not mapped by this adapter"},
 	"zcode":       {resume: zcodeResumeArgv, unavailable: "ZCode has no verified steering route; only exited-turn continuation is supported"},
-	"devin":       {resume: devinACPResumeArgv, unavailable: "devin ACP cancel plus reprompt steering has not been verified against the real CLI; print mode does not report its session id"},
+	"devin":       {resume: acpResumeArgv, unavailable: "devin ACP cancel plus reprompt steering has not been verified against the real CLI; print mode does not report its session id"},
+	"devin-cloud": {resume: acpResumeArgv, unavailable: "devin cloud ACP cancel plus reprompt steering has not been verified against the real service"},
 	"multica":     {unavailable: "Multica owns run input; no verified steering route exists for the current CLI", unresumable: "Multica owns issue and run continuation"},
 }
 
@@ -198,7 +199,7 @@ func NegotiateResume(manifest Manifest, argv []string, promptDelivery string, pr
 		capability.Status = CapabilityDegraded
 		capability.Reason = "Hermes resume argv inherits session policy; provider-backed continuation is not verified on this host"
 	}
-	if manifest.Adapter == "devin" {
+	if manifest.Adapter == "devin" || manifest.Adapter == "devin-cloud" {
 		capability.Status = CapabilityDegraded
 		capability.Reason = "ACP session/load is checked at initialize; requires agentCapabilities.loadSession=true"
 	}
@@ -580,18 +581,4 @@ func (l *liveSession) close() {
 	if !already {
 		_ = l.stdin.Close()
 	}
-}
-
-// This flag is an agentctl transport descriptor; it is removed before exec.
-const devinACPSessionFlag = "--agentctl-acp-session"
-
-func isDevinACP(argv []string) bool { return len(argv) > 1 && argv[1] == "acp" }
-func devinACPResumeArgv(base []string, sessionID, delivery string) ([]string, error) {
-	if !isDevinACP(base) {
-		return nil, fmt.Errorf("devin print mode does not report its session id; continue requires ACP")
-	}
-	if delivery != PromptDeliveryStdin {
-		return nil, fmt.Errorf("devin ACP requires stdin prompt delivery")
-	}
-	return append(withoutSessionSelection(base, devinACPSessionFlag), devinACPSessionFlag, sessionID), nil
 }

@@ -377,6 +377,13 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 		}
 		return recoverAdmission(problem)
 	}
+	if selected.Harness == "devin-cloud" {
+		repository, ok := devinCloudRepository(ctx, cwd)
+		if !ok {
+			return recoverAdmission(delegateError(output.CodeCapabilityUnavailable, "delegate_cloud_repository_unavailable", "devin-cloud works on a GitHub repository: run from a checkout whose origin is on github.com, with the base branch already pushed"))
+		}
+		recipe.Argv = append(recipe.Argv, "--agentctl-acp-config", "repos="+repository)
+	}
 	configDigest, err := digestJSON(profile)
 	if err != nil {
 		return output.Wrap(output.CodeInternal, "digest delegate configuration", false, err)

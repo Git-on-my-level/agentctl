@@ -75,6 +75,7 @@ func DefaultRegistry() *Registry {
 	registerSingleton([]string{"opencode"}, adapter.NewOpenCode())
 	registerSingleton([]string{"zcode"}, adapter.NewZCode())
 	registerSingleton([]string{"devin"}, adapter.NewDevin())
+	registerSingleton([]string{"devin-cloud"}, adapter.NewDevinCloud())
 	registerSingleton([]string{"generic", "generic-process"}, adapter.NewGenericProcess())
 	_ = r.Register("multica", func(spec AdapterSpec) (adapter.Adapter, error) {
 		if err := spec.Validate(); err != nil {
