@@ -130,7 +130,7 @@ func TestDiscoveredOrientAdaptersCoverEveryKnownNativeAdapter(t *testing.T) {
 		return "", errors.New("executable not found")
 	}}
 	want := []struct{ name, executable string }{
-		{"claude", "claude"}, {"codex", "codex"}, {"cursor", "cursor-agent"}, {"devin", "devin"}, {"hermes", "hermes"}, {"omp", "omp"}, {"openclaw", "openclaw"}, {"opencode", "opencode"}, {"zcode", "zcode"},
+		{"claude", "claude"}, {"codex", "codex"}, {"cursor", "cursor-agent"}, {"devin", "devin"}, {"devin-cloud", "devin"}, {"hermes", "hermes"}, {"omp", "omp"}, {"openclaw", "openclaw"}, {"opencode", "opencode"}, {"zcode", "zcode"},
 	}
 	adapters := discoveredOrientAdapters(deps)
 	if len(adapters) != len(want) {
@@ -171,7 +171,7 @@ func TestDiscoveredOrientAdaptersCoverEveryKnownNativeAdapter(t *testing.T) {
 	adapters = discoveredOrientAdapters(deps)
 	for i, item := range want {
 		got := adapters[i]
-		if item.name == "devin" || item.name == "zcode" {
+		if item.executable == "devin" || item.name == "zcode" {
 			if got.Name != item.name || got.ConfigurationStatus != "unconfigured" || got.Health != "unconfigured" || got.Reason != "executable_not_discovered" || got.Executable != "" {
 				t.Fatalf("missing executable did not stay unconfigured: %+v", got)
 			}

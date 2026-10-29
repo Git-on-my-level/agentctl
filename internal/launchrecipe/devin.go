@@ -2,27 +2,61 @@ package launchrecipe
 
 import "strings"
 
+// acpConfigFlag asks agentctl's ACP client to set one session config option
+// and read it back before the prompt. agentctl strips it before exec.
+const acpConfigFlag = "--agentctl-acp-config"
+
 // Devin delegates through ACP. Model selection remains configuration-owned.
+// The ACP client verifies the session's model option equals the configured
+// id, so a fuzzy native match fails instead of running another model. Effort
+// is the session's thought_level option, verified the same way.
 func buildDevin(executable, model, speed, effort, access string, grant bool) (Recipe, error) {
-	exe, err := resolveExecutable("devin", executable)
+	exe, err := devinPreflight(executable, model, speed)
 	if err != nil {
 		return Recipe{}, err
 	}
-	if speed == "fast" {
-		return Recipe{}, fail("speed_unavailable", "devin launch recipes do not select fast service speed")
-	}
+	argv := []string{exe, "acp", "--model", model, acpConfigFlag, "model=" + model}
 	if effort != "" {
-		return Recipe{}, fail("effort_unavailable", "devin has no verified effort flag; the model id already names the reasoning variant")
+		argv = append(argv, acpConfigFlag, "thought_level="+effort)
 	}
-	if err := devinModel(model); err != nil {
+	return Recipe{Argv: argv, Env: devinApprovalEnv(access, grant), PromptDelivery: PromptDeliveryStdin}, nil
+}
+
+// Devin cloud ignores `devin acp --cloud --model`; the cloud session selects
+// its agent through the devin_version config option, which ACP sets and reads
+// back before the first prompt. The repository option is added by the caller
+// from the launch workspace.
+func buildDevinCloud(executable, model, speed, effort, access string, grant bool) (Recipe, error) {
+	exe, err := devinPreflight(executable, model, speed)
+	if err != nil {
 		return Recipe{}, err
 	}
-	argv := []string{exe, "acp", "--model", model}
-	env := []string{"AGENTCTL_DEVIN_ACP_APPROVE=0"}
-	if applyCodingPermissions(access, grant) {
-		env[0] = "AGENTCTL_DEVIN_ACP_APPROVE=1"
+	if effort != "" {
+		return Recipe{}, fail("effort_unavailable", "devin cloud has no effort option; devin_version names the agent")
 	}
-	return Recipe{Argv: argv, Env: env, PromptDelivery: PromptDeliveryStdin}, nil
+	argv := []string{exe, "acp", "--cloud", acpConfigFlag, "devin_version=" + model}
+	return Recipe{Argv: argv, Env: devinApprovalEnv(access, grant), PromptDelivery: PromptDeliveryStdin}, nil
+}
+
+func devinPreflight(executable, model, speed string) (string, error) {
+	exe, err := resolveExecutable("devin", executable)
+	if err != nil {
+		return "", err
+	}
+	if speed == "fast" {
+		return "", fail("speed_unavailable", "devin launch recipes do not select fast service speed")
+	}
+	if err := devinModel(model); err != nil {
+		return "", err
+	}
+	return exe, nil
+}
+
+func devinApprovalEnv(access string, grant bool) []string {
+	if applyCodingPermissions(access, grant) {
+		return []string{"AGENTCTL_DEVIN_ACP_APPROVE=1"}
+	}
+	return []string{"AGENTCTL_DEVIN_ACP_APPROVE=0"}
 }
 
 func devinModel(model string) error {

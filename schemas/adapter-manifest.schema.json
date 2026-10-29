@@ -19,6 +19,10 @@
   ],
   "properties": {
     "schema_version": {"const": 1},
+    "placement": {
+      "enum": ["cloud"],
+      "description": "Where the native session runs. Omitted means local. A cloud adapter's executions never own a local worktree."
+    },
     "adapter": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9_-]{1,31}$"

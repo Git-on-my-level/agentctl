@@ -60,7 +60,7 @@
     },
     "native": {
       "type": "object",
-      "description": "Plan only. The native session id in argv is replaced by <native-session>. Devin ACP uses the internal --agentctl-acp-session descriptor, stripped before exec and mapped to session/load only when loadSession is advertised."
+      "description": "Plan only. The native session id in argv is replaced by <native-session>. Devin ACP uses the internal --agentctl-acp-session descriptor, stripped before exec and mapped to session/load only when loadSession is advertised. --agentctl-acp-config descriptors stay on the argv, so the loaded session is verified again."
     },
     "outcome": {
       "$ref": "outcome.schema.json"

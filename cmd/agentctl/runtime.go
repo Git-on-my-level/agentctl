@@ -237,6 +237,11 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		deadline = deadline.UTC()
 		deadlineAt = &deadline
 	}
+	if runtime.Manifest().Placement == adapter.PlacementCloud {
+		// The session works on the provider's machines; only the local relay
+		// runs here, so the execution must never own this worktree.
+		workspace = nil
+	}
 	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Labels: append([]string(nil), opts.labels...), CWD: launchCWD, Repository: repository, Workspace: workspace, Supersedes: append([]ids.ExecutionID{}, opts.supersedes...), TaskContract: taskContractValue(taskContract), DeadlineAt: deadlineAt, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
 	mutation := contracts.MutationKey{}
 	execution.Caller = caller
@@ -1104,6 +1109,8 @@ func inferAdapter(executable string) string {
 		return "zcode"
 	case "devin":
 		return "devin"
+	case "devin-cloud":
+		return "devin-cloud"
 	default:
 		return "generic-process"
 	}
@@ -1483,6 +1490,8 @@ func (a *app) runtimeAdapter(c common, name, issue, run string) (adapter.Adapter
 		return adapter.NewZCode(), "", nil
 	case "devin":
 		return adapter.NewDevin(), "", nil
+	case "devin-cloud":
+		return adapter.NewDevinCloud(), "", nil
 	case "process", "generic", "generic-process":
 		return adapter.NewGenericProcess(), "", nil
 	case "multica":
@@ -1746,8 +1755,14 @@ func (a *app) finalizeResult(ctx context.Context, c common, journal *store.Journ
 	if outcome.Failure != nil {
 		payload["failure_code"] = outcome.Failure.Code
 	}
-	for _, key := range []string{"diagnostic_code", "parse_diagnostic_code", "result_content_source", "terminal_source_state"} {
+	for _, key := range []string{"diagnostic_code", "parse_diagnostic_code", "result_content_source", "terminal_source_state", "session_url"} {
 		if value, ok := result.Data[key].(string); ok && strings.TrimSpace(value) != "" {
+			payload[key] = value
+		}
+	}
+	// ACP session settings the client verified, or the one it could not.
+	for _, key := range []string{"acp_config", "acp_config_mismatch"} {
+		if value, ok := result.Data[key].(map[string]any); ok && len(value) != 0 {
 			payload[key] = value
 		}
 	}
@@ -2095,7 +2110,7 @@ func appendNativeEvent(ctx context.Context, journal *store.Journal, execution mo
 }
 func safeNativePayload(input map[string]any) map[string]any {
 	output := map[string]any{}
-	for _, key := range []string{"family", "type", "is_error", "status", "state", "subtype", "usage", "artifact_ref", "attention_kind", "diagnostic_code", "repair_action", "progress_phase"} {
+	for _, key := range []string{"family", "type", "is_error", "status", "state", "subtype", "usage", "artifact_ref", "attention_kind", "diagnostic_code", "repair_action", "progress_phase", "acp_config"} {
 		if value, ok := input[key]; ok {
 			output[key] = value
 		}

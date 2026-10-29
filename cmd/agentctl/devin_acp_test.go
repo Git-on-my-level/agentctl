@@ -17,7 +17,7 @@ func newDevinACPDelegateFixture(t *testing.T) delegateFixture {
 		t.Skip("python3 fixture unavailable")
 	}
 	f := newDelegateFixture(t, "")
-	script, err := filepath.Abs("../../internal/adapter/testdata/devin-acp.py")
+	script, err := filepath.Abs("../../internal/adapter/testdata/acp-agent.py")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,5 +186,88 @@ func TestDevinACPRejectsInvalidUTF8BeforeAdmission(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func newDevinCloudDelegateFixture(t *testing.T, origin string) delegateFixture {
+	t.Helper()
+	f := newDevinACPDelegateFixture(t)
+	if origin != "" {
+		for _, args := range [][]string{{"init", "--quiet"}, {"remote", "add", "origin", origin}} {
+			if out, err := exec.Command("git", append([]string{"-C", f.root}, args...)...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v %s", args, err, out)
+			}
+		}
+	}
+	value := map[string]any{"schema_version": 1, "default_profile": "test", "profiles": map[string]any{"test": map[string]any{
+		"adapters":          map[string]any{"devin-cloud": map[string]any{"executable": filepath.Join(f.root, "devin")}},
+		"delegation":        map[string]any{"unattended_coding_permissions": true},
+		"agent_preferences": map[string]any{"mode": "advisory", "preferred": []any{map[string]any{"agent": "devin-cloud", "family": "fixture", "model": "devin-swe-2-high"}}},
+	}}}
+	data, _ := json.Marshal(value)
+	if err := os.WriteFile(f.config, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.selectRequest(t, `{"harness":"devin-cloud","family":"fixture"}`)
+	return f
+}
+
+func TestDevinCloudDelegateVerifiesRepositoryAndOwnsNoWorkspace(t *testing.T) {
+	f := newDevinCloudDelegateFixture(t, "git@github.com:owner/repo.git")
+	// The fixture answers end_turn before its message, like the cloud relay.
+	t.Setenv("ACP_FIXTURE_MODE", "trailing")
+	code, plan := f.invoke("PRIVATE PROMPT", "--plan")
+	if code != 0 || !strings.Contains(plan, `"acp","--cloud","--agentctl-acp-config","devin_version=devin-swe-2-high","--agentctl-acp-config","repos=owner/repo"`) || strings.Contains(plan, `"--model"`) {
+		t.Fatalf("plan exit=%d %s", code, plan)
+	}
+	code, out := f.invoke("PRIVATE PROMPT", "--wait")
+	if code != 0 || !strings.Contains(out, "Hello world") {
+		t.Fatalf("delegate exit=%d %s", code, out)
+	}
+	id := resultID(t, out)
+	code, status := f.command(t, "", "status", id)
+	if code != 0 || !strings.Contains(status, `"adapter":"devin-cloud"`) || strings.Contains(status, `"workspace":{`) {
+		t.Fatalf("status exit=%d %s", code, status)
+	}
+	code, events := f.command(t, "", "events", id)
+	if code != 0 || !strings.Contains(events, `"acp_config":{"devin_version":"devin-swe-2-high","repos":"owner/repo"}`) || !strings.Contains(events, `"session_url":"https://app.devin.ai/sessions/abc123"`) {
+		t.Fatalf("events exit=%d %s", code, events)
+	}
+	code, owners := f.command(t, "", "workspace", "owners", "--path", f.root)
+	if code != 0 || strings.Contains(owners, id) {
+		t.Fatalf("owners exit=%d %s", code, owners)
+	}
+}
+
+func TestDevinCloudDelegateRequiresGitHubOrigin(t *testing.T) {
+	for _, origin := range []string{"", "https://gitlab.com/owner/repo.git"} {
+		f := newDevinCloudDelegateFixture(t, origin)
+		code, out := f.invoke("PRIVATE PROMPT", "--wait")
+		if code == 0 || !strings.Contains(out, "delegate_cloud_repository_unavailable") {
+			t.Fatalf("origin=%q exit=%d %s", origin, code, out)
+		}
+		if _, err := os.Stat(f.count); !os.IsNotExist(err) {
+			t.Fatalf("origin=%q launched devin: %v", origin, err)
+		}
+	}
+}
+
+func TestDevinCloudDelegateRequiresExplicitHarness(t *testing.T) {
+	f := newDevinCloudDelegateFixture(t, "git@github.com:owner/repo.git")
+	// The family resolves uniquely to the cloud entry, but cloud work runs on
+	// the pushed remote, so only an explicit harness may reach it.
+	f.selectRequest(t, `{"family":"fixture"}`)
+	for _, mode := range []string{"--plan", "--wait"} {
+		code, out := f.invoke("PRIVATE PROMPT", mode)
+		if code == 0 || !strings.Contains(out, "delegate_cloud_harness_required") {
+			t.Fatalf("%s exit=%d %s", mode, code, out)
+		}
+	}
+	if _, err := os.Stat(f.count); !os.IsNotExist(err) {
+		t.Fatalf("launched devin: %v", err)
+	}
+	f.selectRequest(t, `{"harness":" Devin-Cloud ","family":"fixture"}`)
+	if code, out := f.invoke("PRIVATE PROMPT", "--plan"); code != 0 {
+		t.Fatalf("explicit harness exit=%d %s", code, out)
 	}
 }

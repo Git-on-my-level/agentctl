@@ -270,7 +270,7 @@ func TestDevinRecipePassesModelAndACP(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []string{"devin", "acp", "--model", model}
+		want := []string{"devin", "acp", "--model", model, "--agentctl-acp-config", "model=" + model}
 		if strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") || got.PromptDelivery != PromptDeliveryStdin {
 			t.Fatalf("argv=%v delivery=%s", got.Argv, got.PromptDelivery)
 		}
@@ -488,9 +488,45 @@ func TestDevinFullPermissionsUsesACPGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"devin", "acp", "--model", "fusion-gpt-6.1-sol-high-sidekick-swe-2-high"}
+	want := []string{"devin", "acp", "--model", "fusion-gpt-6.1-sol-high-sidekick-swe-2-high", "--agentctl-acp-config", "model=fusion-gpt-6.1-sol-high-sidekick-swe-2-high"}
 	if !contains(got.Env, "AGENTCTL_DEVIN_ACP_APPROVE=1") || got.Permissions != PermissionsFull || strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("argv=%v permissions=%s", got.Argv, got.Permissions)
+	}
+}
+
+func TestDevinCloudRecipeSetsDevinVersionThroughACP(t *testing.T) {
+	got, err := Build(Input{Harness: "devin-cloud", Model: "devin-swe-2-high", UnattendedCodingPermissions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// devin acp --cloud ignores --model, so the recipe must not pass it.
+	want := []string{"devin", "acp", "--cloud", "--agentctl-acp-config", "devin_version=devin-swe-2-high"}
+	if strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") || got.PromptDelivery != PromptDeliveryStdin || !contains(got.Env, "AGENTCTL_DEVIN_ACP_APPROVE=1") {
+		t.Fatalf("argv=%v env=%v delivery=%s", got.Argv, got.Env, got.PromptDelivery)
+	}
+	if got.Permissions != PermissionsUnsupported {
+		t.Fatalf("permissions=%s", got.Permissions)
+	}
+	if _, err := Build(Input{Harness: "devin-cloud", Model: "devin-swe-2-high", Access: AccessReadOnly}); err == nil {
+		t.Fatal("expected read_only to be refused")
+	}
+	if harness, err := CanonicalHarness("Devin-Cloud"); err != nil || harness != "devin-cloud" {
+		t.Fatalf("harness=%q err=%v", harness, err)
+	}
+}
+
+func TestDevinEffortSetsThoughtLevelThroughACP(t *testing.T) {
+	got, err := Build(Input{Harness: "devin", Model: "gemini-4-argon-medium", Effort: "high"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"devin", "acp", "--model", "gemini-4-argon-medium", "--agentctl-acp-config", "model=gemini-4-argon-medium", "--agentctl-acp-config", "thought_level=high"}
+	if strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("argv=%v", got.Argv)
+	}
+	var buildErr *Error
+	if _, err := Build(Input{Harness: "devin-cloud", Model: "devin-swe-2-high", Effort: "high"}); !errors.As(err, &buildErr) || buildErr.Code != "effort_unavailable" {
+		t.Fatalf("cloud effort err=%v", err)
 	}
 }
 

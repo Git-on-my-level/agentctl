@@ -14,7 +14,7 @@ type PortableURI struct {
 
 var uriTypes = map[string][]Type{
 	"agentctl": {TypeExecution},
-	"codex":    {TypeSource}, "cursor": {TypeSource}, "claude": {TypeSource}, "omp": {TypeSource}, "openclaw": {TypeSource}, "opencode": {TypeSource}, "zcode": {TypeSource}, "devin": {TypeSource},
+	"codex":    {TypeSource}, "cursor": {TypeSource}, "claude": {TypeSource}, "omp": {TypeSource}, "openclaw": {TypeSource}, "opencode": {TypeSource}, "zcode": {TypeSource}, "devin": {TypeSource}, "devin-cloud": {TypeSource},
 	"multica": {TypeProject, TypeIssue, TypeRun},
 }
 

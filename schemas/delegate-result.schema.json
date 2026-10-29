@@ -250,7 +250,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Prompt-free argv; Devin starts acp --model <configured-model>."
+          "description": "Prompt-free argv; Devin starts acp --model <configured-model> --agentctl-acp-config model=<configured-model>, and devin-cloud starts acp --cloud --agentctl-acp-config devin_version=<configured-model> --agentctl-acp-config repos=<owner/name>. agentctl strips each --agentctl-acp-config descriptor before exec and requires that ACP session config option to read back the value before the prompt."
         },
         "env": {
           "type": [

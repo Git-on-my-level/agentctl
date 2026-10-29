@@ -100,7 +100,7 @@ type processRecord struct {
 	events           []Event
 	result           *Result
 	finalContent     string
-	acp              *devinACP
+	acp              *acpSession
 	sawDevinPrint    bool
 	devinPrintAnswer string
 	contentType      string
@@ -313,7 +313,7 @@ func (p *processRecord) ingestObservation(obs parsedObservation) {
 
 func nativePolicyFamily(name string) bool {
 	switch name {
-	case "codex", "cursor", "claude-code", "omp", "openclaw", "opencode", "zcode", "devin", "hermes", "generic-process":
+	case "codex", "cursor", "claude-code", "omp", "openclaw", "opencode", "zcode", "devin", "devin-cloud", "hermes", "generic-process":
 		return true
 	default:
 		return false
@@ -963,10 +963,14 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	if err := runCtx.Err(); err != nil {
 		return LaunchResult{}, nativeContextError(runCtx, "native process launch")
 	}
-	var acp *devinACP
-	if a.Name() == "devin" && isDevinACP(argv) {
-		acp = newDevinACP(req, argv)
-		argv = withoutSessionSelection(argv, devinACPSessionFlag)
+	var acp *acpSession
+	if profile, ok := acpInvocation(a.Name(), argv); ok {
+		session, err := newACPSession(profile, req, argv)
+		if err != nil {
+			return LaunchResult{}, &AdapterError{Code: ErrUsage, Message: err.Error(), Details: map[string]any{"diagnostic_code": "acp_config_invalid"}}
+		}
+		acp = session
+		argv = acpExecArgv(argv)
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	if req.Cwd != "" {

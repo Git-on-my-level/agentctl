@@ -196,7 +196,7 @@ build their argv from the same verified route, so an adapter that reports
 | Codex | yes | `codex exec resume <thread>`; same three-turn check, and a follow-up turn accepted interrupt-and-resume steering twice |
 | Cursor | yes | `--resume <chat>` after a completed turn kept context across three turns. (An interrupted Cursor turn does not, which is why Cursor cannot be steered.) |
 | OMP | yes, for expert launches only in practice | `--resume <session>` after a completed turn kept context when run by hand. It has no delegate recipe on a host that does not list it as preferred. |
-| Devin ACP | conditional | Loads the recorded session only when initialize advertises loadSession; print-mode runs cannot continue. |
+| Devin ACP, Devin cloud ACP | conditional | Loads the recorded session only when initialize advertises loadSession, then verifies the same ACP config options again; print-mode runs cannot continue. A cloud continuation recalled the prior turn live. |
 | ZCode 0.17.0 coding | yes | `--resume <sessionId> --prompt`; synthetic continuity smoke recorded with the resilience change. Failed-turn recovery requires the recorded session; read_only storage is disposable and refused. No process-interruption steering. |
 | Generic process, Multica | no | No native session to resume; Multica owns its own continuation. |
 

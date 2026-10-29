@@ -157,7 +157,13 @@ type Manifest struct {
 	ContextInjection       ContextInjection        `json:"context_injection,omitempty"`
 	KnownFailures          []KnownFailure          `json:"known_failures,omitempty"`
 	Sensitivity            map[string]string       `json:"sensitivity,omitempty"`
+	// Placement is where the native session runs. Omitted means local.
+	Placement string `json:"placement,omitempty"`
 }
+
+// PlacementCloud marks an adapter whose session runs on the provider's
+// machines. Such an execution never owns a local worktree.
+const PlacementCloud = "cloud"
 
 type VersionRange struct {
 	Minimum          string `json:"minimum"`

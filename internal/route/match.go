@@ -88,6 +88,8 @@ func BuiltinModelCatalog() []ModelRecord {
 		{Adapter: "opencode", Aliases: []string{"opencode"}},
 		{Adapter: "zcode", Aliases: []string{"zcode"}},
 		{Adapter: "devin", Aliases: []string{"devin", "swe", "swe-2", "swe-2-high", "fusion"}},
+		// Cloud is never reached through a family alias, only by its own name.
+		{Adapter: "devin-cloud", Aliases: []string{"devin-cloud"}},
 	}
 }
 

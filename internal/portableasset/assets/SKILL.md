@@ -177,6 +177,13 @@ or a denial with no reject option. The stored answer keeps the final assistant
 message: the next message after tool activity replaces earlier narration. Completed Devin ACP turns can continue only
 when the server advertises `loadSession`; print mode cannot continue. Devin
 steering remains unavailable until a real cancel plus reprompt route is verified.
+Devin ACP verifies the configured model id against the session's `model` option
+before the prompt; a fuzzy native match fails with `acp_config_value_unavailable`.
+`devin-cloud` is a separate harness, reached only by naming it: it runs a Devin
+cloud session through `devin acp --cloud`, verifies `devin_version` (the configured
+model) and `repos` (the GitHub `origin` of `--cwd`) before the prompt, works from
+the pushed remote rather than the local tree, records `session_url`, and is never
+a workspace owner. A family shared by local and cloud entries is ambiguous.
 Harnesses without a reviewed unattended permission recipe report `permissions: unsupported`
 and are not given an inferred flag. Unavailable settings or hosts must not trigger
 silent substitution or fallback to expert `run`.
