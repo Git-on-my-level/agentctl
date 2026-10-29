@@ -378,6 +378,9 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 		return recoverAdmission(problem)
 	}
 	if selected.Harness == "devin-cloud" {
+		if !strings.EqualFold(strings.TrimSpace(request.Selector.Harness), "devin-cloud") {
+			return recoverAdmission(delegateError(output.CodeCapabilityUnavailable, "delegate_cloud_harness_required", "devin-cloud runs on the pushed remote, not the local tree: name harness devin-cloud explicitly to delegate there").WithDetail("resolved_harness", selected.Harness))
+		}
 		repository, ok := devinCloudRepository(ctx, cwd)
 		if !ok {
 			return recoverAdmission(delegateError(output.CodeCapabilityUnavailable, "delegate_cloud_repository_unavailable", "devin-cloud works on a GitHub repository: run from a checkout whose origin is on github.com, with the base branch already pushed"))

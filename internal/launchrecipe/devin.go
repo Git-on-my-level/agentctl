@@ -8,13 +8,17 @@ const acpConfigFlag = "--agentctl-acp-config"
 
 // Devin delegates through ACP. Model selection remains configuration-owned.
 // The ACP client verifies the session's model option equals the configured
-// id, so a fuzzy native match fails instead of running another model.
+// id, so a fuzzy native match fails instead of running another model. Effort
+// is the session's thought_level option, verified the same way.
 func buildDevin(executable, model, speed, effort, access string, grant bool) (Recipe, error) {
-	exe, err := devinPreflight(executable, model, speed, effort)
+	exe, err := devinPreflight(executable, model, speed)
 	if err != nil {
 		return Recipe{}, err
 	}
 	argv := []string{exe, "acp", "--model", model, acpConfigFlag, "model=" + model}
+	if effort != "" {
+		argv = append(argv, acpConfigFlag, "thought_level="+effort)
+	}
 	return Recipe{Argv: argv, Env: devinApprovalEnv(access, grant), PromptDelivery: PromptDeliveryStdin}, nil
 }
 
@@ -23,24 +27,24 @@ func buildDevin(executable, model, speed, effort, access string, grant bool) (Re
 // back before the first prompt. The repository option is added by the caller
 // from the launch workspace.
 func buildDevinCloud(executable, model, speed, effort, access string, grant bool) (Recipe, error) {
-	exe, err := devinPreflight(executable, model, speed, effort)
+	exe, err := devinPreflight(executable, model, speed)
 	if err != nil {
 		return Recipe{}, err
+	}
+	if effort != "" {
+		return Recipe{}, fail("effort_unavailable", "devin cloud has no effort option; devin_version names the agent")
 	}
 	argv := []string{exe, "acp", "--cloud", acpConfigFlag, "devin_version=" + model}
 	return Recipe{Argv: argv, Env: devinApprovalEnv(access, grant), PromptDelivery: PromptDeliveryStdin}, nil
 }
 
-func devinPreflight(executable, model, speed, effort string) (string, error) {
+func devinPreflight(executable, model, speed string) (string, error) {
 	exe, err := resolveExecutable("devin", executable)
 	if err != nil {
 		return "", err
 	}
 	if speed == "fast" {
 		return "", fail("speed_unavailable", "devin launch recipes do not select fast service speed")
-	}
-	if effort != "" {
-		return "", fail("effort_unavailable", "devin has no verified effort flag; the model id already names the reasoning variant")
 	}
 	if err := devinModel(model); err != nil {
 		return "", err

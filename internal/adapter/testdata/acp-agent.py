@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, time
 mode = os.environ.get('ACP_FIXTURE_MODE', 'normal')
 sid = 'fixture-session'
 prompt_id = None
@@ -52,6 +52,8 @@ for line in sys.stdin:
     elif method=='session/new':
         assert os.path.isabs(v['params']['cwd']) and v['params']['mcpServers']==[]
         result(i,dict(sessionId=sid) if config_mode=='absent' else dict(sessionId=sid,configOptions=config_options()))
+        # A server that stops reading leaves a large prompt write blocked.
+        if mode=='deaf': time.sleep(60)
     elif method=='session/load':
         assert mode!='no-load' and v['params']['sessionId']==sid
         update('REPLAY MUST NOT BECOME RESULT')

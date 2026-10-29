@@ -515,6 +515,21 @@ func TestDevinCloudRecipeSetsDevinVersionThroughACP(t *testing.T) {
 	}
 }
 
+func TestDevinEffortSetsThoughtLevelThroughACP(t *testing.T) {
+	got, err := Build(Input{Harness: "devin", Model: "gemini-4-argon-medium", Effort: "high"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"devin", "acp", "--model", "gemini-4-argon-medium", "--agentctl-acp-config", "model=gemini-4-argon-medium", "--agentctl-acp-config", "thought_level=high"}
+	if strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("argv=%v", got.Argv)
+	}
+	var buildErr *Error
+	if _, err := Build(Input{Harness: "devin-cloud", Model: "devin-swe-2-high", Effort: "high"}); !errors.As(err, &buildErr) || buildErr.Code != "effort_unavailable" {
+		t.Fatalf("cloud effort err=%v", err)
+	}
+}
+
 func TestDevinRejectsReadOnlyAccess(t *testing.T) {
 	_, err := Build(Input{Harness: "devin", Model: "swe-2-high", Access: AccessReadOnly, UnattendedCodingPermissions: true})
 	var buildErr *Error

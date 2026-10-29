@@ -251,3 +251,23 @@ func TestDevinCloudDelegateRequiresGitHubOrigin(t *testing.T) {
 		}
 	}
 }
+
+func TestDevinCloudDelegateRequiresExplicitHarness(t *testing.T) {
+	f := newDevinCloudDelegateFixture(t, "git@github.com:owner/repo.git")
+	// The family resolves uniquely to the cloud entry, but cloud work runs on
+	// the pushed remote, so only an explicit harness may reach it.
+	f.selectRequest(t, `{"family":"fixture"}`)
+	for _, mode := range []string{"--plan", "--wait"} {
+		code, out := f.invoke("PRIVATE PROMPT", mode)
+		if code == 0 || !strings.Contains(out, "delegate_cloud_harness_required") {
+			t.Fatalf("%s exit=%d %s", mode, code, out)
+		}
+	}
+	if _, err := os.Stat(f.count); !os.IsNotExist(err) {
+		t.Fatalf("launched devin: %v", err)
+	}
+	f.selectRequest(t, `{"harness":" Devin-Cloud ","family":"fixture"}`)
+	if code, out := f.invoke("PRIVATE PROMPT", "--plan"); code != 0 {
+		t.Fatalf("explicit harness exit=%d %s", code, out)
+	}
+}

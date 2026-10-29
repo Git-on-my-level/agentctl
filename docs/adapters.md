@@ -294,7 +294,10 @@ Delegation launches `devin acp --model <configured-model>
 over newline-delimited JSON-RPC 2.0 stdio. The configured id must be one of the
 session's `model` option values: Devin resolves `--model` fuzzily (for example
 `gemini-4-argon-high` silently ran `gemini-4-argon-medium`), and verification
-turns that into a refusal. The `devin` adapter refuses any `--cloud` argv
+turns that into a refusal. A configured `settings.effort` adds
+`--agentctl-acp-config thought_level=<effort>`, Devin's separate reasoning
+option (it lists `medium`, `high`, `max`), verified the same way; `devin-cloud`
+refuses effort. The `devin` adapter refuses any `--cloud` argv
 (`devin_cloud_requires_cloud_adapter`). ACP requires a nonempty, valid UTF-8
 prompt delivered through agentctl-managed stdin. Both plans and launches reject
 argv/stream delivery or missing prompt evidence before any ACP server starts;
@@ -391,7 +394,9 @@ counts it. The relay is still an owner-process child: events, cancel, and the
 result follow the same ACP contract as local Devin while that process lives.
 The cloud session survives the relay, and `continue` loads it by id. No route
 or family alias reaches `devin-cloud`; a selector must name the `devin-cloud`
-harness, and a family shared by local and cloud entries is ambiguous. Read-only
+harness, or delegate fails with `delegate_cloud_harness_required` even when
+the selector resolves only to a cloud entry. A family shared by local and
+cloud entries is ambiguous. Read-only
 access is refused, and the permission label is `unsupported` because Devin's
 cloud tool policy is provider-owned.
 

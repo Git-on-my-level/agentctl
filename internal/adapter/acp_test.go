@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -533,5 +534,43 @@ func TestDevinACPProbeRequiresPromptEvidence(t *testing.T) {
 	}
 	if fingerprints[0] == fingerprints[1] {
 		t.Fatal("probe scope must distinguish prompt evidence")
+	}
+}
+
+func TestACPCancelEndsABlockedPromptWrite(t *testing.T) {
+	a, req := acpFixture(t, "deaf", false)
+	// Far beyond any pipe buffer: the write blocks once the server stops reading.
+	req.Stdin = bytes.Repeat([]byte("p"), 8<<20)
+	req.StartOnly = true
+	// Launch, status reads, cancel and the result must all stay live while the
+	// prompt write is blocked.
+	done := make(chan Result, 1)
+	go func() {
+		got, err := a.Launch(context.Background(), req)
+		if err != nil {
+			done <- Result{State: StateFailed}
+			return
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			events, _ := a.Events(context.Background(), EventsRequest{Ref: got.Session.Ref})
+			data, _ := json.Marshal(events)
+			if strings.Contains(string(data), "acp.session") || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		time.Sleep(200 * time.Millisecond)
+		_ = a.Cancel(context.Background(), CancelRequest{Ref: got.Session.Ref, Grace: 200 * time.Millisecond})
+		result, _ := a.Result(context.Background(), ResultRequest{Ref: got.Session.Ref})
+		done <- result
+	}()
+	select {
+	case result := <-done:
+		if result.State != StateCancelled || result.Success {
+			t.Fatalf("result=%+v", result)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("a launch blocked writing its prompt stayed uncancellable")
 	}
 }

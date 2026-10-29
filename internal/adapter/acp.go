@@ -208,6 +208,29 @@ func (c *acpSession) send(value any) error {
 func (c *acpSession) request(id int, method string, params any) error {
 	return c.send(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
 }
+
+// promptUnlessCancelled sends session/prompt unless the record is already
+// cancelled. Holding the transport mutex (not p.mu) across the check and the
+// write orders it against cancelRecord, which sets cancelled before its
+// session/cancel send queues on that mutex: either the cancel is seen here, or
+// its notification follows the prompt. A blocked write never holds p.mu, so
+// the cancel grace timer can still kill the server.
+func (c *acpSession) promptUnlessCancelled(p *processRecord, id int, params any) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	p.mu.Lock()
+	cancelled := p.cancelled
+	p.mu.Unlock()
+	if cancelled {
+		return false, nil
+	}
+	data, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": "session/prompt", "params": params})
+	if err != nil {
+		return true, err
+	}
+	_, err = c.stdin.Write(append(data, '\n'))
+	return true, err
+}
 func (c *acpSession) cancel(p *processRecord) {
 	p.mu.Lock()
 	session := p.ref.OpaqueID
@@ -378,18 +401,12 @@ func (c *acpSession) serve(p *processRecord, stdout io.Reader) {
 		phase = acpPrompt
 		prompt := string(c.prompt)
 		c.prompt = nil
-		// Holding p.mu orders this check against cancelRecord, which sets
-		// cancelled under p.mu before its session/cancel goroutine takes p.mu:
-		// either the cancel is seen here, or its notification follows the prompt.
-		p.mu.Lock()
-		if p.cancelled {
-			p.mu.Unlock()
+		pending++
+		sent, err := c.promptUnlessCancelled(p, pending, map[string]any{"sessionId": c.session, "prompt": []any{map[string]any{"type": "text", "text": prompt}}})
+		if !sent {
 			fail("acp_cancelled", 0)
 			return false
 		}
-		pending++
-		err := c.request(pending, "session/prompt", map[string]any{"sessionId": c.session, "prompt": []any{map[string]any{"type": "text", "text": prompt}}})
-		p.mu.Unlock()
 		if err != nil {
 			fail("acp_transport_write_failed", 0)
 			return false
