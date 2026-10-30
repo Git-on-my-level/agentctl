@@ -120,12 +120,12 @@ func TestDecodeRequestAcceptsMaxKeyChars(t *testing.T) {
 func TestDecodeRequestPreciseSafeDiagnostics(t *testing.T) {
 	cases := []struct{ body, path, violation, keys string }{
 		{`{"schema_version":1,"request_key":"private-key","selector":{"family":"private-family","provider":"private-value"}}`, "$.selector.provider", "unknown_field", "family,harness,host,model,settings,version"},
-		{`{"schema_version":1,"request_key":"private-key","selector":{"model":"private-model","settings":{"sped":"private-speed"}}}`, "$.selector.settings.sped", "unknown_field", "access,effort,speed"},
+		{`{"schema_version":1,"request_key":"private-key","selector":{"model":"private-model","settings":{"sped":"private-speed"}}}`, "$.selector.settings.sped", "unknown_field", "access,auto_compact_window,effort,speed"},
 		{`{"schema_version":1,"request_key":"private-key","selector":{"Family":"private-family"}}`, "$.selector.Family", "key_spelling", "family,harness,host,model,settings,version"},
 		{`{"schema_version":1,"request_key":"private-key","selector":{"family":"private-family","family":"other-private-family"}}`, "$.selector.family", "duplicate_key", "family,harness,host,model,settings,version"},
 		{`{"schema_version":1,"request_key":"private-key","selector":{"model":null}}`, "$.selector.model", "null_value", "family,harness,host,model,settings,version"},
-		{`{"schema_version":1,"request_key":"private-key","selector":{"settings":{"speed":17}}}`, "$.selector.settings.speed", "invalid_type", "access,effort,speed"},
-		{`{"schema_version":1,"request_key":"private-key","selector":{"family":"private-family","settings":{"access":"private-access"}}}`, "$.selector.settings.access", "invalid_access", "access,effort,speed"},
+		{`{"schema_version":1,"request_key":"private-key","selector":{"settings":{"speed":17}}}`, "$.selector.settings.speed", "invalid_type", "access,auto_compact_window,effort,speed"},
+		{`{"schema_version":1,"request_key":"private-key","selector":{"family":"private-family","settings":{"access":"private-access"}}}`, "$.selector.settings.access", "invalid_access", "access,auto_compact_window,effort,speed"},
 		{`{"schema_version":1,"selector":{"family":"private-family"}}`, "$.request_key", "required_field", "request_key,schema_version,selector"},
 		{`{"schema_version":1,"request_key":"private-key","selector":{}}`, "$.selector", "required_constraint", "family,harness,host,model,settings,version"},
 		{`{"schema_version":1,"request_key":"private-key","selector":{"family":{"private-key":true}}}`, "$.selector.family", "invalid_type", "family,harness,host,model,settings,version"},

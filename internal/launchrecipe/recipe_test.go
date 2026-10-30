@@ -197,6 +197,39 @@ func TestClaudeCodeMapsSupportedEffortValues(t *testing.T) {
 	}
 }
 
+func TestClaudeCodeAutoCompactWindow(t *testing.T) {
+	for raw, want := range map[string]string{"300000": "300000", "300k": "300000", "1M": "1000000", " 100K ": "100000"} {
+		recipe, err := Build(Input{Harness: "claude-code", Model: "claude-opus-5-5", Executable: "claude", AutoCompactWindow: raw})
+		if err != nil {
+			t.Fatalf("%q: %v", raw, err)
+		}
+		if len(recipe.Env) != 1 || recipe.Env[0] != "CLAUDE_CODE_AUTO_COMPACT_WINDOW="+want {
+			t.Fatalf("%q: env = %v", raw, recipe.Env)
+		}
+	}
+	recipe, err := Build(Input{Harness: "claude-code", Model: "claude-opus-5-5", Executable: "claude"})
+	if err != nil || len(recipe.Env) != 0 {
+		t.Fatalf("no window: env = %v, err = %v", recipe.Env, err)
+	}
+	for _, raw := range []string{"300", "99999", "1000001", "2m", "12x", "-300000", "3e5", "300 k"} {
+		_, err := Build(Input{Harness: "claude-code", Model: "claude-opus-5-5", Executable: "claude", AutoCompactWindow: raw})
+		var issue *Error
+		if !errors.As(err, &issue) || issue.Code != "invalid_auto_compact_window" {
+			t.Fatalf("%q: err = %v", raw, err)
+		}
+	}
+}
+
+func TestAutoCompactWindowRefusedOutsideClaudeCode(t *testing.T) {
+	for _, harness := range []string{"codex", "cursor", "zcode"} {
+		_, err := Build(Input{Harness: harness, Model: "some-model", Executable: harness, AutoCompactWindow: "300000"})
+		var issue *Error
+		if !errors.As(err, &issue) || issue.Code != "auto_compact_window_unavailable" {
+			t.Fatalf("%s: err = %v", harness, err)
+		}
+	}
+}
+
 func TestClaudeCodeOmitsEffortWhenUnspecified(t *testing.T) {
 	got, err := Build(Input{Harness: "claude-code", Model: "claude-sonnet-4"})
 	if err != nil {

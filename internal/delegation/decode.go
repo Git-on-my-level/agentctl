@@ -20,7 +20,7 @@ const (
 var allowedKeys = map[string]map[string]struct{}{
 	"$":                   {"schema_version": {}, "request_key": {}, "selector": {}},
 	"$.selector":          {"harness": {}, "family": {}, "version": {}, "model": {}, "host": {}, "settings": {}},
-	"$.selector.settings": {"speed": {}, "effort": {}, "access": {}},
+	"$.selector.settings": {"speed": {}, "effort": {}, "access": {}, "auto_compact_window": {}},
 }
 
 // DecodeRequest accepts exactly one bounded UTF-8 JSON object. Unknown,
