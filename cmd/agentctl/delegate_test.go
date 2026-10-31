@@ -113,6 +113,43 @@ func TestClaudeCodeDelegatePermissionPlan(t *testing.T) {
 	}
 }
 
+func TestClaudeCodeDelegateAutoCompactWindow(t *testing.T) {
+	script := `printf '%s' "$CLAUDE_CODE_AUTO_COMPACT_WINDOW" > "$(dirname "$0")/window"
+` + delegateSuccessScript
+	f := newDelegateFixture(t, script)
+	path := filepath.Join(f.root, "cursor-agent")
+	cfg := config.Config{SchemaVersion: 1, DefaultProfile: "test", Profiles: map[string]config.Profile{"test": {
+		Adapters:         map[string]config.Adapter{"claude-code": {Executable: path}},
+		AgentPreferences: &config.AgentPreferences{Mode: "advisory", Preferred: []config.AgentPreference{{Agent: "claude-code", Model: "opus[1m]", Family: "opus"}}},
+	}}}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.config, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.selectRequest(t, `{"family":"opus","settings":{"auto_compact_window":"300k"}}`)
+	code, out := f.invoke("private-task-token", "--plan")
+	if code != 0 || !strings.Contains(out, `"CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000"`) || !strings.Contains(out, `"auto_compact_window":"300000"`) || strings.Contains(out, `"300k"`) {
+		t.Fatalf("plan exit=%d output=%s", code, out)
+	}
+	f.selectRequest(t, `{"family":"opus","settings":{"auto_compact_window":"300"}}`)
+	code, out = f.invoke("private-task-token", "--plan")
+	if code == 0 || !strings.Contains(out, "invalid_auto_compact_window") {
+		t.Fatalf("small window exit=%d output=%s", code, out)
+	}
+	f.selectRequest(t, `{"family":"opus","settings":{"auto_compact_window":"300k"}}`)
+	code, out = f.invoke("private-task-token", "--wait")
+	if code != 0 {
+		t.Fatalf("wait exit=%d output=%s", code, out)
+	}
+	got, err := os.ReadFile(filepath.Join(f.root, "window"))
+	if err != nil || string(got) != "300000" {
+		t.Fatalf("native process saw window %q, err %v", got, err)
+	}
+}
+
 func TestDelegateLabelNamesTheViolatedRule(t *testing.T) {
 	_, problem := parseDelegate([]string{"--request-file", "request.json", "--prompt-file", "prompt.md", "--label", "ecoopt-20261013", "--label", "grok-impl", "--label", "A-agentctl"})
 	if problem == nil || problem.Details["diagnostic_code"] != "delegate_invalid_label" || problem.Details["index"] != 2 || problem.Details["rule"] != "pattern" || !strings.Contains(problem.Message, "index 2") || !strings.Contains(problem.Message, runLabelPatternText) {

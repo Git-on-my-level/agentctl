@@ -220,6 +220,9 @@ meaning.
 - Pass configured effort after the model as `--effort <level>` for `low`,
   `medium`, `high`, `xhigh`, and `max`; other values such as Codex-only
   `ultra` fail recipe validation.
+- Pass `settings.auto_compact_window` as `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, a bare
+  token count from 100000 to 1000000, for that launch only. It outranks every
+  settings file and never writes the host default. Other harnesses refuse it.
 - Reject explicit service speed and fast model variants as before.
 - Preserve native permission mode and hooks.
 - Do not read unrelated Claude project/session history during attachment.

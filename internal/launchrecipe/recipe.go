@@ -34,6 +34,7 @@ type Input struct {
 	CursorWorkspaceTrust        bool
 	Access                      string
 	UnattendedCodingPermissions bool
+	AutoCompactWindow           string
 }
 
 // Recipe is the exact native invocation plan before prompt attachment.
@@ -101,6 +102,10 @@ func Build(in Input) (Recipe, error) {
 	if err := requireReviewedAccess(harness, access); err != nil {
 		return Recipe{}, err
 	}
+	window, err := normalizeAutoCompactWindow(harness, in.AutoCompactWindow)
+	if err != nil {
+		return Recipe{}, err
+	}
 	var recipe Recipe
 	switch harness {
 	case "cursor":
@@ -128,6 +133,9 @@ func Build(in Input) (Recipe, error) {
 	}
 	if err != nil {
 		return Recipe{}, err
+	}
+	if window != "" {
+		recipe.Env = append(recipe.Env, autoCompactWindowEnv+"="+window)
 	}
 	recipe.Permissions = permissionLabel(harness, access, in.UnattendedCodingPermissions)
 	return recipe, nil

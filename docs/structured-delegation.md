@@ -225,7 +225,8 @@ do not automatically weaken a failed structured request into an expert launch.
 Cursor, Codex, and Claude Code have recipes for exact requested models and
 supported settings. Claude Code passes effort through `--effort` for `low`,
 `medium`, `high`, `xhigh`, and `max`; it still has no reviewed service-speed
-flag. OMP has a structured recipe with explicit thinking but no service-speed
+flag. Its `settings.auto_compact_window` is a launch setting, not a catalog
+attribute: it never selects an entry, and other harnesses refuse it. OMP has a structured recipe with explicit thinking but no service-speed
 guarantee.
 An unsupported setting fails before launch. The resolved tuple describes what
 agentctl requested. Native providers can still report opaque or substituted model

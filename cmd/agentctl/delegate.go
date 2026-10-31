@@ -360,15 +360,16 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	selected := resolution.Resolved
 	trust := profile.Delegation != nil && profile.Delegation.CursorWorkspaceTrust
 	codingGrant := profile.Delegation != nil && profile.Delegation.UnattendedCodingPermissions
-	access := ""
+	access, autoCompactWindow := "", ""
 	if request.Selector.Settings != nil {
 		access = request.Selector.Settings.Access
+		autoCompactWindow = request.Selector.Settings.AutoCompactWindow
 	}
 	executable, problem := delegateExecutable(profile, selected.Harness)
 	if problem != nil {
 		return recoverAdmission(problem)
 	}
-	recipe, err := launchrecipe.Build(launchrecipe.Input{Harness: selected.Harness, Model: selected.Model, Speed: selected.Speed, Effort: selected.Effort, Executable: executable, CursorWorkspaceTrust: trust, Access: access, UnattendedCodingPermissions: codingGrant})
+	recipe, err := launchrecipe.Build(launchrecipe.Input{Harness: selected.Harness, Model: selected.Model, Speed: selected.Speed, Effort: selected.Effort, Executable: executable, CursorWorkspaceTrust: trust, Access: access, UnattendedCodingPermissions: codingGrant, AutoCompactWindow: autoCompactWindow})
 	if err != nil {
 		problem := delegateError(output.CodeCapabilityUnavailable, "delegate_recipe_unavailable", err.Error())
 		var issue *launchrecipe.Error
@@ -391,7 +392,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	if err != nil {
 		return output.Wrap(output.CodeInternal, "digest delegate configuration", false, err)
 	}
-	requested, _ := json.Marshal(request.Selector)
+	requested, _ := json.Marshal(journalSelector(request.Selector))
 	defaulted := append([]string{}, resolution.Defaulted...)
 	if request.Selector.Host == "" {
 		defaulted = append(defaulted, "host")
@@ -401,7 +402,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	}
 	binding := &model.DelegationBinding{RequestSHA256: inputDigest, ConfigurationSHA256: configDigest, Requested: requested, RequestKey: strings.TrimSpace(request.RequestKey), NativePlan: &model.DelegationNativePlan{Env: append([]string(nil), recipe.Env...), Argv: append([]string(nil), recipe.Argv...), PromptDelivery: recipe.PromptDelivery, Permissions: recipe.Permissions},
 		Resolved: model.DelegationTarget{Harness: selected.Harness, Family: selected.Family, Version: selected.Version, Model: selected.Model, Host: host, Authority: model.AuthorityNative,
-			Settings: model.DelegationSettings{Speed: selected.Speed, Effort: selected.Effort, Access: resolvedAccess(access)}}, Defaulted: defaulted}
+			Settings: model.DelegationSettings{Speed: selected.Speed, Effort: selected.Effort, Access: resolvedAccess(access), AutoCompactWindow: resolvedAutoCompactWindow(recipe.Env)}}, Defaulted: defaulted}
 	prompt.Delivery = recipe.PromptDelivery
 	admissionReused := false
 	admissionRecorded := false
@@ -469,13 +470,42 @@ func canonicalDelegateSelector(in delegation.Selector) delegation.Selector {
 		settings.Speed = strings.ToLower(strings.TrimSpace(settings.Speed))
 		settings.Effort = strings.ToLower(strings.TrimSpace(settings.Effort))
 		settings.Access = strings.ToLower(strings.TrimSpace(settings.Access))
-		if settings.Speed == "" && settings.Effort == "" && settings.Access == "" {
+		settings.AutoCompactWindow = strings.TrimSpace(settings.AutoCompactWindow)
+		if settings.Speed == "" && settings.Effort == "" && settings.Access == "" && settings.AutoCompactWindow == "" {
 			in.Settings = nil
 		} else {
 			in.Settings = &settings
 		}
 	}
 	return in
+}
+
+// journalSelector drops auto_compact_window from the journaled request. An older
+// binary decodes that record strictly and would read the execution as corrupt,
+// so a rollback must not strand it. The applied value stays in resolved settings,
+// and the request digest still covers the original.
+func journalSelector(selector delegation.Selector) delegation.Selector {
+	if selector.Settings == nil || selector.Settings.AutoCompactWindow == "" {
+		return selector
+	}
+	settings := *selector.Settings
+	settings.AutoCompactWindow = ""
+	selector.Settings = &settings
+	if settings == (delegation.Settings{}) {
+		selector.Settings = nil
+	}
+	return selector
+}
+
+// resolvedAutoCompactWindow reports the bare token count the recipe will launch
+// with, so status shows what was applied rather than what was typed.
+func resolvedAutoCompactWindow(env []string) string {
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, "CLAUDE_CODE_AUTO_COMPACT_WINDOW="); ok {
+			return value
+		}
+	}
+	return ""
 }
 
 func digestJSON(value any) (string, error) {

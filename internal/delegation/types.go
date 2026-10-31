@@ -9,6 +9,9 @@ type Settings struct {
 	Speed  string `json:"speed,omitempty"`
 	Effort string `json:"effort,omitempty"`
 	Access string `json:"access,omitempty"`
+	// AutoCompactWindow is a launch setting, not a catalog attribute: it never
+	// selects an entry. Claude Code only; other harnesses refuse it.
+	AutoCompactWindow string `json:"auto_compact_window,omitempty"`
 }
 
 // Selector is the parent-supplied constraint set. Omitted fields stay empty

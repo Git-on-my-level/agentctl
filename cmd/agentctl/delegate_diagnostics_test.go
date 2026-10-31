@@ -45,7 +45,7 @@ func TestDelegateUnknownFieldDiagnosticIsActionableAndPrivate(t *testing.T) {
 			if issue.Details["diagnostic_code"] != "delegate_invalid_request" || issue.Details["field_path"] != "$.selector.settings.sped" || issue.Details["violation"] != "unknown_field" {
 				t.Fatalf("issue=%#v", issue)
 			}
-			if !reflect.DeepEqual(issue.Details["allowed_keys"], []any{"access", "effort", "speed"}) {
+			if !reflect.DeepEqual(issue.Details["allowed_keys"], []any{"access", "auto_compact_window", "effort", "speed"}) {
 				t.Fatalf("keys=%#v", issue.Details["allowed_keys"])
 			}
 			example, _ := json.Marshal(issue.Details["example_request"])

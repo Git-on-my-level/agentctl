@@ -70,6 +70,13 @@
               "maxLength": 256,
               "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
             },
+            "auto_compact_window": {
+              "description": "Claude Code compaction window in tokens; other harnesses refuse it.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+            },
             "effort": {
               "type": "string",
               "minLength": 1,
@@ -138,6 +145,13 @@
           "additionalProperties": false,
           "properties": {
             "speed": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+            },
+            "auto_compact_window": {
+              "description": "Claude Code compaction window in tokens; other harnesses refuse it.",
               "type": "string",
               "minLength": 1,
               "maxLength": 256,
