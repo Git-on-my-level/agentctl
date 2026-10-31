@@ -292,8 +292,8 @@ func TestZCodeRecipeUsesProvisionedModel(t *testing.T) {
 	if _, err := Build(Input{Harness: "zcode", Model: "zai/glm-4.7"}); err == nil {
 		t.Fatal("expected a different model to be refused")
 	}
-	if _, err := Build(Input{Harness: "zcode", Model: "zai/glm-5.3", Effort: "low"}); err == nil {
-		t.Fatal("expected a non-high effort to be refused")
+	if _, err := Build(Input{Harness: "zcode", Model: "zai/glm-5.3", Effort: "low"}); err != nil {
+		t.Fatal("static recipe must defer profile effort verification to preflight", err)
 	}
 }
 

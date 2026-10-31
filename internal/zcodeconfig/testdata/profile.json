@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "config": {
+    "defaultModelSelection": {
+      "providerId": "zai",
+      "modelId": "glm-5.3",
+      "options": {
+        "reasoningLevel": "high"
+      }
+    },
+    "modelConfigRules": {
+      "providerModelRules": [],
+      "manualProviderModelRules": []
+    }
+  }
+}

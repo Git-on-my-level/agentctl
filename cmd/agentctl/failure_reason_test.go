@@ -129,6 +129,7 @@ printf '%s\n' '{"type":"turn.failed","thread_id":"thread-1","error":{"message":"
 }
 
 func TestZCodeFailureReasonSurfacesAcrossDelegateStatusAndResult(t *testing.T) {
+	useZCodeBuiltin(t)
 	for _, tc := range []struct {
 		name, stdoutShape, stderrShape, category, nativeCode, message string
 		retryable                                                     bool
@@ -163,6 +164,9 @@ func TestZCodeFailureReasonSurfacesAcrossDelegateStatusAndResult(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := testutil.TempDir(t)
 			bin := filepath.Join(root, "zcode")
+			provider := filepath.Join(root, "provider.json")
+			writeZCodeEffort(t, provider, "high")
+			t.Setenv("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", provider)
 			script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 0.16.9; exit 0; fi\n"
 			if tc.stdoutShape != "" {
 				script += "cat <<'RESULT'\n" + tc.stdoutShape + "\nRESULT\n"

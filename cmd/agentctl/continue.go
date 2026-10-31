@@ -320,6 +320,24 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 	binding := &model.DelegationBinding{Continuation: continuation, RequestSHA256: inputDigest, ConfigurationSHA256: source.Delegation.ConfigurationSHA256, Requested: append(json.RawMessage(nil), source.Delegation.Requested...), RequestKey: strings.TrimSpace(requestKey),
 		Resolved: source.Delegation.Resolved, Defaulted: append([]string(nil), source.Delegation.Defaulted...),
 		NativePlan: &model.DelegationNativePlan{Env: append([]string(nil), plan.Env...), Argv: argv, PromptDelivery: plan.PromptDelivery, Permissions: plan.Permissions, RecipeArgv: append([]string(nil), recipe...)}}
+	if binding.Resolved.Harness == "zcode" {
+		var requested struct {
+			Settings struct {
+				Effort string `json:"effort"`
+			} `json:"settings"`
+		}
+		_ = json.Unmarshal(binding.Requested, &requested)
+		if requested.Settings.Effort == "" {
+			for _, field := range binding.Defaulted {
+				if field == "effort" || field == "settings.effort" {
+					requested.Settings.Effort = source.Delegation.Resolved.Settings.Effort
+				}
+			}
+		}
+		if problem := resolveZCodeEffort(&binding.Resolved.Settings, plan.Env, strings.ToLower(strings.TrimSpace(requested.Settings.Effort)), *source.CWD); problem != nil {
+			return problem
+		}
+	}
 	prompt.Delivery = plan.PromptDelivery
 	labels := opts.labels
 	if len(labels) == 0 {

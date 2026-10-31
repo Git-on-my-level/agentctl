@@ -403,6 +403,11 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	binding := &model.DelegationBinding{RequestSHA256: inputDigest, ConfigurationSHA256: configDigest, Requested: requested, RequestKey: strings.TrimSpace(request.RequestKey), NativePlan: &model.DelegationNativePlan{Env: append([]string(nil), recipe.Env...), Argv: append([]string(nil), recipe.Argv...), PromptDelivery: recipe.PromptDelivery, Permissions: recipe.Permissions},
 		Resolved: model.DelegationTarget{Harness: selected.Harness, Family: selected.Family, Version: selected.Version, Model: selected.Model, Host: host, Authority: model.AuthorityNative,
 			Settings: model.DelegationSettings{Speed: selected.Speed, Effort: selected.Effort, Access: resolvedAccess(access), AutoCompactWindow: resolvedAutoCompactWindow(recipe.Env)}}, Defaulted: defaulted}
+	if selected.Harness == "zcode" {
+		if problem := resolveZCodeEffort(&binding.Resolved.Settings, recipe.Env, selected.Effort, cwd); problem != nil {
+			return recoverAdmission(problem)
+		}
+	}
 	prompt.Delivery = recipe.PromptDelivery
 	admissionReused := false
 	admissionRecorded := false

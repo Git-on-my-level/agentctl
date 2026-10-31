@@ -38,9 +38,8 @@ func buildZCode(executable, model, speed, effort, access string) (Recipe, error)
 	if nativeModel != "glm-5.3" && nativeModel != "glm-5.3-flash" {
 		return Recipe{}, fail("model_unavailable", "zcode launcher supports only zai/glm-5.3 and zai/glm-5.3-flash via provisioned ZCODE_MODEL configs")
 	}
-	if effort != "" && effort != "high" {
-		return Recipe{}, fail("effort_unavailable", "zcode effort is the CLI reasoningLevel; only high is accepted because that is the configured default")
-	}
+	// Effort is not a native flag: delegate checks it against the selected
+	// profile at preflight. Static recipe compatibility cannot attest to it.
 	// Clear ambient selectors so the base model uses the configured default,
 	// including on hosts that have no provisioned per-model config.
 	env := []string{"ZCODE_MODEL="}
