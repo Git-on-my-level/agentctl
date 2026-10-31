@@ -130,6 +130,45 @@ func TestDelegationRecoversAccessDroppedByLegacyProjection(t *testing.T) {
 	}
 }
 
+func TestDelegationRecoversAutoCompactWindowDroppedByLegacyProjection(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	initial := sampleExecution(now)
+	initial.Delegation = storedDelegationFixture()
+	initial.Delegation.Resolved.Settings.AutoCompactWindow = "300000"
+	mutation := contracts.MutationKey{Scope: "execution:delegate", Key: "request-01", InputDigest: hash('a')}
+	created, _, err := j.CreateExecution(ctx, initial, mutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewrite := func(window string) {
+		t.Helper()
+		err := j.db.Update(func(tx *bbolt.Tx) error {
+			rewritten := created
+			copy := *rewritten.Delegation
+			copy.Resolved.Settings.AutoCompactWindow = window
+			rewritten.Delegation = &copy
+			body, e := json.Marshal(rewritten)
+			if e != nil {
+				return e
+			}
+			return tx.Bucket(bExecutions).Put([]byte(created.ID.String()), body)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	rewrite("")
+	recovered, err := j.GetExecution(ctx, created.ID)
+	if err != nil || recovered.Delegation == nil || recovered.Delegation.Resolved.Settings.AutoCompactWindow != "300000" {
+		t.Fatalf("recovered=%#v error=%v", recovered.Delegation, err)
+	}
+	rewrite("200000")
+	if _, err := j.GetExecution(ctx, created.ID); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("contradiction error=%v", err)
+	}
+}
+
 func TestCleanupRemovesDelegationIdempotencySnapshot(t *testing.T) {
 	ctx := context.Background()
 	j, _, now := openTestJournal(t)

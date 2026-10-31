@@ -70,5 +70,8 @@ func projectionAgreesWithSnapshot(projection, snapshot *model.DelegationBinding)
 	if projection.Resolved.Settings.Access == "" {
 		comparable.Resolved.Settings.Access = ""
 	}
+	if projection.Resolved.Settings.AutoCompactWindow == "" {
+		comparable.Resolved.Settings.AutoCompactWindow = ""
+	}
 	return reflect.DeepEqual(projection, &comparable)
 }
