@@ -301,9 +301,22 @@ flag. Provision the Flash config with `zcode-cli-provision` before selecting
 Flash; GLM-5.3 needs no per-model variant.
 Plans expose these reviewed, non-secret values in `native.env`; the immutable
 admission retains them for retries and follow-up turns. Arbitrary caller env
-and credentials are not accepted through this recipe mechanism. Effort remains
-the configured high default; `fast` service speed is still unsupported. Claude
-Code effort is explicit and does not change that ZCode default.
+and credentials are not accepted through this recipe mechanism.
+ZCode effort is inspected at preflight from only the selected provider config's
+`config.defaultModelSelection.options.reasoningLevel`. The base honors an inherited
+`ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`; named profiles override it, and read-only
+launches ignore it, matching the isolated adapter. `resolved.settings.effort`
+records that observation, never an assumed high or an echoed request. Missing,
+unreadable, malformed or unrecognized levels omit `effort` and add a fixed
+`effort_warning` explaining that effort is unknown and the runtime default applies.
+An explicit or configured effort requirement that differs (including unknown)
+refuses before launch with `zcode_effort_mismatch` and exit 5 (capability unavailable).
+Follow-up turns inspect the profile again; replay retains the original observation.
+Only whitelisted effort tokens and fixed diagnostics leave the reader; credentials,
+config contents and raw parse/file errors are never recorded. This is a local
+profile observation, not runtime/provider attestation, and cannot detect concurrent
+profile edits or later native overrides. Static config compatibility does not read
+ZCode profiles. `fast` service speed remains unsupported.
 
 OpenCode recipes pass `opencode run --format json --model provider/model --`
 with the exact configured model ID and positional prompt delivery. Explicit

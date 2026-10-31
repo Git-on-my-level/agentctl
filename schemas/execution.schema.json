@@ -324,6 +324,13 @@
                   "maxLength": 256,
                   "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
                 },
+                "effort_warning": {
+                  "description": "Fixed diagnostic when the selected ZCode profile effort is unknown; effort is omitted.",
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+                },
                 "effort": {
                   "type": "string",
                   "minLength": 1,

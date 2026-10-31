@@ -17,6 +17,7 @@ import (
 	"unicode"
 
 	"github.com/Git-on-my-level/agentctl/internal/launchrecipe"
+	"github.com/Git-on-my-level/agentctl/internal/zcodeconfig"
 )
 
 // ZCodeReasonProjectConfigPresent identifies a read-only launch refused because
@@ -125,12 +126,9 @@ func prepareZCodeLaunch(cwd string, argv, env []string) (func(), []string, error
 	if err != nil {
 		return nil, nil, refuse("cannot resolve the user home")
 	}
-	provider := filepath.Join(realHome, ".zcode", "cli", "provider_config.json")
-	if model := envValue(env, "ZCODE_MODEL"); model != "" {
-		if model != "glm-5.3" && model != "glm-5.3-flash" {
-			return nil, nil, refuse("unsupported ZCODE_MODEL")
-		}
-		provider = filepath.Join(realHome, ".zcode", "cli", "models", model, "provider_config.json")
+	provider := zcodeconfig.ProviderPath(realHome, envValue(env, "ZCODE_MODEL"), "")
+	if provider == "" {
+		return nil, nil, refuse("unsupported ZCODE_MODEL")
 	}
 	if info, err := os.Stat(provider); err != nil || !info.Mode().IsRegular() {
 		return nil, nil, refuse("provider config missing; run zcode-cli-provision")
