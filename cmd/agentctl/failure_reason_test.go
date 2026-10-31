@@ -129,6 +129,7 @@ printf '%s\n' '{"type":"turn.failed","thread_id":"thread-1","error":{"message":"
 }
 
 func TestZCodeFailureReasonSurfacesAcrossDelegateStatusAndResult(t *testing.T) {
+	useZCodeBuiltin(t)
 	for _, tc := range []struct {
 		name, stdoutShape, stderrShape, category, nativeCode, message string
 		retryable                                                     bool
