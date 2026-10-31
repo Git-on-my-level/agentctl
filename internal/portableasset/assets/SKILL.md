@@ -226,6 +226,10 @@ launcher needs its config from `zcode-cli-provision`. GLM-5.3 keeps the configur
 default by clearing inherited selectors with `ZCODE_MODEL=`. Launch values
 replace inherited entries. Missing variants fail before a prompt runs. Requested model/settings
 are not proof of provider-side model identity or task correctness.
+ZCode `resolved.settings.effort` is the selected profile's `reasoningLevel`
+observed at preflight. Unknown levels omit effort and include `effort_warning`;
+required effort mismatches refuse launch with `zcode_effort_mismatch`.
+This is profile evidence, not provider/runtime attestation; replay preserves it.
 Claude Code supports explicit `settings.effort` through native `--effort` for
 `low`, `medium`, `high`, `xhigh`, and `max`; `ultra` is Codex-only. Claude Code
 service speed remains unsupported.

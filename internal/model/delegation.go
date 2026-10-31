@@ -63,6 +63,7 @@ func (p DelegationNativePlan) Recipe() []string {
 type DelegationSettings struct {
 	Speed             string `json:"speed,omitempty"`
 	Effort            string `json:"effort,omitempty"`
+	EffortWarning     string `json:"effort_warning,omitempty"`
 	Access            string `json:"access,omitempty"`
 	AutoCompactWindow string `json:"auto_compact_window,omitempty"`
 }
@@ -98,7 +99,7 @@ func (b DelegationBinding) Validate() error {
 	if !adapterPattern.MatchString(b.Resolved.Harness) || b.Resolved.Model == "" || b.Resolved.Host == "" {
 		return errors.New("incomplete delegation target")
 	}
-	for _, v := range []string{b.Resolved.Model, b.Resolved.Family, b.Resolved.Version, b.Resolved.Host, b.Resolved.Settings.Speed, b.Resolved.Settings.Effort, b.Resolved.Settings.Access, b.Resolved.Settings.AutoCompactWindow} {
+	for _, v := range []string{b.Resolved.Model, b.Resolved.Family, b.Resolved.Version, b.Resolved.Host, b.Resolved.Settings.Speed, b.Resolved.Settings.Effort, b.Resolved.Settings.EffortWarning, b.Resolved.Settings.Access, b.Resolved.Settings.AutoCompactWindow} {
 		if utf8.RuneCountInString(v) > 256 || !utf8.ValidString(v) || strings.IndexFunc(v, unicode.IsControl) >= 0 {
 			return errors.New("invalid delegation target value")
 		}

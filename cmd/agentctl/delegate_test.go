@@ -463,6 +463,8 @@ func TestZCodeModelEnvironmentAndReplay(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Reviewed recipe selectors must override the conflicting parent.
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", "")
 			t.Setenv("ZCODE_MODEL", tc.inherited)
 			f := newDelegateFixture(t, delegateSuccessScript)
 			native := filepath.Join(f.root, "zcode")
