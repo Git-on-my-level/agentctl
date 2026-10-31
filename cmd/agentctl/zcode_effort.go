@@ -35,7 +35,11 @@ func resolveZCodeEffort(settings *model.DelegationSettings, env []string, reques
 	}
 	settings.Effort, settings.EffortWarning = zcodeconfig.Effort(path)
 	if requested != "" && settings.Effort != requested {
-		return delegateError(output.CodeCapabilityUnavailable, "zcode_effort_mismatch", "ZCode selected profile reasoningLevel does not match the required effort; launch refused").
+		message := "ZCode selected profile reasoningLevel does not match the required effort; launch refused"
+		if settings.Effort == "" {
+			message += ": " + settings.EffortWarning
+		}
+		return delegateError(output.CodeCapabilityUnavailable, "zcode_effort_mismatch", message).
 			WithDetail("effort", settings.Effort).WithDetail("effort_warning", settings.EffortWarning)
 	}
 	return nil

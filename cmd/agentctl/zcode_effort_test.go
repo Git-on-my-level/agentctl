@@ -18,7 +18,7 @@ func writeZCodeEffort(t *testing.T, path, level string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}
-	body := `{"config":{"providerConfigRules":{"secret":"sentinel-credential"},"defaultModelSelection":{"options":{"reasoningLevel":"` + level + `"}}}}`
+	body := `{"schemaVersion":1,"config":{"providerConfigRules":{"secret":"sentinel-credential"},"defaultModelSelection":{"providerId":"zai","modelId":"glm-5.3","options":{"reasoningLevel":"` + level + `"}}}}`
 	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestResolveZCodeEffortSelectedProfile(t *testing.T) {
 	override := filepath.Join(home, "override.json")
 	writeZCodeEffort(t, base, "high")
 	writeZCodeEffort(t, flash, "max")
-	writeZCodeEffort(t, override, "medium")
+	writeZCodeEffort(t, override, "low")
 	for _, tc := range []struct {
 		name, selector, override, requested, want string
 		readOnly, mismatch                        bool
@@ -40,8 +40,8 @@ func TestResolveZCodeEffortSelectedProfile(t *testing.T) {
 		{"base", "", "", "high", "high", false, false},
 		{"flash", "glm-5.3-flash", "", "", "max", false, false},
 		{"flash_mismatch", "glm-5.3-flash", "", "high", "max", false, true},
-		{"override", "", override, "", "medium", false, false},
-		{"relative_override", "", "override.json", "", "medium", false, false},
+		{"override", "", override, "", "low", false, false},
+		{"relative_override", "", "override.json", "", "low", false, false},
 		{"flash_ignores_override", "glm-5.3-flash", override, "", "max", false, false},
 		{"readonly_ignores_override", "", override, "high", "high", true, false},
 	} {
@@ -73,6 +73,57 @@ func TestResolveZCodeEffortSelectedProfile(t *testing.T) {
 	}
 	if p := resolveZCodeEffort(&settings, []string{"ZCODE_MODEL="}, "high", home); p == nil {
 		t.Fatal("unknown must refuse required effort")
+	}
+}
+
+func TestResolveZCodeEffortUnsupportedLevels(t *testing.T) {
+	for _, level := range []string{"medium", "xhigh", "ultra"} {
+		t.Run(level, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", "")
+			writeZCodeEffort(t, filepath.Join(home, ".zcode/cli/provider_config.json"), level)
+			for _, required := range []string{"", level, "high"} {
+				settings := model.DelegationSettings{Effort: level}
+				problem := resolveZCodeEffort(&settings, []string{"ZCODE_MODEL="}, required, home)
+				if settings.Effort != "" || !strings.Contains(settings.EffortWarning, "does not support") || (problem != nil) != (required != "") {
+					t.Fatalf("required=%q settings=%+v problem=%v", required, settings, problem)
+				}
+			}
+		})
+	}
+}
+
+func TestResolveZCodeEffortMissingLevel(t *testing.T) {
+	for _, selection := range []string{
+		`{"providerId":"zai","modelId":"glm-5.3"}`,
+		`{"providerId":"zai","modelId":"glm-5.3","options":{}}`,
+	} {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", "")
+		path := filepath.Join(home, ".zcode/cli/provider_config.json")
+		writeZCodeEffort(t, path, "high")
+		body := `{"schemaVersion":1,"config":{"defaultModelSelection":` + selection + `,"modelConfigRules":{"providerModelRules":[],"manualProviderModelRules":[]}}}`
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		for _, required := range []string{"", "low", "high", "max"} {
+			settings := model.DelegationSettings{Effort: "high"}
+			problem := resolveZCodeEffort(&settings, []string{"ZCODE_MODEL="}, required, home)
+			if settings.Effort != "" || !strings.Contains(settings.EffortWarning, "options.reasoningLevel is missing") || (problem != nil) != (required != "") {
+				t.Fatalf("required=%q settings=%+v problem=%v", required, settings, problem)
+			}
+			if problem != nil {
+				out, err := json.Marshal(problem)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(out), "options.reasoningLevel is missing") || !strings.Contains(string(out), "zcode-cli-provision") {
+					t.Fatalf("missing actionable diagnostic: %s", out)
+				}
+			}
+		}
 	}
 }
 

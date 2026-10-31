@@ -302,13 +302,19 @@ Flash; GLM-5.3 needs no per-model variant.
 Plans expose these reviewed, non-secret values in `native.env`; the immutable
 admission retains them for retries and follow-up turns. Arbitrary caller env
 and credentials are not accepted through this recipe mechanism.
-ZCode effort is inspected at preflight from only the selected provider config's
-`config.defaultModelSelection.options.reasoningLevel`. The base honors an inherited
+ZCode effort is inspected at preflight from the selected provider config's
+`config.defaultModelSelection.modelId` and `options.reasoningLevel`. GLM-5.3 and
+GLM-5.3 Flash accept only `low`, `high`, and `max`; other selected models or
+unsupported levels are unknown. The base honors an inherited
 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`; named profiles override it, and read-only
 launches ignore it, matching the isolated adapter. `resolved.settings.effort`
 records that observation, never an assumed high or an echoed request. Missing,
 unreadable, malformed or unrecognized levels omit `effort` and add a fixed
 `effort_warning` explaining that effort is unknown and the runtime default applies.
+Missing `options.reasoningLevel` stays unknown: the bundled CLI owns the runtime
+default, which is not inferred from legacy `defaultVariant` configuration. The
+diagnostic names the missing field and directs operators to `zcode-cli-provision`
+to record an explicit supported level.
 An explicit or configured effort requirement that differs (including unknown)
 refuses before launch with `zcode_effort_mismatch` and exit 5 (capability unavailable).
 Follow-up turns inspect the profile again; replay retains the original observation.

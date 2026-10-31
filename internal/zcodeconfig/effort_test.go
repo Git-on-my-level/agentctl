@@ -9,9 +9,16 @@ import (
 
 func TestEffort(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
-		{"high", `{"secret":"sentinel-credential","config":{"defaultModelSelection":{"options":{"reasoningLevel":"high"}}}}`, "high"},
-		{"max", `{"config":{"defaultModelSelection":{"options":{"reasoningLevel":"max"}}}}`, "max"},
-		{"missing", `{"config":{"defaultModelSelection":{}}}`, ""},
+		{"high", `{"secret":"sentinel-credential","config":{"defaultModelSelection":{"providerId":"zai","modelId":"GLM-5.3","options":{"reasoningLevel":"high"}}}}`, "high"},
+		{"max", `{"config":{"defaultModelSelection":{"providerId":"zai","modelId":"glm-5.3-flash","options":{"reasoningLevel":"max"}}}}`, "max"},
+		{"low", `{"config":{"defaultModelSelection":{"providerId":"zai","modelId":"glm-5.3","options":{"reasoningLevel":"low"}}}}`, "low"},
+		{"medium_unsupported", `{"config":{"defaultModelSelection":{"providerId":"zai","modelId":"glm-5.3","options":{"reasoningLevel":"medium"}}}}`, ""},
+		{"xhigh_unsupported", `{"config":{"defaultModelSelection":{"providerId":"zai","modelId":"glm-5.3","options":{"reasoningLevel":"xhigh"}}}}`, ""},
+		{"ultra_unsupported", `{"config":{"defaultModelSelection":{"providerId":"zai","modelId":"glm-5.3","options":{"reasoningLevel":"ultra"}}}}`, ""},
+		{"different_model", `{"config":{"defaultModelSelection":{"providerId":"zai","modelId":"glm-4.7","options":{"reasoningLevel":"high"}}}}`, ""},
+		{"missing_model", `{"config":{"defaultModelSelection":{"options":{"reasoningLevel":"high"}}}}`, ""},
+		{"missing", `{"config":{"defaultModelSelection":{"providerId":"zai","modelId":"glm-5.3"}}}`, ""},
+		{"missing_options_level", `{"config":{"defaultModelSelection":{"providerId":"zai","modelId":"glm-5.3","options":{}}}}`, ""},
 		{"malformed", `{"sentinel-credential":`, ""},
 		{"invalid_type", `{"config":{"defaultModelSelection":{"options":{"reasoningLevel":{"sentinel-credential":true}}}}}`, ""},
 		{"invalid_level", `{"config":{"defaultModelSelection":{"options":{"reasoningLevel":"sentinel-credential"}}}}`, ""},
@@ -28,6 +35,9 @@ func TestEffort(t *testing.T) {
 			}
 			if strings.Contains(got+warning, "sentinel-credential") || strings.Contains(warning, path) {
 				t.Fatal("config data leaked")
+			}
+			if strings.HasPrefix(tc.name, "missing") && tc.name != "missing_model" && (!strings.Contains(warning, "options.reasoningLevel") || !strings.Contains(warning, "zcode-cli-provision")) {
+				t.Fatalf("missing field must name the field and provisioner fix: %q", warning)
 			}
 		})
 	}
