@@ -11,19 +11,32 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/zcodeconfig"
 )
 
+var zcodeBuiltinPath = zcodeconfig.BuiltinPath
+
 // resolveZCodeEffort reports a profile observation, not provider attestation.
 // Read-only launches deliberately ignore the ambient personal-file override,
 // matching prepareZCodeLaunch's isolated HOME setup.
 func resolveZCodeEffort(settings *model.DelegationSettings, env []string, requested, cwd string) *output.Error {
 	requested = strings.ToLower(strings.TrimSpace(requested))
 	selector, override := "", os.Getenv("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE")
+	app, builtinOverride := os.Getenv("ZCODE_APP"), os.Getenv("ZCODE_BUILTIN_PROVIDER_CONFIG_FILE")
+	readOnly := false
 	for _, entry := range env {
 		if value, ok := strings.CutPrefix(entry, "ZCODE_MODEL="); ok {
 			selector = value
 		}
 		if entry == launchrecipe.ZCodeReadOnlyProfileEnv {
-			override = ""
+			readOnly = true
 		}
+		if value, ok := strings.CutPrefix(entry, "ZCODE_APP="); ok {
+			app = value
+		}
+		if value, ok := strings.CutPrefix(entry, "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE="); ok {
+			builtinOverride = value
+		}
+	}
+	if readOnly {
+		override, app, builtinOverride = "", "", ""
 	}
 	home, err := os.UserHomeDir()
 	path := ""
@@ -33,7 +46,11 @@ func resolveZCodeEffort(settings *model.DelegationSettings, env []string, reques
 			path = filepath.Join(cwd, path)
 		}
 	}
-	settings.Effort, settings.EffortWarning = zcodeconfig.Effort(path)
+	builtin := zcodeBuiltinPath(app, builtinOverride)
+	if !filepath.IsAbs(builtin) {
+		builtin = filepath.Join(cwd, builtin)
+	}
+	settings.Effort, settings.EffortWarning = zcodeconfig.Effort(path, builtin)
 	if requested != "" && settings.Effort != requested {
 		message := "ZCode selected profile reasoningLevel does not match the required effort; launch refused"
 		if settings.Effort == "" {

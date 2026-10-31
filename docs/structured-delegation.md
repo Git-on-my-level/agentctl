@@ -303,11 +303,20 @@ Plans expose these reviewed, non-secret values in `native.env`; the immutable
 admission retains them for retries and follow-up turns. Arbitrary caller env
 and credentials are not accepted through this recipe mechanism.
 ZCode effort is inspected at preflight from the selected provider config's
-`config.defaultModelSelection.modelId` and `options.reasoningLevel`. GLM-5.3 and
-GLM-5.3 Flash accept only `low`, `high`, and `max`; other selected models or
-unsupported levels are unknown. The base honors an inherited
+`config.defaultModelSelection.modelId` and `options.reasoningLevel`. Supported
+levels come from matching bundled `config.modelConfigRules.modelRules` entries'
+`config.optionSpecs.reasoningLevel.values`, with matching personal
+`providerModelRules` / `manualProviderModelRules` taking precedence. Model regexes
+match the whole ID without case sensitivity; later matching rules override earlier
+ones. No supported-level list is hardcoded. Unreadable metadata, no matching rule,
+or an absent, empty or malformed final list makes effort unknown and cannot satisfy
+a required effort. The reader covers the launcher's reviewed GLM-5.3 and Flash
+model IDs; other selected models and unlisted levels are unknown. The base honors an inherited
 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`; named profiles override it, and read-only
-launches ignore it, matching the isolated adapter. `resolved.settings.effort`
+launches ignore it, matching the isolated adapter. Bundled metadata follows
+`ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` or the `ZCODE_APP` bundle path; read-only
+isolation ignores both overrides and uses the standard bundle.
+`resolved.settings.effort`
 records that observation, never an assumed high or an echoed request. Missing,
 unreadable, malformed or unrecognized levels omit `effort` and add a fixed
 `effort_warning` explaining that effort is unknown and the runtime default applies.

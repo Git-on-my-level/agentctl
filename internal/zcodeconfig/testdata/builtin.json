@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "config": {
+    "modelConfigRules": {
+      "modelRules": [
+        {
+          "modelMatch": ".*glm-5\\.3.*",
+          "config": {
+            "optionSpecs": {
+              "reasoningLevel": {
+                "values": [
+                  "low",
+                  "high",
+                  "max"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

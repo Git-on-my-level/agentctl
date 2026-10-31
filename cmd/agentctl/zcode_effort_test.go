@@ -11,20 +11,69 @@ import (
 
 	"github.com/Git-on-my-level/agentctl/internal/launchrecipe"
 	"github.com/Git-on-my-level/agentctl/internal/model"
+	"github.com/Git-on-my-level/agentctl/internal/zcodeconfig"
 )
+
+// The fixtures retain the installed config's key structure and the bundled
+// GLM modelMatch/values rule, with no provider credentials or option maps.
+func useZCodeBuiltin(t *testing.T) string {
+	t.Helper()
+	app := t.TempDir()
+	path := zcodeconfig.BuiltinPath(app, "")
+	body, err := os.ReadFile("../../internal/zcodeconfig/testdata/builtin.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	previous := zcodeBuiltinPath
+	zcodeBuiltinPath = func(selectedApp, override string) string {
+		if selectedApp == "" {
+			selectedApp = app
+		}
+		return zcodeconfig.BuiltinPath(selectedApp, override)
+	}
+	t.Cleanup(func() { zcodeBuiltinPath = previous })
+	t.Setenv("ZCODE_APP", "")
+	t.Setenv("ZCODE_BUILTIN_PROVIDER_CONFIG_FILE", "")
+	return path
+}
 
 func writeZCodeEffort(t *testing.T, path, level string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}
-	body := `{"schemaVersion":1,"config":{"providerConfigRules":{"secret":"sentinel-credential"},"defaultModelSelection":{"providerId":"zai","modelId":"glm-5.3","options":{"reasoningLevel":"` + level + `"}}}}`
-	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+	body, err := os.ReadFile("../../internal/zcodeconfig/testdata/profile.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var profile map[string]any
+	if err := json.Unmarshal(body, &profile); err != nil {
+		t.Fatal(err)
+	}
+	config := profile["config"].(map[string]any)
+	config["providerConfigRules"] = map[string]any{"secret": "sentinel-credential"}
+	selection := config["defaultModelSelection"].(map[string]any)
+	selection["options"] = map[string]any{"reasoningLevel": level}
+	if strings.Contains(path, "glm-5.3-flash") {
+		selection["modelId"] = "glm-5.3-flash"
+	}
+	body, err = json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body, 0600); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestResolveZCodeEffortSelectedProfile(t *testing.T) {
+	useZCodeBuiltin(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	base := filepath.Join(home, ".zcode/cli/provider_config.json")
@@ -77,6 +126,7 @@ func TestResolveZCodeEffortSelectedProfile(t *testing.T) {
 }
 
 func TestResolveZCodeEffortUnsupportedLevels(t *testing.T) {
+	useZCodeBuiltin(t)
 	for _, level := range []string{"medium", "xhigh", "ultra"} {
 		t.Run(level, func(t *testing.T) {
 			home := t.TempDir()
@@ -95,6 +145,7 @@ func TestResolveZCodeEffortUnsupportedLevels(t *testing.T) {
 }
 
 func TestResolveZCodeEffortMissingLevel(t *testing.T) {
+	useZCodeBuiltin(t)
 	for _, selection := range []string{
 		`{"providerId":"zai","modelId":"glm-5.3"}`,
 		`{"providerId":"zai","modelId":"glm-5.3","options":{}}`,
@@ -127,7 +178,94 @@ func TestResolveZCodeEffortMissingLevel(t *testing.T) {
 	}
 }
 
+func TestResolveZCodeEffortMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name, override, builtin string
+		want                    string
+	}{
+		{"listed", "", "", "high"},
+		{"profile_override_listed", `{"values":["medium","high"]}`, "", "high"},
+		{"profile_override_unlisted", `{"values":["medium"]}`, "", ""},
+		{"profile_override_absent_list", `{}`, "", ""},
+		{"profile_override_empty", `{"values":[]}`, "", ""},
+		{"profile_override_malformed", `{"values":["high",17]}`, "", ""},
+		{"builtin_absent_list", "", `{"config":{"modelConfigRules":{"modelRules":[{"modelMatch":".*glm-5\\.3.*","config":{"optionSpecs":{"reasoningLevel":{}}}}]}}}`, ""},
+		{"builtin_unreadable", "", "remove", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			builtin := useZCodeBuiltin(t)
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", "")
+			path := filepath.Join(home, ".zcode/cli/provider_config.json")
+			writeZCodeEffort(t, path, "high")
+			if tc.override != "" {
+				body, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = bytes.Replace(body, []byte(`"providerModelRules":[]`), []byte(`"providerModelRules":[{"providerId":"zai","modelId":"glm-5.3","config":{"optionSpecs":{"reasoningLevel":`+tc.override+`}}}]`), 1)
+				if err := os.WriteFile(path, body, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.builtin == "remove" {
+				if err := os.Remove(builtin); err != nil {
+					t.Fatal(err)
+				}
+			} else if tc.builtin != "" {
+				if err := os.WriteFile(builtin, []byte(tc.builtin), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, required := range []string{"", "high", "max"} {
+				settings := model.DelegationSettings{Effort: "high"}
+				problem := resolveZCodeEffort(&settings, []string{"ZCODE_MODEL="}, required, home)
+				if settings.Effort != tc.want || (settings.EffortWarning != "") != (tc.want == "") || (problem != nil) != (required != "" && required != tc.want) {
+					t.Fatalf("required=%q settings=%+v problem=%v", required, settings, problem)
+				}
+			}
+		})
+	}
+}
+
+func TestResolveZCodeEffortBuiltinRouting(t *testing.T) {
+	useZCodeBuiltin(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", "")
+	writeZCodeEffort(t, filepath.Join(home, ".zcode/cli/provider_config.json"), "high")
+	for _, tc := range []struct {
+		name, app, override string
+		readOnly, known     bool
+	}{
+		{"default", "", "", false, true},
+		{"app_override", "/missing-app", "", false, false},
+		{"builtin_override", "", "missing.json", false, false},
+		{"recipe_override", "", "", false, false},
+		{"readonly_ignores_overrides", "/missing-app", "missing.json", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ZCODE_APP", tc.app)
+			t.Setenv("ZCODE_BUILTIN_PROVIDER_CONFIG_FILE", tc.override)
+			env := []string{"ZCODE_MODEL="}
+			if tc.readOnly {
+				env = append(env, launchrecipe.ZCodeReadOnlyProfileEnv)
+			}
+			if tc.name == "recipe_override" {
+				env = append(env, "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE=missing.json")
+			}
+			settings := model.DelegationSettings{}
+			problem := resolveZCodeEffort(&settings, env, "high", home)
+			if (problem == nil) != tc.known || (settings.Effort == "high") != tc.known {
+				t.Fatalf("settings=%+v problem=%v", settings, problem)
+			}
+		})
+	}
+}
+
 func TestZCodeEffortPlanAndRecord(t *testing.T) {
+	useZCodeBuiltin(t)
 	for _, level := range []string{"high", "max", ""} {
 		t.Run("level_"+level, func(t *testing.T) {
 			home := t.TempDir()
