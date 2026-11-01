@@ -126,7 +126,6 @@ does not duplicate agentctl callback destinations, receipts, or retry policy.
 - ACP profiles for OMP and OpenCode on the shared ACP client (Devin local and
   cloud use it today), and a verified cancel-plus-reprompt steering route;
   Cursor drops a cancelled turn over ACP;
-- cross-process native cancel over the steering spool;
 - service installation commands after the plan format has deployment mileage;
 - an optional speech-confusion-optimized ID codec v2;
 - delivery/receipt schemas and an independent canonical-event fixture reader.

@@ -742,7 +742,11 @@ func TestNativeManifestDoesNotOverclaimRestartRecovery(t *testing.T) {
 		for _, declaration := range a.Manifest().Capabilities {
 			switch declaration.Name {
 			case CapabilityAttach, CapabilitySnapshot, CapabilityEvents, CapabilityResult, CapabilityResultContent, CapabilityCancel:
-				if declaration.Constraints["scope"] != "same_process_only" || declaration.Constraints["cross_restart"] != false {
+				scope := "same_process_only"
+				if declaration.Name == CapabilityCancel {
+					scope = "live_owner"
+				}
+				if declaration.Constraints["scope"] != scope || declaration.Constraints["cross_restart"] != false {
 					t.Fatalf("%s %s overclaims restart recovery: %#v", a.Name(), declaration.Name, declaration.Constraints)
 				}
 			}

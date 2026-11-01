@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -196,5 +197,106 @@ func TestCancelNativeStillTerminalizesExecution(t *testing.T) {
 	outcome, err := journal.GetOutcome(context.Background(), execution.ID)
 	if err != nil || outcome.Failure == nil || outcome.Failure.Code != "execution_cancelled" {
 		t.Fatalf("outcome=%#v err=%v", outcome, err)
+	}
+}
+
+func TestCancelWithoutLiveOwnerPointsAtOrphanRepair(t *testing.T) {
+	f := newDelegateFixture(t, delegateSuccessScript)
+	code, out := f.invoke("private", "--label", "finished")
+	if code != 0 {
+		t.Fatalf("%d %s", code, out)
+	}
+	var doc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := store.Open(f.journal, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished, err := journal.GetExecution(context.Background(), doc.Result.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished.ID = model.Execution{}.ID
+	finished.State, finished.TerminalAt, finished.Delegation = model.StateRunning, nil, nil
+	running, _, err := journal.CreateExecution(context.Background(), finished, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal.Close()
+	invoke := func(args ...string) (int, string) {
+		var stdout, stderr bytes.Buffer
+		code := testApp(&stdout, &stderr).run(context.Background(), append([]string{"--output", "json", "--config", f.config, "--journal", f.journal}, args...))
+		return code, stdout.String()
+	}
+	code, out = invoke("cancel", running.ID.String())
+	if code != output.ExitCodeFor(output.CodeCapabilityUnavailable) || !strings.Contains(out, "--orphan-if-gone") {
+		t.Fatalf("no spool: %d %s", code, out)
+	}
+	code, out = invoke("cancel", doc.Result.ID.String())
+	if code != output.ExitCodeFor(output.CodeInvalidState) {
+		t.Fatalf("completed work: %d %s", code, out)
+	}
+
+	// An unclaimed request is withdrawn on timeout, so nothing fires later.
+	dir := cancelSpoolDir(f.journal, running.ID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	code, out = invoke("cancel", running.ID.String(), "--timeout", "1ms")
+	if code != output.ExitCodeFor(output.CodeTimeout) || !strings.Contains(out, "cancel_unclaimed") {
+		t.Fatalf("unclaimed: %d %s", code, out)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Fatalf("request not withdrawn: %v %v", entries, err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	// A killed owner leaves a spool and a lease that stops being renewed.
+	journal, err = store.Open(f.journal, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := 1
+	finished.ID = model.Execution{}.ID
+	finished.Observation.FreshForSeconds, finished.Observation.ObservedAt = &fresh, time.Now().Add(-time.Hour)
+	stale, _, err := journal.CreateExecution(context.Background(), finished, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal.Close()
+	dir = cancelSpoolDir(f.journal, stale.ID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	code, out = invoke("cancel", stale.ID.String(), "--timeout", "30s")
+	if code != output.ExitCodeFor(output.CodeExecutionUnknown) || !strings.Contains(out, "cancel_owner_stale") || !strings.Contains(out, "--orphan-if-gone") {
+		t.Fatalf("stale owner: %d %s", code, out)
+	}
+	// Admission can outlast the wait; nothing is requested from an owner with no spool.
+	journal, err = store.Open(f.journal, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished.Observation.FreshForSeconds, finished.Observation.ObservedAt = nil, time.Time{}
+	finished.ID = model.Execution{}.ID
+	finished.State = model.StateStarting
+	starting, _, err := journal.CreateExecution(context.Background(), finished, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal.Close()
+	code, out = invoke("cancel", starting.ID.String(), "--timeout", "1ms")
+	if code != output.ExitCodeFor(output.CodeTimeout) || !strings.Contains(out, "cancel_owner_not_ready") {
+		t.Fatalf("starting: %d %s", code, out)
+	}
+	for _, args := range [][]string{{"cancel"}, {"cancel", "--timeout", "1s"}, {"cancel", running.ID.String(), "--timeout", "0s"}, {"cancel", running.ID.String(), "--orphan-if-gone", "--timeout", "1s"}, {"cancel", running.ID.String(), running.ID.String()}} {
+		if code, out := invoke(args...); code != 2 {
+			t.Fatalf("%v: %d %s", args, code, out)
+		}
 	}
 }

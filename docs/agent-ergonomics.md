@@ -703,7 +703,7 @@ Stale/unreachable and integrity-conflicted inbox entries include structured
 `recovery` guidance and read-only inspection actions. The route is derived from
 recorded capability scopes and exact authority bindings, never an adapter name.
 `owner_process_only` says native process ownership is required; after the owner
-exits it does not promise cross-process cancellation, resume or result recovery.
+exits it does not promise cancellation, resume or result recovery.
 `bound_multica_authority` identifies typed bound issue/run aliases and points to
 explicit refresh discovery or an already configured supervisor's status.
 Otherwise the route is `unverified`.
