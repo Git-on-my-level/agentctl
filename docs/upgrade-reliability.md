@@ -13,6 +13,36 @@ stale socket is removed. Closing a listener removes its own socket inode, never
 a replacement. Supervisor status includes `pid`, startup `version`, and
 `executable_sha256`; CLI status requests time out after five seconds.
 
+## Updating under live work
+
+Replacing the executable is safe at any time: the installer renames a new file
+into place and running processes keep the file they started from. An execution
+owner finishes on the code it started with; it does not hand off to the new
+release. The risk is the journal they all share.
+
+`store.CompatEpoch` names releases that can share a journal concurrently. The
+running release asks a verified, staged candidate for its epoch with the internal
+`_journal-compat` command. A matching answer installs immediately. A different
+answer, or none, waits for owners and returns `live_owners_deferred`.
+
+Rules for changes that touch stored records:
+
+- Every release must tolerate records written by the next one. Unknown fields are
+  ignored on ordinary reads. A record that a reader must evaluate and cannot is
+  skipped, not treated as corruption: on 2026-10-25 a `label_prefix` subscription
+  written by v0.16.x failed event appends in running v0.15.x owners
+  (`record native event`, exit 70), because each append validates every stored
+  subscription.
+- While a previous-release owner runs, it delivers nothing to a subscription it
+  cannot read. Those events remain in the journal.
+- A change the previous release cannot tolerate must bump `store.CompatEpoch`.
+
+`make check-release-skew`, part of `make ci`, enforces the last rule. It runs
+foreground and detached owners and a supervisor from the newest earlier release,
+replaces the executable, restarts the supervisor, writes every subscription scope
+from the new release, and requires the owners to complete. It uses a fixture Cursor
+harness, so harness-specific paths such as steering are not covered.
+
 ## Managed macOS upgrades
 
 The launchd installer waits up to 30 seconds for the old label **and process** to

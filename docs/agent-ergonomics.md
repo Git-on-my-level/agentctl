@@ -151,7 +151,10 @@ override the stored `auto`, `notify`, or `off` policy for a process; the legacy
 a hard-off compatibility path. `agentctl update status` is read-only and
 `agentctl update now` explicitly performs a foreground check and managed update.
 
-If execution owners are live, installation returns retryable conflict
+An update installs while execution owners are live when the verified candidate
+reports this release's journal compatibility epoch. Running owners finish on the
+code they started with; see [upgrade reliability](upgrade-reliability.md).
+Otherwise, if owners are live, installation returns retryable conflict
 `live_owners_deferred` and records `binary.pending` in update status:
 `{"version":"v0.16.3","explicit":true,"waiting_on":["pid:123"]}`.
 `waiting_on` identifies host processes, including native owners and remote

@@ -516,3 +516,58 @@ func TestApplyRechecksOwnersImmediatelyBeforeInstall(t *testing.T) {
 		t.Fatal("an owner that started mid-download was overwritten")
 	}
 }
+
+func TestApplyInstallsUnderLiveOwnersOnlyWithinJournalEpoch(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		candidate string
+		epoch     int
+		installed bool
+	}{
+		{"same epoch installs", "#!/bin/sh\necho '{\"journal_compat_epoch\":7}'\n", 7, true},
+		{"different epoch waits", "#!/bin/sh\necho '{\"journal_compat_epoch\":8}'\n", 7, false},
+		{"candidate without the probe waits", "#!/bin/sh\necho unknown subcommand >&2\nexit 2\n", 7, false},
+		{"unreadable answer waits", "#!/bin/sh\necho not-json\n", 7, false},
+		{"no local epoch waits", "#!/bin/sh\necho '{\"journal_compat_epoch\":0}'\n", 0, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			prefix := testutil.TempDir(t)
+			executable := filepath.Join(prefix, "bin", "agentctl")
+			oldBinary := []byte("#!/bin/sh\nexit 0\n")
+			writeManagedInstall(t, prefix, executable, oldBinary)
+			archiveName := fmt.Sprintf("agentctl_v0.3.4_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+			archive := releaseArchive(t, strings.TrimSuffix(archiveName, ".tar.gz"), []byte(test.candidate))
+			digest := sha256.Sum256(archive)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				switch {
+				case request.URL.Path == "/latest":
+					_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": "v0.3.4"})
+				case strings.HasSuffix(request.URL.Path, "/SHA256SUMS"):
+					fmt.Fprintf(w, "%s  %s\n", hex.EncodeToString(digest[:]), archiveName)
+				case strings.HasSuffix(request.URL.Path, "/"+archiveName):
+					_, _ = w.Write(archive)
+				default:
+					http.NotFound(w, request)
+				}
+			}))
+			defer server.Close()
+			statePath := filepath.Join(testutil.TempDir(t), "state", "update-state.json")
+			result, err := Apply(context.Background(), ApplyOptions{Check: Options{CurrentVersion: "v0.3.3", StatePath: statePath, Endpoint: server.URL + "/latest", Client: server.Client(), Getenv: func(string) string { return "" }}, Executable: executable, ReleaseBaseURL: server.URL, Client: server.Client(),
+				LiveOwners: func() (int, error) { return 2, nil }, JournalCompatEpoch: test.epoch})
+			installed, readErr := os.ReadFile(executable)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if test.installed {
+				if err != nil || !result.Updated || string(installed) != test.candidate {
+					t.Fatalf("result=%#v err=%v installed=%q", result, err, installed)
+				}
+				return
+			}
+			var applyError *ApplyError
+			if !errors.As(err, &applyError) || applyError.Code != "live_owners_deferred" || !bytes.Equal(installed, oldBinary) {
+				t.Fatalf("err=%v installed=%q: must wait and leave the executable alone", err, installed)
+			}
+		})
+	}
+}

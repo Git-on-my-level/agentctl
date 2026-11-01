@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -31,9 +32,9 @@ type ApplyOptions struct {
 	Executable     string
 	ReleaseBaseURL string
 	Client         *http.Client
-	// LiveOwners reports other execution owners. #110 observed a fatal journal
-	// write after an upgrade; the precise cause was lost. Keep its conservative
-	// guard rather than assuming mixed-version journal/service access is safe.
+	// LiveOwners reports other execution owners. Replacing the executable does
+	// not disturb them; sharing the journal with a release they cannot read can
+	// (#110). The guard applies unless the candidate reports JournalCompatEpoch.
 	LiveOwners    func() (int, error)
 	OwnerIDs      func() ([]string, error)
 	Explicit      bool
@@ -41,6 +42,8 @@ type ApplyOptions struct {
 	resumeMode    Mode
 	// AllowLiveOwners installs even when LiveOwners reports owners (`agentctl update now --allow-live-owners`).
 	AllowLiveOwners bool
+	// JournalCompatEpoch is this release's store.CompatEpoch. Zero always guards.
+	JournalCompatEpoch int
 }
 
 type ApplyResult struct {
@@ -157,8 +160,12 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	if err := recordPending(options, version); err != nil {
 		return result, recordApplyError(options.Check.StatePath, "state_record_failed", err)
 	}
-	if err := checkLiveOwners(options); err != nil {
-		return result, err
+	// Compatibility is only known from the candidate, so an epoch-aware release
+	// downloads first and decides below.
+	if options.JournalCompatEpoch == 0 {
+		if err := checkLiveOwners(options); err != nil {
+			return result, err
+		}
 	}
 	client := options.Client
 	if client == nil {
@@ -204,8 +211,10 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 		return result, recordApplyError(options.Check.StatePath, "archive_invalid", errors.New("release archive omitted executable binary or installer"))
 	}
 	// Owners can start during the downloads; check again immediately before the binary is replaced.
-	if err := checkLiveOwners(options); err != nil {
-		return result, err
+	if !candidateSharesJournal(ctx, binary, options.JournalCompatEpoch) {
+		if err := checkLiveOwners(options); err != nil {
+			return result, err
+		}
 	}
 	command := exec.CommandContext(ctx, installer, "--binary", binary, "--prefix", prefix, "--name", filepath.Base(executable))
 	command.Env = replaceEnvironment(os.Environ(), "AGENTCTL_UPDATE_MODE", "off")
@@ -219,6 +228,27 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 		return result, recordApplyError(options.Check.StatePath, "state_record_failed", err)
 	}
 	return result, nil
+}
+
+// candidateSharesJournal asks a verified, staged release for its compatibility
+// epoch. Any failure to answer means the guard stays on.
+func candidateSharesJournal(ctx context.Context, binary string, epoch int) bool {
+	if epoch == 0 {
+		return false
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(probeCtx, binary, "_journal-compat")
+	command.Env = replaceEnvironment(os.Environ(), "AGENTCTL_UPDATE_MODE", "off")
+	command.WaitDelay = time.Second
+	stdout, err := command.Output()
+	if err != nil {
+		return false
+	}
+	var reply struct {
+		Epoch int `json:"journal_compat_epoch"`
+	}
+	return json.Unmarshal(stdout, &reply) == nil && reply.Epoch == epoch
 }
 
 // checkLiveOwners defers the update while other agentctl execution owners run, unless AllowLiveOwners.
