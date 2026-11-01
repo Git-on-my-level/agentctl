@@ -4,8 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 const fakeDevin = `#!/bin/sh
@@ -144,5 +147,83 @@ func TestStatusSummary(t *testing.T) {
 		if got := summarize(checks); got != test.want {
 			t.Errorf("%v = %s", test.statuses, got)
 		}
+	}
+}
+
+func TestEffortComparisonIgnoresCase(t *testing.T) {
+	codex := script(t, "codex", `#!/bin/sh
+echo '{"models":[{"slug":"gpt-6-luna","supported_reasoning_levels":[{"effort":"xhigh"}]}]}'
+`)
+	got := one(t, Entry{Harness: "codex", Model: "gpt-6-luna", Effort: " XHIGH ", Executable: codex})
+	if got.Status != StatusAvailable || got.Effort != "xhigh" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestCursorEffortIsNotReportedAvailable(t *testing.T) {
+	cursor := script(t, "cursor-agent", "#!/bin/sh\necho 'composer-2.5 - Composer'\n")
+	got := one(t, Entry{Harness: "cursor", Model: "composer-2.5", Effort: "high", Executable: cursor})
+	if got.Status != StatusUnverified || got.DiagnosticCode != "effort_unverified" {
+		t.Fatalf("got %+v", got)
+	}
+	got = one(t, Entry{Harness: "cursor", Model: "retired", Effort: "high", Executable: cursor})
+	if got.Status != StatusUnavailable || got.DiagnosticCode != "model_unavailable" {
+		t.Fatalf("absent model = %+v", got)
+	}
+}
+
+func TestAmbiguousExecutableIsNotProbed(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "probed")
+	codex := script(t, "codex", "#!/bin/sh\ntouch '"+marker+"'\n")
+	got := one(t, Entry{Harness: "codex", Model: "x", Executable: codex, Ambiguous: true})
+	if got.Status != StatusUnavailable || got.DiagnosticCode != "ambiguous_executable" {
+		t.Fatalf("got %+v", got)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("ambiguous executable was probed")
+	}
+}
+
+func TestOversizedOutputStopsTheProbe(t *testing.T) {
+	cursor := script(t, "cursor-agent", "#!/bin/sh\nexec yes 'composer-2.5 - Composer'\n")
+	started := time.Now()
+	got := one(t, Entry{Harness: "cursor", Model: "composer-2.5", Executable: cursor})
+	if got.Status != StatusUnverified || !strings.Contains(got.Diagnostic, "too large") {
+		t.Fatalf("got %+v", got)
+	}
+	if elapsed := time.Since(started); elapsed > 20*time.Second {
+		t.Fatalf("probe took %s", elapsed)
+	}
+}
+
+func TestTimeoutEndsHelpersOfAWrapper(t *testing.T) {
+	saved := probeTimeout
+	probeTimeout = 3 * time.Second
+	t.Cleanup(func() { probeTimeout = saved })
+	pidFile := filepath.Join(t.TempDir(), "helper.pid")
+	cursor := script(t, "cursor-agent", "#!/bin/sh\nsleep 60 &\necho $! > '"+pidFile+"'\nwait\n")
+	started := time.Now()
+	got := one(t, Entry{Harness: "cursor", Model: "composer-2.5", Executable: cursor})
+	if got.Status != StatusUnverified || !strings.Contains(got.Diagnostic, "timed out") {
+		t.Fatalf("got %+v", got)
+	}
+	if elapsed := time.Since(started); elapsed > 30*time.Second {
+		t.Fatalf("probe outlived its timeout: %s", elapsed)
+	}
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatal("helper survived the probe timeout")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

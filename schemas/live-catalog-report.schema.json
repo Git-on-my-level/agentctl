@@ -23,7 +23,7 @@
         "model": {"type": "string"},
         "effort": {"type": "string"},
         "status": {"enum": ["available", "unavailable", "unverified"]},
-        "diagnostic_code": {"enum": ["adapter_missing", "model_unavailable", "effort_unavailable", "catalog_unsupported", "catalog_probe_failed"]},
+        "diagnostic_code": {"enum": ["adapter_missing", "model_unavailable", "effort_unavailable", "ambiguous_executable", "effort_unverified", "catalog_unsupported", "catalog_probe_failed"]},
         "diagnostic": {"type": "string"}
       },
       "if": {"properties": {"status": {"const": "available"}}},

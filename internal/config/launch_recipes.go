@@ -119,14 +119,18 @@ func LiveCatalogEntries(profile Profile) []nativecatalog.Entry {
 		if err != nil {
 			harness = preference.Agent
 		}
-		executable := launchrecipe.DefaultExecutable(harness)
+		values := map[string]bool{}
 		for name, adapter := range profile.Adapters {
 			canonical, canonicalErr := launchrecipe.CanonicalHarness(name)
 			if canonicalErr == nil && canonical == harness && adapter.Executable != "" {
-				executable = adapter.Executable
+				values[adapter.Executable] = true
 			}
 		}
-		entries = append(entries, nativecatalog.Entry{Index: i, Harness: harness, Model: preference.Model, Effort: preference.Effort, Executable: executable})
+		executable := launchrecipe.DefaultExecutable(harness)
+		for value := range values {
+			executable = value
+		}
+		entries = append(entries, nativecatalog.Entry{Index: i, Harness: harness, Model: preference.Model, Effort: preference.Effort, Executable: executable, Ambiguous: len(values) > 1})
 	}
 	return entries
 }

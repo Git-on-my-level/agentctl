@@ -23,9 +23,10 @@ const (
 	StatusPartial     = "partial"
 	StatusEmpty       = "not_configured"
 
-	probeTimeout  = 30 * time.Second
 	maxProbeBytes = 16 << 20
 )
+
+var probeTimeout = 30 * time.Second
 
 // Entry is one configured tuple to check. Executable is the configured
 // override or the harness default.
@@ -35,6 +36,9 @@ type Entry struct {
 	Model      string
 	Effort     string
 	Executable string
+	// Ambiguous means harness aliases configure different executables, so a
+	// launch would refuse and there is no single CLI to ask.
+	Ambiguous bool
 }
 
 // Check reports one Entry. An unverified entry is neither available nor
@@ -96,7 +100,13 @@ func CheckEntries(ctx context.Context, entries []Entry, lookPath func(string) (s
 	}
 	cache := map[key]probed{}
 	for _, entry := range entries {
-		check := Check{Index: entry.Index, Harness: entry.Harness, Model: entry.Model, Effort: entry.Effort}
+		check := Check{Index: entry.Index, Harness: entry.Harness, Model: entry.Model, Effort: strings.ToLower(strings.TrimSpace(entry.Effort))}
+		if entry.Ambiguous {
+			check.Status, check.DiagnosticCode = StatusUnavailable, "ambiguous_executable"
+			check.Diagnostic = "harness aliases configure different executables"
+			report.Checks = append(report.Checks, check)
+			continue
+		}
 		switch resolved, err := lookPath(entry.Executable); {
 		case err != nil:
 			check.Status, check.DiagnosticCode = StatusUnavailable, "adapter_missing"
@@ -129,7 +139,10 @@ func compare(check *Check, found catalog, err error) {
 	case !found.models[check.Model]:
 		check.Status, check.DiagnosticCode = StatusUnavailable, "model_unavailable"
 		check.Diagnostic = "the native catalog does not list this model"
-	case check.Effort != "" && found.efforts != nil && !found.efforts(check.Model)[check.Effort]:
+	case check.Effort != "" && found.efforts == nil:
+		check.Status, check.DiagnosticCode = StatusUnverified, "effort_unverified"
+		check.Diagnostic = "the native catalog lists this model but has no effort list"
+	case check.Effort != "" && !found.efforts(check.Model)[check.Effort]:
 		check.Status, check.DiagnosticCode = StatusUnavailable, "effort_unavailable"
 		check.Diagnostic = "the native catalog does not list this effort for this model"
 	default:
@@ -156,16 +169,35 @@ func summarize(checks []Check) string {
 // runOutput never returns native output in its error: a failed CLI may print
 // account details.
 func runOutput(ctx context.Context, executable string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, executable, args...)
-	cmd.WaitDelay = 2 * time.Second
-	out, err := cmd.Output()
+	cmd := probeCommand(ctx, executable, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, errProbeStart
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, errProbeStart
+	}
+	out, _ := io.ReadAll(io.LimitReader(stdout, maxProbeBytes+1))
+	if len(out) > maxProbeBytes {
+		killProbe(cmd)
+		_ = cmd.Wait()
+		return nil, errors.New("native catalog output is too large")
+	}
+	err = cmd.Wait()
+	killProbe(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("native catalog command failed: %s", probeFailure(ctx, err))
 	}
-	if len(out) > maxProbeBytes {
-		return nil, errors.New("native catalog output is too large")
-	}
 	return out, nil
+}
+
+var errProbeStart = errors.New("native catalog command could not start")
+
+func probeCommand(ctx context.Context, executable string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd.WaitDelay = 2 * time.Second
+	isolateProbe(cmd)
+	return cmd
 }
 
 func probeFailure(ctx context.Context, err error) string {
@@ -234,22 +266,21 @@ type acpOptionValue struct {
 // probeDevin reads the session options that a Devin ACP launch verifies
 // against. `devin models list` can show ids that ACP refuses.
 func probeDevin(ctx context.Context, executable string) (catalog, error) {
-	cmd := exec.CommandContext(ctx, executable, "acp")
-	cmd.WaitDelay = 2 * time.Second
+	cmd := probeCommand(ctx, executable, "acp")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return catalog{}, errors.New("native catalog command could not start")
+		return catalog{}, errProbeStart
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return catalog{}, errors.New("native catalog command could not start")
+		return catalog{}, errProbeStart
 	}
 	if err := cmd.Start(); err != nil {
-		return catalog{}, errors.New("native catalog command could not start")
+		return catalog{}, errProbeStart
 	}
 	defer func() {
 		_ = stdin.Close()
-		_ = cmd.Process.Kill()
+		killProbe(cmd)
 		_ = cmd.Wait()
 	}()
 	// A kill on timeout ends the read below.
