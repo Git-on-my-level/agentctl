@@ -33,9 +33,12 @@
           "required": [
             "model"
           ]
-        }
+        }, {"required": ["pool"]}
       ],
+      "if": {"required": ["pool"]},
+      "then": {"properties": {"harness": false, "family": false, "version": false, "model": false, "settings": {"properties": {"speed": false, "effort": false}}}},
       "properties": {
+    "pool": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f]+$", "description": "A configured capacity pool, as an alternative to family or model. Refused with harness, family, version, model, speed or effort, which the chosen candidate decides."},
         "harness": {
           "description": "Native harness constraint, including hermes (exact configured model; managed stdin, no read_only or service speed; grant-gated yolo remains constrained) and openclaw for embedded local agent turns and opencode. OpenClaw and OpenCode recipes resolve the exact configured model; OpenCode requires an exact provider/model ID, and explicit speed, effort, and read_only access are unsupported for it. OpenClaw prompt attachment preserves dash-leading message values.",
           "examples": ["openclaw"],

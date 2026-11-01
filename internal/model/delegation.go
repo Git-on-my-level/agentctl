@@ -23,6 +23,54 @@ type DelegationBinding struct {
 	Requested  json.RawMessage  `json:"requested"`
 	Resolved   DelegationTarget `json:"resolved"`
 	Defaulted  []string         `json:"defaulted"`
+	// Capacity records a pool's account choice. Older binaries ignore it, and the
+	// stored selector stays the resolved harness and model so they can still read
+	// the record after a rollback.
+	Capacity *DelegationCapacity `json:"capacity,omitempty"`
+}
+
+// DelegationCapacity explains which account a pool chose and why. It holds no
+// executable path or credentials.
+type DelegationCapacity struct {
+	Pool            string               `json:"pool"`
+	Mode            string               `json:"mode"`
+	Account         string               `json:"account"`
+	Reason          string               `json:"reason"`
+	FactsStatus     string               `json:"facts_status"`
+	FactsAgeSeconds *int64               `json:"facts_age_seconds,omitempty"`
+	Considered      []CapacityEvaluation `json:"considered"`
+}
+
+// CapacityEvaluation is one candidate as it looked at selection time. UsedRatio
+// is absent when usage was unknown.
+type CapacityEvaluation struct {
+	Account        string   `json:"account"`
+	Model          string   `json:"model"`
+	UsedRatio      *float64 `json:"used_ratio,omitempty"`
+	Window         string   `json:"window,omitempty"`
+	Threshold      float64  `json:"threshold"`
+	CutoffExempt   bool     `json:"cutoff_exempt,omitempty"`
+	Eligible       bool     `json:"eligible"`
+	RecentLaunches int      `json:"recent_launches"`
+}
+
+func (c DelegationCapacity) validate() error {
+	if len(c.Considered) == 0 || len(c.Considered) > 16 {
+		return errors.New("invalid delegation capacity")
+	}
+	values := []string{c.Pool, c.Mode, c.Account, c.Reason, c.FactsStatus}
+	for _, considered := range c.Considered {
+		values = append(values, considered.Account, considered.Model)
+		if considered.Window != "" {
+			values = append(values, considered.Window)
+		}
+	}
+	for _, v := range values {
+		if v == "" || utf8.RuneCountInString(v) > 256 || !utf8.ValidString(v) || strings.IndexFunc(v, unicode.IsControl) >= 0 {
+			return errors.New("invalid delegation capacity")
+		}
+	}
+	return nil
 }
 
 // FollowUpContinuation records provenance only, never carried text or instructions.
@@ -102,6 +150,11 @@ func (b DelegationBinding) Validate() error {
 	for _, v := range []string{b.Resolved.Model, b.Resolved.Family, b.Resolved.Version, b.Resolved.Host, b.Resolved.Settings.Speed, b.Resolved.Settings.Effort, b.Resolved.Settings.EffortWarning, b.Resolved.Settings.Access, b.Resolved.Settings.AutoCompactWindow} {
 		if utf8.RuneCountInString(v) > 256 || !utf8.ValidString(v) || strings.IndexFunc(v, unicode.IsControl) >= 0 {
 			return errors.New("invalid delegation target value")
+		}
+	}
+	if b.Capacity != nil {
+		if err := b.Capacity.validate(); err != nil {
+			return err
 		}
 	}
 	if c := b.Continuation; c != nil {

@@ -67,6 +67,9 @@ func projectionAgreesWithSnapshot(projection, snapshot *model.DelegationBinding)
 	if projection.Continuation == nil {
 		comparable.Continuation = nil
 	}
+	if projection.Capacity == nil {
+		comparable.Capacity = nil
+	}
 	if projection.Resolved.Settings.Access == "" {
 		comparable.Resolved.Settings.Access = ""
 	}
