@@ -788,7 +788,7 @@ func multicaScopedArgv(config MulticaConfig, operation string, ref SourceRef, ex
 func genericManifest() Manifest {
 	return baseManifest("generic-process", "0.1.0", "process", "generic-process-json", []CapabilityDeclaration{
 		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilitySupported), sameProcessDecl(CapabilitySnapshot, CapabilitySupported),
-		sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilityDegraded), sameProcessDecl(CapabilityCancel, CapabilitySupported),
+		sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilityDegraded), liveOwnerDecl(CapabilityCancel, CapabilitySupported),
 		resultContentDecl(CapabilityDegraded, "generic_result"),
 		capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
@@ -799,7 +799,7 @@ func codexManifest() Manifest {
 	resultContent.Constraints["required_output_mode"] = "json"
 	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--json", "kind": "presence"}
 	return baseManifest("codex", "0.1.0", "codex_thread", "codex-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, liveOwnerDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 }
 
@@ -808,7 +808,7 @@ func cursorManifest() Manifest {
 	resultContent.Constraints["required_output_mode"] = "stream-json"
 	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--output-format", "kind": "value", "value": "stream-json"}
 	return baseManifest("cursor", "0.1.0", "cursor_session", "cursor-stream-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, liveOwnerDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 }
 
@@ -817,7 +817,7 @@ func claudeManifest() Manifest {
 	resultContent.Constraints["required_output_mode"] = "stream-json"
 	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--output-format", "kind": "value", "value": "stream-json"}
 	return baseManifest("claude-code", "0.1.0", "claude_session", "claude-stream-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilitySupported), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, liveOwnerDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 }
 
@@ -826,7 +826,7 @@ func devinManifest() Manifest {
 	resultContent.Constraints["required_output_mode"] = "print"
 	resultContent.Constraints["required_argv"] = map[string]any{"flag": "-p", "kind": "presence"}
 	return baseManifest("devin", "0.1.0", "devin_session", "devin-print", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, liveOwnerDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 }
 
@@ -858,7 +858,7 @@ func openclawManifest() Manifest {
 		sameProcessDecl(CapabilityEvents, CapabilityDegraded),
 		sameProcessDecl(CapabilityResult, CapabilitySupported),
 		resultContent,
-		sameProcessDecl(CapabilityCancel, CapabilitySupported),
+		liveOwnerDecl(CapabilityCancel, CapabilitySupported),
 		capDecl(CapabilityContextInjection, CapabilityDegraded),
 	}
 	capabilities[0].Constraints = map[string]any{"transport": "embedded_local", "required_flags": []string{"agent", "--local", "--json", "-m"}, "session_selector": "--agent, --session-key, --session-id, or --to"}
@@ -874,7 +874,7 @@ func zcodeManifest() Manifest {
 	resultContent.Constraints["required_output_mode"] = "json"
 	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--json", "kind": "presence"}
 	m := baseManifest("zcode", "0.1.0", "zcode_session", "zcode-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, liveOwnerDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 	m.KnownFailures = []KnownFailure{{Classifier: "provider_usage_limit", ErrorCode: "provider_capacity"}}
 	return m
@@ -885,7 +885,7 @@ func ompManifest() Manifest {
 	resultContent.Constraints["required_output_mode"] = "json"
 	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--mode", "kind": "value", "value": "json"}
 	m := baseManifest("omp", "0.2.0", "omp_session", "omp-acp-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), sameProcessDecl(CapabilityEvents, CapabilityDegraded), sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, liveOwnerDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 	m.KnownFailures = []KnownFailure{{Classifier: "stats_probe", ErrorCode: "local_operational_write"}}
 	return m
@@ -901,7 +901,7 @@ func opencodeManifest() Manifest {
 	events := sameProcessDecl(CapabilityEvents, CapabilityDegraded)
 	events.Constraints["content"] = "metadata_only"
 	return baseManifest("opencode", "0.1.0", "opencode_session", "opencode-json", []CapabilityDeclaration{
-		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), events, sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, sameProcessDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
+		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), events, sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, liveOwnerDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
 }
 
@@ -973,6 +973,14 @@ func capDecl(name CapabilityName, status CapabilityStatus) CapabilityDeclaration
 func sameProcessDecl(name CapabilityName, status CapabilityStatus) CapabilityDeclaration {
 	decl := capDecl(name, status)
 	decl.Constraints = map[string]any{"scope": "same_process_only", "cross_restart": false}
+	return decl
+}
+
+// liveOwnerDecl marks a capability any invocation can use while the owning
+// process lives, through a request that owner applies.
+func liveOwnerDecl(name CapabilityName, status CapabilityStatus) CapabilityDeclaration {
+	decl := capDecl(name, status)
+	decl.Constraints = map[string]any{"scope": "live_owner", "cross_restart": false}
 	return decl
 }
 

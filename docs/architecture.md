@@ -136,10 +136,21 @@ guarantees:
 when the parent already owns process lifetime. Work that must outlive this
 process is Multica `dispatch`, not a detached agentctl worker. Backgrounding
 `agentctl await` only detaches an observer and does not change ownership.
-Steering is the one cross-process control over a native child: another
-invocation queues a request in an owner-only spool and the owning process
-applies it, so steering shares the child's process-scoped lifetime. See
+Steering and cancellation are the cross-process controls over a native child:
+another invocation queues a request in an owner-only spool and the owning process
+applies it, so both share the child's process-scoped lifetime. See
 [Steering](steering.md).
+
+Cancellation uses `<journal directory>/cancel/<execution-id>/`, which an owner
+creates before the execution is journaled as running and removes after committing
+its outcome. A request is an empty file. The owner claims it by rename and takes
+the same path as a signal: stop the child, drain its events, commit one terminal
+outcome. A caller that times out removes an unclaimed request (`cancel_unclaimed`,
+exit 9, retryable). A claimed one is reported as `cancel_pending`, and repeating
+the command is safe. A result that completed first stays completed and the caller
+gets `invalid_state`. With no spool, a stale lease, or an owner that exited, the
+error's next action is `cancel --orphan-if-gone`, which needs kernel proof that
+the process is gone; agentctl never signals a process it infers from a PID.
 Creating
 or enabling a new supervisor service is an explicit host-state mutation owned
 by a host manager when one exists. `agentctl bootstrap update` may reconcile an

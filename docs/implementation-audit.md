@@ -86,8 +86,8 @@ These are explicit limits, not silently degraded promises:
   invoking process, logout, or reboot, and the callback supervisor remains a
   delivery service rather than a native process manager.
 - Live cross-process observation uses a preallocated execution ID. Native
-  cross-process cancellation remains unavailable unless the adapter exposes a
-  reviewed durable cancel mechanism.
+  cross-process cancellation works only through a live owner process; after the
+  owner exits it requires explicit `--orphan-if-gone` repair.
 - `status` and `result` read the normalized journal envelope. A fresh native
   probe occurs through the runtime/supervisor only where the adapter declares a
   reviewed capability.
