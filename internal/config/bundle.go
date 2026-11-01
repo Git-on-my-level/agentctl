@@ -38,6 +38,7 @@ type BundleProfile struct {
 	AgentPreferences *AgentPreferences        `json:"agent_preferences,omitempty"`
 	Route            *Route                   `json:"route,omitempty"`
 	Delegation       *DelegationPolicy        `json:"delegation,omitempty"`
+	Capacity         *Capacity                `json:"capacity,omitempty"`
 }
 
 type BundleAdapter struct {
@@ -215,7 +216,7 @@ func applyBundle(base Config, bundle Bundle) (Config, error) {
 }
 
 func (p BundleProfile) profile() Profile {
-	result := cloneProfile(Profile{Multica: p.Multica, AgentPreferences: p.AgentPreferences, Route: p.Route, Delegation: p.Delegation})
+	result := cloneProfile(Profile{Multica: p.Multica, AgentPreferences: p.AgentPreferences, Route: p.Route, Delegation: p.Delegation, Capacity: p.Capacity})
 	if len(p.Adapters) != 0 {
 		result.Adapters = make(map[string]Adapter, len(p.Adapters))
 		for name, adapter := range p.Adapters {
