@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/Git-on-my-level/agentctl/internal/nativecatalog"
 )
 
 // ProvenanceCheck is one deterministic, read-only doctor observation.
@@ -50,6 +52,7 @@ type ProvenanceReport struct {
 	Composition      []string                        `json:"composition_order,omitempty"`
 	Source           *SourceStatus                   `json:"source,omitempty"`
 	LaunchRecipes    LaunchRecipeReport              `json:"launch_recipes"`
+	LiveCatalog      *nativecatalog.Report           `json:"live_catalog,omitempty"`
 }
 
 // ProvenanceOptions injects deterministic local functions for tests and

@@ -72,12 +72,25 @@ agentctl config set-profile \
 agentctl config show
 agentctl config validate
 agentctl config doctor  # includes Git-source drift when configured
+agentctl config doctor --live  # also asks native CLIs what they offer now
 ```
 
 `config validate` is structural. `config doctor` additionally verifies the
 selected profile's executable and authority provenance. Adapter and endpoint
 credentials remain in the native CLI, operating-system credential store, or
 another operator-owned secret system; they are not config fields.
+
+`config doctor` compares config with compiled recipes only, so it can call a
+model compatible that the native CLI no longer offers. `config doctor --live`
+adds `live_catalog`: it asks each installed Codex (`debug models`), Cursor
+(`--list-models`) and Devin (the options of an idle ACP session) CLI whether
+each preferred model and effort is offered on this host now. It sends no prompt
+and runs no model turn. Claude Code, ZCode and `devin-cloud` report `unverified`
+because they have no reviewed catalog, or reading one would open a remote
+session; a probe that cannot answer also reports `unverified`. A missing
+executable or an absent model or effort is `unavailable`, which exits with
+`dependency_unavailable` and the report at `error.details.report`. See
+[live-catalog-report](../schemas/live-catalog-report.schema.json).
 
 `agent_preferences` is ordered, portable guidance for callers and delegated
 agents. Its only supported mode is `advisory`; agentctl does not invent a second

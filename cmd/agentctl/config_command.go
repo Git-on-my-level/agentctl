@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
+	"github.com/Git-on-my-level/agentctl/internal/nativecatalog"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 )
 
@@ -21,7 +22,8 @@ func (a *app) configCommand(ctx context.Context, renderer output.Renderer, c com
 	}
 	switch args[0] {
 	case "show", "validate", "doctor":
-		if len(args) != 1 {
+		live := args[0] == "doctor" && len(args) == 2 && args[1] == "--live"
+		if len(args) != 1 && !live {
 			return output.NewError(output.CodeUsage, "config "+args[0]+" takes no positional arguments", false)
 		}
 		resolution, err := config.Resolve(path, c.configBundle)
@@ -52,6 +54,18 @@ func (a *app) configCommand(ctx context.Context, renderer output.Renderer, c com
 			}
 			lines := []output.Line{{Lead: "config.doctor", Fields: []output.Field{{Name: "valid", Value: report.Valid}, {Name: "syntax_valid", Value: report.SyntaxValid}, {Name: "profile", Value: report.Profile}, {Name: "checks", Value: len(report.Checks)}, {Name: "recipe_compatible", Value: report.LaunchRecipes.Compatible}, {Name: "recipe_status", Value: report.LaunchRecipes.Status}}}}
 			lines = append(lines, launchRecipeLines(map[string]config.LaunchRecipeReport{report.Profile: report.LaunchRecipes})...)
+			if live {
+				_, profile, err := cfg.ResolveProfile(c.profile)
+				if err != nil {
+					return mapConfigError("resolve config doctor profile", err)
+				}
+				catalog := nativecatalog.CheckEntries(ctx, config.LiveCatalogEntries(profile), nil)
+				report.LiveCatalog = &catalog
+				if catalog.Status == nativecatalog.StatusUnavailable {
+					return output.NewError(output.CodeDependencyUnavailable, "a configured model or setting is unavailable on this host", true).WithDetail("report", report)
+				}
+				lines = append(lines, liveCatalogLines(catalog)...)
+			}
 			if err := renderer.Success(output.Success{Result: report, Lines: lines}); err != nil {
 				return output.Wrap(output.CodeInternal, "write output", false, err)
 			}
@@ -303,6 +317,16 @@ func (a *app) configBundleCommand(renderer output.Renderer, basePath string, c c
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil
+}
+
+func liveCatalogLines(report nativecatalog.Report) []output.Line {
+	lines := []output.Line{{Lead: "config.live_catalog", Fields: []output.Field{{Name: "status", Value: report.Status}, {Name: "checks", Value: len(report.Checks)}}}}
+	for _, check := range report.Checks {
+		if check.Status != nativecatalog.StatusAvailable {
+			lines = append(lines, output.Line{Lead: "config.live_catalog_check", Fields: []output.Field{{Name: "index", Value: check.Index}, {Name: "harness", Value: check.Harness}, {Name: "model", Value: check.Model}, {Name: "status", Value: check.Status}, {Name: "diagnostic_code", Value: check.DiagnosticCode}}})
+		}
+	}
+	return lines
 }
 
 func launchRecipeLines(reports map[string]config.LaunchRecipeReport) []output.Line {

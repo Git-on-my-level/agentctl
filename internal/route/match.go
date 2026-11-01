@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -265,13 +266,31 @@ func scoreToken(token string, keywords []string) (int, string) {
 			if scorePrefix > best {
 				best, kind = scorePrefix, "prefix"
 			}
-		case len(token) >= minFuzzyToken && strings.Contains(kw, token):
+		case len(token) >= minFuzzyToken && containsAtSegmentStart(kw, token):
 			if scoreSubstring > best {
 				best, kind = scoreSubstring, "substring"
 			}
 		}
 	}
 	return best, kind
+}
+
+// containsAtSegmentStart keeps "argon" matching gemini-4-argon-medium while
+// "omp" does not select composer-2.5.
+func containsAtSegmentStart(keyword, token string) bool {
+	for start := 0; start < len(keyword); {
+		i := strings.Index(keyword[start:], token)
+		if i < 0 {
+			return false
+		}
+		i += start
+		before, _ := utf8.DecodeLastRuneInString(keyword[:i])
+		if i == 0 || !unicode.IsLetter(before) && !unicode.IsDigit(before) {
+			return true
+		}
+		start = i + 1
+	}
+	return false
 }
 
 func normalizeKeyword(value string) string {

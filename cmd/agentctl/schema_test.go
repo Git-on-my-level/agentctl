@@ -71,6 +71,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 		"recent-result":        "schemas/recent-result.schema.json",
 		"reconcile-plan":       "schemas/reconcile-plan.schema.json",
 		"launch-recipe-report": "schemas/launch-recipe-report.schema.json",
+		"live-catalog-report":  "schemas/live-catalog-report.schema.json",
 		"inbox-result":         "schemas/inbox-result.schema.json",
 		"knowledge-source":     "schemas/knowledge-source.schema.json",
 		"outcome":              "schemas/outcome.schema.json",
