@@ -127,6 +127,7 @@ func CheckProfileProvenance(profile Profile, options ...ProvenanceOptions) Prove
 		addURLCheck(&report, "multica.server_url", m.ServerURL)
 		addURLCheck(&report, "multica.app_url", m.AppURL)
 	}
+	addCapacityChecks(&report, profile, opts)
 
 	return report
 }

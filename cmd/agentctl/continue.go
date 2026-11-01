@@ -318,7 +318,7 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 		return continueError(output.CodeInvalidState, "continue_cwd_missing", "the execution's working directory no longer exists; follow-up turns run where the original ran", source)
 	}
 	binding := &model.DelegationBinding{Continuation: continuation, RequestSHA256: inputDigest, ConfigurationSHA256: source.Delegation.ConfigurationSHA256, Requested: append(json.RawMessage(nil), source.Delegation.Requested...), RequestKey: strings.TrimSpace(requestKey),
-		Resolved: source.Delegation.Resolved, Defaulted: append([]string(nil), source.Delegation.Defaulted...),
+		Resolved: source.Delegation.Resolved, Defaulted: append([]string(nil), source.Delegation.Defaulted...), Capacity: source.Delegation.Capacity,
 		NativePlan: &model.DelegationNativePlan{Env: append([]string(nil), plan.Env...), Argv: argv, PromptDelivery: plan.PromptDelivery, Permissions: plan.Permissions, RecipeArgv: append([]string(nil), recipe...)}}
 	if binding.Resolved.Harness == "zcode" {
 		var requested struct {

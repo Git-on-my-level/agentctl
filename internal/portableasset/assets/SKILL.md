@@ -136,6 +136,11 @@ Other word orders produce the same constraints. Never guess a version or native
 slug from memory. Add explicit speed/effort under `settings` when requested.
 `settings.auto_compact_window` (for example `"300k"`) sets a Claude Code lane's
 compaction window for that launch; other harnesses refuse it.
+When a profile configures capacity pools and the user named no model, request
+`{"pool":"<name>"}` instead of a family or model. agentctl picks an account from
+published usage, stops sending new work at `switch_threshold` (default 0.95), and
+reports its choice as `capacity`. Never combine a pool with harness, family,
+version, model, speed or effort, and never use a pool when the user named a model.
 
 ```json
 {"schema_version":1,"request_key":"review-01","selector":{"family":"grok"}}

@@ -57,6 +57,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 		"config-bundle":        "schemas/config-bundle.schema.json",
 		"context-result":       "schemas/context-result.schema.json",
 		"continue-result":      "schemas/continue-result.schema.json",
+		"capacity-facts":       "schemas/capacity-facts.schema.json",
 		"carry-forward-prompt": "schemas/carry-forward-prompt.schema.json",
 		"data-cleanup-plan":    "schemas/data-cleanup-plan.schema.json",
 		"data-inventory":       "schemas/data-inventory.schema.json",

@@ -19,7 +19,7 @@ const (
 
 var allowedKeys = map[string]map[string]struct{}{
 	"$":                   {"schema_version": {}, "request_key": {}, "selector": {}},
-	"$.selector":          {"harness": {}, "family": {}, "version": {}, "model": {}, "host": {}, "settings": {}},
+	"$.selector":          {"harness": {}, "family": {}, "version": {}, "model": {}, "host": {}, "pool": {}, "settings": {}},
 	"$.selector.settings": {"speed": {}, "effort": {}, "access": {}, "auto_compact_window": {}},
 }
 
@@ -172,14 +172,37 @@ func validateRequest(req Request) error {
 	if strings.TrimSpace(req.RequestKey) == "" {
 		return requestError("required_field", "request_key is required", "$.request_key", "$")
 	}
-	if !selectorConstraintPresent(req.Selector) {
-		return requestError("required_constraint", "selector requires family or model", "$.selector", "$.selector")
+	if strings.TrimSpace(req.Selector.Pool) != "" {
+		if err := validatePoolSelector(req.Selector); err != nil {
+			return err
+		}
+	} else if !selectorConstraintPresent(req.Selector) {
+		return requestError("required_constraint", "selector requires family, model or pool", "$.selector", "$.selector")
 	}
 	if req.Selector.Settings != nil {
 		switch strings.ToLower(strings.TrimSpace(req.Selector.Settings.Access)) {
 		case "", "coding", "read_only":
 		default:
 			return requestError("invalid_access", "settings.access must be coding or read_only", "$.selector.settings.access", "$.selector.settings")
+		}
+	}
+	return nil
+}
+
+// validatePoolSelector refuses constraints a pool candidate decides, so a request
+// never looks pinned to a model it might not get.
+func validatePoolSelector(sel Selector) error {
+	for _, field := range []struct{ name, value string }{{"harness", sel.Harness}, {"family", sel.Family}, {"version", sel.Version}, {"model", sel.Model}} {
+		if strings.TrimSpace(field.value) != "" {
+			return requestError("pool_conflict", "pool cannot be combined with "+field.name, "$.selector."+field.name, "$.selector")
+		}
+	}
+	if sel.Settings != nil {
+		if strings.TrimSpace(sel.Settings.Speed) != "" {
+			return requestError("pool_conflict", "pool cannot be combined with speed", "$.selector.settings.speed", "$.selector.settings")
+		}
+		if strings.TrimSpace(sel.Settings.Effort) != "" {
+			return requestError("pool_conflict", "pool cannot be combined with effort", "$.selector.settings.effort", "$.selector.settings")
 		}
 	}
 	return nil

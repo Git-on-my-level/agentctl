@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-agentctl-docs": "../docs/structured-delegation.md",
+  "$id": "urn:agentctl:schema:capacity-facts:v1",
+  "title": "Capacity facts v1",
+  "description": "Plan usage published by an external tool. agentctl only reads this file and ignores unknown fields.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "accounts"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "accounts": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "windows": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "used_ratio"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "description": "Opaque; matched exactly against a candidate's windows."
+                },
+                "used_ratio": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "May exceed 1 on plans that run past their allowance."
+                },
+                "resets_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "observed_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

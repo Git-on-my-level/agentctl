@@ -18,11 +18,14 @@ type Settings struct {
 // so configured defaults can fill them. Family or an exact native Model is
 // required; Host is preserved for later placement and is not catalog-matched.
 type Selector struct {
-	Harness  string    `json:"harness,omitempty"`
-	Family   string    `json:"family,omitempty"`
-	Version  string    `json:"version,omitempty"`
-	Model    string    `json:"model,omitempty"`
-	Host     string    `json:"host,omitempty"`
+	Harness string `json:"harness,omitempty"`
+	Family  string `json:"family,omitempty"`
+	Version string `json:"version,omitempty"`
+	Model   string `json:"model,omitempty"`
+	Host    string `json:"host,omitempty"`
+	// Pool names a configured candidate list, as an alternative to Family or
+	// Model. Naming a family or model never falls over to a pool.
+	Pool     string    `json:"pool,omitempty"`
 	Settings *Settings `json:"settings,omitempty"`
 }
 

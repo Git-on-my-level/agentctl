@@ -220,6 +220,66 @@ native local launches only. Task contracts and external
 existing expert `run`, `fanout`, or `dispatch` interfaces when those are needed;
 do not automatically weaken a failed structured request into an expert launch.
 
+## Capacity pools
+
+A pool lets `delegate` choose an account from plan usage, so a caller can ask for
+work rather than for a model. Request it with `{"pool":"work"}` in place of a
+family or model. A request naming a family or model never takes a pool, and pool
+requests refuse harness, family, version, model, speed and effort.
+
+agentctl never measures usage or calls a provider. Another tool publishes a facts
+file (`schemas/capacity-facts.schema.json`), and agentctl reads it at launch:
+
+```json
+{"schema_version":1,"generated_at":"2026-11-01T09:00:00Z","accounts":[
+  {"id":"account-a","windows":[{"name":"weekly","used_ratio":0.4,"resets_at":"2026-11-05T00:00:00Z","observed_at":"2026-11-01T08:35:00Z"}]}
+]}
+```
+
+Pools live in the profile. A candidate must also resolve through
+`agent_preferences`, so a pool can't widen the reviewed allowlist. `executable`
+selects that account's launcher, which owns its authentication:
+
+```json
+{"capacity":{"file":"/var/lib/capacity.json","max_age_seconds":3600,"switch_threshold":0.95,"pools":{
+  "work":{"mode":"balance","candidates":[
+    {"harness":"codex","model":"example-model","account":"account-a"},
+    {"harness":"codex","model":"example-model","account":"account-b","executable":"/usr/local/bin/codex-b"}
+  ]}
+}}}
+```
+
+- A candidate is eligible below its threshold: its own `switch_threshold`, else
+  the profile's, else 0.95. `cutoff_exempt` keeps it eligible at any usage, for an
+  account meant to run past its allowance.
+- `windows` names the windows that limit a candidate; absent means all of them. A
+  window past its `resets_at` counts as empty, and one whose `observed_at` is older
+  than `max_age_seconds` is ignored.
+- `priority` (the default) takes the first eligible candidate, in order.
+- `balance` takes the lowest used ratio plus `launch_debit` (default 0.02) for each
+  launch this journal still has running or started within `max_age_seconds`, which
+  spreads a fan-out while facts lag. Ties go to the soonest reset, then to order.
+
+A pool doesn't block work on a number that may be stale. Missing, stale or invalid
+facts use configured order and warn `capacity_facts_unusable`; `balance` still
+spreads by recent launches. If every candidate is over its threshold, the least
+used one runs and warns `capacity_all_over_threshold`. The refusals are an unknown
+pool name (`delegate_unknown_pool`) and no candidate matching the allowlist
+(`delegate_pool_no_candidate`).
+
+Plans, results and the execution record carry `capacity`: the pool, account,
+reason, facts status and age, and each candidate as it looked. A plan's choice is
+advisory, since launch chooses again. Replaying a request key returns the original
+choice, and `continue` keeps the frozen launch plan, so it stays on the account
+holding the session. The stored selector is the resolved harness and model, so an
+older binary can still read the record after a rollback.
+
+Known limits: recent launches come from this journal, so other hosts' launches
+appear only once the facts catch up. A provider limit error doesn't bench an
+account, because those failures are attributed to a harness rather than an account
+today; the recorded account makes that possible later. Multica delegation remains
+refused.
+
 ## Native and Multica boundaries
 
 Cursor, Codex, and Claude Code have recipes for exact requested models and

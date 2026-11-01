@@ -344,9 +344,23 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	if canonical, err := launchrecipe.CanonicalHarness(selector.Harness); err == nil {
 		selector.Harness = canonical
 	}
-	resolution, err := delegation.Resolve(selector, delegateEntries(profile))
-	if err != nil {
-		return recoverAdmission(mapDelegationError(err))
+	selector.Pool = strings.ToLower(strings.TrimSpace(selector.Pool))
+	var resolution delegation.Resolution
+	var pool poolSelection
+	if selector.Pool != "" {
+		var poolProblem *output.Error
+		pool, poolProblem = a.selectDelegatePool(ctx, c, profile, selector)
+		if poolProblem != nil {
+			return recoverAdmission(poolProblem)
+		}
+		resolution = pool.resolution
+		renderer = renderer.WithWarnings(pool.warnings...)
+	} else {
+		var err error
+		resolution, err = delegation.Resolve(selector, delegateEntries(profile))
+		if err != nil {
+			return recoverAdmission(mapDelegationError(err))
+		}
 	}
 	host, local, problem := resolveDelegateHost(request.Selector.Host, profile)
 	if problem != nil {
@@ -368,6 +382,9 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	executable, problem := delegateExecutable(profile, selected.Harness)
 	if problem != nil {
 		return recoverAdmission(problem)
+	}
+	if pool.executable != "" {
+		executable = pool.executable
 	}
 	recipe, err := launchrecipe.Build(launchrecipe.Input{Harness: selected.Harness, Model: selected.Model, Speed: selected.Speed, Effort: selected.Effort, Executable: executable, CursorWorkspaceTrust: trust, Access: access, UnattendedCodingPermissions: codingGrant, AutoCompactWindow: autoCompactWindow})
 	if err != nil {
@@ -392,7 +409,11 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	if err != nil {
 		return output.Wrap(output.CodeInternal, "digest delegate configuration", false, err)
 	}
-	requested, _ := json.Marshal(journalSelector(request.Selector))
+	journaled := request.Selector
+	if selector.Pool != "" {
+		journaled = pooledJournalSelector(request.Selector, selected)
+	}
+	requested, _ := json.Marshal(journalSelector(journaled))
 	defaulted := append([]string{}, resolution.Defaulted...)
 	if request.Selector.Host == "" {
 		defaulted = append(defaulted, "host")
@@ -402,7 +423,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	}
 	binding := &model.DelegationBinding{RequestSHA256: inputDigest, ConfigurationSHA256: configDigest, Requested: requested, RequestKey: strings.TrimSpace(request.RequestKey), NativePlan: &model.DelegationNativePlan{Env: append([]string(nil), recipe.Env...), Argv: append([]string(nil), recipe.Argv...), PromptDelivery: recipe.PromptDelivery, Permissions: recipe.Permissions},
 		Resolved: model.DelegationTarget{Harness: selected.Harness, Family: selected.Family, Version: selected.Version, Model: selected.Model, Host: host, Authority: model.AuthorityNative,
-			Settings: model.DelegationSettings{Speed: selected.Speed, Effort: selected.Effort, Access: resolvedAccess(access), AutoCompactWindow: resolvedAutoCompactWindow(recipe.Env)}}, Defaulted: defaulted}
+			Settings: model.DelegationSettings{Speed: selected.Speed, Effort: selected.Effort, Access: resolvedAccess(access), AutoCompactWindow: resolvedAutoCompactWindow(recipe.Env)}}, Defaulted: defaulted, Capacity: pool.capacity}
 	if selected.Harness == "zcode" {
 		if problem := resolveZCodeEffort(&binding.Resolved.Settings, recipe.Env, selected.Effort, cwd); problem != nil {
 			return recoverAdmission(problem)
@@ -469,6 +490,7 @@ func canonicalDelegateSelector(in delegation.Selector) delegation.Selector {
 	in.Family = strings.ToLower(strings.TrimSpace(in.Family))
 	in.Version = strings.ToLower(strings.TrimSpace(in.Version))
 	in.Host = strings.ToLower(strings.TrimSpace(in.Host))
+	in.Pool = strings.ToLower(strings.TrimSpace(in.Pool))
 	in.Model = strings.TrimSpace(in.Model)
 	if in.Settings != nil {
 		settings := *in.Settings
@@ -546,6 +568,9 @@ func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding
 		"provenance":     map[string]any{"configuration_sha256": binding.ConfigurationSHA256, "defaulted": binding.Defaulted},
 		"lifecycle":      map[string]any{"owner": "foreground_process", "restart_durable": false, "background_flag_supported": false, "detach_flag_supported": true, "collection": "--wait --content requires completed work and stored answer", "cross_process_cancel": "only when explicitly advertised by adapter", "steering": "agentctl steer <id>; the route is the steer capability negotiated for this exact invocation", "follow_up": "agentctl continue <id> after completion; native resume when supported; explicit --mode carry_forward with an eligible stored answer", "durable_authority": "Multica dispatch"},
 		"request_sha256": binding.RequestSHA256, "side_effect_class": output.ReadOnly, "reused": reusedID != ""}
+	if binding.Capacity != nil {
+		result["capacity"] = binding.Capacity
+	}
 	if native != nil {
 		result["native"] = native
 	} else if binding.NativePlan != nil {
@@ -647,6 +672,9 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		result := map[string]any{"id": execution.ID, "origin_host_id": execution.OriginHostID, "state": execution.State, "liveness": execution.Liveness,
 			"authority": execution.Authority, "reused": reused, "requested": binding.Requested, "resolved": binding.Resolved,
 			"provenance": map[string]any{"configuration_sha256": binding.ConfigurationSHA256, "defaulted": binding.Defaulted}, "request_sha256": binding.RequestSHA256}
+		if binding.Capacity != nil {
+			result["capacity"] = binding.Capacity
+		}
 		if opts.detachedReceipt && !reused {
 			result["lifecycle"] = map[string]any{"owner": "detached_process", "parent_independent": true, "reboot_recovery": false}
 		}

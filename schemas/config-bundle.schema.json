@@ -17,6 +17,9 @@
     }
   },
   "$defs": {
+    "capacity": {"type": "object", "additionalProperties": false, "properties": {"file": {"type": "string", "pattern": "^/", "description": "Absolute path of the capacity facts file."}, "max_age_seconds": {"type": "integer", "minimum": 0, "description": "Facts older than this are stale. Default 3600."}, "switch_threshold": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "Used ratio at which a candidate stops receiving new work. Default 0.95."}, "launch_debit": {"type": "number", "minimum": 0, "maximum": 1, "description": "Used ratio one recent launch is assumed to cost when balancing. Default 0.02."}, "pools": {"type": "object", "maxProperties": 32, "propertyNames": {"pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"}, "additionalProperties": {"$ref": "#/$defs/capacity_pool"}}}},
+    "capacity_pool": {"type": "object", "additionalProperties": false, "required": ["candidates"], "properties": {"mode": {"enum": ["priority", "balance"]}, "candidates": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/capacity_candidate"}}}},
+    "capacity_candidate": {"type": "object", "additionalProperties": false, "required": ["harness", "model", "account"], "properties": {"harness": {"type": "string", "minLength": 1}, "model": {"type": "string", "minLength": 1}, "effort": {"type": "string"}, "account": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"}, "executable": {"type": "string", "pattern": "^/", "description": "Launcher for this account. Absent uses the harness adapter's executable."}, "switch_threshold": {"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "cutoff_exempt": {"type": "boolean", "description": "Never cut off by usage, for accounts meant to run past their allowance."}, "windows": {"type": "array", "maxItems": 8, "items": {"type": "string", "minLength": 1}, "description": "Window names that limit this candidate. Absent means all."}}},
     "anx": {
       "type": "object",
       "additionalProperties": false,
@@ -64,6 +67,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+    "capacity": {"$ref": "#/$defs/capacity"},
         "adapters": {
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/adapter" }
@@ -74,7 +78,7 @@
         "delegation": { "$ref": "#/$defs/delegation" }
       },
       "anyOf": [
-        { "required": ["adapters"] },
+        { "required": ["adapters"] }, {"required": ["capacity"]},
         { "required": ["multica"] },
         { "required": ["agent_preferences"] },
         { "required": ["route"] }

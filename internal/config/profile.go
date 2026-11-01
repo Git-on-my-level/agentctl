@@ -211,5 +211,6 @@ func cloneProfile(in Profile) Profile {
 		grant := *in.Delegation
 		out.Delegation = &grant
 	}
+	out.Capacity = cloneCapacity(in.Capacity)
 	return out
 }
