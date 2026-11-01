@@ -152,7 +152,7 @@ func TestStatusSummary(t *testing.T) {
 
 func TestEffortComparisonIgnoresCase(t *testing.T) {
 	codex := script(t, "codex", `#!/bin/sh
-echo '{"models":[{"slug":"gpt-6-luna","supported_reasoning_levels":[{"effort":"xhigh"}]}]}'
+echo '{"models":[{"slug":"gpt-6-luna","supported_reasoning_levels":[{"effort":"XHigh"}]}]}'
 `)
 	got := one(t, Entry{Harness: "codex", Model: "gpt-6-luna", Effort: " XHIGH ", Executable: codex})
 	if got.Status != StatusAvailable || got.Effort != "xhigh" {

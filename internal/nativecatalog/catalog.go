@@ -100,7 +100,7 @@ func CheckEntries(ctx context.Context, entries []Entry, lookPath func(string) (s
 	}
 	cache := map[key]probed{}
 	for _, entry := range entries {
-		check := Check{Index: entry.Index, Harness: entry.Harness, Model: entry.Model, Effort: strings.ToLower(strings.TrimSpace(entry.Effort))}
+		check := Check{Index: entry.Index, Harness: entry.Harness, Model: entry.Model, Effort: normalizeEffort(entry.Effort)}
 		if entry.Ambiguous {
 			check.Status, check.DiagnosticCode = StatusUnavailable, "ambiguous_executable"
 			check.Diagnostic = "harness aliases configure different executables"
@@ -130,6 +130,10 @@ func CheckEntries(ctx context.Context, entries []Entry, lookPath func(string) (s
 	}
 	report.Status = summarize(report.Checks)
 	return report
+}
+
+func normalizeEffort(effort string) string {
+	return strings.ToLower(strings.TrimSpace(effort))
 }
 
 func compare(check *Check, found catalog, err error) {
@@ -233,7 +237,7 @@ func probeCodex(ctx context.Context, executable string) (catalog, error) {
 		found.models[model.Slug] = true
 		efforts[model.Slug] = map[string]bool{}
 		for _, level := range model.Levels {
-			efforts[model.Slug][level.Effort] = true
+			efforts[model.Slug][normalizeEffort(level.Effort)] = true
 		}
 	}
 	found.efforts = func(model string) map[string]bool { return efforts[model] }
@@ -303,7 +307,11 @@ func probeDevin(ctx context.Context, executable string) (catalog, error) {
 			return catalog{}, errors.New("native catalog output has no models")
 		}
 		found := catalog{models: got.options["model"]}
-		found.efforts = func(string) map[string]bool { return got.options["thought_level"] }
+		levels := map[string]bool{}
+		for level := range got.options["thought_level"] {
+			levels[normalizeEffort(level)] = true
+		}
+		found.efforts = func(string) map[string]bool { return levels }
 		return found, nil
 	case <-ctx.Done():
 		return catalog{}, errors.New("native catalog command failed: timed out")

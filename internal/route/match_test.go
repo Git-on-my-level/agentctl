@@ -292,6 +292,10 @@ func TestSubstringMatchesOnlyAtSegmentStart(t *testing.T) {
 	if got := Match("omp", catalog); len(got.Models) != 0 || len(got.Unmatched) != 1 {
 		t.Fatalf("omp selected %+v", got.Models)
 	}
+	accented := NewCatalog("", nil, []ModelRecord{{Adapter: "codex", Model: "éclair"}}, "")
+	if got := Match("cla", accented); len(got.Models) != 0 {
+		t.Fatalf("cla selected %+v", got.Models)
+	}
 	if got := Match("argon", catalog); len(got.Models) != 1 || got.Models[0].Model != "gemini-4-argon-medium" {
 		t.Fatalf("argon selected %+v", got.Models)
 	}

@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -283,7 +284,8 @@ func containsAtSegmentStart(keyword, token string) bool {
 			return false
 		}
 		i += start
-		if i == 0 || !unicode.IsLetter(rune(keyword[i-1])) && !unicode.IsDigit(rune(keyword[i-1])) {
+		before, _ := utf8.DecodeLastRuneInString(keyword[:i])
+		if i == 0 || !unicode.IsLetter(before) && !unicode.IsDigit(before) {
 			return true
 		}
 		start = i + 1
