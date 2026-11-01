@@ -170,9 +170,9 @@ With no pending request the completion path only reads local state. The worker
 keeps a contended resume alive until it acquires the apply lock and re-reads the
 request. It retries live-owner deferrals once per second within its two-minute
 budget, allowing spawning owners to exit and concurrent completions to converge.
-Timeouts leave the pending request intact for the next worker. Both owner checks
-remain in place, including
-the check immediately before installation. A pending retry bypasses discovery
+Timeouts leave the pending request intact for the next worker. A candidate found
+incompatible is not downloaded again while its owners drain, and owners are
+checked again immediately before installation. A pending retry bypasses discovery
 backoff and installs only the recorded release, never a newly discovered tag.
 Under `notify`, only an explicit `update now` request can resume; `off` pauses
 pending requests. Successful installation clears the request; failures retain it.
@@ -182,10 +182,9 @@ commands, help and plans never apply updates. This behavior is shared by direct
 native execution and Multica-backed work; Multica remains the task authority.
 
 The installer replaces the binary by rename, preserving existing executable
-images. That alone does not prove mixed-version journal and supervisor access
-safe: PR #110's post-update fatal journal-write incident lost the underlying
-error detail. Pending apply therefore preserves #110's conservative owner guard
-rather than assuming immutable binaries alone solve that incident.
+images. Mixed-version journal access is what needs proof; the compatibility epoch
+and its release check provide it, and only an epoch change keeps #110's owner
+guard. `--allow-live-owners` overrides that guard too.
 
 ## Error contract
 

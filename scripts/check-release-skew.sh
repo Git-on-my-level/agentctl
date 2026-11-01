@@ -4,7 +4,9 @@
 # supervisor restarts, and the new release writes to the same journal.
 #
 # usage: check-release-skew.sh [PREVIOUS_BINARY CURRENT_BINARY]
-# Without arguments it builds the newest earlier release tag and the working tree.
+# Without arguments it builds the working tree and checks it against both the
+# oldest and the newest earlier release in its epoch: an owner can outlive several
+# updates, so every release in an epoch must work beside every later one.
 # Releases in different store.CompatEpoch values are not expected to share a
 # journal, so the check does not apply to them; the updater waits for owners then.
 set -u
@@ -40,20 +42,28 @@ if [ $# -eq 2 ]; then
   current=$2
 elif [ $# -eq 0 ]; then
   head_commit=$(git rev-parse HEAD)
-  tag=
+  epoch=$(sed -n 's/^const CompatEpoch = //p' internal/store/store.go)
+  [ -n "$epoch" ] || fail 'cannot read store.CompatEpoch'
+  newest=
+  oldest=
   while IFS= read -r candidate; do
-    if [ "$(git rev-list -n 1 "$candidate")" != "$head_commit" ]; then
-      tag=$candidate
-      break
+    [ "$(git rev-list -n 1 "$candidate")" != "$head_commit" ] || continue
+    [ -n "$newest" ] || newest=$candidate
+    if git show "$candidate:internal/store/store.go" | grep -qx "const CompatEpoch = $epoch"; then
+      oldest=$candidate
     fi
   done < <(git tag --merged HEAD --sort=-v:refname --list 'v[0-9]*.[0-9]*.[0-9]*')
-  [ -n "$tag" ] || fail 'no earlier release tag; fetch tags and full history'
-  mkdir -p "$scratch/source"
-  git archive "$tag" | tar -x -C "$scratch/source" || fail "cannot export $tag"
-  (cd "$scratch/source" && go build -ldflags "-X main.version=$tag" -o "$scratch/previous" ./cmd/agentctl) || fail "cannot build $tag"
+  [ -n "$newest" ] || fail 'no earlier release tag; fetch tags and full history'
   go build -o "$scratch/current" ./cmd/agentctl || fail 'cannot build the working tree'
-  previous=$scratch/previous
-  current=$scratch/current
+  for tag in $oldest $newest; do
+    [ ! -x "$scratch/$tag" ] || continue
+    mkdir -p "$scratch/source/$tag"
+    git archive "$tag" | tar -x -C "$scratch/source/$tag" || fail "cannot export $tag"
+    (cd "$scratch/source/$tag" && go build -ldflags "-X main.version=$tag" -o "$scratch/$tag" ./cmd/agentctl) || fail "cannot build $tag"
+    printf 'release skew: %s beside this tree\n' "$tag"
+    "$0" "$scratch/$tag" "$scratch/current" || exit 1
+  done
+  exit 0
 else
   fail 'usage: check-release-skew.sh [PREVIOUS_BINARY CURRENT_BINARY]'
 fi
@@ -137,19 +147,22 @@ while [ "$(find "$scratch" -maxdepth 1 -name 'started.*' | wc -l)" -lt 2 ]; do
   /bin/sleep 0.2
 done
 
-# The update: replace the executable, then restart the supervisor from it.
+# The update: replace the executable. The previous supervisor keeps running until
+# the installer restarts it, and it may see records the new release writes.
 { cp "$current" "$bin.new" && mv -f "$bin.new" "$bin"; } || fail 'cannot replace the executable'
+agentctl subscribe create --label-prefix skew. --kind terminal,attention --ttl 1h --destination file --target "$scratch/events/prefix.ndjson" >"$scratch/writes.log" 2>&1 || fail 'the current release could not write beside live owners'
+/bin/sleep 2
+kill -0 "$supervisor" 2>/dev/null || fail 'the previous supervisor exited beside a new subscription'
 stop_supervisor
 start_supervisor
 
 # The new release writes everything a previous owner reads while appending.
 {
-  agentctl subscribe create --label-prefix skew. --kind terminal,attention --ttl 1h --destination file --target "$scratch/events/prefix.ndjson" &&
-    agentctl subscribe create --execution "$detached" --ttl 1h --destination file --target "$scratch/events/exact.ndjson" &&
+  agentctl subscribe create --execution "$detached" --ttl 1h --destination file --target "$scratch/events/exact.ndjson" &&
     agentctl subscribe create --authority direct --ttl 1h --destination file --target "$scratch/events/authority.ndjson" &&
     request quick 'finish' &&
     agentctl delegate --request-file quick.json --prompt-file quick.prompt --wait --content --timeout 60s --label skew.quick
-} >"$scratch/writes.log" 2>&1 || fail 'the current release could not write beside live owners'
+} >>"$scratch/writes.log" 2>&1 || fail 'the current release could not write beside live owners'
 
 /bin/sleep 3
 kill -0 "$supervisor" 2>/dev/null || fail 'the current supervisor exited beside live owners'

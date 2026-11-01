@@ -51,6 +51,9 @@ type PendingApply struct {
 	Version   string   `json:"version"`
 	Explicit  bool     `json:"explicit"`
 	WaitingOn []string `json:"waiting_on"`
+	// AwaitOwners records that this candidate cannot share the journal, so a
+	// retry can wait for owners without downloading it again.
+	AwaitOwners bool `json:"await_owners,omitempty"`
 }
 
 type cacheState struct {

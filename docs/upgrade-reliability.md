@@ -23,7 +23,10 @@ release. The risk is the journal they all share.
 `store.CompatEpoch` names releases that can share a journal concurrently. The
 running release asks a verified, staged candidate for its epoch with the internal
 `_journal-compat` command. A matching answer installs immediately. A different
-answer, or none, waits for owners and returns `live_owners_deferred`.
+answer, or none, waits for owners and returns `live_owners_deferred`, unless
+`update now --allow-live-owners` overrides it. A supervisor is not an owner: it
+never exits on its own, and the installer restarts a managed one. An unmanaged
+supervisor keeps running the release it started with until you restart it.
 
 Rules for changes that touch stored records:
 
@@ -37,9 +40,10 @@ Rules for changes that touch stored records:
   cannot read. Those events remain in the journal.
 - A change the previous release cannot tolerate must bump `store.CompatEpoch`.
 
-`make check-release-skew`, part of `make ci`, enforces the last rule. It runs
-foreground and detached owners and a supervisor from the newest earlier release,
-replaces the executable, restarts the supervisor, writes every subscription scope
+`make check-release-skew`, part of `make ci`, enforces the last rule against the
+oldest and newest earlier releases in the epoch, since an owner can outlive
+several updates. It runs foreground and detached owners and a supervisor from that
+release, replaces the executable, restarts the supervisor, writes every subscription scope
 from the new release, and requires the owners to complete. It uses a fixture Cursor
 harness, so harness-specific paths such as steering are not covered.
 
