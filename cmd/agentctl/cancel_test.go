@@ -256,6 +256,27 @@ func TestCancelWithoutLiveOwnerPointsAtOrphanRepair(t *testing.T) {
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
+	// A killed owner leaves a spool and a lease that stops being renewed.
+	journal, err = store.Open(f.journal, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := 1
+	finished.ID = model.Execution{}.ID
+	finished.Observation.FreshForSeconds, finished.Observation.ObservedAt = &fresh, time.Now().Add(-time.Hour)
+	stale, _, err := journal.CreateExecution(context.Background(), finished, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal.Close()
+	dir = cancelSpoolDir(f.journal, stale.ID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	code, out = invoke("cancel", stale.ID.String(), "--timeout", "30s")
+	if code != output.ExitCodeFor(output.CodeExecutionUnknown) || !strings.Contains(out, "cancel_owner_stale") || !strings.Contains(out, "--orphan-if-gone") {
+		t.Fatalf("stale owner: %d %s", code, out)
+	}
 	for _, args := range [][]string{{"cancel"}, {"cancel", "--timeout", "1s"}, {"cancel", running.ID.String(), "--timeout", "0s"}, {"cancel", running.ID.String(), "--orphan-if-gone", "--timeout", "1s"}, {"cancel", running.ID.String(), running.ID.String()}} {
 		if code, out := invoke(args...); code != 2 {
 			t.Fatalf("%v: %d %s", args, code, out)

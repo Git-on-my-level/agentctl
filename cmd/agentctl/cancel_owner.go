@@ -101,15 +101,29 @@ func (a *app) cancelThroughOwner(ctx context.Context, renderer output.Renderer, 
 		return true, output.Wrap(output.CodeInternal, "resolve journal path", false, err)
 	}
 	dir := cancelSpoolDir(path, id)
+	// An owner opens its spool just after it journals the execution as starting.
+	for wait := time.Duration(0); !cancelSpoolLive(dir) && execution.State == model.StateStarting && wait < 5*time.Second && ctx.Err() == nil; wait += steerPollEvery {
+		time.Sleep(steerPollEvery)
+		if latest, problem := a.readExecutionForCancel(ctx, c, id); problem == nil {
+			execution = latest
+		}
+	}
 	if !cancelSpoolLive(dir) {
 		return false, nil
 	}
 	withID := func(problem *output.Error) *output.Error {
 		return problem.WithDetail("execution_id", id.String()).WithDetail("state", execution.State)
 	}
-	if fresh := execution.Observation.FreshForSeconds; fresh != nil && a.now().After(execution.Observation.ObservedAt.Add(time.Duration(*fresh)*time.Second+10*time.Second)) {
-		return true, withID(output.NewError(output.CodeExecutionUnknown, "the owning agentctl process has not renewed its lease; no cancellation was requested", false).
+	leaseStale := func() bool {
+		fresh := execution.Observation.FreshForSeconds
+		return fresh != nil && a.now().After(execution.Observation.ObservedAt.Add(time.Duration(*fresh)*time.Second+10*time.Second))
+	}
+	staleOwner := func() *output.Error {
+		return withID(output.NewError(output.CodeExecutionUnknown, "the owning agentctl process has not renewed its lease; cancellation is unconfirmed", false).
 			WithDetail("diagnostic_code", "cancel_owner_stale").WithActions(orphanIfGoneAction(id)))
+	}
+	if leaseStale() {
+		return true, staleOwner()
 	}
 	pending := ""
 	file, err := os.CreateTemp(dir, "*"+cancelRequestSuffix)
@@ -142,6 +156,13 @@ func (a *app) cancelThroughOwner(ctx context.Context, renderer output.Renderer, 
 				return true, withID(output.NewError(output.CodeExecutionUnknown, "the owning agentctl process exited without recording an outcome", false).
 					WithDetail("diagnostic_code", "cancel_owner_gone").WithActions(orphanIfGoneAction(id)))
 			}
+			// A killed owner leaves its spool behind and stops renewing its lease.
+			if leaseStale() {
+				if pending != "" {
+					_ = os.Remove(pending)
+				}
+				return true, staleOwner()
+			}
 		}
 		if ctx.Err() != nil || a.now().After(deadline) {
 			if pending != "" && os.Remove(pending) == nil {
@@ -173,7 +194,7 @@ func (a *app) readExecutionForCancel(ctx context.Context, c common, id ids.Execu
 }
 
 func parseCancel(args []string) (ref string, orphanIfGone bool, timeout time.Duration, problem *output.Error) {
-	usage := output.NewError(output.CodeUsage, "usage: agentctl cancel <execution-id> [--timeout duration] | --orphan-if-gone", false)
+	usage := output.NewError(output.CodeUsage, "usage: agentctl cancel <execution-id> [--timeout duration | --orphan-if-gone]", false)
 	timeout = cancelDefaultTimeout
 	timeoutSet := false
 	for i := 0; i < len(args); i++ {

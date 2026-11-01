@@ -302,6 +302,10 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	}
 	launchCtx, interruptLaunch := context.WithCancel(operationCtx)
 	defer interruptLaunch()
+	// A preallocated ID can be cancelled during launch, and the spool must outlive
+	// every later defer that records this execution's outcome.
+	cancels := a.openCancelInbox(c, execution.ID)
+	defer closeCancelInbox(cancels)
 	launchRequest := adapter.LaunchRequest{Env: opts.env, Argv: opts.argv, Cwd: opts.cwd, Context: contextInput(c), DiscoveryWindow: 250 * time.Millisecond, StartOnly: true,
 		ExecutionContext: &adapter.ExecutionContext{ExecutionID: execution.ID.String(), Adapter: execution.Adapter, HostID: execution.OriginHostID.String(), Labels: append([]string(nil), execution.Labels...), Authority: string(execution.Authority)}}
 	if execution.Adapter == "generic-process" && !opts.noStoreResult {
@@ -345,8 +349,6 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	// running execution can already queue a request.
 	inbox := a.openSteerInbox(c, execution)
 	defer func() { a.closeSteerInbox(c, execution.ID, inbox) }()
-	cancels := a.openCancelInbox(c, execution.ID)
-	defer closeCancelInbox(cancels)
 	writeJournal, current, openProblem := a.openExecutionWriteOwned(c, execution.ID)
 	if openProblem != nil {
 		return openProblem
