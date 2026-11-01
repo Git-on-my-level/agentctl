@@ -147,7 +147,10 @@ its outcome. A request is an empty file. The owner claims it by rename and takes
 the same path as a signal: stop the child, drain its events, commit one terminal
 outcome. A caller that times out removes an unclaimed request (`cancel_unclaimed`,
 exit 9, retryable). A claimed one is reported as `cancel_pending`, and repeating
-the command is safe. A result that completed first stays completed and the caller
+the command is safe. While the execution is still being admitted there is no spool;
+the caller waits and reports `cancel_owner_not_ready` if admission outlasts it. A
+lease that lapses matters only for an unclaimed request, because an owner stopping
+a child does not renew. A result that completed first stays completed and the caller
 gets `invalid_state`. With no spool, a stale lease, or an owner that exited, the
 error's next action is `cancel --orphan-if-gone`, which needs kernel proof that
 the process is gone; agentctl never signals a process it infers from a PID.

@@ -277,6 +277,23 @@ func TestCancelWithoutLiveOwnerPointsAtOrphanRepair(t *testing.T) {
 	if code != output.ExitCodeFor(output.CodeExecutionUnknown) || !strings.Contains(out, "cancel_owner_stale") || !strings.Contains(out, "--orphan-if-gone") {
 		t.Fatalf("stale owner: %d %s", code, out)
 	}
+	// Admission can outlast the wait; nothing is requested from an owner with no spool.
+	journal, err = store.Open(f.journal, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished.Observation.FreshForSeconds, finished.Observation.ObservedAt = nil, time.Time{}
+	finished.ID = model.Execution{}.ID
+	finished.State = model.StateStarting
+	starting, _, err := journal.CreateExecution(context.Background(), finished, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal.Close()
+	code, out = invoke("cancel", starting.ID.String(), "--timeout", "1ms")
+	if code != output.ExitCodeFor(output.CodeTimeout) || !strings.Contains(out, "cancel_owner_not_ready") {
+		t.Fatalf("starting: %d %s", code, out)
+	}
 	for _, args := range [][]string{{"cancel"}, {"cancel", "--timeout", "1s"}, {"cancel", running.ID.String(), "--timeout", "0s"}, {"cancel", running.ID.String(), "--orphan-if-gone", "--timeout", "1s"}, {"cancel", running.ID.String(), running.ID.String()}} {
 		if code, out := invoke(args...); code != 2 {
 			t.Fatalf("%v: %d %s", args, code, out)

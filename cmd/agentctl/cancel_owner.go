@@ -101,18 +101,32 @@ func (a *app) cancelThroughOwner(ctx context.Context, renderer output.Renderer, 
 		return true, output.Wrap(output.CodeInternal, "resolve journal path", false, err)
 	}
 	dir := cancelSpoolDir(path, id)
-	// An owner opens its spool just after it journals the execution as starting.
-	for wait := time.Duration(0); !cancelSpoolLive(dir) && execution.State == model.StateStarting && wait < 5*time.Second && ctx.Err() == nil; wait += steerPollEvery {
-		time.Sleep(steerPollEvery)
+	withID := func(problem *output.Error) *output.Error {
+		return problem.WithDetail("execution_id", id.String()).WithDetail("state", execution.State)
+	}
+	// An owner opens its spool after admission, while the execution is starting.
+	deadline := a.now().Add(timeout)
+	for !cancelSpoolLive(dir) && execution.State == model.StateStarting {
+		if ctx.Err() != nil || a.now().After(deadline) {
+			return true, withID(output.NewError(output.CodeTimeout, "the execution is still being admitted; no cancellation was requested", true).
+				WithDetail("diagnostic_code", "cancel_owner_not_ready").WithActions(orphanIfGoneAction(id)))
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(steerPollEvery):
+		}
 		if latest, problem := a.readExecutionForCancel(ctx, c, id); problem == nil {
 			execution = latest
 		}
 	}
+	if execution.State == model.StateCancelled {
+		return true, writeExecution(renderer, execution, "cancel")
+	}
+	if execution.State.Terminal() {
+		return true, withID(output.NewError(output.CodeInvalidState, fmt.Sprintf("execution reached %s before the cancellation took effect", execution.State), false))
+	}
 	if !cancelSpoolLive(dir) {
 		return false, nil
-	}
-	withID := func(problem *output.Error) *output.Error {
-		return problem.WithDetail("execution_id", id.String()).WithDetail("state", execution.State)
 	}
 	leaseStale := func() bool {
 		fresh := execution.Observation.FreshForSeconds
@@ -136,7 +150,6 @@ func (a *app) cancelThroughOwner(ctx context.Context, renderer output.Renderer, 
 	}
 	// A missing spool means the owner returned after the checks above; the
 	// journal says what it recorded.
-	deadline := a.now().Add(timeout)
 	for {
 		latest, problem := a.readExecutionForCancel(ctx, c, id)
 		if problem == nil {
@@ -157,10 +170,9 @@ func (a *app) cancelThroughOwner(ctx context.Context, renderer output.Renderer, 
 					WithDetail("diagnostic_code", "cancel_owner_gone").WithActions(orphanIfGoneAction(id)))
 			}
 			// A killed owner leaves its spool behind and stops renewing its lease.
-			if leaseStale() {
-				if pending != "" {
-					_ = os.Remove(pending)
-				}
+			// One that claimed the request may just be waiting for the child to
+			// exit without renewing, so only an unclaimed request proves staleness.
+			if leaseStale() && pending != "" && os.Remove(pending) == nil {
 				return true, staleOwner()
 			}
 		}
@@ -171,7 +183,7 @@ func (a *app) cancelThroughOwner(ctx context.Context, renderer output.Renderer, 
 			}
 			return true, withID(output.NewError(output.CodeTimeout, "the owner took the cancellation request and has not finished; it is still stopping the native process", true).
 				WithDetail("diagnostic_code", "cancel_pending").
-				WithActions(output.NextAction{Label: "Wait for the outcome", Argv: []string{"agentctl", "await", id.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}}))
+				WithActions(output.NextAction{Label: "Wait for the outcome", Argv: []string{"agentctl", "await", id.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}}, orphanIfGoneAction(id)))
 		}
 		select {
 		case <-ctx.Done():
