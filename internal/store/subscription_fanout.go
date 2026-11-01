@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -64,8 +65,8 @@ func enqueueMatchingSubscriptionsTx(tx *bbolt.Tx, event *model.Event, canonicalP
 		if err := json.Unmarshal(raw, &record); err != nil {
 			return corrupt(err)
 		}
-		if err := record.Subscription.Validate(time.Time{}); err != nil {
-			return corrupt(err)
+		if !fanoutUnderstands(raw, record.Subscription) {
+			return nil
 		}
 		if err := validateStoredSubscriptionIdentity(record.Subscription); err != nil {
 			return err
@@ -80,6 +81,31 @@ func enqueueMatchingSubscriptionsTx(tx *bbolt.Tx, event *model.Event, canonicalP
 		return err
 	}
 	return nil
+}
+
+// fanoutUnderstands reports whether this release can evaluate a stored
+// subscription. A journal is shared with other releases: owners started before
+// an upgrade keep appending events after a newer binary writes a subscription
+// they cannot read. Failing the append for that would kill an unrelated
+// execution (2026-10-25 m5 incident), so such a record gets no delivery from
+// this release instead. Dropping an unknown filter field would widen the match,
+// so an unknown field also skips the record. Unparsable JSON stays corruption.
+func fanoutUnderstands(raw []byte, value subscription.Subscription) bool {
+	if value.State != subscription.StateActive || value.Validate(time.Time{}) != nil {
+		return false
+	}
+	var stored struct {
+		Subscription struct {
+			Filter json.RawMessage `json:"filter"`
+		} `json:"subscription"`
+	}
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		return false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(stored.Subscription.Filter))
+	decoder.DisallowUnknownFields()
+	var filter subscription.EventFilter
+	return decoder.Decode(&filter) == nil
 }
 
 // enqueueSubscriptionEventTx enqueues one deduplicated delivery of event for

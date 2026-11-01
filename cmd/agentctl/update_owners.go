@@ -12,8 +12,8 @@ import (
 	"time"
 )
 
-// ownerSubcommands are the agentctl invocations that own an execution for its lifetime. A binary or journal change
-// under them can fail their next journal write, so updates wait for them (2026-10-25 m5 incident).
+// ownerSubcommands are the agentctl invocations that own an execution for its lifetime. A release outside their journal
+// compatibility epoch can fail their next journal write, so such an update waits for them (2026-10-25 m5 incident).
 // dispatch and promote write the journal after remote work, so they count too.
 var ownerSubcommands = map[string]bool{"delegate": true, "run": true, "fanout": true, "continue": true, "dispatch": true, "promote": true, "_delegate-worker": true}
 

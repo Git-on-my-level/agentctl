@@ -51,6 +51,9 @@ type PendingApply struct {
 	Version   string   `json:"version"`
 	Explicit  bool     `json:"explicit"`
 	WaitingOn []string `json:"waiting_on"`
+	// AwaitOwnersEpoch is the installed epoch this candidate was found unable to
+	// share a journal with, so a retry from it can skip downloading it again.
+	AwaitOwnersEpoch int `json:"await_owners_epoch,omitempty"`
 }
 
 type cacheState struct {

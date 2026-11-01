@@ -13,6 +13,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/portableasset"
 	"github.com/Git-on-my-level/agentctl/internal/skillpack"
+	"github.com/Git-on-my-level/agentctl/internal/store"
 	"github.com/Git-on-my-level/agentctl/internal/updatecheck"
 )
 
@@ -56,6 +57,15 @@ func (a *app) updateInstalled(args []string) int {
 	return 0
 }
 
+// A running release asks a staged candidate this before replacing the binary.
+func (a *app) journalCompat(args []string) int {
+	if len(args) != 0 {
+		return 2
+	}
+	_, _ = fmt.Fprintf(a.stdout, "{\"journal_compat_epoch\":%d}\n", store.CompatEpoch)
+	return 0
+}
+
 func (a *app) updateWorker(parent context.Context, c common) int {
 	statePath, policyPath, err := updatecheck.DefaultPaths(a.getenv)
 	if err != nil {
@@ -69,7 +79,7 @@ func (a *app) updateWorker(parent context.Context, c common) int {
 	// Only the detached worker waits for draining owners or competing applies.
 	// A short bounded retry also lets the spawning owner exit before the scan.
 	for modeErr == nil {
-		result, resumeErr := updatecheck.Resume(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv}, OwnerIDs: a.liveOwnerIDs}, mode)
+		result, resumeErr := updatecheck.Resume(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv}, OwnerIDs: a.liveOwnerIDs, JournalCompatEpoch: store.CompatEpoch}, mode)
 		if result.Updated {
 			return 0
 		}
@@ -89,7 +99,7 @@ func (a *app) updateWorker(parent context.Context, c common) int {
 
 	status, statusErr := updatecheck.ReadStatus(statePath, policyPath, a.getenv)
 	if modeErr == nil && mode == updatecheck.ModeAuto && !hadPending && statusErr == nil && status.Pending == nil {
-		_, _ = updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv}, OwnerIDs: a.liveOwnerIDs})
+		_, _ = updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv}, OwnerIDs: a.liveOwnerIDs, JournalCompatEpoch: store.CompatEpoch})
 	}
 	_, _ = a.updateSkillsAutoClean(ctx, c, false)
 	return 0
@@ -146,7 +156,7 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c com
 		if len(args) != 1 && !allowLive {
 			return output.NewError(output.CodeUsage, "usage: agentctl update now [--allow-live-owners]", false)
 		}
-		result, err := updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv, Force: true}, AllowLiveOwners: allowLive, Explicit: true, OwnerIDs: a.liveOwnerIDs})
+		result, err := updatecheck.Apply(ctx, updatecheck.ApplyOptions{Check: updatecheck.Options{CurrentVersion: version, StatePath: statePath, Getenv: a.getenv, Force: true}, AllowLiveOwners: allowLive, Explicit: true, OwnerIDs: a.liveOwnerIDs, JournalCompatEpoch: store.CompatEpoch})
 		if err != nil {
 			return mapUpdateApplyError(err)
 		}

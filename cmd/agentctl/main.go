@@ -165,6 +165,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		return a.updateWorker(ctx, commonArgs)
 	case "_update-installed":
 		return a.updateInstalled(rest[1:])
+	case "_journal-compat":
+		return a.journalCompat(rest[1:])
 	case "update":
 		err = a.updateCommand(ctx, renderer, commonArgs, rest[1:])
 	case "help", "--help", "-h":

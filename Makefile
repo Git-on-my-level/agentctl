@@ -17,12 +17,12 @@ LDFLAGS ?= -s -w -X main.version=$(VERSION)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || printf '%s' dev)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || printf '%s' unknown)
 
-.PHONY: all ci pre-push hooks security vuln-check fmt fmt-check vet test test-race build check-ids check-schemas check-links check-scripts check-portable-assets check-distribution release check-release-security \
+.PHONY: all ci pre-push hooks security vuln-check fmt fmt-check vet test test-race build check-ids check-schemas check-links check-scripts check-portable-assets check-distribution check-release-skew release check-release-security \
 	install uninstall clean
 
 all: ci
 
-ci: fmt-check vet test check-ids check-schemas check-links check-scripts check-portable-assets check-distribution build
+ci: fmt-check vet test check-ids check-schemas check-links check-scripts check-portable-assets check-distribution check-release-skew build
 
 # Keep the local push gate bounded while reusing the same checks as CI. Hosted
 # CI remains authoritative for distribution validators, builds, race tests, and
@@ -85,6 +85,11 @@ check-links:
 
 check-scripts:
 	@if command -v shellcheck >/dev/null 2>&1; then shellcheck $(SCRIPTS_DIR)/*.sh .githooks/*; else bash -n $(SCRIPTS_DIR)/*.sh .githooks/*; fi
+
+# Runs the previous release beside this tree across a real binary swap. Not part
+# of pre-push because it builds a second release.
+check-release-skew:
+	@$(SCRIPTS_DIR)/check-release-skew.sh
 
 check-portable-assets:
 	@test -f go.mod || { echo 'go.mod is required for portable asset checks' >&2; exit 1; }

@@ -472,3 +472,73 @@ func TestLabelPrefixSubscriptionMatchesExistingAndFutureExecutions(t *testing.T)
 		t.Fatalf("label-prefix subscription stopped after one terminal: %#v err=%v", after, err)
 	}
 }
+
+// A journal is shared across releases: a subscription this release cannot read
+// must cost only its own delivery, never the event being appended.
+func TestFanoutSkipsSubscriptionsFromAnotherRelease(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	execution, _, err := j.CreateExecution(ctx, sampleExecution(now), contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	known := durableTestSubscription(durableTestID(ids.TypeSubscription, 900))
+	known.Filter.ExecutionIDs = []string{execution.ID.String()}
+	known.Filter.Kinds = []string{string(model.EventStarted)}
+	if _, _, err := j.PutSubscription(ctx, known); err != nil {
+		t.Fatal(err)
+	}
+	foreign := func(payload uint64, filter map[string]any) {
+		t.Helper()
+		id := durableTestID(ids.TypeSubscription, payload)
+		base, err := json.Marshal(SubscriptionRecord{Subscription: durableTestSubscription(id), CreatedAt: now, UpdatedAt: now, Revision: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var record map[string]any
+		if err := json.Unmarshal(base, &record); err != nil {
+			t.Fatal(err)
+		}
+		record["subscription"].(map[string]any)["filter"] = filter
+		raw, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := j.db.Update(func(tx *bbolt.Tx) error {
+			bucket, err := tx.CreateBucketIfNotExists(bSubscriptions)
+			if err != nil {
+				return err
+			}
+			return bucket.Put([]byte(id), raw)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Reads as an empty filter here, as label_prefix did to releases before it.
+	foreign(901, map[string]any{"future_scope": "lane."})
+	// Passes validation once the unknown field is dropped, and would then match every native event.
+	foreign(902, map[string]any{"authority": "native", "future_scope": "lane."})
+
+	event := model.Event{SchemaVersion: model.SchemaVersion, ID: ids.EventID(durableTestID(ids.TypeEvent, 903)), OriginHostID: execution.OriginHostID, ExecutionID: execution.ID, Sequence: 1, Ordering: model.OrderingObservation, Kind: model.EventStarted, Authority: execution.Authority, Adapter: execution.Adapter, ObservedAt: now, DedupeKey: hash('b'), DedupeVersion: 1, Payload: map[string]any{"accepted": true}}
+	if err := j.db.Update(func(tx *bbolt.Tx) error {
+		return enqueueMatchingSubscriptionsTx(tx, &event, []byte(`{}`), now, j.generator)
+	}); err != nil {
+		t.Fatalf("an unreadable subscription failed the append: %v", err)
+	}
+	pending, err := j.ListPendingDeliveries(ctx)
+	if err != nil || len(pending) != 1 || pending[0].SubscriptionID != known.ID {
+		t.Fatalf("pending=%#v err=%v: only the readable subscription should deliver", pending, err)
+	}
+
+	if err := j.db.Update(func(tx *bbolt.Tx) error {
+		return tx.Bucket(bSubscriptions).Put([]byte(durableTestID(ids.TypeSubscription, 904)), []byte("{not json"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err = j.db.Update(func(tx *bbolt.Tx) error {
+		return enqueueMatchingSubscriptionsTx(tx, &event, []byte(`{}`), now, j.generator)
+	})
+	if !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("unparsable record must stay corruption, got %v", err)
+	}
+}

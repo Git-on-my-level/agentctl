@@ -162,6 +162,13 @@ func (j *Journal) Close() error {
 }
 func (j *Journal) Path() string { return j.path }
 
+// CompatEpoch identifies releases that can share one journal while running at
+// the same time. Bump it only for a change that a process from the previous
+// release cannot tolerate; `make check-release-skew` fails when such a change
+// ships without a bump. Updates install under live owners within an epoch and
+// wait for them across one.
+const CompatEpoch = 1
+
 func (j *Journal) initialize() error {
 	return j.db.Update(func(tx *bbolt.Tx) error {
 		for _, name := range [][]byte{bMetadata, bExecutions, bEvents, bEventsByExecution, bDedupe, bTerminal, bIdempotency, bOutcomes, bAcknowledgements, bStatusContacts} {
