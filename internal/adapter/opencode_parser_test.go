@@ -321,10 +321,13 @@ func TestOpenCodeManifestDeclaresBoundedSameProcessContract(t *testing.T) {
 			t.Fatalf("%s = %#v", name, status[name])
 		}
 	}
-	for _, name := range []CapabilityName{CapabilityAttach, CapabilitySnapshot, CapabilityEvents, CapabilityResult, CapabilityResultContent, CapabilityCancel} {
+	for _, name := range []CapabilityName{CapabilityAttach, CapabilitySnapshot, CapabilityEvents, CapabilityResult, CapabilityResultContent} {
 		if status[name].Constraints["scope"] != "same_process_only" || status[name].Constraints["cross_restart"] != false {
 			t.Fatalf("%s constraints = %#v", name, status[name].Constraints)
 		}
+	}
+	if status[CapabilityCancel].Constraints["scope"] != "live_owner" || status[CapabilityCancel].Constraints["cross_restart"] != false {
+		t.Fatalf("cancel constraints = %#v", status[CapabilityCancel].Constraints)
 	}
 	if status[CapabilityEvents].Constraints["content"] != "metadata_only" {
 		t.Fatalf("events constraints = %#v", status[CapabilityEvents].Constraints)

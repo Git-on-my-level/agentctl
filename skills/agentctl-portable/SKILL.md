@@ -283,8 +283,8 @@ form, completed final-step text, and a final `step_finish` with
 `part.reason: "stop"` plus exit 0. Answer buffering is capped at a 1 MiB UTF-8
 prefix; excess text is discarded and the result is marked truncated.
 Missing/non-stop finishes fail without
-returning partial text; other invocations are not result-capable. Cancellation is process-scoped
-and resume is unavailable; no permission auto-approval flags are used.
+returning partial text; other invocations are not result-capable. Cancellation goes through the
+live owner and resume is unavailable; no permission auto-approval flags are used.
 
 Never infer prompt delivery from an adapter name. Use `argv` only for a native
 form that expects a positional prompt and `stdin` only for a verified
@@ -414,9 +414,9 @@ execution cannot be steered; use `continue`. Steering needs a prompt that agentc
 delivered (`--prompt-file` or `--prompt-stdin`), not one embedded in native argv.
 
 Native work remains owned by its launching agentctl process; `delegate --detach`
-makes that owner independent of the caller. A direct adapter
-does not gain cross-process cancellation; add `--timeout` when a hard stop is
-required unless capabilities advertise a durable cancel route. For aggregate usage, use `recent --since <RFC3339> --until <RFC3339> --summary`.
+makes that owner independent of the caller. `cancel <id>` works from any invocation
+while that owner lives; the owner stops the child and commits the outcome. If the
+owner is gone, follow the returned `--orphan-if-gone` action. For aggregate usage, use `recent --since <RFC3339> --until <RFC3339> --summary`.
 `status` and `recent` expose nullable `progress_at` for newly recorded task
 progress; probe attempts, empty/duplicate event pages and cursor checkpoints do
 not advance it. Null means unknown history, never a fresh or stale task claim.

@@ -300,7 +300,12 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			return refusal.WithDetail("execution_id", execution.ID.String())
 		}
 	}
-	launchCtx := operationCtx
+	launchCtx, interruptLaunch := context.WithCancel(operationCtx)
+	defer interruptLaunch()
+	// A preallocated ID can be cancelled during launch, and the spool must outlive
+	// every later defer that records this execution's outcome.
+	cancels := a.openCancelInbox(c, execution.ID)
+	defer closeCancelInbox(cancels)
 	launchRequest := adapter.LaunchRequest{Env: opts.env, Argv: opts.argv, Cwd: opts.cwd, Context: contextInput(c), DiscoveryWindow: 250 * time.Millisecond, StartOnly: true,
 		ExecutionContext: &adapter.ExecutionContext{ExecutionID: execution.ID.String(), Adapter: execution.Adapter, HostID: execution.OriginHostID.String(), Labels: append([]string(nil), execution.Labels...), Authority: string(execution.Authority)}}
 	if execution.Adapter == "generic-process" && !opts.noStoreResult {
@@ -470,6 +475,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		// a live-input write is serviced off this goroutine so a full pipe
 		// cannot freeze heartbeats or cancellation.
 		a.serviceSteerInbox(launchCtx, c, runtime, launch.Session.Ref, execution, inbox)
+		a.serviceCancelInbox(cancels, interruptLaunch)
 		select {
 		case <-launchCtx.Done():
 			last, _ := runtime.Result(context.Background(), adapter.ResultRequest{Ref: launch.Session.Ref})
@@ -1301,14 +1307,11 @@ func (a *app) attachNative(ctx context.Context, renderer output.Renderer, c comm
 }
 
 func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
-	if len(args) == 2 && args[0] == "--orphan-if-gone" {
-		args = []string{args[1], args[0]}
+	ref, orphanIfGone, timeout, problem := parseCancel(args)
+	if problem != nil {
+		return problem
 	}
-	orphanIfGone := len(args) == 2 && args[1] == "--orphan-if-gone"
-	if (len(args) != 1 && !orphanIfGone) || strings.HasPrefix(args[0], "-") {
-		return output.NewError(output.CodeUsage, "usage: agentctl cancel <execution-id> [--orphan-if-gone]", false)
-	}
-	id, problem := parseExecutionRef(args[0], c)
+	id, problem := parseExecutionRef(ref, c)
 	if problem != nil {
 		return problem
 	}
@@ -1323,6 +1326,9 @@ func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c comm
 	}
 	if orphanIfGone {
 		return a.orphanNativeIfGone(ctx, renderer, c, execution.ID)
+	}
+	if execution.State == model.StateCancelled && execution.Authority != model.AuthorityMultica {
+		return writeExecution(renderer, execution, "cancel")
 	}
 	if execution.State.Terminal() {
 		return output.NewError(output.CodeInvalidState, "terminal execution cannot be cancelled", false).WithDetail("execution_id", id.String()).WithDetail("state", execution.State)
@@ -1365,16 +1371,20 @@ func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c comm
 	if execution.Authority == model.AuthorityMultica {
 		return a.cancelMulticaForward(ctx, renderer, c, execution, id)
 	}
+	if handled, problem := a.cancelThroughOwner(ctx, renderer, c, execution, timeout); handled {
+		return problem
+	}
 	runtime, _, problem := a.runtimeAdapter(c, execution.Adapter, bindingOpaque(execution, "issue"), bindingOpaque(execution, "run"))
 	if problem != nil {
 		return problem
 	}
-	ref := sourceRef(execution)
-	if ref.Empty() {
+	source := sourceRef(execution)
+	if source.Empty() {
 		return output.NewError(output.CodeCapabilityUnavailable, "execution has no exact native source binding", false).WithDetail("execution_id", id.String())
 	}
-	if err := runtime.Cancel(ctx, adapter.CancelRequest{Ref: ref, Signal: "term", Grace: 5 * time.Second}); err != nil {
-		return mapAdapterError("native cancellation failed", err).WithDetail("execution_id", id.String())
+	if err := runtime.Cancel(ctx, adapter.CancelRequest{Ref: source, Signal: "term", Grace: 5 * time.Second}); err != nil {
+		// No owner is servicing a spool: it is gone, or predates this route.
+		return mapAdapterError("native cancellation failed", err).WithDetail("execution_id", id.String()).WithActions(orphanIfGoneAction(id))
 	}
 	cancelled, cancelProblem := func() (model.Execution, *output.Error) {
 		journal, problem = a.openWrite(c)

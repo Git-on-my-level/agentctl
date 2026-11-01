@@ -176,8 +176,8 @@ Rejections use the normal error envelope with a `diagnostic_code`:
 
 ## Not covered
 
-- Cross-process `cancel` for native executions is unchanged. The spool could
-  carry a cancel request, but that is a separate change.
+- Stopping an execution. `agentctl cancel` has its own spool beside this one;
+  see [architecture](architecture.md).
 - A finished execution. Send the next instruction to its session with
   [`agentctl continue`](follow-up-turns.md), which is the more common need in
   practice and works on more harnesses, because a completed turn keeps its

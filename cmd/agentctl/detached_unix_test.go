@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -16,7 +17,10 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
+	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/model"
+	"github.com/Git-on-my-level/agentctl/internal/output"
+	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
 // Journal contention is an explicit retryable outcome, including during a
@@ -311,5 +315,93 @@ func TestDetachedWorkerConcurrentAdmissionAndFailure(t *testing.T) {
 				t.Fatalf("launches=%s", data)
 			}
 		})
+	}
+}
+
+// Cancelling from an invocation other than the detached owner must reach the
+// owner, stop the child, and record one terminal outcome.
+func TestCancelFromAnotherProcessStopsDetachedOwner(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "agentctl")
+	if out, err := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, ".").CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	f := newDelegateFixture(t, "")
+	pidFile := filepath.Join(f.root, "child.pid")
+	script := "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 2026.09.10; exit 0; fi\necho $$ > '" + pidFile + "'\nexec sleep 300\n"
+	if err := os.WriteFile(filepath.Join(f.root, "cursor-agent"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	promptFile := filepath.Join(f.root, "task.md")
+	if err := os.WriteFile(promptFile, []byte("private-task"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	launch := exec.Command(binary, "--output", "json", "--config", f.config, "--journal", f.journal, "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-file", promptFile, "--detach")
+	launch.Env = append(os.Environ(), "AGENTCTL_UPDATE_MODE=off")
+	out, err := launch.Output()
+	if err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	var doc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatal(err)
+	}
+	id := doc.Result.ID.String()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if body, _ := os.ReadFile(pidFile); len(bytes.TrimSpace(body)) != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("native child never started")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	body, _ := os.ReadFile(pidFile)
+	child, err := strconv.Atoi(string(bytes.TrimSpace(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+
+	invoke := func(args ...string) (int, string) {
+		var stdout, stderr bytes.Buffer
+		code := testApp(&stdout, &stderr).run(context.Background(), append([]string{"--output", "json", "--config", f.config, "--journal", f.journal}, args...))
+		return code, stdout.String() + stderr.String()
+	}
+	code, cancelled := invoke("cancel", id, "--timeout", "30s")
+	if code != 0 || !strings.Contains(cancelled, `"state":"cancelled"`) {
+		t.Fatalf("cancel %d %s", code, cancelled)
+	}
+	if err := syscall.Kill(child, 0); err == nil {
+		t.Fatalf("native child %d survived cancellation", child)
+	}
+	if code, again := invoke("cancel", id); code != 0 || !strings.Contains(again, `"state":"cancelled"`) {
+		t.Fatalf("repeat cancel must be idempotent: %d %s", code, again)
+	}
+	if code, awaited := invoke("await", id, "--timeout", "5s"); code != output.ExitCodeFor(output.CodeExecutionCancelled) {
+		t.Fatalf("await %d %s", code, awaited)
+	}
+	journal, err := store.Open(f.journal, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	events, err := journal.ListEvents(context.Background(), doc.Result.ID, contracts.EventQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminals := 0
+	for _, event := range events {
+		if event.Kind == model.EventTerminal {
+			terminals++
+		}
+	}
+	if terminals != 1 {
+		t.Fatalf("committed %d terminal events", terminals)
+	}
+	if _, err := os.Stat(cancelSpoolDir(f.journal, doc.Result.ID)); !os.IsNotExist(err) {
+		t.Fatalf("owner left its cancel spool behind: %v", err)
 	}
 }
