@@ -606,8 +606,9 @@ func TestApplyWaitingAcrossEpochsDoesNotDownloadAgain(t *testing.T) {
 	if got := downloads.Load(); got != 1 {
 		t.Fatalf("downloaded the candidate %d times while waiting", got)
 	}
-	options.LiveOwners = func() (int, error) { return 0, nil }
+	// A later install in the candidate's epoch must ask again, not reuse the old answer.
+	options.JournalCompatEpoch = 8
 	if result, err := Apply(context.Background(), options); err != nil || !result.Updated {
-		t.Fatalf("result=%#v err=%v: owners drained, so it must install", result, err)
+		t.Fatalf("result=%#v err=%v: same-epoch owners must not block", result, err)
 	}
 }

@@ -183,8 +183,8 @@ native execution and Multica-backed work; Multica remains the task authority.
 
 The installer replaces the binary by rename, preserving existing executable
 images. Mixed-version journal access is what needs proof; the compatibility epoch
-and its release check provide it, and only an epoch change keeps #110's owner
-guard. `--allow-live-owners` overrides that guard too.
+and its release check provide it. #110's owner guard remains only when the
+candidate reports a different epoch or cannot answer. `--allow-live-owners` overrides that guard too.
 
 ## Error contract
 

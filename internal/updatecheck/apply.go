@@ -162,7 +162,7 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	}
 	// Compatibility is only known from the candidate, so an epoch-aware release
 	// downloads first and decides below, unless a prior attempt already decided.
-	if options.JournalCompatEpoch == 0 || pendingAwaitsOwners(options.Check.StatePath, version) {
+	if options.JournalCompatEpoch == 0 || pendingAwaitsOwners(options.Check.StatePath, version, options.JournalCompatEpoch) {
 		if err := checkLiveOwners(options); err != nil {
 			return result, err
 		}
@@ -214,7 +214,7 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	if !candidateSharesJournal(ctx, binary, options.JournalCompatEpoch) {
 		if err := mutateApplyState(options.Check.StatePath, func(state *cacheState) {
 			if state.Pending != nil {
-				state.Pending.AwaitOwners = true
+				state.Pending.AwaitOwnersEpoch = options.JournalCompatEpoch
 			}
 		}); err != nil {
 			return result, recordApplyError(options.Check.StatePath, "state_record_failed", err)
@@ -237,9 +237,9 @@ func Apply(ctx context.Context, options ApplyOptions) (ApplyResult, error) {
 	return result, nil
 }
 
-func pendingAwaitsOwners(path, version string) bool {
+func pendingAwaitsOwners(path, version string, epoch int) bool {
 	state, err := readState(path)
-	return err == nil && state.Pending != nil && state.Pending.Version == version && state.Pending.AwaitOwners
+	return err == nil && state.Pending != nil && state.Pending.Version == version && state.Pending.AwaitOwnersEpoch == epoch
 }
 
 // candidateSharesJournal asks a verified, staged release for its compatibility
@@ -725,12 +725,12 @@ func mutateApplyState(path string, mutate func(*cacheState)) error {
 
 func recordPending(options ApplyOptions, version string) error {
 	return mutateApplyState(options.Check.StatePath, func(state *cacheState) {
-		explicit, awaitOwners := options.Explicit, false
+		explicit, awaitEpoch := options.Explicit, 0
 		if state.Pending != nil && state.Pending.Version == version {
 			explicit = explicit || state.Pending.Explicit
-			awaitOwners = state.Pending.AwaitOwners
+			awaitEpoch = state.Pending.AwaitOwnersEpoch
 		}
-		state.Pending = &PendingApply{Version: version, Explicit: explicit, WaitingOn: []string{}, AwaitOwners: awaitOwners}
+		state.Pending = &PendingApply{Version: version, Explicit: explicit, WaitingOn: []string{}, AwaitOwnersEpoch: awaitEpoch}
 	})
 }
 

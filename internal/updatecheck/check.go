@@ -51,9 +51,9 @@ type PendingApply struct {
 	Version   string   `json:"version"`
 	Explicit  bool     `json:"explicit"`
 	WaitingOn []string `json:"waiting_on"`
-	// AwaitOwners records that this candidate cannot share the journal, so a
-	// retry can wait for owners without downloading it again.
-	AwaitOwners bool `json:"await_owners,omitempty"`
+	// AwaitOwnersEpoch is the installed epoch this candidate was found unable to
+	// share a journal with, so a retry from it can skip downloading it again.
+	AwaitOwnersEpoch int `json:"await_owners_epoch,omitempty"`
 }
 
 type cacheState struct {
