@@ -233,6 +233,53 @@ func TestSkillHubSelectionRoundTripsAndRejectsUnsafePolicy(t *testing.T) {
 	}
 }
 
+func TestBundleCarriesCapacityIntoMaterializedConfig(t *testing.T) {
+	document := `{
+  "schema_version": 1,
+  "default_profile": "private",
+  "profiles": {
+    "private": {
+      "agent_preferences": {
+        "mode": "advisory",
+        "preferred": [
+          {"agent": "codex", "model": "model-a", "family": "a", "version": "1"}
+        ]
+      },
+      "capacity": {
+        "file": "/var/capacity/facts.json",
+        "switch_threshold": 0.9,
+        "pools": {
+          "work": {"mode": "balance", "candidates": [
+            {"harness": "codex", "model": "model-a", "account": "one", "executable": "/opt/bin/codex-one", "cutoff_exempt": true},
+            {"harness": "codex", "model": "model-a", "account": "two", "executable": "/opt/bin/codex-two", "switch_threshold": 0.7, "windows": ["weekly"]}
+          ]}
+        }
+      }
+    }
+  }
+}`
+	bundle, _, err := LoadBundle(writeBundle(t, document, 0o644))
+	if err != nil {
+		t.Fatal(err)
+	}
+	capacity := MaterializeBundle(bundle).Profiles["private"].Capacity
+	if capacity == nil || capacity.File != "/var/capacity/facts.json" || capacity.SwitchThreshold == nil || *capacity.SwitchThreshold != 0.9 {
+		t.Fatalf("capacity = %+v", capacity)
+	}
+	candidates := capacity.Pools["work"].Candidates
+	if len(candidates) != 2 || candidates[0].Executable != "/opt/bin/codex-one" || !candidates[0].CutoffExempt || candidates[1].SwitchThreshold == nil || *candidates[1].SwitchThreshold != 0.7 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+}
+
+func TestSourceEnrichmentCannotReplaceLocalCapacity(t *testing.T) {
+	existing := Config{SchemaVersion: SchemaVersion, Profiles: map[string]Profile{"private": {Capacity: &Capacity{File: "/var/local.json"}}}}
+	desired := Config{SchemaVersion: SchemaVersion, Profiles: map[string]Profile{"private": {Capacity: &Capacity{File: "/var/bundle.json"}}}}
+	if configCanBeEnrichedBy(existing, desired) {
+		t.Fatal("a bundle replaced local capacity during source setup")
+	}
+}
+
 func TestLoadBundleFailsClosedForArgumentsCredentialsAndUnknownFields(t *testing.T) {
 	cases := map[string]string{
 		"arguments":    strings.Replace(validBundle, `"executable": "/opt/bin/codex"`, `"executable": "/opt/bin/codex", "arguments": ["--danger"]`, 1),
