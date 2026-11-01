@@ -283,3 +283,16 @@ func contains(in []string, want string) bool {
 	}
 	return false
 }
+
+func TestSubstringMatchesOnlyAtSegmentStart(t *testing.T) {
+	catalog := NewCatalog("", nil, []ModelRecord{
+		{Adapter: "cursor", Model: "composer-2.5", Aliases: []string{"composer"}},
+		{Adapter: "devin", Model: "gemini-4-argon-medium"},
+	}, "")
+	if got := Match("omp", catalog); len(got.Models) != 0 || len(got.Unmatched) != 1 {
+		t.Fatalf("omp selected %+v", got.Models)
+	}
+	if got := Match("argon", catalog); len(got.Models) != 1 || got.Models[0].Model != "gemini-4-argon-medium" {
+		t.Fatalf("argon selected %+v", got.Models)
+	}
+}

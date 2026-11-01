@@ -281,6 +281,8 @@ syntax/composition/provenance meaning. Doctor emits the selected profile report;
 bundle validation emits reports keyed by profile. A provenance failure retains
 the partial doctor report at `error.details.report` with its existing error exit.
 See [launch-recipe-report](../schemas/launch-recipe-report.schema.json).
+`config doctor --live` adds the explicit native catalog check described in
+[configuration](configuration.md).
 
 Recipe compatibility tests exact configured harness/model/settings and aliases
 without executing binaries, contacting providers or resolving Multica assignees.

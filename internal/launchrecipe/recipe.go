@@ -297,6 +297,9 @@ func defaultExecutable(harness string) string {
 	}
 }
 
+// DefaultExecutable names the CLI a harness runs when config sets no override.
+func DefaultExecutable(harness string) string { return defaultExecutable(harness) }
+
 func resolveExecutable(harness, override string) (string, error) {
 	exe := override
 	if exe == "" {

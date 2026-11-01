@@ -201,7 +201,8 @@ request example; selection errors include bounded reviewed catalog candidates.
 Preserve explicit constraints: examples and candidates never authorize fallback.
 `config doctor` separates syntax/provenance from static `launch_recipes`
 compatibility; `runtime_verified: false` means runtime/account/Multica readiness
-has not been established.
+has not been established. `config doctor --live` asks installed Codex, Cursor and
+Devin CLIs whether each preferred model and effort is offered now, with no prompt.
 
 `--wait` requires completed work with a nonempty stored answer and acknowledges
 collection after delivery. `--content` returns exact answer text. Explicit

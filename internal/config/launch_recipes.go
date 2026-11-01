@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/Git-on-my-level/agentctl/internal/launchrecipe"
+	"github.com/Git-on-my-level/agentctl/internal/nativecatalog"
 )
 
 // LaunchRecipeReport checks only whether the configured preferred tuples can
@@ -104,4 +105,28 @@ func CheckConfigLaunchRecipes(cfg Config) map[string]LaunchRecipeReport {
 		reports[name] = CheckLaunchRecipes(cfg.Profiles[name])
 	}
 	return reports
+}
+
+// LiveCatalogEntries lists the tuples of a profile for an explicit native
+// catalog check, with the executable each one would launch.
+func LiveCatalogEntries(profile Profile) []nativecatalog.Entry {
+	if profile.AgentPreferences == nil {
+		return nil
+	}
+	entries := make([]nativecatalog.Entry, 0, len(profile.AgentPreferences.Preferred))
+	for i, preference := range profile.AgentPreferences.Preferred {
+		harness, err := launchrecipe.CanonicalHarness(preference.Agent)
+		if err != nil {
+			harness = preference.Agent
+		}
+		executable := launchrecipe.DefaultExecutable(harness)
+		for name, adapter := range profile.Adapters {
+			canonical, canonicalErr := launchrecipe.CanonicalHarness(name)
+			if canonicalErr == nil && canonical == harness && adapter.Executable != "" {
+				executable = adapter.Executable
+			}
+		}
+		entries = append(entries, nativecatalog.Entry{Index: i, Harness: harness, Model: preference.Model, Effort: preference.Effort, Executable: executable})
+	}
+	return entries
 }
