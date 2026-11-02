@@ -1,11 +1,42 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"testing"
 	"time"
 )
+
+func TestLinuxPresentPIDRequiresMatchingNamespace(t *testing.T) {
+	for _, ticks := range []int64{100, 200} {
+		for _, scenario := range []string{"mismatch", "unrecorded", "unknown", "error", "no_getter"} {
+			t.Run(fmt.Sprintf("%d/%s", ticks, scenario), func(t *testing.T) {
+				id := processIdentity{PID: 42, StartTicks: 100, PIDNamespaceIno: 7}
+				getter := func() (uint64, error) { return 8, nil }
+				switch scenario {
+				case "unrecorded":
+					id.PIDNamespaceIno = 0
+					getter = func() (uint64, error) { return 7, nil }
+				case "unknown":
+					getter = func() (uint64, error) { return 0, nil }
+				case "error":
+					getter = func() (uint64, error) { return 0, errors.New("namespace unavailable") }
+				case "no_getter":
+					getter = nil
+				}
+				reads := 0
+				proof := linuxProof(id, func(string) ([]byte, error) {
+					reads++
+					return procStatLine(42, 1, ticks), nil
+				}, getter)
+				if proof.Alive || proof.Gone || proof.Proof != "unproven" || reads != 0 {
+					t.Fatalf("used an aliased PID without namespace proof: %+v reads=%d", proof, reads)
+				}
+			})
+		}
+	}
+}
 
 func TestLinuxENOENTWithoutNamespaceProofIsUnproven(t *testing.T) {
 	read := func(name string) ([]byte, error) {

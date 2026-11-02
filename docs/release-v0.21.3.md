@@ -30,8 +30,10 @@ Supervisor recovery preserves active runner leases with one read. After five
 minutes without fresh evidence it can mark a native launch orphaned only with
 kernel proof that both its native launch and collecting owner identities are
 gone, a matching journal host and an unchanged revision. Legacy rows without
-owner identity qualify only when the native launch predates this kernel boot.
-Same-boot legacy rows remain unknown. Live, recently observed, parked and unproven
+owner identity remain unknown for explicit operator reconciliation. Wall-clock
+boot comparisons are not used as ownership proof. Linux process proofs require
+a matching recorded PID namespace even when the PID is present.
+Live, recently observed, parked and unproven
 legacy executions are preserved. Orphaned means the outcome is unknown.
 
 The journal schema version and compatibility epoch remain unchanged. An optional
@@ -40,7 +42,7 @@ projections may omit it, which makes automatic repair conservative. No migration
 record deletion or process cancellation is required. Existing owners may keep
 running during the binary replacement. The new worker accepts the old launch
 protocol to tolerate an in-flight v0.21.1 parent crossing the replacement.
-Legacy rows without launch identity still need explicit reconciliation; a
+Legacy rows without launch or collector identity need explicit reconciliation; a
 parent lost between admission and worker creation leaves a known starting row.
 
 `recent` execution rows now expose the recorded `capacity` object used by

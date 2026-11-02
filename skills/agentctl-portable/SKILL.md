@@ -727,8 +727,9 @@ identity, and unproven absence refuse without mutation. Never treat `orphaned`
 as success or failure. Use ordinary `cancel` for live work and Multica authority.
 Supervisor automatic repair additionally requires five minutes without fresh
 evidence and proof that the collecting `owner_launch` is gone. Legacy rows
-without owner identity qualify only when the native launch predates the current
-kernel boot; a same-boot finished child can still have a live collecting owner.
+without owner identity remain unknown for explicit operator reconciliation;
+wall-clock boot comparisons cannot prove the collector is gone. Linux process
+proofs require a matching recorded PID namespace before consulting a PID.
 Native event-write errors reap the child and report `terminal_recorded`; if false,
 the journal needs repair before it can durably represent the result. Delegate
 failures include a native exit code when available and an allowlisted diagnostic

@@ -12,10 +12,11 @@ import (
 )
 
 func TestSupervisorOrphansOnlyProvenGoneStaleNativeLaunch(t *testing.T) {
-	for _, scenario := range []string{"gone", "alive", "unproven", "lease", "legacy", "recent", "renewed", "same_boot", "boot_unknown", "owner_alive", "owner_gone", "owner_unproven", "pending"} {
+	for _, scenario := range []string{"gone", "alive", "unproven", "lease", "legacy", "recent", "renewed", "owner_missing", "clock_shift_legacy", "owner_alive", "owner_gone", "owner_unproven", "pending"} {
 		t.Run(scenario, func(t *testing.T) {
 			world := seedReconcileWorld(t)
 			row := world.gone
+			row.OwnerLaunch = &model.LaunchIdentity{PID: 9999, StartedAt: world.now.Add(-30 * time.Minute)}
 			j, err := store.Open(world.path, store.Options{})
 			if err != nil {
 				t.Fatal(err)
@@ -25,13 +26,18 @@ func TestSupervisorOrphansOnlyProvenGoneStaleNativeLaunch(t *testing.T) {
 				row.State = model.StateStarting
 				row.SourceBindings = nil
 				row.Launch = nil
-			case "same_boot":
-				row.Launch.StartedAt = world.now.Add(-10 * time.Minute)
+				row.OwnerLaunch = nil
+			case "owner_missing", "clock_shift_legacy":
+				// Even an apparently pre-boot wall-clock launch must not
+				// substitute for a missing collector identity.
+				row.Launch.StartedAt = world.now.Add(-24 * time.Hour)
+				row.OwnerLaunch = nil
 			case "owner_alive", "owner_gone", "owner_unproven":
 				row.Launch.StartedAt = world.now.Add(-10 * time.Minute)
 				row.OwnerLaunch = &model.LaunchIdentity{PID: 9999, StartedAt: world.now.Add(-30 * time.Minute)}
 			case "legacy":
 				row.Launch = nil
+				row.OwnerLaunch = nil
 			case "recent":
 				row.Observation.ObservedAt = world.now.Add(-time.Minute)
 				row.UpdatedAt = row.Observation.ObservedAt
@@ -48,17 +54,11 @@ func TestSupervisorOrphansOnlyProvenGoneStaleNativeLaunch(t *testing.T) {
 			var out, stderr bytes.Buffer
 			a := testApp(&out, &stderr)
 			a.now = func() time.Time { return world.now }
-			a.bootTime = func() time.Time {
-				if scenario == "boot_unknown" {
-					return time.Time{}
-				}
-				return world.now.Add(-time.Hour)
-			}
 			proofCalls := 0
 			a.processProof = func(identity processIdentity) processProof {
 				proofCalls++
 				if identity.PID == 9999 {
-					return processProof{Gone: scenario == "owner_gone", Alive: scenario == "owner_alive", Proof: "owner_proof"}
+					return processProof{Gone: scenario == "gone" || scenario == "renewed" || scenario == "owner_gone", Alive: scenario == "owner_alive", Proof: "owner_proof"}
 				}
 				if scenario == "renewed" {
 					// The proof must run outside the journal lock, and progress
@@ -75,7 +75,7 @@ func TestSupervisorOrphansOnlyProvenGoneStaleNativeLaunch(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				gone := scenario == "gone" || scenario == "renewed" || scenario == "same_boot" || scenario == "boot_unknown" || scenario == "owner_alive" || scenario == "owner_gone" || scenario == "owner_unproven"
+				gone := scenario == "gone" || scenario == "renewed" || scenario == "owner_alive" || scenario == "owner_gone" || scenario == "owner_unproven"
 				return processProof{Gone: gone, Alive: scenario == "alive", Proof: "pid_absent"}
 			}
 			bridge := pathSupervisorExecutions{path: world.path, app: a}
@@ -111,7 +111,7 @@ func TestSupervisorOrphansOnlyProvenGoneStaleNativeLaunch(t *testing.T) {
 			} else if current.Revision != row.Revision || current.State != row.State {
 				t.Fatalf("mutated %s: %+v", scenario, current)
 			}
-			if (scenario == "lease" || scenario == "legacy" || scenario == "recent" || scenario == "pending") && proofCalls != 0 {
+			if (scenario == "lease" || scenario == "legacy" || scenario == "recent" || scenario == "pending" || scenario == "owner_missing" || scenario == "clock_shift_legacy") && proofCalls != 0 {
 				t.Fatalf("unnecessary kernel probe for %s", scenario)
 			}
 		})

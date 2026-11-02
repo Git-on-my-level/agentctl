@@ -94,9 +94,10 @@ After five minutes without a runner lease or observation, the supervisor may
 mark a native execution `orphaned/owner_lost` only when the kernel proves its
 immutable launch identity and collecting owner identity are both gone, the
 journal host matches, and the execution revision has not changed during proof.
-New launches record `owner_launch`; legacy rows without it qualify only when
-the native launch predates the current kernel boot. Same-boot legacy rows stay
-unknown because a live owner may still be committing a finished child's result.
+New launches record `owner_launch`; legacy rows without it remain unknown for
+explicit operator reconciliation. Wall-clock boot comparisons do not prove
+collector absence after clock corrections. Linux PID evidence requires a
+matching recorded PID namespace before consulting either presence or absence.
 This records an unknown outcome and
 does not kill processes or delete records. Live, recently observed, parked,
 foreign-host and legacy rows without launch identity are preserved. A parent

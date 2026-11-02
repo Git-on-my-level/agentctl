@@ -51,7 +51,6 @@ type app struct {
 	// processProof overrides host process-identity checks. Production leaves it
 	// nil and reads the kernel process table; tests inject a deterministic proof.
 	processProof func(processIdentity) processProof
-	bootTime     func() time.Time
 	updateNotice func(context.Context, string, common) *output.Warning
 	// liveOwners overrides the host process scan that defers binary updates while execution owners run.
 	liveOwners func() ([]string, error)

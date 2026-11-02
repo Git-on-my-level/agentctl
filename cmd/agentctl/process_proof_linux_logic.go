@@ -12,7 +12,9 @@ import (
 // Absence is pid_absent only when the recorded pid namespace matches
 // /proc/self/ns/pid and a known-live pid (/proc/1 or this process's parent)
 // is visible. Otherwise ENOENT is unproven: hidepid and a foreign pid
-// namespace both hide live processes. Start identity compares raw stat
+// namespace both hide live processes. A visible PID also requires a matching
+// recorded namespace: a different namespace can alias a live unrelated PID.
+// Start identity compares raw stat
 // starttime ticks. Rows without ticks recorded at launch stay unproven
 // instead of pid_reused, because boot-time plus ticks wall-clock math moves
 // when NTP steps the clock.
@@ -20,6 +22,10 @@ func linuxProof(id processIdentity, read func(string) ([]byte, error), nsInode f
 	proof := processProof{PID: id.PID}
 	if id.PID <= 0 {
 		proof.Proof = "no_pid"
+		return proof
+	}
+	if !linuxNamespaceMatches(id.PIDNamespaceIno, nsInode) {
+		proof.Proof = "unproven"
 		return proof
 	}
 	data, err := read("/proc/" + strconv.Itoa(id.PID) + "/stat")
@@ -62,11 +68,7 @@ func linuxProof(id processIdentity, read func(string) ([]byte, error), nsInode f
 }
 
 func linuxAbsenceProven(recordedNS uint64, read func(string) ([]byte, error), nsInode func() (uint64, error)) bool {
-	if recordedNS == 0 || nsInode == nil {
-		return false
-	}
-	current, err := nsInode()
-	if err != nil || current == 0 || current != recordedNS {
+	if !linuxNamespaceMatches(recordedNS, nsInode) {
 		return false
 	}
 	if _, err := read("/proc/1/stat"); err == nil {
@@ -82,4 +84,12 @@ func linuxAbsenceProven(recordedNS uint64, read func(string) ([]byte, error), ns
 	}
 	_, err = read("/proc/" + strconv.Itoa(ppid) + "/stat")
 	return err == nil
+}
+
+func linuxNamespaceMatches(recordedNS uint64, nsInode func() (uint64, error)) bool {
+	if recordedNS == 0 || nsInode == nil {
+		return false
+	}
+	current, err := nsInode()
+	return err == nil && current != 0 && current == recordedNS
 }

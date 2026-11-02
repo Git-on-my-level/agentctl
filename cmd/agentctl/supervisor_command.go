@@ -359,7 +359,8 @@ func (b pathSupervisorExecutions) Reprobe(ctx context.Context, execution supervi
 // A verified runner lease needs no adapter construction or write-back. Once a
 // native launch has been silent for five minutes, kernel proof of its absence
 // may close it as orphaned (unknown outcome), never as success or failure.
-// Legacy rows without launch identity and parked recoveries stay untouched.
+// Legacy rows without launch/collector identity and parked recoveries stay
+// untouched; wall-clock age cannot prove an unknown collector's absence.
 func (b pathSupervisorExecutions) probeNativeOwner(ctx context.Context, id string) (supervisor.ProbeResult, bool, error) {
 	executionID, err := ids.ParseExecutionID(id)
 	if err != nil {
@@ -388,7 +389,7 @@ func (b pathSupervisorExecutions) probeNativeOwner(ctx context.Context, id strin
 		return result, true, nil
 	}
 	identity, recorded := recordedLaunch(current)
-	if !recorded || observationAge(current, now) < 5*time.Minute {
+	if !recorded || current.OwnerLaunch == nil || observationAge(current, now) < 5*time.Minute {
 		return supervisor.ProbeResult{}, false, nil
 	}
 	// Proof is outside the database lock. The subsequent writer rechecks the
@@ -401,27 +402,14 @@ func (b pathSupervisorExecutions) probeNativeOwner(ctx context.Context, id strin
 	if !proof.Gone {
 		return supervisor.ProbeResult{}, false, nil
 	}
-	var ownerEvidence map[string]any
-	if current.OwnerLaunch != nil {
-		owner := current.OwnerLaunch
-		ownerProof := prove(processIdentity{PID: owner.PID, StartedAt: owner.StartedAt, StartTicks: owner.StartTicks, PIDNamespaceIno: owner.PIDNamespaceIno})
-		if !ownerProof.Gone {
-			return supervisor.ProbeResult{}, false, nil
-		}
-		ownerEvidence = map[string]any{"kind": "process_absence", "proof": ownerProof.Proof, "pid": owner.PID, "recorded_started_at": owner.StartedAt.UTC().Format(time.RFC3339Nano)}
-	} else {
-		// Legacy launches have no owner identity. A child from before this
-		// boot also lost its original owner; a same-boot child may merely
-		// have finished while a live owner waits to commit its result.
-		boot := hostBootTime()
-		if b.app != nil && b.app.bootTime != nil {
-			boot = b.app.bootTime()
-		}
-		if boot.IsZero() || !identity.StartedAt.Before(boot.Add(-processStartTolerance)) {
-			return supervisor.ProbeResult{}, false, nil
-		}
-		ownerEvidence = map[string]any{"kind": "previous_boot", "boot_at": boot.UTC().Format(time.RFC3339Nano), "launch_started_at": identity.StartedAt.UTC().Format(time.RFC3339Nano)}
+	// Wall-clock boot comparisons cannot establish a legacy collector's
+	// absence after clock corrections. Only its recorded identity can.
+	owner := current.OwnerLaunch
+	ownerProof := prove(processIdentity{PID: owner.PID, StartedAt: owner.StartedAt, StartTicks: owner.StartTicks, PIDNamespaceIno: owner.PIDNamespaceIno})
+	if !ownerProof.Gone {
+		return supervisor.ProbeResult{}, false, nil
 	}
+	ownerEvidence := map[string]any{"kind": "process_absence", "proof": ownerProof.Proof, "pid": owner.PID, "recorded_started_at": owner.StartedAt.UTC().Format(time.RFC3339Nano)}
 	err = journal.with(ctx, false, func(j *store.Journal) error {
 		host, err := j.HostID(ctx)
 		if err != nil {
