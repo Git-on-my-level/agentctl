@@ -92,7 +92,10 @@ func TestClaudeCodeDelegatePermissionPlan(t *testing.T) {
 		f.selectRequest(t, `{"family":"opus"}`)
 		code, out := f.invoke("private-task-token", "--plan")
 		wantPermissions := `"permissions":"constrained"`
-		if code != 0 || !strings.Contains(out, wantPermissions) || strings.Contains(out, `"--permission-mode","auto"`) != grant || !strings.Contains(out, `"opus[1m]"`) || !strings.Contains(out, `"prompt_delivery":"stream"`) || strings.Contains(out, "private-task-token") {
+		if grant {
+			wantPermissions = `"permissions":"full"`
+		}
+		if code != 0 || !strings.Contains(out, wantPermissions) || strings.Contains(out, `"--permission-mode","bypassPermissions"`) != grant || !strings.Contains(out, `"opus[1m]"`) || !strings.Contains(out, `"prompt_delivery":"stream"`) || strings.Contains(out, "private-task-token") {
 			t.Fatalf("grant=%v exit=%d output=%s", grant, code, out)
 		}
 		if _, err := os.Stat(f.journal); !os.IsNotExist(err) {

@@ -54,7 +54,7 @@ func TestClaudeCodePreferredEffortPassesDoctorRecipeCheck(t *testing.T) {
 func TestLaunchRecipesDoNotInventPermissionSupport(t *testing.T) {
 	profile := Profile{Delegation: &DelegationPolicy{UnattendedCodingPermissions: true}, AgentPreferences: &AgentPreferences{Mode: "advisory", Preferred: []AgentPreference{{Agent: "omp", Model: "zai/glm-5.3"}, {Agent: "codex", Model: "exact-model"}, {Agent: "devin", Model: "exact-model"}, {Agent: "claude-code", Model: "opus[1m]"}}}}
 	report := CheckLaunchRecipes(profile)
-	if !report.Compatible || report.Checks[0].Permissions != "unsupported" || report.Checks[1].Permissions != "full" || report.Checks[2].Permissions != "full" || report.Checks[3].Permissions != "constrained" {
+	if !report.Compatible || report.Checks[0].Permissions != "unsupported" || report.Checks[1].Permissions != "full" || report.Checks[2].Permissions != "full" || report.Checks[3].Permissions != "full" {
 		t.Fatalf("permission support misreported: %#v", report)
 	}
 	if got := CheckLaunchRecipes(Profile{}); !got.Compatible || got.Status != "not_configured" || len(got.Checks) != 0 {

@@ -331,7 +331,7 @@ func TestClaudeCodePreservesNativeContextSuffix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", model, err)
 		}
-		if got.Argv[9] != model || got.Permissions != PermissionsConstrained || strings.Join(got.Argv[len(got.Argv)-2:], " ") != "--permission-mode auto" || contains(got.Argv, "--dangerously-skip-permissions") {
+		if got.Argv[9] != model || got.Permissions != PermissionsFull || strings.Join(got.Argv[len(got.Argv)-2:], " ") != "--permission-mode bypassPermissions" || contains(got.Argv, "--dangerously-skip-permissions") {
 			t.Fatalf("model or permissions changed: %#v", got)
 		}
 		if _, err := Build(Input{Harness: "cursor", Model: model}); err == nil {
@@ -356,7 +356,8 @@ func TestClaudeCodeCodingPermissionGrant(t *testing.T) {
 				want := []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--input-format", "stream-json", "--replay-user-messages", "--model", "opus[1m]", "--effort", "high"}
 				permissions := PermissionsConstrained
 				if grant {
-					want = append(want, "--permission-mode", "auto")
+					want = append(want, "--permission-mode", "bypassPermissions")
+					permissions = PermissionsFull
 				}
 				if strings.Join(got.Argv, "\x00") != strings.Join(want, "\x00") || got.Permissions != permissions || got.PromptDelivery != PromptDeliveryStream {
 					t.Fatalf("harness=%s access=%q grant=%v recipe=%#v", harness, access, grant, got)

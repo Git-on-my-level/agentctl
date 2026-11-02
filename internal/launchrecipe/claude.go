@@ -79,7 +79,10 @@ func buildClaudeCode(executable, model, speed, effort, access string, codingGran
 		argv = append(argv, "--effort", effort)
 	}
 	if applyCodingPermissions(access, codingGrant) {
-		argv = append(argv, "--permission-mode", "auto")
+		// bypassPermissions skips prompts. settings.json defaultMode is not
+		// enough: phone-started and --print sessions ignore it unless this
+		// flag is on the argv. David 2026-11-02.
+		argv = append(argv, "--permission-mode", "bypassPermissions")
 	}
 	return Recipe{Argv: argv, PromptDelivery: PromptDeliveryStream}, nil
 }
