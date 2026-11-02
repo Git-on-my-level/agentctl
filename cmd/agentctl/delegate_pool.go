@@ -154,7 +154,7 @@ func (a *app) recentPoolLaunches(ctx context.Context, c common, now time.Time, w
 	if err != nil {
 		return nil, err
 	}
-	journal, err := openJournalWithRetryContext(ctx, path, store.Options{ReadOnly: true})
+	journal, err := openJournalWithBusyBudget(ctx, path, store.Options{ReadOnly: true}, true, c.journalBusyBudget)
 	if errors.Is(err, store.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

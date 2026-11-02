@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -35,6 +36,8 @@ const (
 )
 
 type app struct {
+	// Tests inject worker creation/receipt faults without launching a native CLI.
+	startDetachedWorker func(*exec.Cmd) error
 	// nativeEventWriter injects storage faults in lifecycle tests; nil uses the journal.
 	nativeEventWriter func(context.Context, *store.Journal, model.Execution, adapter.Event) (model.Execution, error)
 
@@ -623,6 +626,7 @@ func (a *app) status(ctx context.Context, renderer output.Renderer, c common, ar
 			return mapStoreError("read execution outcome", err)
 		}
 	}
+	_ = journal.Close()
 	return writeExecutionReported(renderer, execution, "status", opts)
 }
 

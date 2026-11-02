@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/callback"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	agentruntime "github.com/Git-on-my-level/agentctl/internal/runtime"
@@ -92,7 +93,7 @@ func (a *app) supervisorRun(ctx context.Context, renderer output.Renderer, c com
 	// transport I/O and authority reprobes must not hold bbolt's process lock.
 	resolvedStateDir := cfg.StateDir
 	factory := supervisor.DependenciesFactoryFunc(func(cycleCtx context.Context) (supervisor.CycleDependencies, error) {
-		bridge := pathSupervisorExecutions{path: journalPath, probeTimeout: 10 * time.Second}
+		bridge := pathSupervisorExecutions{path: journalPath, probeTimeout: 10 * time.Second, app: a}
 		deps := supervisor.Dependencies{
 			Executions: bridge,
 			Reprober:   bridge,
@@ -290,7 +291,10 @@ func (a *app) supervisorPlan(renderer output.Renderer, args []string) *output.Er
 type pathSupervisorExecutions struct {
 	path         string
 	probeTimeout time.Duration
+	app          *app
 }
+
+const supervisorJournalBusyBudget = 2 * time.Second
 
 func (a *app) reprobeAwaitedMultica(ctx context.Context, c common, execution model.Execution) *output.Error {
 	journalPath, err := a.journalPath(c)
@@ -318,7 +322,7 @@ func (a *app) reprobeAwaitedMultica(ctx context.Context, c common, execution mod
 }
 
 func (b pathSupervisorExecutions) withBridge(ctx context.Context, fn func(agentruntime.SupervisorExecutions) error) error {
-	engine, err := agentruntime.New(scopedJournal{path: b.path}, agentruntime.Options{})
+	engine, err := agentruntime.New(scopedJournal{path: b.path, busyBudget: supervisorJournalBusyBudget}, agentruntime.Options{})
 	if err != nil {
 		return err
 	}
@@ -339,6 +343,9 @@ func (b pathSupervisorExecutions) Reprobe(ctx context.Context, execution supervi
 		ctx, cancel = context.WithTimeout(ctx, b.probeTimeout)
 		defer cancel()
 	}
+	if result, handled, err := b.probeNativeOwner(ctx, execution.ID); handled || err != nil {
+		return result, err
+	}
 	err = b.withBridge(ctx, func(bridge agentruntime.SupervisorExecutions) error {
 		result, err = bridge.Reprobe(ctx, execution)
 		return err
@@ -347,6 +354,84 @@ func (b pathSupervisorExecutions) Reprobe(ctx context.Context, execution supervi
 		return supervisor.ProbeResult{}, ctx.Err()
 	}
 	return result, err
+}
+
+// A verified runner lease needs no adapter construction or write-back. Once a
+// native launch has been silent for five minutes, kernel proof of its absence
+// may close it as orphaned (unknown outcome), never as success or failure.
+// Legacy rows without launch/collector identity and parked recoveries stay
+// untouched; wall-clock age cannot prove an unknown collector's absence.
+func (b pathSupervisorExecutions) probeNativeOwner(ctx context.Context, id string) (supervisor.ProbeResult, bool, error) {
+	executionID, err := ids.ParseExecutionID(id)
+	if err != nil {
+		return supervisor.ProbeResult{}, false, err
+	}
+	journal := scopedJournal{path: b.path, busyBudget: supervisorJournalBusyBudget}
+	current, err := journal.GetExecution(ctx, executionID)
+	if err != nil {
+		return supervisor.ProbeResult{}, false, err
+	}
+	if current.Authority != model.AuthorityNative {
+		return supervisor.ProbeResult{}, false, nil
+	}
+	now := time.Now().UTC()
+	if b.app != nil {
+		now = b.app.now().UTC()
+	}
+	result := supervisor.ProbeResult{State: string(current.State), Liveness: string(current.Liveness), Revision: current.Revision, ObservedAt: current.Observation.ObservedAt, Source: string(current.Observation.Source), AlreadyApplied: true, ProbedAt: now}
+	if current.State.Terminal() || current.NativeRecoveryParked() || runnerLeaseActive(current, now) {
+		return result, true, nil
+	}
+	if current.State == model.StateStarting && len(current.SourceBindings) == 0 {
+		// Admission is durable before the worker has a native status binding.
+		// There is no authority route to probe yet; an unchanged pending row
+		// is not a failed reprobe and never authorizes another launch.
+		return result, true, nil
+	}
+	identity, recorded := recordedLaunch(current)
+	if !recorded || current.OwnerLaunch == nil || observationAge(current, now) < 5*time.Minute {
+		return supervisor.ProbeResult{}, false, nil
+	}
+	// Proof is outside the database lock. The subsequent writer rechecks the
+	// whole revision and lease; a renewed owner always wins that race.
+	prove := inspectProcess
+	if b.app != nil {
+		prove = b.app.proveProcess
+	}
+	proof := prove(identity)
+	if !proof.Gone {
+		return supervisor.ProbeResult{}, false, nil
+	}
+	// Wall-clock boot comparisons cannot establish a legacy collector's
+	// absence after clock corrections. Only its recorded identity can.
+	owner := current.OwnerLaunch
+	ownerProof := prove(processIdentity{PID: owner.PID, StartedAt: owner.StartedAt, StartTicks: owner.StartTicks, PIDNamespaceIno: owner.PIDNamespaceIno, ProcfsPIDNamespaceIno: owner.ProcfsPIDNamespaceIno})
+	if !ownerProof.Gone {
+		return supervisor.ProbeResult{}, false, nil
+	}
+	ownerEvidence := map[string]any{"kind": "process_absence", "proof": ownerProof.Proof, "pid": owner.PID, "recorded_started_at": owner.StartedAt.UTC().Format(time.RFC3339Nano)}
+	err = journal.with(ctx, false, func(j *store.Journal) error {
+		host, err := j.HostID(ctx)
+		if err != nil {
+			return err
+		}
+		latest, err := j.GetExecution(ctx, executionID)
+		if err != nil {
+			return err
+		}
+		if latest.Revision != current.Revision || latest.OriginHostID != host || latest.State.Terminal() || runnerLeaseActive(latest, now) {
+			return nil
+		}
+		updated, err := commitOwnerLostEvidence(ctx, j, latest, proof, observationAge(latest, now), now, ownerEvidence)
+		if err != nil {
+			return err
+		}
+		result.State = string(updated.State)
+		result.Liveness = string(updated.Liveness)
+		result.Revision = updated.Revision
+		return nil
+	})
+	return result, true, err
 }
 
 func (b pathSupervisorExecutions) ApplyProbe(ctx context.Context, id string, result supervisor.ProbeResult) error {
@@ -358,7 +443,7 @@ func (b pathSupervisorExecutions) ApplyProbe(ctx context.Context, id string, res
 type journalSupervisorOutbox struct{ path string }
 
 func (b journalSupervisorOutbox) withJournal(ctx context.Context, fn func(*store.Journal) error) error {
-	journal, err := openJournalWithRetryContext(ctx, b.path, store.Options{})
+	journal, err := openJournalWithBusyBudget(ctx, b.path, store.Options{}, true, supervisorJournalBusyBudget)
 	if err != nil {
 		return err
 	}

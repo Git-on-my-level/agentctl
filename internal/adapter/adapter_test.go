@@ -1178,7 +1178,7 @@ func TestNumericSessionIDDoesNotReplaceLaunchPID(t *testing.T) {
 		startedAt:      started,
 		updatedAt:      started,
 		done:           make(chan struct{}),
-		launchIdentity: ProcessLaunch{PID: 4242, StartedAt: started, StartTicks: 99, PIDNamespaceIno: 7},
+		launchIdentity: ProcessLaunch{PID: 4242, StartedAt: started, StartTicks: 99, PIDNamespaceIno: 7, ProcfsPIDNamespaceIno: 7},
 	}
 	record.binding = record.ref.Binding()
 	record.ingestObservation(parsedObservation{SessionID: "8675309"})
@@ -1186,7 +1186,7 @@ func TestNumericSessionIDDoesNotReplaceLaunchPID(t *testing.T) {
 	if session.Ref.OpaqueID != "8675309" || session.Ref.PID != 4242 {
 		t.Fatalf("session ref=%#v", session.Ref)
 	}
-	if session.Launch == nil || session.Launch.PID != 4242 || session.Launch.StartTicks != 99 || session.Launch.PIDNamespaceIno != 7 {
+	if session.Launch == nil || session.Launch.PID != 4242 || session.Launch.StartTicks != 99 || session.Launch.PIDNamespaceIno != 7 || session.Launch.ProcfsPIDNamespaceIno != 7 {
 		t.Fatalf("launch identity was overwritten: %#v", session.Launch)
 	}
 }

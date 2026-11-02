@@ -34,23 +34,24 @@ type recentOptions struct {
 }
 
 type recentExecution struct {
-	Caller                *model.ExecutionCaller `json:"caller,omitempty"`
-	ID                    ids.ExecutionID        `json:"id"`
-	Labels                []string               `json:"labels"`
-	Authority             model.Authority        `json:"authority"`
-	Adapter               string                 `json:"adapter"`
-	Mode                  model.Mode             `json:"mode"`
-	State                 model.State            `json:"state"`
-	Liveness              model.Liveness         `json:"liveness"`
-	CreatedAt             time.Time              `json:"created_at"`
-	StartedAt             *time.Time             `json:"started_at,omitempty"`
-	ProgressAt            *time.Time             `json:"progress_at"`
-	UpdatedAt             time.Time              `json:"updated_at"`
-	TerminalAt            *time.Time             `json:"terminal_at,omitempty"`
-	DurationSeconds       float64                `json:"duration_seconds"`
-	Unreconciled          bool                   `json:"unreconciled"`
-	AcknowledgedAt        *time.Time             `json:"acknowledged_at,omitempty"`
-	AcknowledgementSource string                 `json:"acknowledgement_source,omitempty"`
+	Capacity              *model.DelegationCapacity `json:"capacity,omitempty"`
+	Caller                *model.ExecutionCaller    `json:"caller,omitempty"`
+	ID                    ids.ExecutionID           `json:"id"`
+	Labels                []string                  `json:"labels"`
+	Authority             model.Authority           `json:"authority"`
+	Adapter               string                    `json:"adapter"`
+	Mode                  model.Mode                `json:"mode"`
+	State                 model.State               `json:"state"`
+	Liveness              model.Liveness            `json:"liveness"`
+	CreatedAt             time.Time                 `json:"created_at"`
+	StartedAt             *time.Time                `json:"started_at,omitempty"`
+	ProgressAt            *time.Time                `json:"progress_at"`
+	UpdatedAt             time.Time                 `json:"updated_at"`
+	TerminalAt            *time.Time                `json:"terminal_at,omitempty"`
+	DurationSeconds       float64                   `json:"duration_seconds"`
+	Unreconciled          bool                      `json:"unreconciled"`
+	AcknowledgedAt        *time.Time                `json:"acknowledged_at,omitempty"`
+	AcknowledgementSource string                    `json:"acknowledgement_source,omitempty"`
 }
 
 func (a *app) recent(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
@@ -87,6 +88,9 @@ func (a *app) recent(ctx context.Context, renderer output.Renderer, c common, ar
 	if err != nil {
 		return mapStoreError("list execution acknowledgements", err)
 	}
+	// Projection, filtering, encoding and output can be slow (or pipe-blocked).
+	// They need no database handle and must not keep writers out.
+	_ = journal.Close()
 	items := make([]recentExecution, 0, opts.limit)
 	matched, remaining := 0, 0
 	summary := recentUsageSummary{ByAdapter: map[string]int{}, ByAuthority: map[string]int{}, ByState: map[string]int{}, ByCaller: map[string]int{}, ByModel: map[string]int{}}
@@ -399,6 +403,9 @@ func projectRecent(execution model.Execution, now time.Time, acks store.Acknowle
 		labels = []string{}
 	}
 	item := recentExecution{Caller: execution.Caller, ID: execution.ID, Labels: labels, Authority: execution.Authority, Adapter: execution.Adapter, Mode: execution.Mode, State: execution.State, Liveness: execution.Liveness, CreatedAt: execution.CreatedAt, StartedAt: execution.StartedAt, UpdatedAt: execution.UpdatedAt, ProgressAt: execution.ProgressAt, TerminalAt: execution.TerminalAt, DurationSeconds: duration.Seconds(), Unreconciled: acks.Unreconciled(execution)}
+	if execution.Delegation != nil {
+		item.Capacity = execution.Delegation.Capacity
+	}
 	if ack, ok := acks.ByID[execution.ID]; ok {
 		acknowledgedAt := ack.AcknowledgedAt
 		item.AcknowledgedAt = &acknowledgedAt

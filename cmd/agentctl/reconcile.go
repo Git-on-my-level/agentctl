@@ -610,6 +610,10 @@ func (a *app) applyReconcile(ctx context.Context, journal *store.Journal, host i
 }
 
 func commitOwnerLost(ctx context.Context, journal *store.Journal, execution model.Execution, proof processProof, age time.Duration, now time.Time) (model.Execution, error) {
+	return commitOwnerLostEvidence(ctx, journal, execution, proof, age, now, nil)
+}
+
+func commitOwnerLostEvidence(ctx context.Context, journal *store.Journal, execution model.Execution, proof processProof, age time.Duration, now time.Time, ownerEvidence map[string]any) (model.Execution, error) {
 	sourceState := reconcileOwnerLost
 	execution.State = model.StateOrphaned
 	execution.Liveness = model.LivenessUnreachable
@@ -626,6 +630,9 @@ func commitOwnerLost(ctx context.Context, journal *store.Journal, execution mode
 	payload := map[string]any{
 		"diagnostic_code": reconcileOwnerLost, "reason": reconcileOwnerLost, "proof": proof.Proof, "pid": proof.PID,
 		"observation_age_seconds": int(age.Seconds()),
+	}
+	if ownerEvidence != nil {
+		payload["owner_evidence"] = ownerEvidence
 	}
 	if !proof.RecordedStartedAt.IsZero() {
 		payload["recorded_started_at"] = proof.RecordedStartedAt.Format(time.RFC3339Nano)

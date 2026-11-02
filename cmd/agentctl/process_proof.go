@@ -1,19 +1,37 @@
 package main
 
 import (
+	"os"
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/model"
 )
 
+func retainNativeOwner(execution *model.Execution) {
+	if execution.OwnerLaunch != nil {
+		return
+	}
+	pid := os.Getpid()
+	observed := processStart(pid)
+	if observed.err != nil || !observed.present || !observed.startKnown {
+		return
+	}
+	started := observed.started
+	if started.IsZero() {
+		started = time.Now().UTC()
+	} // Linux identity uses kernel ticks and namespace.
+	execution.OwnerLaunch = &model.LaunchIdentity{PID: pid, StartedAt: started, StartTicks: observed.startTicks, PIDNamespaceIno: observed.nsInode, ProcfsPIDNamespaceIno: observed.nsInode}
+}
+
 const processStartTolerance = 5 * time.Second
 
 // processIdentity is the launcher-recorded owner reconcile is allowed to prove.
 type processIdentity struct {
-	PID             int
-	StartedAt       time.Time
-	StartTicks      int64
-	PIDNamespaceIno uint64
+	PID                   int
+	StartedAt             time.Time
+	StartTicks            int64
+	PIDNamespaceIno       uint64
+	ProcfsPIDNamespaceIno uint64
 }
 
 // processProof is identity evidence for one recorded launch PID. Gone is proof
@@ -73,5 +91,5 @@ func recordedLaunch(execution model.Execution) (processIdentity, bool) {
 	if launch.PID <= 0 || launch.PID > model.MaxLaunchPID || launch.StartedAt.IsZero() {
 		return processIdentity{}, false
 	}
-	return processIdentity{PID: launch.PID, StartedAt: launch.StartedAt, StartTicks: launch.StartTicks, PIDNamespaceIno: launch.PIDNamespaceIno}, true
+	return processIdentity{PID: launch.PID, StartedAt: launch.StartedAt, StartTicks: launch.StartTicks, PIDNamespaceIno: launch.PIDNamespaceIno, ProcfsPIDNamespaceIno: launch.ProcfsPIDNamespaceIno}, true
 }

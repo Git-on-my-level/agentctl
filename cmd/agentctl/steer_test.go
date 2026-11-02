@@ -77,7 +77,10 @@ func startSteerFixtureTimeout(t *testing.T, timeout, script, adapterName, delive
 	owner := testApp(&stdout, &stderr)
 	owner.stdin = strings.NewReader("launch task\n")
 	owner.stdinIsTerminal = func() bool { return false }
-	args := append([]string{"--output", "json", "--journal", fixture.journal, "run", "--label", "steer-fixture", "--timeout", timeout, "--adapter", adapterName, "--prompt-stdin", "--prompt-delivery", delivery, "--", path}, nativeArgs...)
+	// Steering fixtures own a temporary cwd as well as their executable and
+	// journal. Ambient repository discovery is unrelated to input delivery and
+	// makes startup depend on the caller's Git wrappers and repository load.
+	args := append([]string{"--output", "json", "--journal", fixture.journal, "run", "--cwd", root, "--label", "steer-fixture", "--timeout", timeout, "--adapter", adapterName, "--prompt-stdin", "--prompt-delivery", delivery, "--", path}, nativeArgs...)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		fixture.code = owner.run(ctx, args)

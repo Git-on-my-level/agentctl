@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -37,8 +39,20 @@ func TestZCodeEventWriteFailureReapsAndTerminalizes(t *testing.T) {
 	if code != output.ExitCodeFor(output.CodeExecutionUnknown) || !strings.Contains(stdout.String(), `"terminal_recorded":true`) || strings.Contains(stdout.String(), "PRIVATE-TEXT") || !strings.Contains(stdout.String(), `"journal_error_class":"event_validation"`) || !strings.Contains(stdout.String(), `"journal_operation":"commit_observed_event"`) {
 		t.Fatalf("code=%d output=%s", code, stdout.String())
 	}
-	if identity.PID == 0 || !inspectProcess(identity).Gone {
-		t.Fatalf("child %d not reaped", identity.PID)
+	if identity.PID <= 0 {
+		t.Fatal("native child identity was not recorded")
+	}
+	// This test owns the child in its own PID namespace. Signal 0 verifies
+	// reaping directly without requiring access to procfs namespace metadata;
+	// conservative external reconciliation can legitimately remain unproven.
+	child, err := os.FindProcess(identity.PID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = child.Signal(syscall.Signal(0))
+	_ = child.Release()
+	if !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("child %d not reaped: %v", identity.PID, err)
 	}
 	journal, err := store.Open(f.journal, store.Options{ReadOnly: true})
 	if err != nil {

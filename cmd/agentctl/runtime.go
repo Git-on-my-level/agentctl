@@ -31,9 +31,11 @@ import (
 )
 
 type runOptions struct {
-	env        []string
-	delegation *model.DelegationBinding
-	supersedes []ids.ExecutionID
+	detachNative      bool
+	reservedExecution ids.ExecutionID
+	env               []string
+	delegation        *model.DelegationBinding
+	supersedes        []ids.ExecutionID
 	// admit runs after the execution is journaled and before anything is
 	// launched. A refusal terminalizes the execution without starting a
 	// native process; it closes check-then-launch races between invocations.
@@ -260,7 +262,22 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	// The operation context can be cancelled concurrently with this small local
 	// commit. Complete it under a live context so every created execution either
 	// launches or reaches one durable terminal state.
-	execution, reused, err := journal.CreateExecution(context.Background(), execution, mutation)
+	var reused bool
+	if opts.reservedExecution.IsZero() {
+		execution, reused, err = journal.CreateExecution(context.Background(), execution, mutation)
+	} else {
+		// A detached worker may claim only its parent's exact admission. It
+		// cannot create a replacement if that admission is absent or changed.
+		execution, reused, err = journal.GetExecutionByMutation(context.Background(), mutation)
+		if err == nil && (!reused || execution.ID != opts.reservedExecution || execution.State != model.StateStarting || len(execution.SourceBindings) != 0 || execution.SourceState != nil) {
+			err = store.ErrConflict
+		}
+		if err == nil {
+			claim := "detached_worker_claimed"
+			execution.SourceState = &claim
+			execution, err = journal.UpdateExecution(context.Background(), execution, execution.Revision)
+		}
+	}
 	if err != nil {
 		journal.Close()
 		return mapStoreError("create execution", err)
@@ -271,8 +288,11 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	if opts.admissionReused != nil {
 		*opts.admissionReused = reused
 	}
-	if reused {
+	if reused && opts.reservedExecution.IsZero() {
 		journal.Close()
+		if opts.detachNative {
+			return a.collectDelegation(ctx, renderer, c, execution, delegateOptions{detachedReceipt: true}, true)
+		}
 		if opts.started != nil {
 			opts.started(execution, true)
 		}
@@ -282,6 +302,14 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	// a native child: status/subscription commands and the callback supervisor
 	// must be able to observe the execution while it is running.
 	journal.Close()
+	if opts.detachNative {
+		// Parent preflight used the complete invocation. The private payload
+		// carries the prompt separately, so the worker must attach it once.
+		if promptArgs > 0 {
+			opts.argv = opts.argv[:len(opts.argv)-promptArgs]
+		}
+		return a.startReservedDetachedNative(ctx, renderer, c, opts, execution)
+	}
 	if opts.admit != nil {
 		if refusal := opts.admit(execution); refusal != nil {
 			writeJournal, current, openProblem := a.openExecutionWrite(context.Background(), c, execution.ID)
@@ -525,6 +553,26 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 
 func (a *app) recordNativeEvents(c common, execution model.Execution, nativeEvents []adapter.Event, cursor *string, inbox *steerInbox) (model.Execution, bool, *output.Error) {
 	defer a.acknowledgeSteer(c, execution.ID, inbox, nativeEvents)
+	// Bound a stream burst's exclusive file-lock tenure. Each event remains
+	// atomic; a competing command may observe any committed prefix.
+	const batchSize = 16
+	for len(nativeEvents) > 0 {
+		n := min(batchSize, len(nativeEvents))
+		var terminal bool
+		var problem *output.Error
+		execution, terminal, problem = a.recordNativeEventBatch(c, execution, nativeEvents[:n], cursor)
+		if problem != nil || terminal {
+			return execution, terminal, problem
+		}
+		nativeEvents = nativeEvents[n:]
+		if len(nativeEvents) > 0 {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	return execution, false, nil
+}
+
+func (a *app) recordNativeEventBatch(c common, execution model.Execution, nativeEvents []adapter.Event, cursor *string) (model.Execution, bool, *output.Error) {
 	journal, current, problem := a.openExecutionWriteOwned(c, execution.ID)
 	if problem != nil {
 		return execution, false, problem
@@ -1681,6 +1729,10 @@ func nativeSessionID(execution model.Execution) string {
 }
 
 func applySession(journal *store.Journal, execution model.Execution, session adapter.Session, now time.Time) (model.Execution, error) {
+	retainNativeOwner(&execution)
+	if execution.SourceState != nil && *execution.SourceState == "detached_worker_claimed" {
+		execution.SourceState = nil
+	}
 	state := toModelState(session.State)
 	liveness := toModelLiveness(session.Liveness)
 	// A fast child may already be terminal when launch returns. Terminal state
@@ -1717,7 +1769,7 @@ func applySession(journal *store.Journal, execution model.Execution, session ada
 	}
 	recordNativeSession(&execution, session.Ref)
 	if session.Launch != nil {
-		execution.RetainLaunch(session.Launch.PID, session.Launch.StartedAt, session.Launch.StartTicks, session.Launch.PIDNamespaceIno)
+		execution.RetainLaunch(session.Launch.PID, session.Launch.StartedAt, session.Launch.StartTicks, session.Launch.PIDNamespaceIno, session.Launch.ProcfsPIDNamespaceIno)
 	}
 	return journal.UpdateExecution(context.Background(), execution, execution.Revision)
 }

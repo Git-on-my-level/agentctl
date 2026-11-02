@@ -463,12 +463,14 @@ type Session struct {
 
 // ProcessLaunch is the PID and start identity recorded by the launcher itself.
 // Linux start_ticks are the raw /proc stat starttime. pid_namespace_ino is the
-// inode of /proc/self/ns/pid at launch.
+// inode of /proc/self/ns/pid at launch. procfs_pid_namespace_ino attests that
+// /proc/1/ns/pid matched it, so numeric procfs paths use that namespace.
 type ProcessLaunch struct {
-	PID             int       `json:"pid"`
-	StartedAt       time.Time `json:"started_at"`
-	StartTicks      int64     `json:"start_ticks,omitempty"`
-	PIDNamespaceIno uint64    `json:"pid_namespace_ino,omitempty"`
+	PID                   int       `json:"pid"`
+	StartedAt             time.Time `json:"started_at"`
+	StartTicks            int64     `json:"start_ticks,omitempty"`
+	PIDNamespaceIno       uint64    `json:"pid_namespace_ino,omitempty"`
+	ProcfsPIDNamespaceIno uint64    `json:"procfs_pid_namespace_ino,omitempty"`
 }
 
 type LaunchResult struct {

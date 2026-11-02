@@ -68,6 +68,9 @@ func TestANXSecurityDetachedCommandLatency(t *testing.T) {
 	configPath := writeAnxConfig(t, script)
 	journal := filepath.Join(root, "state", "journal.db")
 	command := exec.Command(binary, "--config", configPath, "--journal", journal, "run", "--adapter", "generic-process", "--anx-card", "dogfooding", "--", "/bin/echo", `{"type":"result","session_id":"fixture-session","status":"completed","result":"done"}`)
+	// Measure detached ANX behavior without managed-Git discovery in the
+	// caller's repository contributing to this wall-clock assertion.
+	command.Dir = root
 	command.Env = append(os.Environ(), "AGENTCTL_UPDATE_MODE=off")
 	started := time.Now()
 	if out, err := command.CombinedOutput(); err != nil {

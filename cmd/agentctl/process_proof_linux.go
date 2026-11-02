@@ -24,11 +24,11 @@ func processStart(pid int) processObservation {
 	if err != nil {
 		return processObservation{present: true, err: err}
 	}
-	obs := processObservation{present: true, startKnown: true, startTicks: ticks}
-	if ino, err := selfPIDNamespaceInode(); err == nil {
-		obs.nsInode = ino
+	ino, err := selfPIDNamespaceInode()
+	if err != nil {
+		return processObservation{present: true, err: err}
 	}
-	return obs
+	return processObservation{present: true, startKnown: true, startTicks: ticks, nsInode: ino}
 }
 
 func inspectProcessPlatform(id processIdentity) processProof {
@@ -36,9 +36,11 @@ func inspectProcessPlatform(id processIdentity) processProof {
 }
 
 func selfPIDNamespaceInode() (uint64, error) {
-	var st unix.Stat_t
-	if err := unix.Stat("/proc/self/ns/pid", &st); err != nil {
-		return 0, err
-	}
-	return uint64(st.Ino), nil
+	return adapter.ProcPIDNamespace(func(path string) (uint64, error) {
+		var st unix.Stat_t
+		if err := unix.Stat(path, &st); err != nil {
+			return 0, err
+		}
+		return uint64(st.Ino), nil
+	})
 }
