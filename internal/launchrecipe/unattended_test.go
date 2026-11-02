@@ -11,7 +11,7 @@ func TestUnattendedRecipes(t *testing.T) {
 		{"codex", "read_only", `approval_policy="never"`, PermissionsReadOnly},
 		{"cursor", "coding", "--force", PermissionsFull},
 		{"cursor", "read_only", "ask", PermissionsReadOnly},
-		{"claude-code", "coding", "auto", PermissionsConstrained},
+		{"claude-code", "coding", "bypassPermissions", PermissionsFull},
 		{"zcode", "coding", "yolo", PermissionsConstrained},
 		{"zcode", "read_only", "plan", PermissionsReadOnly},
 		{"devin", "coding", "acp", PermissionsFull},

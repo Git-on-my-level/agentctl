@@ -39,7 +39,7 @@ agentctl delegate --request-file request.json --prompt-file task.md --wait
 Inspect `native.argv`, `native.env`, and `native.permissions` on the plan before launching.
 Coding is the default access. It adds Cursor `--force`, Codex
 `--dangerously-bypass-approvals-and-sandbox`, Claude Code
-`--permission-mode auto`, and Devin ACP permission approval only when `delegation.unattended_coding_permissions` is true.
+`--permission-mode bypassPermissions`, and Devin ACP permission approval only when `delegation.unattended_coding_permissions` is true.
 `settings.access: "read_only"` never adds those flags; Claude Code and Devin refuse it. Expert `run` does not apply this grant.
 Do not hand-write cursor or codex argv for a new agent, and do not edit a
 global CLI allowlist to widen permissions.
@@ -163,7 +163,7 @@ implied by a model preference. Unattended coding permissions are a separate
 `delegation.unattended_coding_permissions` grant. When it is true, coding
 launches (omitted `settings.access`, or `"coding"`) include Cursor `--force`,
 Codex `--dangerously-bypass-approvals-and-sandbox`, Claude Code
-`--permission-mode auto`, and Devin ACP permission approval. Set `settings.access` to `read_only` for
+`--permission-mode bypassPermissions`, and Devin ACP permission approval. Set `settings.access` to `read_only` for
 Cursor `--mode ask` and Codex `--sandbox read-only`; that access never
 receives the coding permission flags. ZCode `read_only` (reviewed for CLI
 0.17.0 only) runs plan mode with a tool denylist, a private empty HOME, and a
@@ -173,8 +173,7 @@ non-canonical cwd, or `zcode.json`, `.zcode/config.json` or `.env` in the cwd
 or an ancestor. Claude Code refuses `read_only` because no reviewed
 mode guarantees blocking edits and shell writes in `--print`. Without the coding
 grant Claude Code adds no permission flag and reports `permissions: constrained`;
-with the grant it still reports `constrained`: auto mode retains native
-classifier checks and can deny tool calls. Devin refuses `read_only`: ACP read-only enforcement is unverified.
+with the grant it reports `permissions: full` and passes `--permission-mode bypassPermissions`. Devin refuses `read_only`: ACP read-only enforcement is unverified.
 Devin ACP requires a nonempty UTF-8 prompt via agentctl-managed stdin; invalid
 text or delivery is refused before launch, including read-only plans. Expert
 ACP runs require `--prompt-delivery stdin` with a prompt source. Its frozen `AGENTCTL_DEVIN_ACP_APPROVE`
@@ -542,7 +541,7 @@ delivery and must not be silently installed as a new service.
 
 Permission-granting native flags remain explicit on expert `run` argv. `delegate`
 applies Cursor `--force`, the Codex bypass, Claude Code
-`--permission-mode auto`, and Devin ACP permission approval only from
+`--permission-mode bypassPermissions`, and Devin ACP permission approval only from
 `delegation.unattended_coding_permissions`, and never on read-only access.
 Consult `agentctl config doctor` for advisory operator preferences: pass Cursor
 `--trust` on expert `run` when that exact authorization is present, otherwise preserve the

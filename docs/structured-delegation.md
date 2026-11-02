@@ -94,7 +94,7 @@ without this grant, even if the directory was previously trusted. A model alias 
 allowlist entry never grants it. Unattended coding permissions are a second
 grant: `delegation.unattended_coding_permissions: true` adds Cursor `--force`,
 Codex `--dangerously-bypass-approvals-and-sandbox`, Claude Code
-`--permission-mode auto`, and grants Devin ACP one-operation permission approvals on coding launches (the default
+`--permission-mode bypassPermissions`, and grants Devin ACP one-operation permission approvals on coding launches (the default
 `settings.access`). `settings.access: "read_only"` uses Cursor `--mode ask`
 and Codex `--sandbox read-only -c approval_policy="never"` and never adds those coding permission flags.
 ZCode read-only (reviewed for ZCode CLI 0.17.0 only; any other version
@@ -138,10 +138,7 @@ working directory or its ancestors during the launch is out of scope. Expert `ru
 never applies any of this. Claude Code
 (`claude` or `claude-code`) refuses `read_only` with `access_unavailable`: no
 reviewed mode guarantees blocking edits and shell writes in `--print`. Coding
-launches report `permissions: constrained` with or without the grant: auto mode
-retains native classifier checks and can deny tool calls. Without the grant
-Claude Code adds no permission flag. The explicit native
-`--permission-mode auto` form was verified with Claude Code 2.1.300 on m5-mbp. See the native
+launches report `permissions: constrained` without the grant and add no permission flag. With the grant they report `permissions: full` and pass `--permission-mode bypassPermissions`, which skips prompts. See the native
 [permission-mode contract](https://code.claude.com/docs/en/permission-modes). Devin
 refuses `read_only` with `access_unavailable`: ACP read-only enforcement is
 unverified. Devin uses `devin acp --model <configured-model>` with stdin prompt

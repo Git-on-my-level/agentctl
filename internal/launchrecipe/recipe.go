@@ -195,8 +195,8 @@ func permissionLabel(harness, access string, grant bool) string {
 	case "cursor", "codex", "devin":
 		return PermissionsFull
 	case "claude-code":
-		// Auto mode keeps native classifier checks and may deny tool calls.
-		return PermissionsConstrained
+		// bypassPermissions skips prompts, unlike auto mode's classifier.
+		return PermissionsFull
 	default:
 		return PermissionsUnsupported
 	}
