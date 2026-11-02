@@ -79,10 +79,37 @@ An exhausted budget returns the existing error unchanged in class:
 `dependency_unavailable`, exit 6, `retryable: true`,
 `details.diagnostic_code: journal_busy`, plus `busy_attempts`,
 `busy_waited_ms`, and `busy_budget_ms`. The detached delegate worker inherits
-the launcher's environment, so `AGENTCTL_JOURNAL_BUSY_BUDGET` applies to it; a
-`--journal-busy-budget` flag on the launcher does not cross the worker
-boundary. The worker's owned-execution writes already wait indefinitely, as
+the launcher's resolved budget through its private pipe, including an explicit
+`--journal-busy-budget` flag or `0`. The worker's owned-execution writes already wait indefinitely, as
 before.
+
+Scoped writable opens validate an already initialized schema without a write
+transaction. Native event bursts release the exclusive file lock every 16
+events; each event remains atomic and readers may observe a committed prefix.
+On Darwin/Linux the first bbolt file open acquires its normal shared/exclusive
+flock on the same descriptor with jittered 1-4ms polling. bbolt's fixed 50ms
+retry interval otherwise makes a 50ms scoped timeout a single attempt, followed
+by the CLI's longer backoff. The same descriptor preserves old-binary lock
+interoperation; snapshot/copy file opens keep bbolt's ordinary open behavior.
+Status/recent release read handles before encoding or writing to output pipes.
+Steering uses the last index key for its sequence boundary rather than decoding
+the full event history; final reconciliation reads have a 500ms shared budget.
+The journal format and compatibility epoch stay unchanged. bbolt still permits
+one writer at a time, so these bounds reduce contention rather than claiming
+unlimited writer throughput.
+
+An opt-in Unix reproducer, using only fake native processes and a fresh private
+journal, runs concurrent delegates, status polling, supervisor cycles and exact
+key replay. It reports ready native workers before the burst and collects both
+initial and recovered execution IDs. It makes no model/provider requests:
+
+```sh
+python3 -I scripts/bench-native-concurrency.py build/agentctl /tmp/new-agentctl-load --agents 30 --require-clean
+```
+
+Choose a new directory on the host's scratch volume and run through its heavy
+command gate. `--alternating-events` adds distinct item.started/item.completed
+observations; the default repeating metadata can be coalesced by the adapter.
 
 Idempotency is unchanged: the retry repeats only the local lock acquisition,
 never adapter I/O or a remote mutation, and a retried `delegate` with the same

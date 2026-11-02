@@ -79,6 +79,7 @@
           "unreconciled"
         ],
         "properties": {
+		"capacity": {"$ref": "delegate-result.schema.json#/properties/capacity"},
           "id": {
             "$ref": "execution.schema.json#/properties/id"
           },

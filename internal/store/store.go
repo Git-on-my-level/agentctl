@@ -118,7 +118,9 @@ func Open(path string, options Options) (*Journal, error) {
 	if timeout == 0 {
 		timeout = 15 * time.Second
 	}
-	db, err := bbolt.Open(absolute, 0o600, &bbolt.Options{ReadOnly: options.ReadOnly, Timeout: timeout, NoFreelistSync: false})
+	boltOptions := &bbolt.Options{ReadOnly: options.ReadOnly, Timeout: timeout, NoFreelistSync: false}
+	configureOpenLock(boltOptions)
+	db, err := bbolt.Open(absolute, 0o600, boltOptions)
 	if err != nil {
 		if errors.Is(err, bbolt.ErrTimeout) {
 			return nil, fmt.Errorf("%w: %v", ErrBusy, err)
@@ -170,6 +172,32 @@ func (j *Journal) Path() string { return j.path }
 const CompatEpoch = 1
 
 func (j *Journal) initialize() error {
+	// Most opens are one short scoped mutation. Rewriting schema_version on
+	// every open adds an unnecessary durable transaction under the exclusive
+	// process lock. Older schema-1 journals with missing optional buckets still
+	// take the existing additive initialization path below.
+	complete := false
+	if err := j.db.View(func(tx *bbolt.Tx) error {
+		metadata := tx.Bucket(bMetadata)
+		if metadata == nil {
+			return nil
+		}
+		if current := metadata.Get(keySchema); current != nil && string(current) != "1" {
+			return fmt.Errorf("%w: unsupported journal schema %q", ErrCorrupt, current)
+		}
+		for _, name := range [][]byte{bMetadata, bExecutions, bEvents, bEventsByExecution, bDedupe, bTerminal, bIdempotency, bOutcomes, bAcknowledgements, bStatusContacts} {
+			if tx.Bucket(name) == nil {
+				return nil
+			}
+		}
+		complete = string(metadata.Get(keySchema)) == "1" && metadata.Get(keyHost) != nil && metadata.Get(keyAckEpoch) != nil
+		return nil
+	}); err != nil {
+		return err
+	}
+	if complete {
+		return nil
+	}
 	return j.db.Update(func(tx *bbolt.Tx) error {
 		for _, name := range [][]byte{bMetadata, bExecutions, bEvents, bEventsByExecution, bDedupe, bTerminal, bIdempotency, bOutcomes, bAcknowledgements, bStatusContacts} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
@@ -560,7 +588,9 @@ func (j *Journal) appendEventTx(tx *bbolt.Tx, event model.Event, canonicalProjec
 	if err != nil {
 		return model.Event{}, false, err
 	}
-	sequence := uint64(nested.Stats().KeyN) + 1
+	// The last sequence is authoritative even when old history was retained
+	// with gaps. Stats traverses the whole index and its count is not needed.
+	sequence := uint64(1)
 	if lastKey, _ := nested.Cursor().Last(); lastKey != nil {
 		sequence = binary.BigEndian.Uint64(lastKey) + 1
 	}
@@ -803,6 +833,34 @@ func (j *Journal) GetEvent(ctx context.Context, id ids.EventID) (model.Event, er
 	return event, err
 }
 
+// LastEventSequence reads the sequence index in O(log n), without decoding
+// historical event bodies. It does not acknowledge or mutate an execution.
+func (j *Journal) LastEventSequence(ctx context.Context, executionID ids.ExecutionID) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	var sequence uint64
+	err := j.db.View(func(tx *bbolt.Tx) error {
+		if tx.Bucket(bExecutions).Get([]byte(executionID.String())) == nil {
+			return ErrNotFound
+		}
+		bucket := tx.Bucket(bEventsByExecution).Bucket([]byte(executionID.String()))
+		if bucket == nil {
+			return nil
+		}
+		key, eventID := bucket.Cursor().Last()
+		if key == nil {
+			return nil
+		}
+		if len(key) != 8 || tx.Bucket(bEvents).Get(eventID) == nil {
+			return fmt.Errorf("%w: invalid last event index", ErrCorrupt)
+		}
+		sequence = binary.BigEndian.Uint64(key)
+		return nil
+	})
+	return sequence, err
+}
+
 func (j *Journal) ListEvents(ctx context.Context, executionID ids.ExecutionID, query contracts.EventQuery) ([]model.Event, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -833,6 +891,9 @@ func (j *Journal) ListEvents(ctx context.Context, executionID ids.ExecutionID, q
 		binary.BigEndian.PutUint64(seek[:], query.AfterSequence+1)
 		cursor := nested.Cursor()
 		for _, eventID := cursor.Seek(seek[:]); eventID != nil && len(events) < query.Limit; _, eventID = cursor.Next() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			raw := tx.Bucket(bEvents).Get(eventID)
 			if raw == nil {
 				return fmt.Errorf("%w: event index target missing", ErrCorrupt)

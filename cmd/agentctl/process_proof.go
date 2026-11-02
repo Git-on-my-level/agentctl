@@ -1,10 +1,27 @@
 package main
 
 import (
+	"os"
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/model"
 )
+
+func retainNativeOwner(execution *model.Execution) {
+	if execution.OwnerLaunch != nil {
+		return
+	}
+	pid := os.Getpid()
+	observed := processStart(pid)
+	if observed.err != nil || !observed.present || !observed.startKnown {
+		return
+	}
+	started := observed.started
+	if started.IsZero() {
+		started = time.Now().UTC()
+	} // Linux identity uses kernel ticks and namespace.
+	execution.OwnerLaunch = &model.LaunchIdentity{PID: pid, StartedAt: started, StartTicks: observed.startTicks, PIDNamespaceIno: observed.nsInode}
+}
 
 const processStartTolerance = 5 * time.Second
 

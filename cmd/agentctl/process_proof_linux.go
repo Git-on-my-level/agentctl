@@ -6,11 +6,30 @@ import (
 	"errors"
 	"os"
 	"strconv"
+	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
 )
+
+func hostBootTime() time.Time {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return time.Time{}
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "btime" {
+			seconds, err := strconv.ParseInt(fields[1], 10, 64)
+			if err == nil && seconds > 0 {
+				return time.Unix(seconds, 0).UTC()
+			}
+		}
+	}
+	return time.Time{}
+}
 
 func processStart(pid int) processObservation {
 	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")

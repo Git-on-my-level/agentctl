@@ -18,6 +18,7 @@ import (
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
@@ -184,7 +185,9 @@ func TestDetachedLifecycleThroughBuiltBinary(t *testing.T) {
 		f := newDelegateFixture(t, delegateSuccessScript)
 		ready := filepath.Join(f.root, "probe-ready")
 		release := filepath.Join(f.root, "probe-release")
-		script := "#!/bin/sh\nif [ \"$1\" = --version ]; then touch '" + ready + "'; while [ ! -f '" + release + "' ]; do sleep 0.05; done; echo 2026.09.10; exit 0; fi\necho launch >> '" + f.count + "'\n" + delegateSuccessScript + "\n"
+		// The parent now preflights before durable admission. Hold only the
+		// worker's probe (the journal already exists), then lose its receipt.
+		script := "#!/bin/sh\nif [ \"$1\" = --version ]; then if [ -f '" + f.journal + "' ]; then touch '" + ready + "'; while [ ! -f '" + release + "' ]; do sleep 0.05; done; fi; echo 2026.09.10; exit 0; fi\necho launch >> '" + f.count + "'\n" + delegateSuccessScript + "\n"
 		os.WriteFile(filepath.Join(f.root, "cursor-agent"), []byte(script), 0700)
 		parent := exec.Command(binary, "--config", f.config, "--journal", f.journal, "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin", "--detach", "--timeout", "10s")
 		parent.Stdin = strings.NewReader("lost-receipt-task")
@@ -206,6 +209,15 @@ func TestDetachedLifecycleThroughBuiltBinary(t *testing.T) {
 				t.Fatal("worker never reached probe")
 			}
 			time.Sleep(20 * time.Millisecond)
+		}
+		journal, err := store.Open(f.journal, store.Options{ReadOnly: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		admitted, err := journal.ListExecutions(context.Background(), false)
+		journal.Close()
+		if err != nil || len(admitted) != 1 || admitted[0].State != model.StateStarting {
+			t.Fatalf("missing durable admission before worker probe: %v %v", admitted, err)
 		}
 		pipe.Close()
 		parent.Process.Kill()
@@ -284,8 +296,30 @@ func TestDetachedWorkerConcurrentAdmissionAndFailure(t *testing.T) {
 			for i := 0; i < count; i++ {
 				var doc struct {
 					Result model.Execution `json:"result"`
+					Error  struct {
+						Code    string `json:"code"`
+						Details struct {
+							ExecutionID      string `json:"execution_id"`
+							TerminalRecorded bool   `json:"terminal_recorded"`
+						} `json:"details"`
+					} `json:"error"`
 				}
-				if errs[i] != nil || json.Unmarshal(outputs[i], &doc) != nil || doc.Result.ID.IsZero() {
+				if err := json.Unmarshal(outputs[i], &doc); err != nil {
+					t.Fatal(err)
+				}
+				if scenario == "deadline" && errs[i] != nil {
+					// Under load the same one-second execution deadline can
+					// expire during worker preflight. It must still return the
+					// durable cancelled ID, rather than an ambiguous receipt.
+					if doc.Error.Code != "timeout" || !doc.Error.Details.TerminalRecorded {
+						t.Fatalf("deadline admission %v %s", errs[i], outputs[i])
+					}
+					var err error
+					doc.Result.ID, err = ids.ParseExecutionID(doc.Error.Details.ExecutionID)
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else if errs[i] != nil || doc.Result.ID.IsZero() {
 					t.Fatalf("admission %v %s", errs[i], outputs[i])
 				}
 				if id != "" && id != doc.Result.ID.String() {
@@ -311,7 +345,8 @@ func TestDetachedWorkerConcurrentAdmissionAndFailure(t *testing.T) {
 				}
 			}
 			data, _ := os.ReadFile(f.count)
-			if strings.Count(string(data), "launch") != 1 {
+			launches := strings.Count(string(data), "launch")
+			if (scenario == "deadline" && launches > 1) || (scenario != "deadline" && launches != 1) {
 				t.Fatalf("launches=%s", data)
 			}
 		})

@@ -548,7 +548,7 @@ func (a *app) findDelegation(ctx context.Context, c common, mutation contracts.M
 	if err != nil {
 		return model.Execution{}, false, output.Wrap(output.CodeInternal, "resolve journal", false, err)
 	}
-	journal, err := openJournalWithRetryContext(ctx, path, store.Options{ReadOnly: true})
+	journal, err := openJournalWithBusyBudget(ctx, path, store.Options{ReadOnly: true}, true, c.journalBusyBudget)
 	if errors.Is(err, store.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 		return model.Execution{}, false, nil
 	}
@@ -677,6 +677,10 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		}
 		if opts.detachedReceipt && !reused {
 			result["lifecycle"] = map[string]any{"owner": "detached_process", "parent_independent": true, "reboot_recovery": false}
+			result["launch_status"] = "launched"
+			if execution.State == model.StateStarting {
+				result["launch_status"] = "admitted"
+			}
 		}
 		if len(execution.Supersedes) != 0 {
 			result["continues"] = execution.Supersedes[0]

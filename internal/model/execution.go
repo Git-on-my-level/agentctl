@@ -352,9 +352,12 @@ type Execution struct {
 	StartedAt            *time.Time         `json:"started_at,omitempty"`
 	// Launch is the process the launcher recorded at start. Session discovery
 	// must not overwrite it. Reconcile accepts a PID only from this record.
-	Launch     *LaunchIdentity `json:"launch,omitempty"`
-	DeadlineAt *time.Time      `json:"deadline_at,omitempty"`
-	UpdatedAt  time.Time       `json:"updated_at"`
+	Launch *LaunchIdentity `json:"launch,omitempty"`
+	// OwnerLaunch identifies the agentctl process collecting this native child.
+	// A gone child alone does not prove its live owner lost the result.
+	OwnerLaunch *LaunchIdentity `json:"owner_launch,omitempty"`
+	DeadlineAt  *time.Time      `json:"deadline_at,omitempty"`
+	UpdatedAt   time.Time       `json:"updated_at"`
 	// ProgressAt is newly recorded task progress, not a probe or heartbeat.
 	// Nil preserves unknown history; UpdatedAt is never a backfill source.
 	ProgressAt  *time.Time  `json:"progress_at"`
@@ -409,6 +412,11 @@ func (e Execution) Validate() error {
 	if e.Launch != nil {
 		if err := e.Launch.Validate(); err != nil {
 			return fmt.Errorf("launch: %w", err)
+		}
+	}
+	if e.OwnerLaunch != nil {
+		if err := e.OwnerLaunch.Validate(); err != nil {
+			return fmt.Errorf("owner launch: %w", err)
 		}
 	}
 	if e.CreatedAt.IsZero() || e.UpdatedAt.IsZero() || e.Observation.ObservedAt.IsZero() {

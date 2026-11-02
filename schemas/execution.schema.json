@@ -28,6 +28,7 @@
     "observation"
   ],
   "properties": {
+	"owner_launch": {"$ref":"#/properties/launch", "description":"Kernel identity of the native child's collecting agentctl process, when observed. Missing on legacy rows."},
     "failure": {
       "type": "object",
       "required": ["code", "kind", "message", "retryable"],

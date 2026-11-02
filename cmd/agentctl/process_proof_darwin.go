@@ -24,6 +24,14 @@ func processStart(pid int) processObservation {
 	return processObservation{present: true, started: started, startKnown: true}
 }
 
+func hostBootTime() time.Time {
+	boot, err := unix.SysctlTimeval("kern.boottime")
+	if err != nil {
+		return time.Time{}
+	}
+	return time.Unix(boot.Sec, int64(boot.Usec)*int64(time.Microsecond)).UTC()
+}
+
 func inspectProcessPlatform(id processIdentity) processProof {
 	proof := processProof{}
 	if id.PID <= 0 {

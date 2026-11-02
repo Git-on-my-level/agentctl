@@ -21,7 +21,6 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
-	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
 // Steering crosses a process boundary: the native child belongs to the
@@ -525,10 +524,14 @@ func (a *app) awaitSteerOutcome(ctx context.Context, renderer output.Renderer, c
 		case <-ctx.Done():
 		case <-time.After(steerPollEvery):
 		}
-		outcome, _ := a.findSteerOutcome(ctx, c, id, baseline, requestID)
-		if latest, _, problem := a.readSteerState(context.WithoutCancel(ctx), c, id); problem == nil {
+		// Final delivery reconciliation may outlive caller cancellation, but
+		// must never spend two legacy 15s lock opens past --timeout.
+		readCtx, cancelRead := context.WithTimeout(context.WithoutCancel(ctx), 500*time.Millisecond)
+		outcome, _ := a.findSteerOutcome(readCtx, c, id, baseline, requestID)
+		if latest, _, problem := a.readSteerState(readCtx, c, id); problem == nil {
 			execution = latest
 		}
+		cancelRead()
 		if outcome != nil && !steerQueued(outcome) {
 			return writeSteerOutcome(renderer, execution, outcome, route, replayed)
 		}
@@ -595,7 +598,7 @@ func steerRequestID(id ids.ExecutionID, key, messageDigest string) (string, erro
 // readSteerState returns the execution and its newest event sequence, which
 // bounds the later search for this request's outcome.
 func (a *app) readSteerState(ctx context.Context, c common, id ids.ExecutionID) (model.Execution, uint64, *output.Error) {
-	journal, problem := a.openRead(c)
+	journal, problem := a.openReadContext(ctx, c)
 	if problem != nil {
 		return model.Execution{}, 0, problem
 	}
@@ -604,18 +607,11 @@ func (a *app) readSteerState(ctx context.Context, c common, id ids.ExecutionID) 
 	if err != nil {
 		return model.Execution{}, 0, mapStoreError("read execution", err)
 	}
-	return execution, lastEventSequence(ctx, journal, id), nil
-}
-
-func lastEventSequence(ctx context.Context, journal *store.Journal, id ids.ExecutionID) uint64 {
-	var last uint64
-	for {
-		events, err := journal.ListEvents(ctx, id, contracts.EventQuery{AfterSequence: last, Limit: 1000})
-		if err != nil || len(events) == 0 {
-			return last
-		}
-		last = events[len(events)-1].Sequence
+	last, err := journal.LastEventSequence(ctx, id)
+	if err != nil {
+		return model.Execution{}, 0, mapStoreError("read latest event sequence", err)
 	}
+	return execution, last, nil
 }
 
 // findSteerOutcome returns the newest journaled record of one request (a
@@ -623,14 +619,14 @@ func lastEventSequence(ctx context.Context, journal *store.Journal, id ids.Execu
 // recorded. A journal that cannot be read is reported as a problem so
 // a caller never mistakes "could not look" for "not delivered".
 func (a *app) findSteerOutcome(ctx context.Context, c common, id ids.ExecutionID, after uint64, requestID string) (map[string]any, *output.Error) {
-	journal, problem := a.openRead(c)
+	journal, problem := a.openReadContext(ctx, c)
 	if problem != nil {
 		return nil, problem
 	}
 	defer journal.Close()
 	var newest map[string]any
 	for {
-		events, err := journal.ListEvents(context.WithoutCancel(ctx), id, contracts.EventQuery{AfterSequence: after, Limit: 1000, Kinds: []model.EventKind{model.EventProgress}})
+		events, err := journal.ListEvents(ctx, id, contracts.EventQuery{AfterSequence: after, Limit: 1000, Kinds: []model.EventKind{model.EventProgress}})
 		if err != nil {
 			return nil, mapStoreError("read steering outcome", err)
 		}

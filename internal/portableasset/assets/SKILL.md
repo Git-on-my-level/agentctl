@@ -213,7 +213,10 @@ collection after delivery. `--content` returns exact answer text. Explicit
 `--require-result-source` and `--min-result-bytes` assertions are available.
 Native work is foreground-owned by default, with optional `--timeout`. For
 work that must survive the parent, use `delegate --detach` and retain its full
-`exec-*` handle. It returns after a detached owner journals the native launch,
+`exec-*` handle. The parent journals admission before creating a worker. A
+normal receipt reports `launch_status: launched`; if the worker response is
+lost or the collector is cancelled, `launch_status: admitted` returns that
+durable starting ID for status/await without claiming native launch. It returns
 without acknowledging collection. Collect once with `await <id> --content`;
 failed, cancelled, and orphaned work returns a structured nonzero error.
 `--detach` and `--wait` are mutually exclusive. The prompt and frozen recipe
@@ -221,7 +224,9 @@ travel through an anonymous pipe, with no prompt file dependency after handoff.
 Keep the execution cwd, config and journal on storage that survives scratch cleanup.
 This survives parent exit and parent process-group termination, not reboot or
 loss of the detached owner. Replay the same request key and inputs after a lost
-receipt; never invent a new key for recovery. Replay does not detach work that
+receipt; never invent a new key for recovery. A worker-creation failure returns
+the failed execution ID. The resolved journal-busy budget crosses the worker
+boundary, including explicit 0. Replay does not detach work that
 was already launched in the foreground. Plans are read-only. External context
 handles remain unsupported. See [the lifecycle contract](https://github.com/Git-on-my-level/agentctl/blob/main/docs/generalized-lifecycle.md).
 Multica delegation is rejected until its result/settings contract is available;
@@ -720,6 +725,10 @@ without native cancel. It records `orphaned`/`owner_lost` with kernel identity
 evidence. Live processes, active runner leases, foreign hosts, missing launch
 identity, and unproven absence refuse without mutation. Never treat `orphaned`
 as success or failure. Use ordinary `cancel` for live work and Multica authority.
+Supervisor automatic repair additionally requires five minutes without fresh
+evidence and proof that the collecting `owner_launch` is gone. Legacy rows
+without owner identity qualify only when the native launch predates the current
+kernel boot; a same-boot finished child can still have a live collecting owner.
 Native event-write errors reap the child and report `terminal_recorded`; if false,
 the journal needs repair before it can durably represent the result. Delegate
 failures include a native exit code when available and an allowlisted diagnostic

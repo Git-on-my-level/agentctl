@@ -61,8 +61,11 @@ A successful new admission uses the existing
 ```
 
 The example abbreviates typed IDs and digests; callers retain full values.
-The receipt is sent only after launch bindings and the started event have been
-committed. It proves admission and observation ownership, not task success.
+The parent commits admission before creating the worker. A normal receipt has
+`launch_status: launched` after launch bindings and the started event commit.
+If that response is lost, the parent returns the committed execution with
+`launch_status: admitted` and `state: starting`; use status or await to observe
+launch and outcome. Neither receipt proves task success.
 Collection is not acknowledged. Existing `exec-*` is the durable lookup handle;
 there is no extra job ID. New receipt next actions include `await <id> --content`.
 
@@ -77,14 +80,28 @@ Concurrent same-key owners use existing atomic admission and launch at most once
 A changed prompt, selector, cwd, authority, timeout, or labels conflicts (8).
 
 Failure before native launch returns the normal bounded error, with an execution
-ID when admission was recorded. If the collector is cancelled, the worker exits
-without a receipt, or the receipt is unavailable after the bounded 60-second
-handshake, admission returns `execution_unknown` (13), retryable, with
-`diagnostic_code=detached_receipt_unknown`. This is uncertainty, not permission
-to relaunch. Replay the same key and inputs. A lost response does not cancel the
+ID when admission was recorded. Worker creation failure terminalizes that
+admission as failed. If the collector is cancelled, the worker exits without a
+receipt, or the receipt is unavailable after its journal-busy budget plus 60
+seconds, the committed admission is returned as `admitted`. No worker exists
+before there is a durable lookup ID. Replay the same key and inputs, never a
+fresh key to recover a lost response. A lost response does not cancel the
 owner; a broken receipt pipe does not terminate it. The worker runs no automatic
 update/bootstrap maintenance. Journal contention keeps its existing bounded
 retry and `journal_busy` contract.
+
+After five minutes without a runner lease or observation, the supervisor may
+mark a native execution `orphaned/owner_lost` only when the kernel proves its
+immutable launch identity and collecting owner identity are both gone, the
+journal host matches, and the execution revision has not changed during proof.
+New launches record `owner_launch`; legacy rows without it qualify only when
+the native launch predates the current kernel boot. Same-boot legacy rows stay
+unknown because a live owner may still be committing a finished child's result.
+This records an unknown outcome and
+does not kill processes or delete records. Live, recently observed, parked,
+foreign-host and legacy rows without launch identity are preserved. A parent
+that dies after admission but before worker creation leaves a known starting
+row; without process identity its absence cannot safely be inferred.
 
 The owner survives parent exit, parent restart, and termination of the parent's
 process group. It does not survive reboot, explicit termination of the owner,
