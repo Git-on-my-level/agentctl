@@ -32,7 +32,10 @@ kernel proof that both its native launch and collecting owner identities are
 gone, a matching journal host and an unchanged revision. Legacy rows without
 owner identity remain unknown for explicit operator reconciliation. Wall-clock
 boot comparisons are not used as ownership proof. Linux process proofs require
-a matching recorded PID namespace even when the PID is present.
+a matching recorded PID namespace and launch-time procfs attestation even when
+the PID is present. Both launch and inspection verify that `/proc/1/ns/pid`
+matches `/proc/self/ns/pid`; inherited or hidden procfs views and legacy Linux
+identities without `procfs_pid_namespace_ino` remain unproven.
 Live, recently observed, parked and unproven
 legacy executions are preserved. Orphaned means the outcome is unknown.
 

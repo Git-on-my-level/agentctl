@@ -97,7 +97,10 @@ journal host matches, and the execution revision has not changed during proof.
 New launches record `owner_launch`; legacy rows without it remain unknown for
 explicit operator reconciliation. Wall-clock boot comparisons do not prove
 collector absence after clock corrections. Linux PID evidence requires a
-matching recorded PID namespace before consulting either presence or absence.
+matching recorded PID namespace and `procfs_pid_namespace_ino` attestation
+before consulting either presence or absence. At launch and inspection,
+`/proc/1/ns/pid` must match `/proc/self/ns/pid`; inherited or hidden procfs
+views and legacy unattested Linux identities remain unproven.
 This records an unknown outcome and
 does not kill processes or delete records. Live, recently observed, parked,
 foreign-host and legacy rows without launch identity are preserved. A parent

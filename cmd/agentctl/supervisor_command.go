@@ -405,7 +405,7 @@ func (b pathSupervisorExecutions) probeNativeOwner(ctx context.Context, id strin
 	// Wall-clock boot comparisons cannot establish a legacy collector's
 	// absence after clock corrections. Only its recorded identity can.
 	owner := current.OwnerLaunch
-	ownerProof := prove(processIdentity{PID: owner.PID, StartedAt: owner.StartedAt, StartTicks: owner.StartTicks, PIDNamespaceIno: owner.PIDNamespaceIno})
+	ownerProof := prove(processIdentity{PID: owner.PID, StartedAt: owner.StartedAt, StartTicks: owner.StartTicks, PIDNamespaceIno: owner.PIDNamespaceIno, ProcfsPIDNamespaceIno: owner.ProcfsPIDNamespaceIno})
 	if !ownerProof.Gone {
 		return supervisor.ProbeResult{}, false, nil
 	}

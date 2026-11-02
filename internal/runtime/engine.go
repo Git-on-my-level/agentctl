@@ -559,7 +559,7 @@ func (e *Engine) applySession(ctx context.Context, execution model.Execution, se
 	}
 	execution.SourceBindings = bindings
 	if session.Launch != nil {
-		execution.RetainLaunch(session.Launch.PID, session.Launch.StartedAt, session.Launch.StartTicks, session.Launch.PIDNamespaceIno)
+		execution.RetainLaunch(session.Launch.PID, session.Launch.StartedAt, session.Launch.StartTicks, session.Launch.PIDNamespaceIno, session.Launch.ProcfsPIDNamespaceIno)
 	}
 	state := mapState(session.State)
 	if !validNormalizedState(state) {

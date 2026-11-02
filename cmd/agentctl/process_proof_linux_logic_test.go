@@ -6,17 +6,25 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/adapter"
 )
 
 func TestLinuxPresentPIDRequiresMatchingNamespace(t *testing.T) {
 	for _, ticks := range []int64{100, 200} {
-		for _, scenario := range []string{"mismatch", "unrecorded", "unknown", "error", "no_getter"} {
+		for _, scenario := range []string{"mismatch", "unrecorded", "unattested", "wrong_procfs", "unknown", "error", "no_getter"} {
 			t.Run(fmt.Sprintf("%d/%s", ticks, scenario), func(t *testing.T) {
-				id := processIdentity{PID: 42, StartTicks: 100, PIDNamespaceIno: 7}
+				id := processIdentity{PID: 42, StartTicks: 100, PIDNamespaceIno: 7, ProcfsPIDNamespaceIno: 7}
 				getter := func() (uint64, error) { return 8, nil }
 				switch scenario {
 				case "unrecorded":
 					id.PIDNamespaceIno = 0
+					getter = func() (uint64, error) { return 7, nil }
+				case "unattested":
+					id.ProcfsPIDNamespaceIno = 0
+					getter = func() (uint64, error) { return 7, nil }
+				case "wrong_procfs":
+					id.ProcfsPIDNamespaceIno = 8
 					getter = func() (uint64, error) { return 7, nil }
 				case "unknown":
 					getter = func() (uint64, error) { return 0, nil }
@@ -38,6 +46,32 @@ func TestLinuxPresentPIDRequiresMatchingNamespace(t *testing.T) {
 	}
 }
 
+func TestLinuxInheritedProcfsCannotProveMissingOrReusedPID(t *testing.T) {
+	for _, missing := range []bool{true, false} {
+		t.Run(fmt.Sprintf("missing=%t", missing), func(t *testing.T) {
+			id := processIdentity{PID: 42, StartTicks: 100, PIDNamespaceIno: 7, ProcfsPIDNamespaceIno: 7}
+			reads := 0
+			proof := linuxProof(id, func(string) ([]byte, error) {
+				reads++
+				if missing {
+					return nil, os.ErrNotExist
+				}
+				return procStatLine(42, 1, 200), nil
+			}, func() (uint64, error) {
+				return adapter.ProcPIDNamespace(func(path string) (uint64, error) {
+					if path == "/proc/self/ns/pid" {
+						return 7, nil
+					}
+					return 8, nil // procfs belongs to an ancestor namespace
+				})
+			})
+			if proof.Gone || proof.Alive || proof.Proof != "unproven" || reads != 0 {
+				t.Fatalf("inherited procfs authorized a PID lookup: %+v reads=%d", proof, reads)
+			}
+		})
+	}
+}
+
 func TestLinuxENOENTWithoutNamespaceProofIsUnproven(t *testing.T) {
 	read := func(name string) ([]byte, error) {
 		if name == "/proc/1/stat" {
@@ -47,7 +81,7 @@ func TestLinuxENOENTWithoutNamespaceProofIsUnproven(t *testing.T) {
 	}
 	sameNS := func() (uint64, error) { return 7, nil }
 	otherNS := func() (uint64, error) { return 8, nil }
-	id := processIdentity{PID: 42, StartedAt: time.Unix(1, 0).UTC(), StartTicks: 100, PIDNamespaceIno: 7}
+	id := processIdentity{PID: 42, StartedAt: time.Unix(1, 0).UTC(), StartTicks: 100, PIDNamespaceIno: 7, ProcfsPIDNamespaceIno: 7}
 
 	mismatch := linuxProof(id, read, otherNS)
 	if mismatch.Gone || mismatch.Alive || mismatch.Proof != "unproven" {
@@ -87,7 +121,7 @@ func TestLinuxStartTicksDoNotUseWallClock(t *testing.T) {
 	const liveTicks int64 = 5000
 	read := func(string) ([]byte, error) { return procStatLine(42, 1, liveTicks), nil }
 	ns := func() (uint64, error) { return 7, nil }
-	base := processIdentity{PID: 42, StartedAt: time.Unix(1_700_000_000, 0).UTC(), PIDNamespaceIno: 7, StartTicks: liveTicks}
+	base := processIdentity{PID: 42, StartedAt: time.Unix(1_700_000_000, 0).UTC(), PIDNamespaceIno: 7, ProcfsPIDNamespaceIno: 7, StartTicks: liveTicks}
 	alive := linuxProof(base, read, ns)
 	if !alive.Alive || alive.Proof != "pid_alive" {
 		t.Fatalf("matching ticks were not alive: %+v", alive)

@@ -139,10 +139,11 @@ const MaxLaunchPID = 4194303
 // session id in a source binding is not a substitute: session discovery
 // overwrites that binding and must leave this record alone.
 type LaunchIdentity struct {
-	PID             int       `json:"pid"`
-	StartedAt       time.Time `json:"started_at"`
-	StartTicks      int64     `json:"start_ticks,omitempty"`
-	PIDNamespaceIno uint64    `json:"pid_namespace_ino,omitempty"`
+	PID                   int       `json:"pid"`
+	StartedAt             time.Time `json:"started_at"`
+	StartTicks            int64     `json:"start_ticks,omitempty"`
+	PIDNamespaceIno       uint64    `json:"pid_namespace_ino,omitempty"`
+	ProcfsPIDNamespaceIno uint64    `json:"procfs_pid_namespace_ino,omitempty"`
 }
 
 func (l LaunchIdentity) Validate() error {
@@ -160,11 +161,11 @@ func (l LaunchIdentity) Validate() error {
 
 // RetainLaunch records the launcher identity only when the execution does not
 // already have one. Later session discovery cannot replace it.
-func (e *Execution) RetainLaunch(pid int, started time.Time, startTicks int64, pidNamespaceIno uint64) {
+func (e *Execution) RetainLaunch(pid int, started time.Time, startTicks int64, pidNamespaceIno, procfsPIDNamespaceIno uint64) {
 	if e == nil || e.Launch != nil || pid <= 0 || pid > MaxLaunchPID || started.IsZero() {
 		return
 	}
-	e.Launch = &LaunchIdentity{PID: pid, StartedAt: started.UTC(), StartTicks: startTicks, PIDNamespaceIno: pidNamespaceIno}
+	e.Launch = &LaunchIdentity{PID: pid, StartedAt: started.UTC(), StartTicks: startTicks, PIDNamespaceIno: pidNamespaceIno, ProcfsPIDNamespaceIno: procfsPIDNamespaceIno}
 }
 
 type PromotionState string

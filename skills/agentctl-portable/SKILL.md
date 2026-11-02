@@ -729,7 +729,9 @@ Supervisor automatic repair additionally requires five minutes without fresh
 evidence and proof that the collecting `owner_launch` is gone. Legacy rows
 without owner identity remain unknown for explicit operator reconciliation;
 wall-clock boot comparisons cannot prove the collector is gone. Linux process
-proofs require a matching recorded PID namespace before consulting a PID.
+proofs require matching recorded PID and procfs namespaces, attested at launch
+and verified at inspection, before consulting a PID. Inherited or hidden procfs
+views and legacy Linux identities without `procfs_pid_namespace_ino` stay unproven.
 Native event-write errors reap the child and report `terminal_recorded`; if false,
 the journal needs repair before it can durably represent the result. Delegate
 failures include a native exit code when available and an allowlisted diagnostic

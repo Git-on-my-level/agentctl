@@ -10,7 +10,7 @@ import (
 
 // linuxProof decides Linux process identity from an injected /proc reader.
 // Absence is pid_absent only when the recorded pid namespace matches
-// /proc/self/ns/pid and a known-live pid (/proc/1 or this process's parent)
+// a validated procfs PID namespace, attested at launch, and a known-live pid (/proc/1 or this process's parent)
 // is visible. Otherwise ENOENT is unproven: hidepid and a foreign pid
 // namespace both hide live processes. A visible PID also requires a matching
 // recorded namespace: a different namespace can alias a live unrelated PID.
@@ -24,7 +24,7 @@ func linuxProof(id processIdentity, read func(string) ([]byte, error), nsInode f
 		proof.Proof = "no_pid"
 		return proof
 	}
-	if !linuxNamespaceMatches(id.PIDNamespaceIno, nsInode) {
+	if id.ProcfsPIDNamespaceIno == 0 || id.ProcfsPIDNamespaceIno != id.PIDNamespaceIno || !linuxNamespaceMatches(id.PIDNamespaceIno, nsInode) {
 		proof.Proof = "unproven"
 		return proof
 	}
