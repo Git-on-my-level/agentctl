@@ -418,14 +418,31 @@ func TestCancelFromAnotherProcessStopsDetachedOwner(t *testing.T) {
 	if code, awaited := invoke("await", id, "--timeout", "5s"); code != output.ExitCodeFor(output.CodeExecutionCancelled) {
 		t.Fatalf("await %d %s", code, awaited)
 	}
-	journal, err := store.Open(f.journal, store.Options{})
+	// Terminal journaling precedes owner teardown. Its deferred final
+	// reconciliation also opens the journal. Wait without an inspection
+	// handle, then count events after teardown so a late duplicate is visible.
+	cleanupDeadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := os.Stat(cancelSpoolDir(f.journal, doc.Result.ID))
+		if os.IsNotExist(err) {
+			break
+		}
+		if err != nil || time.Now().After(cleanupDeadline) {
+			t.Fatalf("owner left its cancel spool behind: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	journal, err := store.Open(f.journal, store.Options{ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer journal.Close()
 	events, err := journal.ListEvents(context.Background(), doc.Result.ID, contracts.EventQuery{})
+	closeErr := journal.Close()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
 	}
 	terminals := 0
 	for _, event := range events {
@@ -435,8 +452,5 @@ func TestCancelFromAnotherProcessStopsDetachedOwner(t *testing.T) {
 	}
 	if terminals != 1 {
 		t.Fatalf("committed %d terminal events", terminals)
-	}
-	if _, err := os.Stat(cancelSpoolDir(f.journal, doc.Result.ID)); !os.IsNotExist(err) {
-		t.Fatalf("owner left its cancel spool behind: %v", err)
 	}
 }
