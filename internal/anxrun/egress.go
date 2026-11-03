@@ -97,6 +97,12 @@ func Allowlisted(r Registration, catalog []route.ModelRecord, verified ...Verifi
 		BuiltAt:  r.BuiltAt.UTC(),
 		Sequence: r.Sequence, ResultCollected: r.ResultCollected,
 	}
+	if r.WorkspaceAlias != "" {
+		if code := workspaceAliasCode(r.WorkspaceAlias); code != 0 {
+			return Registration{}, egressError(code)
+		}
+		out.WorkspaceAlias = r.WorkspaceAlias
+	}
 	out.EgressErrorCode = validEgressCode(r.EgressErrorCode)
 	reject := func(code int) {
 		if code != 0 && (out.EgressErrorCode == 0 || code < out.EgressErrorCode) {
@@ -156,7 +162,7 @@ func Allowlisted(r Registration, catalog []route.ModelRecord, verified ...Verifi
 		reject(code)
 	}
 	for _, ref := range r.CardRefs {
-		code := stringCode(strings.TrimPrefix(ref, cardRefPrefix), 64, false)
+		code := cardSlugCode(strings.TrimPrefix(ref, cardRefPrefix))
 		if code != 0 {
 			reject(code)
 			continue

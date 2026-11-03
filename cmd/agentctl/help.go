@@ -164,16 +164,24 @@ func helpTopics() map[string]commandHelp {
 			Related:  []string{"status", "capabilities", "await", "delegate", "continue"}},
 		"id": {Name: "id", Summary: "Generate or inspect typed six-word identifiers.", Usage: "agentctl id generate <type> | agentctl id inspect <id>", SideEffectClass: output.ReadOnly, Defaults: []string{"full typed IDs are mutation targets"}, Examples: [][]string{{"agentctl", "id", "generate", "exec"}}},
 		"anx": {
-			Name: "anx", Summary: "Inspect or flush best-effort ANX run-link registrations for labeled executions.", Usage: "agentctl anx status|flush",
+			Name: "anx", Summary: "Inspect, recover or flush best-effort ANX run-link registrations for labeled executions.", Usage: "agentctl anx status|flush|requeue-dead [--dry-run]",
 			SideEffectClass: output.LocalOperationalWrite, Defaults: []string{
 				"runs carrying an anx.card.<slug> label register with Agent Nexus automatically; registration never blocks or fails a run",
 				"status is read-only and reports the effective mode, pending spool entries, and dead letters with reasons",
 				"flush retries pending deliveries through the configured anx CLI with backoff, then cleans expired dead letters",
-				"deliveries upsert the public sessions and participation API keyed by the delegate request key and the durable agentctl://<origin-host>/<exec> ID",
+				"workspace_alias explicitly pins new registrations; otherwise anx config workspaces resolves the run cwd before first delivery and the alias is persisted for retries",
+				"each delivery passes --as from the registration adapter (claude-code maps to claude), independent of worker environment",
+				"requeue-dead is local-only; --dry-run reads without writes or ANX calls; apply preserves payload, sequence and request-key hash, resets attempts/backoff and fills free pending capacity without evictions; flush separately",
+				"deliveries register principal-private sessions and participation by native fingerprint and sequence, then post card messages with stable events.create request keys",
 				"terminal registrations read outcomes through the journal's read-only accessor and never acknowledge collection",
 				"the spool lives under <state dir>/anx-run-links and is bounded; overflow dead-letters the oldest entries",
 			},
 			Examples: [][]string{{"agentctl", "anx", "status"}, {"agentctl", "anx", "flush"}}, Related: []string{"run", "delegate", "config"},
+		},
+		"anx requeue-dead": {
+			Name: "anx requeue-dead", Summary: "Requeue retained ANX dead letters locally without sending.", Usage: "agentctl anx requeue-dead [--dry-run]", SideEffectClass: output.LocalOperationalWrite,
+			Defaults: []string{"--dry-run reads without files, locks, subprocesses or ANX calls", "apply preserves registration, sequence and request-key hash; resets attempts and backoff", "fills free pending capacity without evictions; pending and acknowledged phases are skipped", "repeat after an explicit anx flush if deferred_capacity is nonzero", "local errors exit 70; invalid arguments exit 2; repeating after partial progress is safe"},
+			Examples: [][]string{{"agentctl", "anx", "requeue-dead", "--dry-run"}, {"agentctl", "anx", "requeue-dead"}}, Related: []string{"anx"},
 		},
 		"schema": {Name: "schema", Summary: "List normative JSON schema files.", Usage: "agentctl schema list", SideEffectClass: output.ReadOnly, Defaults: []string{}, Examples: [][]string{{"agentctl", "schema", "list"}}},
 	}

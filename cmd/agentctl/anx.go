@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/anxrun"
@@ -53,7 +54,7 @@ func (s anxSettings) registers(labels []string) bool {
 }
 
 func (a *app) anxSettings(c common) (anxSettings, bool) {
-	settings := anxSettings{Mode: config.RunLinksDefaultMode, WorkspaceAlias: "anx", Executable: "anx", FlushTimeout: 10 * time.Second}
+	settings := anxSettings{Mode: config.RunLinksDefaultMode, Executable: "anx", FlushTimeout: 10 * time.Second}
 	journalPath, pathErr := a.journalPath(c)
 	if pathErr != nil {
 		return settings, false
@@ -142,6 +143,8 @@ func (a *app) anxJournalSender(c common, settings anxSettings) *anxrun.CLISender
 			return r, nil, err
 		}
 		r.CardRefs = anxrun.ResolveCards(execution.Labels)
+		// Recompute old slug diagnostics from authoritative journal labels.
+		r.EgressErrorCode = anxrun.BuildStart(execution, r.BuiltAt).EgressErrorCode
 		if r.Phase == anxrun.PhaseTerminal {
 			if outcome, err := journal.GetOutcome(ctx, id); err == nil {
 				r.Outcome = anxrun.ProjectOutcome(outcome)
@@ -176,10 +179,12 @@ func (a *app) anxRegisterStart(c common, execution model.Execution) {
 		a.anxNote("local_io:0")
 		return
 	}
-	if _, err := spool.Enqueue(anxRegistrationModel(anxrun.BuildStart(execution, a.now()), execution)); err != nil {
+	registration := anxRegistrationModel(anxrun.BuildStart(execution, a.now()), execution)
+	registration.WorkspaceAlias = settings.WorkspaceAlias
+	if _, err := spool.Enqueue(registration); err != nil {
 		a.anxEgressNote(err)
 	}
-	a.scheduleANXFlush(c)
+	a.scheduleANXFlush(c, execution.Adapter)
 }
 
 // anxRegisterTerminal spools the PhaseTerminal registration after a terminal
@@ -222,6 +227,7 @@ func (a *app) anxRegisterTerminal(c common, id ids.ExecutionID) {
 		return
 	}
 	registration := anxRegistrationModel(anxrun.BuildTerminal(execution, outcome, collected, a.now()), execution)
+	registration.WorkspaceAlias = settings.WorkspaceAlias
 	spool, err := a.anxOpenSpool(settings)
 	if err != nil {
 		a.anxNote("local_io:0")
@@ -231,7 +237,7 @@ func (a *app) anxRegisterTerminal(c common, id ids.ExecutionID) {
 		a.anxEgressNote(err)
 		return
 	}
-	a.scheduleANXFlush(c)
+	a.scheduleANXFlush(c, execution.Adapter)
 }
 
 func anxRegistrationModel(r anxrun.Registration, execution model.Execution) anxrun.Registration {
@@ -243,13 +249,17 @@ func anxRegistrationModel(r anxrun.Registration, execution model.Execution) anxr
 
 // The return path only persists local state and starts a detached worker.
 // Tests inject this seam; only newApp installs the production launcher.
-func (a *app) scheduleANXFlush(c common) {
+func (a *app) scheduleANXFlush(c common, adapters ...string) {
+	adapter := "other"
+	if len(adapters) > 0 {
+		adapter = adapters[0]
+	}
 	if a.startANXWorker != nil {
-		_ = a.startANXWorker(c)
+		_ = a.startANXWorker(c, adapter)
 	}
 }
 
-func startANXWorker(c common) error {
+func startANXWorker(c common, adapter string) error {
 	executable, err := os.Executable()
 	if err != nil {
 		return err
@@ -263,7 +273,7 @@ func startANXWorker(c common) error {
 		}
 	}
 	command := exec.Command(executable, args...)
-	command.Env = os.Environ()
+	command.Env = anxWorkerEnvironment(adapter)
 	prepareDetachedCommand(command)
 	if err := command.Start(); err != nil {
 		return err
@@ -301,12 +311,21 @@ func (a *app) anxNote(_ string) {
 
 // anxCommand implements `agentctl anx status|flush`.
 func (a *app) anxCommand(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
-	if len(args) != 1 {
-		return output.NewError(output.CodeUsage, "usage: agentctl anx status|flush", false)
+	if len(args) == 0 {
+		return output.NewError(output.CodeUsage, "usage: agentctl anx status|flush|requeue-dead [--dry-run]", false)
 	}
 	settings, ok := a.anxSettings(c)
 	if !ok {
 		return output.NewError(output.CodeInvalidState, "configuration_invalid:0", false)
+	}
+	if args[0] == "requeue-dead" {
+		if len(args) > 2 || len(args) == 2 && args[1] != "--dry-run" {
+			return output.NewError(output.CodeUsage, "usage: agentctl anx requeue-dead [--dry-run]", false)
+		}
+		return a.anxRequeueDead(ctx, renderer, settings, len(args) == 2)
+	}
+	if len(args) != 1 {
+		return output.NewError(output.CodeUsage, "usage: agentctl anx status|flush|requeue-dead [--dry-run]", false)
 	}
 	switch args[0] {
 	case "status":
@@ -314,11 +333,12 @@ func (a *app) anxCommand(ctx context.Context, renderer output.Renderer, c common
 	case "flush":
 		return a.anxFlush(ctx, renderer, c, settings)
 	default:
-		return output.NewError(output.CodeUsage, "usage: agentctl anx status|flush", false)
+		return output.NewError(output.CodeUsage, "usage: agentctl anx status|flush|requeue-dead [--dry-run]", false)
 	}
 }
 
 type anxPendingItem struct {
+	WorkspaceAlias  string    `json:"workspace_alias,omitempty"`
 	ExecutionID     string    `json:"execution_id"`
 	Phase           string    `json:"phase"`
 	CreatedAt       time.Time `json:"created_at"`
@@ -331,6 +351,7 @@ type anxPendingItem struct {
 }
 
 type anxDeadItem struct {
+	WorkspaceAlias  string    `json:"workspace_alias,omitempty"`
 	ExecutionID     string    `json:"execution_id"`
 	Phase           string    `json:"phase"`
 	Reason          string    `json:"reason"`
@@ -354,6 +375,9 @@ type anxStatusResult struct {
 
 func (a *app) anxStatus(ctx context.Context, renderer output.Renderer, c common, settings anxSettings) *output.Error {
 	alias := "[redacted]"
+	if settings.WorkspaceAlias == "" {
+		alias = "cwd"
+	}
 	if anxrun.ValidWorkspaceAlias(settings.WorkspaceAlias) {
 		alias = settings.WorkspaceAlias
 	}
@@ -368,12 +392,12 @@ func (a *app) anxStatus(ctx context.Context, renderer output.Renderer, c common,
 		result.LastRejection = spool.LastRejection()
 		if pending, err := spool.ListPending(); err == nil {
 			for _, entry := range pending {
-				result.Pending = append(result.Pending, anxPendingItem{ExecutionID: entry.ExecutionID, Phase: string(entry.Phase), CreatedAt: entry.CreatedAt, Attempts: entry.Attempts, NextAttempt: entry.NextAttemptAt, CardRefs: entry.Registration.CardRefs, LastError: entry.LastError, ErrorCode: entry.ErrorCode, EgressErrorCode: entry.Registration.EgressErrorCode})
+				result.Pending = append(result.Pending, anxPendingItem{WorkspaceAlias: entry.Registration.WorkspaceAlias, ExecutionID: entry.ExecutionID, Phase: string(entry.Phase), CreatedAt: entry.CreatedAt, Attempts: entry.Attempts, NextAttempt: entry.NextAttemptAt, CardRefs: entry.Registration.CardRefs, LastError: entry.LastError, ErrorCode: entry.ErrorCode, EgressErrorCode: entry.Registration.EgressErrorCode})
 			}
 		}
 		if dead, err := spool.ListDead(); err == nil {
 			for _, entry := range dead {
-				result.Dead = append(result.Dead, anxDeadItem{ExecutionID: entry.ExecutionID, Phase: string(entry.Phase), Reason: deadLetterReason(entry), ErrorCode: entry.ErrorCode, CreatedAt: entry.CreatedAt, Attempts: entry.Attempts, EgressErrorCode: entry.Registration.EgressErrorCode})
+				result.Dead = append(result.Dead, anxDeadItem{WorkspaceAlias: entry.Registration.WorkspaceAlias, ExecutionID: entry.ExecutionID, Phase: string(entry.Phase), Reason: deadLetterReason(entry), ErrorCode: entry.ErrorCode, CreatedAt: entry.CreatedAt, Attempts: entry.Attempts, EgressErrorCode: entry.Registration.EgressErrorCode})
 			}
 		}
 	}
@@ -429,4 +453,36 @@ func (a *app) anxFlush(ctx context.Context, renderer output.Renderer, c common, 
 		return output.NewError(output.CodeInternal, "local_io:0", false)
 	}
 	return nil
+}
+
+// Recovery is deliberately separate from flush: dry-run is entirely read-only.
+func (a *app) anxRequeueDead(ctx context.Context, renderer output.Renderer, settings anxSettings, dryRun bool) *output.Error {
+	spool, present, err := anxrun.OpenSpoolIfPresent(settings.SpoolDir)
+	if err != nil {
+		return output.NewError(output.CodeInternal, "local_io:0", false)
+	}
+	result := anxrun.RequeueResult{DryRun: dryRun}
+	if present {
+		spool.Catalog = settings.Catalog
+		result, err = spool.RequeueDead(ctx, dryRun)
+		if err != nil {
+			return output.NewError(output.CodeInternal, "local_io:0", false)
+		}
+	}
+	lines := []output.Line{{Lead: "requeue", Fields: []output.Field{{Name: "dry_run", Value: result.DryRun}, {Name: "requeued", Value: result.Requeued}, {Name: "already_pending", Value: result.AlreadyPending}, {Name: "already_delivered", Value: result.AlreadyDelivered}, {Name: "deferred_capacity", Value: result.DeferredCapacity}}}}
+	if err := renderer.Success(output.Success{Result: result, Lines: lines}); err != nil {
+		return output.NewError(output.CodeInternal, "local_io:0", false)
+	}
+	return nil
+}
+
+func anxWorkerEnvironment(adapter string) []string {
+	env := []string{}
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if key != "ANX_AS" {
+			env = append(env, entry)
+		}
+	}
+	return append(env, "ANX_AS="+anxrun.CanonicalProvider(adapter))
 }

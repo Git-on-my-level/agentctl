@@ -713,7 +713,19 @@ class enums plus numeric codes; dead letters expire after seven days. Check and 
 ```bash
 agentctl anx status   # safe alias, credential-checked spool path and counts (read-only)
 agentctl anx flush    # retry delivery now
+agentctl anx requeue-dead --dry-run # local-only recovery preview; no ANX calls
+agentctl anx requeue-dead           # fill free pending slots; flush separately
 ```
+
+Workspace defaults come from the ANX CLI's rules for the run cwd unless host
+config explicitly sets `workspace_alias`. The worker persists the alias before
+sending and uses that workspace for card lookup on every retry. Each send passes
+`--as` from its registration adapter, independent of inherited identity markers.
+Recovery preserves sequence, payload and request-key hash, resets attempts and
+backoff, and never evicts pending entries. JSON counts report `requeued`,
+`already_pending`, `already_delivered`, `deferred_capacity` and `dry_run`.
+Repeat recovery after flushing when capacity is full; already delivered phases
+are skipped. Dry-run creates no files or locks. No automatic dead-letter replay.
 
 A registered outcome is evidence for the card, never acceptance. The raw
 native session id never leaves the host; only the `agentctl identity` v1

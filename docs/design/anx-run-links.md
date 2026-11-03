@@ -441,7 +441,7 @@ code: <number>}` receipt. Spool and status errors are closed class enums plus
 numeric codes, never upstream messages, prompts or result text.
 `agentctl anx status` shows a workspace alias only if it passes the same
 1–64 lowercase-alphanumeric/hyphen grammar and secret check as delivery;
-otherwise it shows `[redacted]`. Status prints the configured `spool_dir`
+otherwise it shows `[redacted]` (or `cwd` when no host override is configured). Status prints the configured `spool_dir`
 when it passes the per-token credential and well-formedness checks, otherwise
 `[redacted]`. Its `spool` field remains `present` or `absent`, with
 `pending_count` and `dead_letter_count`. JSON and text have the same policy.
@@ -651,3 +651,52 @@ same card.
 2. Fingerprint index plus a `session-archive-find` helper over the existing manifests, keyed by `origin_host_id` and hostname.
 3. agentctl run registration: outcome schema, allowlisted egress, an idempotent upsert keyed by the host-keyed delegate request hash, spooling while ANX is unreachable, and default-on for runs that carry an `anx.card.*` label.
 4. ANX: a runs view on `work context` and `runs list --card`, with the visibility rules from decision 2.
+
+## Workspace routing and dead-letter recovery
+
+Workspace routing is per run. An explicit `anx.run_links.workspace_alias` pins
+new registrations. Without it, the flush worker runs the ANX CLI's local
+`config workspaces` command in the run cwd, using its directory rules and
+default. Inherited `ANX_WORKSPACE` and `ANX_BASE_URL` are excluded from that
+lookup. The selected alias is saved as optional `workspace_alias` in the v5
+registration before any remote call; missing/ambiguous aliases or a missing cwd
+retry with a bounded diagnostic instead of guessing. Legacy entries resolve
+once using the journal cwd. Pinned aliases survive configuration changes and
+re-enqueueing. Card lookup uses that registration's workspace. Each delivery
+passes `--as <adapter>` (`claude-code` maps to `claude`), including mixed native
+and Multica batches. Workers also receive `ANX_AS`; per-entry `--as` wins.
+
+Recovery after fixing delivery (local-only; never sends automatically):
+
+```bash
+agentctl anx requeue-dead --dry-run
+agentctl anx requeue-dead
+agentctl anx flush
+```
+
+`requeue-dead` reads retained dead letters oldest first (ties by execution and
+phase), fills available pending capacity without evicting anything, and resets
+attempts, error diagnostics and next-attempt time. It preserves the registration,
+sequence, request-key hash and original creation time. It does not clean expired
+entries. JSON result fields are `dry_run` (boolean), `requeued`, `already_pending`,
+`already_delivered`, and `deferred_capacity` (nonnegative counts). In dry-run,
+`requeued` counts candidates; no locks/files are created and no subprocess runs.
+An absent spool succeeds with zero counts. Invalid arguments exit 2; local read
+or write failures return the standard internal error (partial progress is safe
+to repeat). Non-dry recovery serializes with flush and enqueue; a pending entry
+wins over a leftover dead copy after a crash. The durable delivered index skips
+already acknowledged phases. Repeating recovery is idempotent. If capacity is
+full, flush pending entries and repeat recovery. Ordinary flush/launch retention
+still applies; entries already expired or evicted from dead storage cannot be
+recovered. ANX `events.create` request keys retain the existing payload digest:
+local workspace routing is excluded from the public message and digest.
+
+The sessions request deliberately omits `host_scope`: ANX's
+`core/internal/primitives/sessions_store.go` binds it to the authenticated
+host-agent's enrolled host ID (not agentctl's word ID). ANX's
+`core/internal/server/sessions_integration_test.go` verifies omission succeeds,
+an enrolled slug replays canonically, and a forged host returns 403. This relies
+on host enrollment; standalone bearer principals need their own ANX host scope
+and are not inferred by agentctl. Slug credential prefixes remain checked over
+the entire value; entropy is checked per hyphen-separated word so ordinary
+long titles pass while token-shaped words still fail.

@@ -30,6 +30,8 @@ type CLISender struct {
 	Resolve     func(context.Context, Registration) (Registration, *Repository, error)
 	cards       map[string]ConfirmedCard
 	cardsLoaded bool
+	cardsScope  string
+	catalogs    map[string]map[string]ConfirmedCard
 	options     CLIOptions
 	// run is injectable for tests; production uses runAnxProcess.
 	run func(ctx context.Context, argv []string, stdin []byte) (stdout []byte, err error)
@@ -44,21 +46,20 @@ type CLIOptions struct {
 	Catalog      []route.ModelRecord
 	// Executable defaults to "anx" (resolved on PATH).
 	Executable string
-	// WorkspaceAlias defaults to "anx". Never a hard-coded URL.
+	// WorkspaceAlias explicitly overrides cwd resolution for new registrations.
 	WorkspaceAlias string
 	// BaseURL and ConfigDir are optional explicit passthroughs.
 	BaseURL   string
 	ConfigDir string
 	// Timeout bounds each subprocess invocation. Default 10s.
 	Timeout time.Duration
+	// As is set per registration, never inferred from the worker environment.
+	As string
 }
 
 func (o CLIOptions) normalized() CLIOptions {
 	if strings.TrimSpace(o.Executable) == "" {
 		o.Executable = "anx"
-	}
-	if strings.TrimSpace(o.WorkspaceAlias) == "" {
-		o.WorkspaceAlias = "anx"
 	}
 	if o.Timeout <= 0 {
 		o.Timeout = 10 * time.Second
@@ -143,6 +144,25 @@ func classifyDeadReason(err error) string {
 // Send succeeds only after ANX acknowledges every required write. Partial
 // delivery is safe to replay; spool deletion is owned by Flush afterwards.
 func (s *CLISender) Send(ctx context.Context, registration Registration) error {
+	copy := *s
+	if registration.WorkspaceAlias != "" {
+		copy.options.WorkspaceAlias = registration.WorkspaceAlias
+	}
+	copy.options.As = CanonicalProvider(safeHarness(registration.Adapter))
+	scope := copy.options.WorkspaceAlias + "\x00" + copy.options.As
+	if s.catalogs == nil {
+		s.catalogs = map[string]map[string]ConfirmedCard{}
+	}
+	copy.cards, copy.cardsLoaded = s.catalogs[scope]
+	copy.cardsScope = copy.options.WorkspaceAlias
+	err := copy.send(ctx, registration)
+	if copy.cardsLoaded {
+		s.catalogs[scope] = copy.cards
+	}
+	return err
+}
+
+func (s *CLISender) send(ctx context.Context, registration Registration) error {
 	if _, err := Allowlisted(registration, s.options.Catalog); err != nil {
 		return err
 	}
@@ -153,13 +173,14 @@ func (s *CLISender) Send(ctx context.Context, registration Registration) error {
 	if s.options.Verification != nil {
 		policy = *s.options.Verification
 	} else {
-		if !s.cardsLoaded {
+		if !s.cardsLoaded || s.cardsScope != s.options.WorkspaceAlias {
 			cards, err := s.loadCards(ctx)
 			if err != nil {
 				return err
 			}
 			s.cards = cards
 			s.cardsLoaded = true
+			s.cardsScope = s.options.WorkspaceAlias
 		}
 		policy.Cards = s.cards
 	}
@@ -190,7 +211,7 @@ func (s *CLISender) Send(ctx context.Context, registration Registration) error {
 		body, _ := json.Marshal(map[string]any{
 			"provider": r.NativeSession.Provider, "native_session_id": r.NativeSession.Fingerprint,
 			"native_session_id_kind": r.NativeSession.Kind, "activity": activity,
-			"sequence": r.Sequence, "host_scope": r.OriginHostID,
+			"sequence":     r.Sequence,
 			"capabilities": map[string]string{"resume": "unknown", "history": "unknown", "logs": "unknown"},
 		})
 		sessionID, err := s.invoke(ctx, "sessions.register", nil, body)
@@ -222,6 +243,9 @@ func (s *CLISender) Send(ctx context.Context, registration Registration) error {
 	// A stable structured card message is today's public transport for run
 	// identity/state/outcome/evidence. Native transcript coordinates stay private.
 	r.NativeSession = nil
+	// Routing is local metadata. Keep the public payload and request_key digest
+	// compatible with registrations emitted before workspace pinning.
+	r.WorkspaceAlias = ""
 	r.BuiltAt = time.Time{}
 	for _, card := range r.CardRefs {
 		target := policy.Cards[card]
@@ -277,10 +301,16 @@ func (s *CLISender) invoke(ctx context.Context, commandID string, params map[str
 
 func (s *CLISender) invokeResult(ctx context.Context, commandID string, params map[string]string, body []byte) (json.RawMessage, error) {
 	options := s.options.normalized()
-	if code := workspaceAliasCode(options.WorkspaceAlias); code != 0 {
+	if code := workspaceAliasCode(options.WorkspaceAlias); options.WorkspaceAlias != "" && code != 0 {
 		return nil, egressError(code)
 	}
-	argv := []string{options.Executable, "--json", "--workspace", options.WorkspaceAlias}
+	argv := []string{options.Executable, "--json"}
+	if options.WorkspaceAlias != "" {
+		argv = append(argv, "--workspace", options.WorkspaceAlias)
+	}
+	if options.As != "" {
+		argv = append(argv, "--as", options.As)
+	}
 	if options.BaseURL != "" {
 		argv = append(argv, "--base-url", options.BaseURL)
 	}
@@ -436,7 +466,12 @@ func sortedKeys(values map[string]string) []string {
 
 // runAnxProcess executes the anx subprocess with the body on stdin.
 func runAnxProcess(ctx context.Context, argv []string, stdin []byte) ([]byte, error) {
+	return runAnxProcessAt(ctx, argv, stdin, "", false)
+}
+
+func runAnxProcessAt(ctx context.Context, argv []string, stdin []byte, cwd string, workspaceOnly bool) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Dir = cwd
 	if err := isolateANXProcess(cmd); err != nil {
 		return nil, err
 	}
@@ -446,6 +481,16 @@ func runAnxProcess(ctx context.Context, argv []string, stdin []byte) ([]byte, er
 	cmd.WaitDelay = 250 * time.Millisecond
 	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Env = os.Environ()
+	if workspaceOnly {
+		cmd.Env = nil
+		for _, entry := range os.Environ() {
+			key, _, _ := strings.Cut(entry, "=")
+			if key != "ANX_WORKSPACE" && key != "ANX_BASE_URL" && key != "ANX_UPDATE_POLICY" {
+				cmd.Env = append(cmd.Env, entry)
+			}
+		}
+		cmd.Env = append(cmd.Env, "ANX_UPDATE_POLICY=off")
+	}
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &bytes.Buffer{}

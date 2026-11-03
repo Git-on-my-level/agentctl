@@ -153,7 +153,10 @@ registers labeled executions with Agent Nexus (see
 `default` accepts `labeled` (the default and zero-config behavior: register
 runs carrying an `anx.card.<slug>` label), `all` (also register unlabeled
 runs; these park as `card_unresolved` until ANX supports card-independent
-run records), and `off`. `workspace_alias`, `base_url`, and `config_dir` are passed
+run records), and `off`. Omit `workspace_alias` to use the ANX CLI's directory
+rules/default for each run cwd; the resolved alias is persisted before delivery
+and retained for retries. An explicit alias overrides cwd rules for new entries.
+`workspace_alias`, `base_url`, and `config_dir` are passed
 explicitly to the `anx` CLI; agentctl never hard-codes a base URL and reads no
 ANX credentials — authentication and workspace resolution stay with the `anx`
 CLI's own credential store. Free-text summary support is absent; the former

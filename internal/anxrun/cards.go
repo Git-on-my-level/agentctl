@@ -21,7 +21,7 @@ var cardSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 // ParseCardSlug validates one card slug (without prefix).
 func ParseCardSlug(slug string) error {
-	if !cardSlugPattern.MatchString(slug) || stringCode(slug, 64, false) != 0 {
+	if !cardSlugPattern.MatchString(slug) || cardSlugCode(slug) != 0 {
 		return fmt.Errorf("card slug must be 1-64 lowercase letters, digits or hyphens without credential shapes")
 	}
 	return nil
@@ -53,7 +53,7 @@ func resolveCards(labels []string) ([]string, int) {
 		}
 		slug := strings.TrimPrefix(label, CardLabelPrefix)
 		if err := ParseCardSlug(slug); err != nil {
-			code = stringCode(slug, 64, false)
+			code = cardSlugCode(slug)
 			if code == 0 {
 				code = EgressFormat
 			}

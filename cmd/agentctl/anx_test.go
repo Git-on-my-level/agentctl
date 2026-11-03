@@ -26,7 +26,7 @@ func writeAnxConfig(t *testing.T, executable string) string {
 	path := filepath.Join(testutil.TempDir(t), "config.json")
 	document := map[string]any{"schema_version": 1}
 	if executable != "" {
-		document["anx"] = map[string]any{"run_links": map[string]any{"executable": executable}}
+		document["anx"] = map[string]any{"run_links": map[string]any{"executable": executable, "workspace_alias": "anx"}}
 	}
 	raw, err := json.Marshal(document)
 	if err != nil {

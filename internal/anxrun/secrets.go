@@ -85,6 +85,24 @@ func stringCode(value string, limit int, cryptographic bool) int {
 	return 0
 }
 
+// cardSlugCode checks credential prefixes/JWTs across the whole slug, then
+// entropy per hyphen-separated word. Ordinary title words must not combine
+// into a fake token; a token-shaped word still rejects the whole slug.
+func cardSlugCode(slug string) int {
+	if len(slug) > 64 {
+		return EgressLength
+	}
+	if tokenPrefix.MatchString(slug) || jwtShape.MatchString(slug) {
+		return EgressSecretShape
+	}
+	for _, word := range strings.Split(slug, "-") {
+		if code := stringCode(word, 64, false); code != 0 {
+			return code
+		}
+	}
+	return 0
+}
+
 // Real word IDs contain only dictionary words plus a type-bound checksum.
 // Validate the generator grammar first, then check each dictionary word. A
 // hyphenated sentence must not make dictionary IDs look like random tokens.
