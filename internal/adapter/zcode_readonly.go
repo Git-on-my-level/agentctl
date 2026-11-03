@@ -52,70 +52,80 @@ var zcodeVersion = func(executable, dir string, env []string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// prepareZCodeLaunch isolates launches the read_only recipe marked and does
-// nothing for any other launch. ZCode's tool flags alone do not make it
-// read-only, so this layers every control 0.17.0 offers and refuses whenever
-// one cannot be established:
-//
-//   - The prompt may not start with "/": ZCode expands a leading /name from
-//     command files, which can run shell lines before the model is involved.
-//   - Only a reviewed CLI version runs.
-//   - No zcode.json or .zcode/config.json may exist in the working directory
-//     or any ancestor: project configs merge from the repository root down and
-//     can define hooks and MCP servers.
-//   - The child gets a private, empty HOME, so user-level hooks, commands,
-//     plugins and settings never load. The provider config the host launcher
-//     would have chosen is passed by absolute path instead.
-//   - The reviewed profile is created in the working directory with
-//     no-clobber, no-follow semantics and removed after the child is reaped.
-//
-// It does not defend against a process that concurrently rewrites the working
-// directory or its ancestors during the launch: such a writer can already
-// change what any agent reads there.
-func prepareZCodeLaunch(cwd string, argv, env []string) (func(), []string, error) {
-	if !hasEnvEntry(env, launchrecipe.ZCodeReadOnlyProfileEnv) {
-		return nil, nil, nil
+// ZCode read-only constraint reasons. Plan, fanout preflight, and launch all
+// report these; they are not a second policy.
+const (
+	ZCodeConstraintOccupies       = "project_config_slot"
+	ZCodeReasonDotenv             = "dotenv"
+	ZCodeReasonProjectConfig      = "project_config"
+	ZCodeReasonSlotHeld           = "slot_held"
+	ZCodeReasonCommandPrompt      = "command_prompt"
+	ZCodeReasonRelativeExecutable = "relative_executable"
+	ZCodeReasonNonCanonicalCWD    = "non_canonical_cwd"
+	ZCodeReasonUnreviewedVersion  = "unreviewed_version"
+	ZCodeReasonProviderMissing    = "provider_missing"
+	ZCodeReasonProfileUnavailable = "profile_unavailable"
+)
+
+// ZCodeReadOnlyConstraint is the read-only decision prepareZCodeLaunch enforces.
+// It names the slot and the refusal reason. It does not include a filesystem path.
+type ZCodeReadOnlyConstraint struct {
+	Applies  bool   `json:"applies"`
+	Occupies string `json:"occupies,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// ZCodeReadOnlyDiagnostic is the fixed code for a constraint reason.
+func ZCodeReadOnlyDiagnostic(reason string) string {
+	switch reason {
+	case ZCodeReasonDotenv:
+		return "zcode_read_only_dotenv_present"
+	case ZCodeReasonProjectConfig, ZCodeReasonProjectConfigPresent:
+		return "zcode_read_only_project_config_present"
+	case ZCodeReasonSlotHeld:
+		return "zcode_read_only_slot_held"
+	default:
+		return "zcode_read_only_unavailable"
 	}
-	refuse := func(reason string) error {
-		reasonCode := "profile_unavailable"
-		if strings.HasPrefix(reason, "a ZCode project config is present at ") {
-			reasonCode = ZCodeReasonProjectConfigPresent
-		}
-		return &AdapterError{Code: ErrCapabilityUnavailable, Message: "zcode read_only profile refused: " + reason, Retryable: false,
-			Details: map[string]any{"diagnostic_code": "zcode_read_only_unavailable", "reason_code": reasonCode, "cwd": cwd}}
+}
+
+// InspectZCodeReadOnly is the read-only half of prepareZCodeLaunch. It creates
+// no project file. A launch whose recipe did not mark the read-only profile
+// does not apply. A refusal is the same error launch returns.
+func InspectZCodeReadOnly(cwd string, argv, env []string) (ZCodeReadOnlyConstraint, error) {
+	if !hasEnvEntry(env, launchrecipe.ZCodeReadOnlyProfileEnv) {
+		return ZCodeReadOnlyConstraint{}, nil
+	}
+	constraint := ZCodeReadOnlyConstraint{Applies: true, Occupies: ZCodeConstraintOccupies}
+	refuse := func(reason string) (ZCodeReadOnlyConstraint, error) {
+		constraint.Reason = reason
+		return constraint, &AdapterError{Code: ErrCapabilityUnavailable, Message: "zcode read_only profile refused: " + reason, Retryable: false,
+			Details: map[string]any{"diagnostic_code": ZCodeReadOnlyDiagnostic(reason), "reason_code": reason, "launch_constraints": constraint}}
 	}
 	if len(argv) < 3 || argv[len(argv)-2] != "--prompt" {
-		return nil, nil, refuse("the prompt must be the final argv value")
+		return refuse(ZCodeReasonProfileUnavailable)
 	}
-	// ZCode trims with JavaScript's String.prototype.trim (Unicode white space,
-	// line terminators and the BOM) before matching a command. Strip a
-	// superset: all Unicode white space and format characters.
 	trimmed := strings.TrimLeftFunc(argv[len(argv)-1], func(r rune) bool { return unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) })
 	if strings.HasPrefix(trimmed, "/") {
-		return nil, nil, refuse("a prompt starting with / would expand a ZCode command")
+		return refuse(ZCodeReasonCommandPrompt)
 	}
 	if !filepath.IsAbs(argv[0]) {
-		return nil, nil, refuse("the ZCode executable must be an absolute path")
+		return refuse(ZCodeReasonRelativeExecutable)
 	}
 	if !filepath.IsAbs(cwd) {
-		return nil, nil, refuse("working directory is not absolute")
+		return refuse(ZCodeReasonNonCanonicalCWD)
 	}
-	// Node reports the physical directory, so every check below must see the
-	// same path ZCode will: refuse a working directory reached through a
-	// symlink rather than guess which ancestors ZCode will search.
 	if physical, err := filepath.EvalSymlinks(cwd); err != nil || physical != filepath.Clean(cwd) {
-		return nil, nil, refuse("working directory must be a canonical path without symlinks")
+		return refuse(ZCodeReasonNonCanonicalCWD)
 	}
 	if info, err := os.Lstat(cwd); err != nil || !info.IsDir() {
-		return nil, nil, refuse("working directory is not a directory")
+		return refuse(ZCodeReasonNonCanonicalCWD)
 	}
-	// Project configs merge from the repository root down and can define hooks
-	// and MCP servers; ZCode also loads the nearest .env upward, which can
-	// redirect its storage and provider settings. Refuse any of them.
 	for dir := filepath.Clean(cwd); ; dir = filepath.Dir(dir) {
 		for _, name := range []string{"zcode.json", filepath.Join(".zcode", "config.json"), ".env"} {
-			if _, err := os.Lstat(filepath.Join(dir, name)); err == nil || !errors.Is(err, fs.ErrNotExist) {
-				return nil, nil, refuse("a ZCode project config is present at " + filepath.Join(dir, name))
+			path := filepath.Join(dir, name)
+			if _, err := os.Lstat(path); err == nil || !errors.Is(err, fs.ErrNotExist) {
+				return refuse(zcodeReadOnlyBlocker(name, path))
 			}
 		}
 		if dir == filepath.Dir(dir) {
@@ -124,14 +134,74 @@ func prepareZCodeLaunch(cwd string, argv, env []string) (func(), []string, error
 	}
 	realHome, err := os.UserHomeDir()
 	if err != nil {
-		return nil, nil, refuse("cannot resolve the user home")
+		return refuse(ZCodeReasonProviderMissing)
 	}
 	provider := zcodeconfig.ProviderPath(realHome, envValue(env, "ZCODE_MODEL"), "")
 	if provider == "" {
-		return nil, nil, refuse("unsupported ZCODE_MODEL")
+		return refuse(ZCodeReasonProviderMissing)
 	}
 	if info, err := os.Stat(provider); err != nil || !info.Mode().IsRegular() {
-		return nil, nil, refuse("provider config missing; run zcode-cli-provision")
+		return refuse(ZCodeReasonProviderMissing)
+	}
+	version, err := zcodeVersion(argv[0], cwd, env)
+	if err != nil || !zcodeReadOnlyVersions[version] {
+		return refuse(ZCodeReasonUnreviewedVersion)
+	}
+	return constraint, nil
+}
+
+// zcodeReadOnlyBlocker classifies the first existing project file. A
+// .zcode/config.json that still holds the reviewed profile bytes is the slot
+// a read-only launch occupies. Anything else is project configuration. .env is
+// separate because ZCode loads it from the working directory up to the
+// filesystem root.
+func zcodeReadOnlyBlocker(name, path string) string {
+	switch name {
+	case ".env":
+		return ZCodeReasonDotenv
+	case "zcode.json":
+		return ZCodeReasonProjectConfig
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return ZCodeReasonProjectConfig
+	}
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return ZCodeReasonProjectConfig
+	}
+	defer file.Close()
+	got, err := io.ReadAll(io.LimitReader(file, int64(len(zcodeReadOnlyConfig))+1))
+	if err != nil || !bytes.Equal(got, zcodeReadOnlyConfig) {
+		return ZCodeReasonProjectConfig
+	}
+	return ZCodeReasonSlotHeld
+}
+
+// prepareZCodeLaunch isolates launches the read_only recipe marked and does
+// nothing for any other launch. Inspection and refusal are InspectZCodeReadOnly.
+// This function only lays down the reviewed profile after that check passes.
+//
+// It does not defend against a process that concurrently rewrites the working
+// directory or its ancestors during the launch: such a writer can already
+// change what any agent reads there.
+func prepareZCodeLaunch(cwd string, argv, env []string) (func(), []string, error) {
+	constraint, err := InspectZCodeReadOnly(cwd, argv, env)
+	if err != nil || !constraint.Applies {
+		return nil, nil, err
+	}
+	refuse := func(reason string) error {
+		constraint.Reason = reason
+		return &AdapterError{Code: ErrCapabilityUnavailable, Message: "zcode read_only profile refused: " + reason, Retryable: false,
+			Details: map[string]any{"diagnostic_code": ZCodeReadOnlyDiagnostic(reason), "reason_code": reason, "launch_constraints": constraint}}
+	}
+	realHome, err := os.UserHomeDir()
+	if err != nil {
+		return nil, nil, refuse(ZCodeReasonProviderMissing)
+	}
+	provider := zcodeconfig.ProviderPath(realHome, envValue(env, "ZCODE_MODEL"), "")
+	if provider == "" {
+		return nil, nil, refuse(ZCodeReasonProviderMissing)
 	}
 	home, err := os.MkdirTemp("", "agentctl-zcode-ro-home-")
 	if err != nil {
@@ -142,11 +212,6 @@ func prepareZCodeLaunch(cwd string, argv, env []string) (func(), []string, error
 	if err != nil {
 		removeHome()
 		return nil, nil, refuse(err.Error())
-	}
-	version, err := zcodeVersion(argv[0], cwd, mergeEnvironment(append([]string(nil), env...), extra))
-	if err != nil || !zcodeReadOnlyVersions[version] {
-		removeHome()
-		return nil, nil, refuse("ZCode CLI version " + strconvQuote(version) + " is not a reviewed read_only version")
 	}
 	dir := filepath.Join(cwd, ".zcode")
 	createdDir := false
@@ -171,7 +236,11 @@ func prepareZCodeLaunch(cwd string, argv, env []string) (func(), []string, error
 			_ = os.Remove(dir)
 		}
 		removeHome()
-		return nil, nil, refuse("cannot create .zcode/config.json: " + err.Error())
+		reason := ZCodeReasonProfileUnavailable
+		if _, statErr := os.Lstat(path); statErr == nil {
+			reason = ZCodeReasonSlotHeld
+		}
+		return nil, nil, refuse(reason)
 	}
 	_, writeErr := file.Write(zcodeReadOnlyConfig)
 	syncErr := file.Sync()
@@ -360,11 +429,4 @@ func envValue(env []string, key string) string {
 		}
 	}
 	return value
-}
-
-func strconvQuote(value string) string {
-	if len(value) > 64 {
-		value = value[:64]
-	}
-	return "\"" + value + "\""
 }

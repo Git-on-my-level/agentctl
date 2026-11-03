@@ -133,9 +133,14 @@ func withReadOnlyHost(t *testing.T, version string) {
 func refusal(t *testing.T, release func(), err error) {
 	t.Helper()
 	var adapterErr *AdapterError
-	if release != nil || !errors.As(err, &adapterErr) || adapterErr.Code != ErrCapabilityUnavailable || adapterErr.Details["diagnostic_code"] != "zcode_read_only_unavailable" {
+	if release != nil || !errors.As(err, &adapterErr) || adapterErr.Code != ErrCapabilityUnavailable || !strings.HasPrefix(diagnosticCode(adapterErr), "zcode_read_only_") {
 		t.Fatalf("release=%v err=%v", release != nil, err)
 	}
+}
+
+func diagnosticCode(err *AdapterError) string {
+	code, _ := err.Details["diagnostic_code"].(string)
+	return code
 }
 
 func TestZCodeLaunchWithoutProfileWritesNothing(t *testing.T) {
@@ -363,10 +368,32 @@ func TestZCodeReadOnlyProjectConfigReason(t *testing.T) {
 	release, _, err := prepareZCodeLaunch(dir, readOnlyArgv("hi"), readOnlyEnv)
 	refusal(t, release, err)
 	var ae *AdapterError
-	if !errors.As(err, &ae) || ae.Details["reason_code"] != ZCodeReasonProjectConfigPresent {
+	if !errors.As(err, &ae) || ae.Details["reason_code"] != ZCodeReasonProjectConfig || diagnosticCode(ae) != "zcode_read_only_project_config_present" {
 		t.Fatalf("project config reason: %+v", err)
 	}
-	if ZCodeReasonProjectConfigPresent != "project_config_present" {
-		t.Fatal("project config reason wire value changed")
+}
+
+func TestZCodeReadOnlyConstraintClassifiesBlockers(t *testing.T) {
+	withReadOnlyHost(t, "0.17.0")
+	dir := canonicalTemp(t)
+	if constraint, err := InspectZCodeReadOnly(dir, readOnlyArgv("hi"), []string{"ZCODE_MODEL=glm-5.3"}); err != nil || constraint.Applies {
+		t.Fatalf("coding launch applied read-only constraints: %+v %v", constraint, err)
+	}
+	mustWrite(t, filepath.Join(dir, ".env"), "ZCODE_STORAGE_DIR=/tmp/x")
+	_, err := InspectZCodeReadOnly(dir, readOnlyArgv("hi"), readOnlyEnv)
+	var ae *AdapterError
+	if !errors.As(err, &ae) || ae.Details["reason_code"] != ZCodeReasonDotenv || diagnosticCode(ae) != "zcode_read_only_dotenv_present" {
+		t.Fatalf("dotenv: %+v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, ".env")); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(dir, ".zcode", "config.json"), string(zcodeReadOnlyConfig))
+	_, err = InspectZCodeReadOnly(dir, readOnlyArgv("hi"), readOnlyEnv)
+	if !errors.As(err, &ae) || ae.Details["reason_code"] != ZCodeReasonSlotHeld || diagnosticCode(ae) != "zcode_read_only_slot_held" {
+		t.Fatalf("slot: %+v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(dir, ".zcode", "config.json")); statErr != nil {
+		t.Fatalf("inspect created or removed the profile: %v", statErr)
 	}
 }

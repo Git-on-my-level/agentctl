@@ -99,7 +99,9 @@ Codex `--dangerously-bypass-approvals-and-sandbox`, Claude Code
 and Codex `--sandbox read-only -c approval_policy="never"` and never adds those coding permission flags.
 ZCode read-only (reviewed for ZCode CLI 0.17.0 only; any other version
 refuses with `zcode_read_only_unavailable`) layers every control the CLI
-offers, because none is sufficient alone: `--mode plan` (Bash still runs in
+offers, because none is sufficient alone. `delegate --plan` and fanout
+preflight return that decision as `launch_constraints` and refuse when the
+launch would refuse. Do not restate the file list. The controls are: `--mode plan` (Bash still runs in
 plan mode); `--disallowed-tools=` naming every built-in tool that writes,
 executes, spawns, messages or reaches the network; a private empty `HOME` per
 launch, so user-level hooks, custom commands, plugins and settings never load

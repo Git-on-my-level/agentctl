@@ -86,16 +86,12 @@ func TestZCodeInstantExitClassifiesFirstStderr(t *testing.T) {
 }
 
 func TestZCodePrelaunchRefusalClassified(t *testing.T) {
-	for _, reason := range []string{"", adapter.ZCodeReasonProjectConfigPresent} {
-		result := nativeLaunchFailure(&adapter.AdapterError{Code: adapter.ErrCapabilityUnavailable, Message: "zcode read_only profile refused: private directory", Details: map[string]any{"diagnostic_code": "zcode_read_only_unavailable", "reason_code": reason}}, adapter.StateFailed)
+	for _, code := range []string{"zcode_read_only_unavailable", "zcode_read_only_project_config_present", "zcode_read_only_dotenv_present", "zcode_read_only_slot_held"} {
+		result := nativeLaunchFailure(&adapter.AdapterError{Code: adapter.ErrCapabilityUnavailable, Message: "zcode read_only profile refused: private directory", Details: map[string]any{"diagnostic_code": code}}, adapter.StateFailed)
 		e := model.Execution{Adapter: "zcode", State: model.StateFailed}
 		outcome := buildOutcome(e, result, time.Now(), false)
-		want := "zcode_read_only_unavailable"
-		if reason != "" {
-			want = "zcode_read_only_project_config_present"
-		}
-		if outcome.Failure == nil || outcome.Failure.Code != want || strings.Contains(outcome.Failure.Message, "private directory") || outcome.NativeExitCode != nil {
-			t.Fatalf("%+v", outcome)
+		if outcome.Failure == nil || outcome.Failure.Code != code || strings.Contains(outcome.Failure.Message, "private directory") || outcome.NativeExitCode != nil {
+			t.Fatalf("%s %+v", code, outcome)
 		}
 	}
 }
