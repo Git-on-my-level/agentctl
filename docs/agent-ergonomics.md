@@ -763,9 +763,11 @@ it cannot promise a durable terminal record. No automatic prompt replay occurs.
 Failed delegate waits include `native_exit_code` when a child actually ran, and
 `failure.code`, `failure.kind`, and the allowlisted first-stderr-line diagnostic
 (`code`, SHA-256 fingerprint, byte count). Arbitrary stderr text is never stored.
-A ZCode read-only preparation refusal has code `zcode_read_only_unavailable`
-(or `zcode_read_only_project_config_present` when an existing project config
-blocks isolation) and no child exit code. `result` retains the full normalized outcome.
+A ZCode read-only preparation refusal has code `zcode_read_only_dotenv_present`,
+`zcode_read_only_project_config_present`, or `zcode_read_only_slot_held` (other
+preparation failures stay `zcode_read_only_unavailable`) and no child exit code.
+`delegate --plan` returns the same `launch_constraints` object and refuses
+before launch. `result` retains the full normalized outcome.
 
 For a native execution stranded after its owner exited:
 

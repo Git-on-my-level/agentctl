@@ -251,7 +251,7 @@ func (a *app) settleDetachedAdmission(c common, id ids.ExecutionID, problem *out
 
 func writeDetachedPlan(renderer output.Renderer, binding model.DelegationBinding, preflight json.RawMessage) *output.Error {
 	plan := binding.NativePlan
-	native := map[string]any{"env": plan.Env, "argv": plan.Argv, "prompt_delivery": plan.PromptDelivery, "permissions": plan.Permissions, "preflight": preflight}
+	native := delegatePlanNative(plan.Env, plan.Argv, plan.PromptDelivery, plan.Permissions, preflight)
 	var captured bytes.Buffer
 	if problem := writeDelegatePlan(output.Renderer{Mode: output.JSON, Writer: &captured}, binding, native, ""); problem != nil {
 		return problem

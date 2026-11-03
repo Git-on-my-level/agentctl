@@ -461,7 +461,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 		if opts.detach {
 			return writeDetachedPlan(renderer, *binding, document.Result)
 		}
-		return writeDelegatePlan(renderer, *binding, map[string]any{"env": recipe.Env, "argv": recipe.Argv, "prompt_delivery": recipe.PromptDelivery, "permissions": recipe.Permissions, "preflight": document.Result}, "")
+		return writeDelegatePlan(renderer, *binding, delegatePlanNative(recipe.Env, recipe.Argv, recipe.PromptDelivery, recipe.Permissions, document.Result), "")
 	}
 	execution, found, problem := a.findDelegation(ctx, c, mutation)
 	if problem != nil {
@@ -563,6 +563,17 @@ func (a *app) findDelegation(ctx context.Context, c common, mutation contracts.M
 	return execution, found, nil
 }
 
+func delegatePlanNative(env, argv []string, delivery, permissions string, preflight json.RawMessage) map[string]any {
+	native := map[string]any{"env": env, "argv": argv, "prompt_delivery": delivery, "permissions": permissions, "preflight": preflight}
+	var fields map[string]any
+	if err := json.Unmarshal(preflight, &fields); err == nil {
+		if constraints, ok := fields["launch_constraints"]; ok {
+			native["launch_constraints"] = constraints
+		}
+	}
+	return native
+}
+
 func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding, native any, reusedID string, replay ...model.Execution) *output.Error {
 	result := map[string]any{"plan": true, "requested": binding.Requested, "resolved": binding.Resolved,
 		"provenance":     map[string]any{"configuration_sha256": binding.ConfigurationSHA256, "defaulted": binding.Defaulted},
@@ -573,6 +584,11 @@ func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding
 	}
 	if native != nil {
 		result["native"] = native
+		if fields, ok := native.(map[string]any); ok {
+			if constraints, ok := fields["launch_constraints"]; ok {
+				result["launch_constraints"] = constraints
+			}
+		}
 	} else if binding.NativePlan != nil {
 		result["native"] = map[string]any{"env": binding.NativePlan.Env, "argv": binding.NativePlan.Argv, "prompt_delivery": binding.NativePlan.PromptDelivery, "permissions": binding.NativePlan.Permissions, "source": "frozen_admission", "preflight_repeated": false}
 	}

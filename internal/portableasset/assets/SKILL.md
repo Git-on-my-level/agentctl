@@ -165,12 +165,12 @@ launches (omitted `settings.access`, or `"coding"`) include Cursor `--force`,
 Codex `--dangerously-bypass-approvals-and-sandbox`, Claude Code
 `--permission-mode bypassPermissions`, and Devin ACP permission approval. Set `settings.access` to `read_only` for
 Cursor `--mode ask` and Codex `--sandbox read-only`; that access never
-receives the coding permission flags. ZCode `read_only` (reviewed for CLI
-0.17.0 only) runs plan mode with a tool denylist, a private empty HOME, and a
-launch-scoped `.zcode/config.json`; it refuses (`zcode_read_only_unavailable`)
-on another version, a prompt starting with `/`, a relative executable, a
-non-canonical cwd, or `zcode.json`, `.zcode/config.json` or `.env` in the cwd
-or an ancestor. Claude Code refuses `read_only` because no reviewed
+receives the coding permission flags. ZCode `read_only` occupies the project
+config slot. `delegate --plan` returns `launch_constraints` from the same
+check that refuses the launch (`zcode_read_only_dotenv_present`,
+`zcode_read_only_project_config_present`, or `zcode_read_only_slot_held`;
+other preparation failures stay `zcode_read_only_unavailable`). Do not restate
+that check. `workspace owners` is not a lock. Claude Code refuses `read_only` because no reviewed
 mode guarantees blocking edits and shell writes in `--print`. Without the coding
 grant Claude Code adds no permission flag and reports `permissions: constrained`;
 with the grant it reports `permissions: full` and passes `--permission-mode bypassPermissions`. Devin refuses `read_only`: ACP read-only enforcement is unverified.

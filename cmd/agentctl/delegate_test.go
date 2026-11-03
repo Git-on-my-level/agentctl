@@ -543,3 +543,68 @@ func TestCursorReadOnlyTrustGrantPreflightsBeforeLaunch(t *testing.T) {
 		})
 	}
 }
+
+func TestZCodeReadOnlyPlanReportsConstraintsBeforeWriting(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ZCODE_MODEL", "")
+	t.Setenv("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", "")
+	provider := filepath.Join(home, ".zcode", "cli", "provider_config.json")
+	if err := os.MkdirAll(filepath.Dir(provider), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(provider, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	native := filepath.Join(cwd, "zcode")
+	if err := os.WriteFile(native, []byte("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.17.0; exit 0; fi\nprintf '%s\\n' '{\"sessionId\":\"s\",\"turnId\":\"t\",\"response\":\"ok\"}'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(cwd, "config.json")
+	requestPath := filepath.Join(cwd, "request.json")
+	journal := filepath.Join(cwd, "state", "journal.db")
+	cfg := map[string]any{"schema_version": 1, "default_profile": "test", "profiles": map[string]any{"test": map[string]any{
+		"adapters":          map[string]any{"zcode": map[string]any{"executable": native}},
+		"agent_preferences": map[string]any{"mode": "advisory", "preferred": []any{map[string]any{"agent": "zcode", "family": "glm", "model": "zai/glm-5.3", "use_for": "alias:glm"}}},
+	}}}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(requestPath, []byte(`{"schema_version":1,"request_key":"ro-plan","selector":{"family":"glm","settings":{"access":"read_only"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	invoke := func() (int, string) {
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		a.stdin = strings.NewReader("judge these trees")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		code := a.run(ctx, []string{"--config", configPath, "--journal", journal, "delegate", "--cwd", cwd, "--request-file", requestPath, "--prompt-stdin", "--plan"})
+		return code, stdout.String() + stderr.String()
+	}
+	code, out := invoke()
+	if code != 0 || !strings.Contains(out, `"launch_constraints":{"applies":true,"occupies":"project_config_slot"}`) {
+		t.Fatalf("plan exit=%d %s", code, out)
+	}
+	if _, err := os.Lstat(filepath.Join(cwd, ".zcode", "config.json")); !os.IsNotExist(err) {
+		t.Fatalf("plan wrote the profile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, ".env"), []byte("ZCODE_STORAGE_DIR=/tmp/x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out = invoke()
+	if code != 5 || !strings.Contains(out, `"diagnostic_code":"zcode_read_only_dotenv_present"`) || !strings.Contains(out, `"reason":"dotenv"`) {
+		t.Fatalf("refusal exit=%d %s", code, out)
+	}
+	if _, err := os.Lstat(filepath.Join(cwd, ".zcode", "config.json")); !os.IsNotExist(err) {
+		t.Fatalf("refused plan wrote the profile: %v", err)
+	}
+}

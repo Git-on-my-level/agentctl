@@ -205,6 +205,14 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		if prompt != nil {
 			result["prompt"] = map[string]any{"source": prompt.Source, "delivery": prompt.Delivery, "bytes": len(prompt.Bytes), "sha256": prompt.Digest}
 		}
+		if constraint, constraintErr := adapter.InspectZCodeReadOnly(planConstraintDir(opts.cwd), opts.argv, append(append([]string{}, os.Environ()...), opts.env...)); constraint.Applies {
+			result["launch_constraints"] = constraint
+			if constraintErr != nil {
+				problem := mapAdapterError("ZCode read_only launch constraints", constraintErr)
+				problem.WithDetail("launch_constraints", constraint)
+				return problem
+			}
+		}
 		if !opts.executionID.IsZero() {
 			result["execution_id"] = opts.executionID.String()
 		}
@@ -1120,6 +1128,17 @@ func containsArg(argv []string, value string) bool {
 	return false
 }
 
+func planConstraintDir(cwd string) string {
+	if cwd != "" {
+		return cwd
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return cwd
+	}
+	return dir
+}
+
 func timeoutDescription(opts runOptions) any {
 	if opts.timeout <= 0 {
 		return "none"
@@ -1947,7 +1966,11 @@ func allowlistedFailureMessage(failure model.OutcomeFailure) string {
 	case "native_owner_failed":
 		return "native owner failed; child reaped"
 	case "zcode_read_only_project_config_present":
-		return "ZCode read_only launch refused: project configuration or concurrent read_only launch present"
+		return "ZCode read_only launch refused: project configuration present"
+	case "zcode_read_only_dotenv_present":
+		return "ZCode read_only launch refused: dotenv present"
+	case "zcode_read_only_slot_held":
+		return "ZCode read_only launch refused: project config slot held"
 	case "zcode_read_only_unavailable":
 		return "ZCode read_only launch refused before process start; inspect launch error details"
 	case "provider_capacity":
@@ -2032,7 +2055,7 @@ func classifyOutcomeFailure(message, diagnosticCode, nativeCode, harness, provid
 	switch diagnosticCode {
 	case "native_event_write_failed", "native_owner_failed":
 		return diagnosticCode, "observation", "", false
-	case "zcode_read_only_unavailable", "zcode_read_only_project_config_present":
+	case "zcode_read_only_unavailable", "zcode_read_only_project_config_present", "zcode_read_only_dotenv_present", "zcode_read_only_slot_held":
 		return diagnosticCode, "configuration", "", false
 	}
 	if harness == "codex" && (diagnosticCode == "codex_git_repo_check_required" || message == (&diagnostic.Stderr{Code: "codex_git_repo_check_required"}).Message()) {

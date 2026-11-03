@@ -55,15 +55,15 @@ func nativeJournalErrorClass(err error) string {
 func nativeLaunchFailure(err error, state adapter.State) adapter.Result {
 	result := adapter.Result{State: state, Error: err.Error()}
 	var ae *adapter.AdapterError
-	if errors.As(err, &ae) && ae.Details["diagnostic_code"] == "zcode_read_only_unavailable" {
-		code := "zcode_read_only_unavailable"
-		if ae.Details["reason_code"] == adapter.ZCodeReasonProjectConfigPresent {
-			code = "zcode_read_only_project_config_present"
+	if errors.As(err, &ae) {
+		code, _ := ae.Details["diagnostic_code"].(string)
+		switch code {
+		case "zcode_read_only_unavailable", "zcode_read_only_project_config_present", "zcode_read_only_dotenv_present", "zcode_read_only_slot_held":
+			if result.Data == nil {
+				result.Data = map[string]any{}
+			}
+			result.Data["diagnostic_code"] = code
 		}
-		if result.Data == nil {
-			result.Data = map[string]any{}
-		}
-		result.Data["diagnostic_code"] = code
 	}
 	return result
 }
