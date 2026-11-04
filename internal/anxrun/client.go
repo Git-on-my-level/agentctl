@@ -48,7 +48,8 @@ type CLIOptions struct {
 	Executable string
 	// WorkspaceAlias explicitly overrides cwd resolution for new registrations.
 	WorkspaceAlias string
-	// BaseURL and ConfigDir are optional explicit passthroughs.
+	// BaseURL overrides all workspace aliases, including saved registration pins.
+	// ConfigDir is an optional explicit passthrough.
 	BaseURL   string
 	ConfigDir string
 	// Timeout bounds each subprocess invocation. Default 10s.
@@ -301,11 +302,11 @@ func (s *CLISender) invoke(ctx context.Context, commandID string, params map[str
 
 func (s *CLISender) invokeResult(ctx context.Context, commandID string, params map[string]string, body []byte) (json.RawMessage, error) {
 	options := s.options.normalized()
-	if code := workspaceAliasCode(options.WorkspaceAlias); options.WorkspaceAlias != "" && code != 0 {
-		return nil, egressError(code)
-	}
 	argv := []string{options.Executable, "--json"}
-	if options.WorkspaceAlias != "" {
+	if options.BaseURL == "" && options.WorkspaceAlias != "" {
+		if code := workspaceAliasCode(options.WorkspaceAlias); code != 0 {
+			return nil, egressError(code)
+		}
 		argv = append(argv, "--workspace", options.WorkspaceAlias)
 	}
 	if options.As != "" {
@@ -361,14 +362,14 @@ func (s *CLISender) invokeResult(ctx context.Context, commandID string, params m
 	return envelope.Result, nil
 }
 
-var workspaceAliasPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+var workspaceAliasPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,127}$`)
 
 // ValidWorkspaceAlias is shared by delivery and status: configuration strings
 // may be printed only after both the exact grammar and secret-shape check.
 func ValidWorkspaceAlias(value string) bool { return workspaceAliasCode(value) == 0 }
 
 func workspaceAliasCode(value string) int {
-	if code := stringCode(value, 64, false); code != 0 {
+	if code := stringCode(value, 128, false); code != 0 {
 		return code
 	}
 	if !workspaceAliasPattern.MatchString(value) {

@@ -11,6 +11,11 @@ import (
 // before Send so retries and dead-letter recovery retain the same workspace.
 // Legacy registrations recover cwd from the private journal when available.
 func (s *CLISender) Prepare(ctx context.Context, r Registration) (Registration, error) {
+	// An explicit endpoint wins over all aliases, including a saved pin. Do not
+	// discover an alias: --workspace can override or conflict with --base-url.
+	if s.options.BaseURL != "" {
+		return r, nil
+	}
 	if r.WorkspaceAlias != "" {
 		return r, nil
 	}
@@ -24,10 +29,6 @@ func (s *CLISender) Prepare(ctx context.Context, r Registration) (Registration, 
 				return r, err
 			}
 			cwd = resolved.CWD
-		}
-		// Never resolve against the flush worker's unrelated current directory.
-		if cwd == "" {
-			return r, &SendError{Code: "protocol_error"}
 		}
 		options := s.options.normalized()
 		argv := []string{options.Executable, "--json"}
@@ -50,7 +51,7 @@ func (s *CLISender) Prepare(ctx context.Context, r Registration) (Registration, 
 		if err != nil {
 			return r, &SendError{NumericCode: processCode(err)}
 		}
-		alias, err := workspaceFromCatalog(raw)
+		alias, err := workspaceFromCatalog(raw, cwd == "")
 		if err != nil {
 			return r, err
 		}
@@ -64,11 +65,14 @@ func (s *CLISender) Prepare(ctx context.Context, r Registration) (Registration, 
 
 // ANX owns directory matching (including symlinks and filesystem case rules).
 // Its local config command returns the selected URL and discovered aliases.
-// Multiple aliases for that URL are equivalent: choose lexical order.
-func workspaceFromCatalog(raw []byte) (string, error) {
+// Without a run cwd, use the catalog's configured default, ignoring the CLI's
+// selection against the worker cwd. Multiple aliases for a URL are equivalent:
+// choose lexical order.
+func workspaceFromCatalog(raw []byte, defaultOnly bool) (string, error) {
 	var response struct {
 		OK     bool `json:"ok"`
 		Result struct {
+			Default        string `json:"default"`
 			BaseURL        string `json:"base_url"`
 			SelectionError string `json:"selection_error"`
 			Workspaces     []struct {
@@ -77,12 +81,28 @@ func workspaceFromCatalog(raw []byte) (string, error) {
 			} `json:"workspaces"`
 		} `json:"result"`
 	}
-	if json.Unmarshal(raw, &response) != nil || !response.OK || response.Result.BaseURL == "" || response.Result.SelectionError != "" {
+	if json.Unmarshal(raw, &response) != nil || !response.OK {
+		return "", &SendError{Code: "protocol_error"}
+	}
+	baseURL := response.Result.BaseURL
+	if defaultOnly {
+		baseURL = response.Result.Default
+		// ANX stores a URL for `config use`, but also accepts alias defaults.
+		for _, workspace := range response.Result.Workspaces {
+			if workspace.Alias == response.Result.Default {
+				baseURL = workspace.BaseURL
+				break
+			}
+		}
+	} else if response.Result.SelectionError != "" {
+		return "", &SendError{Code: "protocol_error"}
+	}
+	if baseURL == "" {
 		return "", &SendError{Code: "protocol_error"}
 	}
 	aliases := []string{}
 	for _, workspace := range response.Result.Workspaces {
-		if strings.TrimRight(workspace.BaseURL, "/") == strings.TrimRight(response.Result.BaseURL, "/") && ValidWorkspaceAlias(workspace.Alias) {
+		if strings.TrimRight(workspace.BaseURL, "/") == strings.TrimRight(baseURL, "/") && ValidWorkspaceAlias(workspace.Alias) {
 			aliases = append(aliases, workspace.Alias)
 		}
 	}

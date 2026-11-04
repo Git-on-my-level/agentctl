@@ -296,7 +296,7 @@ func (r RunLinks) Validate() error {
 		}
 	}
 	if r.WorkspaceAlias != "" && !runLinksTokenPattern.MatchString(r.WorkspaceAlias) {
-		return errors.New("workspace_alias must match ^[a-z0-9][a-z0-9-]{0,63}$")
+		return errors.New("workspace_alias must match ^[a-z0-9][a-z0-9_-]{0,127}$")
 	}
 	if r.BaseURL != "" {
 		parsed, err := url.Parse(r.BaseURL)
@@ -316,7 +316,7 @@ func (r RunLinks) Validate() error {
 	return nil
 }
 
-var runLinksTokenPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+var runLinksTokenPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,127}$`)
 
 func (s Skills) Validate() error {
 	s.Source.Remote = strings.TrimSpace(s.Source.Remote)

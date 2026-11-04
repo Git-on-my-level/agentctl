@@ -21,6 +21,17 @@ func TestCardSlugWordEntropy(t *testing.T) {
 		{"alarm-on-batch-audio-unprocessed-2-hours", true},
 		{"build-the-cheapest-long-term-streaming", true},
 		{"ghp-ordinary-card", true},
+		{"task-fix-the-worker", true},
+		{"ask-about-the-task", true},
+		{"mask-the-desk-risk", true},
+		{"slovakia-trip", true},
+		{"akia-fixture", false},
+		{"task-sk-fixture", false},
+		{"task-glpat-fixture", false},
+		{"task-glrt-fixture", false},
+		{"task-xoxb-fixture", false},
+		{"task-pypi-fixture", false},
+		{"sk-fixture", false},
 		{"sk-abcdefghijklmnopqrstuvwxyz012345", false},
 		{"glpat-abcdefghijklmnopqrstuvwxyz", false},
 		{"abcdefghijklmnopqrstuvwxyz0123456789", false},
@@ -52,7 +63,7 @@ func TestWorkspaceCatalogSelection(t *testing.T) {
 		{`{"ok":true,"result":{"base_url":"https://missing.test","workspaces":[]}}`, ""},
 		{`{"ok":false}`, ""},
 	} {
-		got, err := workspaceFromCatalog([]byte(tc.raw))
+		got, err := workspaceFromCatalog([]byte(tc.raw), false)
 		if got != tc.want || (err == nil) != (tc.want != "") {
 			t.Fatalf("got %q %v want %q", got, err, tc.want)
 		}

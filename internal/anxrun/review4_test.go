@@ -78,12 +78,12 @@ func TestReview4OriginIgnoresGitEnvironment(t *testing.T) {
 }
 
 func TestReview4WorkspaceAliasGrammar(t *testing.T) {
-	for _, value := range []string{"anx", "work-space-2"} {
+	for _, value := range []string{"anx", "work-space-2", "team_ops", strings.Repeat("a", 65), strings.Repeat("a", 128)} {
 		if !ValidWorkspaceAlias(value) {
 			t.Fatal("valid alias rejected")
 		}
 	}
-	for _, value := range []string{"", "ANX", "anx/work", "anx_space", "-anx", strings.Repeat("a", 65), "glpat-abcdefghijklmnopqrst", strings.Repeat("a", 38) + "glpat-abcdefghijklmnopqrst"} {
+	for _, value := range []string{"", "ANX", "anx/work", "_anx", "-anx", strings.Repeat("a", 129), "glpat-abcdefghijklmnopqrst", strings.Repeat("a", 38) + "glpat-abcdefghijklmnopqrst"} {
 		if ValidWorkspaceAlias(value) {
 			t.Fatal("unsafe alias accepted")
 		}

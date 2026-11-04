@@ -717,9 +717,13 @@ agentctl anx requeue-dead --dry-run # local-only recovery preview; no ANX calls
 agentctl anx requeue-dead           # fill free pending slots; flush separately
 ```
 
-Workspace defaults come from the ANX CLI's rules for the run cwd unless host
-config explicitly sets `workspace_alias`. The worker persists the alias before
-sending and uses that workspace for card lookup on every retry. Each send passes
+Explicit `base_url` overrides every workspace alias and is passed without
+`--workspace`. Otherwise a persisted run alias wins over host `workspace_alias`,
+then ANX's rules for the run cwd. With no run cwd (including Multica), use ANX's
+configured default, ignoring the worker's cwd; missing selection retries.
+Aliases accept underscores and up to 128 characters, with credential checks.
+The worker persists the resolved alias before sending and uses that workspace
+for card lookup on every retry. Each send passes
 `--as` from its registration adapter, independent of inherited identity markers.
 Recovery preserves sequence, payload and request-key hash, resets attempts and
 backoff, and never evicts pending entries. JSON counts report `requeued`,

@@ -654,13 +654,20 @@ same card.
 
 ## Workspace routing and dead-letter recovery
 
-Workspace routing is per run. An explicit `anx.run_links.workspace_alias` pins
-new registrations. Without it, the flush worker runs the ANX CLI's local
+Workspace routing precedence is explicit `anx.run_links.base_url`, then an
+already pinned run alias, then explicit `anx.run_links.workspace_alias`, then
+ANX directory rules/default. An explicit base URL bypasses alias discovery and
+is sent without `--workspace`, avoiding alias overrides or routing-flag conflicts.
+Without an explicit endpoint or alias, the flush worker runs the ANX CLI's local
 `config workspaces` command in the run cwd, using its directory rules and
 default. Inherited `ANX_WORKSPACE` and `ANX_BASE_URL` are excluded from that
 lookup. The selected alias is saved as optional `workspace_alias` in the v5
-registration before any remote call; missing/ambiguous aliases or a missing cwd
-retry with a bounded diagnostic instead of guessing. Legacy entries resolve
+registration before any remote call. When the run has no cwd (including Multica),
+the catalog's configured `default` determines the route, ignoring selection
+against the flush worker's cwd. Both alias and URL defaults are supported.
+Missing/unresolvable defaults or missing/ambiguous aliases retry with a bounded
+diagnostic instead of guessing. Aliases follow ANX's grammar
+`^[a-z0-9][a-z0-9_-]{0,127}$`, with credential checks still applied. Legacy entries resolve
 once using the journal cwd. Pinned aliases survive configuration changes and
 re-enqueueing. Card lookup uses that registration's workspace. Each delivery
 passes `--as <adapter>` (`claude-code` maps to `claude`), including mixed native

@@ -309,8 +309,8 @@
     },
     "workspace_alias": {
       "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
-      "description": "Local routing metadata, pinned before first remote delivery. Omitted in legacy entries and public card messages; never part of the request_key digest."
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,127}$",
+      "description": "Local routing metadata, pinned before first remote delivery unless explicit base_url is set. Explicit base_url overrides this alias. Omitted in legacy entries and public card messages; never part of the request_key digest."
     }
   }
 }
