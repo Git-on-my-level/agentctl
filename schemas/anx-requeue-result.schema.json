@@ -1,0 +1,16 @@
+{
+ "$schema":"https://json-schema.org/draft/2020-12/schema",
+ "$id":"urn:agentctl:schema:anx-requeue-result:v1",
+ "x-agentctl-docs":"../docs/design/anx-run-links.md#workspace-routing-and-dead-letter-recovery",
+ "title":"Local ANX dead-letter recovery result",
+ "type":"object",
+ "additionalProperties":false,
+ "required":["dry_run","requeued","already_pending","already_delivered","deferred_capacity"],
+ "properties":{
+  "dry_run":{"type":"boolean"},
+  "requeued":{"type":"integer","minimum":0},
+  "already_pending":{"type":"integer","minimum":0},
+  "already_delivered":{"type":"integer","minimum":0},
+  "deferred_capacity":{"type":"integer","minimum":0}
+ }
+}

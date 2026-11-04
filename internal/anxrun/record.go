@@ -65,6 +65,7 @@ type Registration struct {
 	Model          string      `json:"model,omitempty"`
 	State          string      `json:"state"`
 	Liveness       string      `json:"liveness"`
+	WorkspaceAlias string      `json:"workspace_alias,omitempty"`
 	CWD            string      `json:"cwd,omitempty"`
 	Repository     *Repository `json:"repository,omitempty"`
 	Labels         []string    `json:"-"`

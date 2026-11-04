@@ -19,6 +19,10 @@ const (
 )
 
 var tokenPrefix = regexp.MustCompile(`(?i)(?:gh[opsur]_|github_pat_|glpat-|gldt-|glrt-|sk-|rk_live_|sk_live_|xox[abpr]-|hf_|npm_|pypi-|ya29\.|-----BEGIN)|AKIA|AIza`)
+
+// Slugs join title words with hyphens. A prefix must start a token so the
+// suffix of an ordinary word (such as the sk- in task-) is not a credential.
+var slugTokenPrefix = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])(?:` + tokenPrefix.String() + `)`)
 var jwtShape = regexp.MustCompile(`[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`)
 var entropyRun = regexp.MustCompile(`[A-Za-z0-9+/=_-]{24,}`)
 
@@ -61,25 +65,48 @@ func stringCode(value string, limit int, cryptographic bool) int {
 		return EgressSecretShape
 	}
 	if !cryptographic {
-		for _, run := range entropyRun.FindAllString(value, -1) {
-			// Examine every 24-byte window, so low-entropy padding cannot
-			// dilute a token-shaped substring. Iterate counts deterministically.
-			for start := 0; start+24 <= len(run); start++ {
-				counts := [256]int{}
-				for _, value := range []byte(run[start : start+24]) {
-					counts[value]++
-				}
-				entropy := 0.0
-				for _, count := range counts {
-					if count > 0 {
-						p := float64(count) / 24
-						entropy -= p * math.Log2(p)
-					}
-				}
-				if entropy >= 3.5 {
-					return EgressSecretShape
+		return entropyCode(value)
+	}
+	return 0
+}
+
+func entropyCode(value string) int {
+	for _, run := range entropyRun.FindAllString(value, -1) {
+		// Examine every 24-byte window, so low-entropy padding cannot
+		// dilute a token-shaped substring. Iterate counts deterministically.
+		for start := 0; start+24 <= len(run); start++ {
+			counts := [256]int{}
+			for _, value := range []byte(run[start : start+24]) {
+				counts[value]++
+			}
+			entropy := 0.0
+			for _, count := range counts {
+				if count > 0 {
+					p := float64(count) / 24
+					entropy -= p * math.Log2(p)
 				}
 			}
+			if entropy >= 3.5 {
+				return EgressSecretShape
+			}
+		}
+	}
+	return 0
+}
+
+// cardSlugCode checks credential prefixes/JWTs across the whole slug, then
+// entropy per hyphen-separated word. Ordinary title words must not combine
+// into a fake token; a token-shaped word still rejects the whole slug.
+func cardSlugCode(slug string) int {
+	if len(slug) > 64 {
+		return EgressLength
+	}
+	if slugTokenPrefix.MatchString(slug) || jwtShape.MatchString(slug) {
+		return EgressSecretShape
+	}
+	for _, word := range strings.Split(slug, "-") {
+		if code := entropyCode(word); code != 0 {
+			return code
 		}
 	}
 	return 0

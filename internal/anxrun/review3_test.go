@@ -15,7 +15,7 @@ func TestReview3EmbeddedCredentialsAndEntropy(t *testing.T) {
 			t.Fatal("embedded credential/entropy escaped")
 		}
 	}
-	if refs := ResolveCards([]string{CardLabelPrefix + strings.Repeat("a", 38) + "glpat-" + "abcdefghijklmnopqrst"}); len(refs) != 0 {
+	if refs := ResolveCards([]string{CardLabelPrefix + strings.Repeat("a", 37) + "-glpat-" + "abcdefghijklmnopqrst"}); len(refs) != 0 {
 		t.Fatal("embedded credential slug escaped")
 	}
 }

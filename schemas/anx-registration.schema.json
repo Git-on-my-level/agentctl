@@ -94,7 +94,7 @@
       "items": {
         "type": "string",
         "pattern": "^card:[a-z0-9][a-z0-9-]{0,63}$",
-        "description": "Delivery-only canonical ref from the target workspace cards.list response. Unverified refs never enter the outbox."
+        "description": "Delivery-only canonical ref from the target workspace cards.list response. Unverified refs never enter the outbox. Credential prefixes are checked across the slug; entropy is checked per hyphen-separated word."
       }
     },
     "started_at": {
@@ -306,6 +306,11 @@
         }
       },
       "description": "Run CWD origin, parsed after stripping userinfo. Any remote host is permitted. Credential-shaped components are omitted independently."
+    },
+    "workspace_alias": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,127}$",
+      "description": "Local routing metadata, pinned before first remote delivery unless explicit base_url is set. Explicit base_url overrides this alias. Omitted in legacy entries and public card messages; never part of the request_key digest."
     }
   }
 }

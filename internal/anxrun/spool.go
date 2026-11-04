@@ -209,13 +209,14 @@ func (s *Spool) LastRejection() *Rejection {
 // Assigned identities are retained after pending/dead cleanup. Delivered is
 // an explicit durable replay index; crashes before pending deletion are safe.
 type sequenceIndex struct {
-	Counters  map[string]int `json:"counters"`
-	Assigned  map[string]int `json:"assigned"`
-	Delivered map[string]int `json:"delivered"`
+	Counters   map[string]int    `json:"counters"`
+	Assigned   map[string]int    `json:"assigned"`
+	Delivered  map[string]int    `json:"delivered"`
+	Workspaces map[string]string `json:"workspaces,omitempty"`
 }
 
 func (s *Spool) index() (sequenceIndex, error) {
-	index := sequenceIndex{Counters: map[string]int{}, Assigned: map[string]int{}, Delivered: map[string]int{}}
+	index := sequenceIndex{Counters: map[string]int{}, Assigned: map[string]int{}, Delivered: map[string]int{}, Workspaces: map[string]string{}}
 	raw, err := os.ReadFile(filepath.Join(s.root, "sequence-index.json"))
 	if os.IsNotExist(err) {
 		// Preserve counters from the pre-v2 spool.
@@ -234,8 +235,16 @@ func (s *Spool) index() (sequenceIndex, error) {
 	if err = json.Unmarshal(raw, &index); err != nil {
 		return index, err
 	}
+	if index.Workspaces == nil {
+		index.Workspaces = map[string]string{}
+	}
 	if index.Counters == nil || index.Assigned == nil || index.Delivered == nil {
 		return index, fmt.Errorf("invalid_sequence_index")
+	}
+	for _, alias := range index.Workspaces {
+		if !ValidWorkspaceAlias(alias) {
+			return index, egressError(EgressFormat)
+		}
 	}
 	return index, nil
 }
@@ -319,6 +328,9 @@ func (s *Spool) Enqueue(registration Registration) (Entry, error) {
 		entry.CreatedAt, entry.Attempts, entry.NextAttemptAt = existing.CreatedAt, existing.Attempts, existing.NextAttemptAt
 		entry.LastError, entry.ErrorCode = existing.LastError, existing.ErrorCode
 		entry.Registration.Sequence = existing.Registration.Sequence
+		if existing.Registration.WorkspaceAlias != "" {
+			entry.Registration.WorkspaceAlias = existing.Registration.WorkspaceAlias
+		}
 		entry.Revision = existing.Revision + 1
 	} else if errors.Is(err, os.ErrNotExist) {
 		entry.Registration.Sequence, err = s.nextSequence(registration)
@@ -335,6 +347,11 @@ func (s *Spool) Enqueue(registration Registration) (Entry, error) {
 	index, err := s.index()
 	if err != nil {
 		return Entry{}, err
+	}
+	if alias := index.Workspaces[entry.Registration.DurableID]; alias != "" {
+		entry.Registration.WorkspaceAlias = alias
+	} else if entry.Registration.WorkspaceAlias != "" {
+		index.Workspaces[entry.Registration.DurableID] = entry.Registration.WorkspaceAlias
 	}
 	index.Assigned[replayKey(entry.Registration)] = entry.Registration.Sequence
 	scope := sequenceScope(entry.Registration)
@@ -504,12 +521,80 @@ func (s *Spool) Flush(ctx context.Context, sender Sender, maxAttempts int) (Flus
 			result.SkippedNotDue++
 			continue
 		}
+		// Pin missing routing durably before any remote calls. A refresh that
+		// races preparation wins; the next worker handles its fresh snapshot.
+		var prepareErr error
+		if preparer, ok := sender.(interface {
+			Prepare(context.Context, Registration) (Registration, error)
+		}); ok {
+			var prepared Registration
+			input := snapshot.Registration
+			unlock, err := s.lockContext(ctx, "state")
+			if err != nil {
+				return result, err
+			}
+			index, err := s.index()
+			unlock()
+			if err != nil {
+				return result, err
+			}
+			if input.WorkspaceAlias == "" {
+				input.WorkspaceAlias = index.Workspaces[input.DurableID]
+			}
+			prepared, prepareErr = preparer.Prepare(ctx, input)
+			if prepareErr == nil && !reflect.DeepEqual(prepared, snapshot.Registration) {
+				unlock, err := s.lockContext(ctx, "state")
+				if err != nil {
+					return result, err
+				}
+				current, err := s.read(s.pendingPath(entryKey(snapshot.ExecutionID, snapshot.Phase)))
+				if errors.Is(err, os.ErrNotExist) {
+					unlock()
+					continue
+				}
+				if err != nil {
+					unlock()
+					return result, err
+				}
+				if !reflect.DeepEqual(current, snapshot) {
+					unlock()
+					continue
+				}
+				prepared, err = Allowlisted(prepared, s.Catalog)
+				if err == nil {
+					index, indexErr := s.index()
+					if indexErr == nil {
+						if alias := index.Workspaces[prepared.DurableID]; alias != "" {
+							prepared.WorkspaceAlias = alias
+						}
+						index.Workspaces[prepared.DurableID] = prepared.WorkspaceAlias
+						indexErr = s.saveIndex(index)
+					}
+					if indexErr != nil {
+						unlock()
+						return result, indexErr
+					}
+					snapshot.Registration = prepared
+					snapshot.Revision++
+					var raw []byte
+					raw, err = json.Marshal(snapshot)
+					if err == nil {
+						err = writeFileAtomic(s.pendingPath(entryKey(snapshot.ExecutionID, snapshot.Phase)), raw)
+					}
+				}
+				unlock()
+				if err != nil {
+					return result, err
+				}
+			}
+		}
 		// Revalidate legacy or edited entries at the last egress boundary.
 		safe, sendErr := Allowlisted(snapshot.Registration, s.Catalog)
+		if prepareErr != nil {
+			sendErr = prepareErr
+		}
 		if sendErr == nil {
 			sendErr = sender.Send(ctx, safe)
-		} else {
-			sendErr = &SendError{Fatal: true, Reason: ReasonRejected}
 		}
 		interrupted := ctx.Err()
 		if interrupted == nil && (errors.Is(sendErr, context.Canceled) || errors.Is(sendErr, context.DeadlineExceeded)) {

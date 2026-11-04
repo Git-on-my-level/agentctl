@@ -51,6 +51,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 	}
 	want := map[string]string{
 		"anx-registration":     "schemas/anx-registration.schema.json",
+		"anx-requeue-result":   "schemas/anx-requeue-result.schema.json",
 		"adapter-manifest":     "schemas/adapter-manifest.schema.json",
 		"await-any-result":     "schemas/await-any-result.schema.json",
 		"callback-envelope":    "schemas/callback-envelope.schema.json",
@@ -90,7 +91,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 	for _, item := range document.Result.Schemas {
 		expectedVersion := 1
 		if item.Name == "anx-registration" {
-			expectedVersion = 4
+			expectedVersion = 5
 		}
 		if item.Version != expectedVersion || want[item.Name] != item.File {
 			t.Fatalf("unexpected schema listing item: %#v", item)

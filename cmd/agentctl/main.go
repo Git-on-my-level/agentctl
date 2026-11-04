@@ -42,7 +42,7 @@ type app struct {
 	nativeEventWriter func(context.Context, *store.Journal, model.Execution, adapter.Event) (model.Execution, error)
 
 	startUpdateWorker func(common) error
-	startANXWorker    func(common) error
+	startANXWorker    func(common, string) error
 	stdout, stderr    io.Writer
 	stdin             io.Reader
 	stdinIsTerminal   func() bool

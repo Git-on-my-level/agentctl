@@ -27,6 +27,9 @@ func (f *fakeRunner) run(_ context.Context, argv []string, stdin []byte) ([]byte
 		return []byte(next), nil
 	}
 	joined := strings.Join(argv, " ")
+	if strings.Contains(joined, "config workspaces") {
+		return []byte(`{"ok":true,"result":{"base_url":"https://anx.test","workspaces":[{"alias":"anx","base_url":"https://anx.test"}]}}`), nil
+	}
 	if strings.Contains(joined, "api cards.list") {
 		return []byte(`{"ok":true,"result":{"cards":[{"ref":"card:watch-redesign","thread_id":"thread-test"},{"ref":"card:other","thread_id":"thread-other"},{"ref":"card:dogfooding","thread_id":"thread-dogfooding"}]}}`), nil
 	}
@@ -72,7 +75,7 @@ func TestCLISenderArgvAndBodies(t *testing.T) {
 	if err := json.Unmarshal([]byte(runner.stdins[1]), &sessionBody); err != nil {
 		t.Fatal(err)
 	}
-	if sessionBody["native_session_id_kind"] != NativeSessionIDKind || sessionBody["provider"] != "claude" || sessionBody["activity"] != "idle" || sessionBody["sequence"] != float64(4) || sessionBody["host_scope"] != registration.OriginHostID {
+	if sessionBody["native_session_id_kind"] != NativeSessionIDKind || sessionBody["provider"] != "claude" || sessionBody["activity"] != "idle" || sessionBody["sequence"] != float64(4) || sessionBody["host_scope"] != nil {
 		t.Fatalf("session body = %#v", sessionBody)
 	}
 	capabilities, _ := sessionBody["capabilities"].(map[string]any)
@@ -189,7 +192,7 @@ func TestCLISenderOnlyDeletesAfterRunRecordAcknowledged(t *testing.T) {
 	runner := &fakeRunner{}
 	var firstBody string
 	failMessage := true
-	sender := &CLISender{options: CLIOptions{AllowedOrgs: []string{"o"}}, Resolve: fixtureResolve(r), run: func(ctx context.Context, argv []string, stdin []byte) ([]byte, error) {
+	sender := &CLISender{options: CLIOptions{WorkspaceAlias: "anx", AllowedOrgs: []string{"o"}}, Resolve: fixtureResolve(r), run: func(ctx context.Context, argv []string, stdin []byte) ([]byte, error) {
 		if strings.Contains(strings.Join(argv, " "), "api events.create") {
 			if firstBody == "" {
 				firstBody = string(stdin)

@@ -42,7 +42,7 @@ func TestV4SpoolEvidenceSurvivesDeliveryAsV5(t *testing.T) {
 		t.Fatalf("v4 evidence changed on read: %+v", pending[0].Registration)
 	}
 	runner := &fakeRunner{}
-	sender := &CLISender{run: runner.run, Resolve: func(_ context.Context, r Registration) (Registration, *Repository, error) {
+	sender := &CLISender{options: CLIOptions{WorkspaceAlias: "anx"}, run: runner.run, Resolve: func(_ context.Context, r Registration) (Registration, *Repository, error) {
 		// Recover only the target from the journal; evidence must survive from
 		// the old spool, rather than being replaced by a fresh outcome fixture.
 		r.CardRefs = []string{"card:watch-redesign"}
