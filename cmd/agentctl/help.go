@@ -170,6 +170,7 @@ func helpTopics() map[string]commandHelp {
 				"status is read-only and reports the effective mode, pending spool entries, and dead letters with reasons",
 				"flush retries pending deliveries through the configured anx CLI with backoff, then cleans expired dead letters",
 				"explicit base_url overrides all workspace aliases; otherwise a saved run alias wins over host workspace_alias, then anx config workspaces resolves the run cwd; no-cwd runs use the configured ANX default; resolved aliases persist for retries",
+				"workspace aliases match ^[a-z0-9][a-z0-9_-]{0,127}$, the same grammar anx accepts",
 				"each delivery passes --as from the registration adapter (claude-code maps to claude), independent of worker environment",
 				"requeue-dead is local-only; --dry-run reads without writes or ANX calls; apply preserves payload, sequence and request-key hash, resets attempts/backoff and fills free pending capacity without evictions; flush separately",
 				"deliveries register principal-private sessions and participation by native fingerprint and sequence, then post card messages with stable events.create request keys",

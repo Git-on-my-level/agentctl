@@ -2545,3 +2545,21 @@ func TestGenericExtractionNoStoreDoesNotCaptureOutput(t *testing.T) {
 		t.Fatalf("no-store wrote output files: %v %v", matches, err)
 	}
 }
+
+func TestHelpANXStatesWorkspaceAliasGrammar(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"help", "anx"}); code != 0 {
+		t.Fatalf("help anx exit=%d output=%s", code, stdout.String())
+	}
+	var doc struct {
+		OK     bool        `json:"ok"`
+		Result commandHelp `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.OK || !strings.Contains(strings.Join(doc.Result.Defaults, "\n"), "^[a-z0-9][a-z0-9_-]{0,127}$") {
+		t.Fatalf("anx help defaults=%q", doc.Result.Defaults)
+	}
+}
