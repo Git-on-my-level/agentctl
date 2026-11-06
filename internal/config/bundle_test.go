@@ -249,7 +249,7 @@ func TestBundleCarriesCapacityIntoMaterializedConfig(t *testing.T) {
         "file": "/var/capacity/facts.json",
         "switch_threshold": 0.9,
         "pools": {
-          "work": {"mode": "balance", "candidates": [
+          "work": {"candidates": [
             {"harness": "codex", "model": "model-a", "account": "one", "executable": "/opt/bin/codex-one", "cutoff_exempt": true},
             {"harness": "codex", "model": "model-a", "account": "two", "executable": "/opt/bin/codex-two", "switch_threshold": 0.7, "windows": ["weekly"]}
           ]}

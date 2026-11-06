@@ -20,72 +20,93 @@ func weekly(id string, ratio float64) Account {
 	return Account{ID: id, Windows: []Window{{Name: "weekly", UsedRatio: ratio, ResetsAt: &reset}}}
 }
 
-func input(mode string, facts *Facts, candidates ...Candidate) Input {
-	return Input{Mode: mode, Candidates: candidates, Facts: facts, LaunchDebit: 0.02, MaxAge: time.Hour, Now: testNow}
+func input(facts *Facts, candidates ...Candidate) Input {
+	return Input{Candidates: candidates, Facts: facts, LaunchDebit: 0.02, MaxAge: time.Hour, Now: testNow}
 }
 
-func TestPriorityDrainsFirstAccountWhileExempt(t *testing.T) {
-	choice := Select(input(ModePriority, factsWith(weekly("a", 1.4), weekly("b", 0)),
+func TestSoonestResetWinsOverFresherAccount(t *testing.T) {
+	// 86% used and 17h to reset, against a fresh account with a full week left.
+	soon := testNow.Add(17 * time.Hour)
+	used := Account{ID: "a", Windows: []Window{{Name: "weekly", UsedRatio: 0.86, ResetsAt: &soon}}}
+	choice := Select(input(factsWith(used, weekly("b", 0)), Candidate{Account: "a", Threshold: 0.96}, Candidate{Account: "b", Threshold: 0.96}))
+	if choice.Index != 0 || choice.Reason != ReasonSoonestReset {
+		t.Fatalf("choice=%+v", choice)
+	}
+}
+
+func TestHeadroomFloorExcludesNearlyFullAccount(t *testing.T) {
+	soon := testNow.Add(time.Hour)
+	nearly := Account{ID: "a", Windows: []Window{{Name: "weekly", UsedRatio: 0.91, ResetsAt: &soon}}}
+	choice := Select(input(factsWith(nearly, weekly("b", 0.5)), Candidate{Account: "a", Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95}))
+	if choice.Index != 1 || choice.Evaluations[0].Eligible {
+		t.Fatalf("choice=%+v", choice)
+	}
+	if !Select(input(factsWith(weekly("a", 0.85)), Candidate{Account: "a", Threshold: 0.95})).Evaluations[0].Eligible {
+		t.Fatal("headroom of 5% or more must stay eligible")
+	}
+}
+
+func TestExemptRunsPastLimit(t *testing.T) {
+	choice := Select(input(factsWith(weekly("a", 1.4), weekly("b", 0)),
 		Candidate{Account: "a", Exempt: true, Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95}))
-	if choice.Index != 0 || choice.Reason != ReasonFirstEligible {
+	if !choice.Evaluations[0].Eligible {
 		t.Fatalf("choice=%+v", choice)
 	}
 }
 
-func TestPriorityMovesOnAtThreshold(t *testing.T) {
-	choice := Select(input(ModePriority, factsWith(weekly("a", 0.95), weekly("b", 0.99)),
-		Candidate{Account: "a", Threshold: 0.95}, Candidate{Account: "b", Exempt: true}))
-	if choice.Index != 1 {
+func TestResetOrderBreaksAcrossKnownUsageThenUnknown(t *testing.T) {
+	soon, late := testNow.Add(time.Hour), testNow.Add(100*time.Hour)
+	facts := factsWith(
+		Account{ID: "a", Windows: []Window{{Name: "w", UsedRatio: 0.2, ResetsAt: &late}}},
+		Account{ID: "b", Windows: []Window{{Name: "w", UsedRatio: 0.2, ResetsAt: &soon}}},
+		Account{ID: "c", Windows: []Window{{Name: "w", UsedRatio: 0.1}}},
+	)
+	choice := Select(input(facts, Candidate{Account: "a", Threshold: 0.95}, Candidate{Account: "c", Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95}))
+	if choice.Index != 2 {
 		t.Fatalf("choice=%+v", choice)
 	}
-	if !Select(input(ModePriority, factsWith(weekly("a", 0.94)), Candidate{Account: "a", Threshold: 0.95})).Evaluations[0].Eligible {
-		t.Fatal("below the threshold must stay eligible")
+	choice = Select(input(facts, Candidate{Account: "c", Threshold: 0.95}, Candidate{Account: "a", Threshold: 0.95}))
+	if choice.Index != 1 || choice.Reason != ReasonSoonestReset {
+		t.Fatalf("choice=%+v", choice)
 	}
 }
 
-func TestBalancePicksMostHeadroomAndSkipsOverThreshold(t *testing.T) {
-	choice := Select(input(ModeBalance, factsWith(weekly("a", 0.96), weekly("b", 0.5), weekly("c", 0.2)),
-		Candidate{Account: "a", Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95}, Candidate{Account: "c", Threshold: 0.95}))
-	if choice.Index != 2 || choice.Reason != ReasonLowestPressure {
+func TestExpiredWindowCountsEmptyWithoutNextReset(t *testing.T) {
+	past := testNow.Add(-time.Minute)
+	expired := Account{ID: "a", Windows: []Window{{Name: "w", UsedRatio: 0.9, ResetsAt: &past}}}
+	later := testNow.Add(72 * time.Hour)
+	fresh := Account{ID: "b", Windows: []Window{{Name: "w", UsedRatio: 0.5, ResetsAt: &later}}}
+	choice := Select(input(factsWith(expired, fresh), Candidate{Account: "a", Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95}))
+	got := choice.Evaluations[0]
+	if got.UsedRatio != 0 || got.ResetsAt != nil || !got.Eligible {
+		t.Fatalf("evaluation=%+v", got)
+	}
+	if choice.Index != 1 || choice.Reason != ReasonSoonestReset {
 		t.Fatalf("choice=%+v", choice)
 	}
 }
 
-func TestBalanceSpreadsFanOutWhenFactsLag(t *testing.T) {
-	in := input(ModeBalance, factsWith(weekly("a", 0.1), weekly("b", 0.1)), Candidate{Account: "a", Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95})
+func TestAllOverThresholdRunsLeastUsed(t *testing.T) {
+	choice := Select(input(factsWith(weekly("a", 0.99), weekly("b", 0.96)), Candidate{Account: "a", Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95}))
+	if choice.Index != 1 || choice.Reason != ReasonAllOverThreshold {
+		t.Fatalf("choice=%+v", choice)
+	}
+}
+
+func TestLaunchDebitSpreadsFanOutWhenFactsLag(t *testing.T) {
+	in := input(factsWith(weekly("a", 0.1), weekly("b", 0.1)), Candidate{Account: "a", Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95})
 	in.RecentLaunches = map[string]int{"a": 1}
 	if got := Select(in).Index; got != 1 {
 		t.Fatalf("got %d", got)
 	}
 }
 
-func TestBalanceTieGoesToSoonestReset(t *testing.T) {
-	soon, late := testNow.Add(time.Hour), testNow.Add(100*time.Hour)
-	facts := factsWith(Account{ID: "a", Windows: []Window{{Name: "w", UsedRatio: 0.3, ResetsAt: &late}}}, Account{ID: "b", Windows: []Window{{Name: "w", UsedRatio: 0.3, ResetsAt: &soon}}})
-	if got := Select(input(ModeBalance, facts, Candidate{Account: "a", Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95})).Index; got != 1 {
-		t.Fatalf("got %d", got)
-	}
-}
-
-func TestBalanceRanksUnknownUsageLast(t *testing.T) {
-	if got := Select(input(ModeBalance, factsWith(weekly("b", 0.8)), Candidate{Account: "a", Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95})).Index; got != 1 {
-		t.Fatalf("got %d", got)
-	}
-}
-
-func TestAllOverThresholdRunsLeastUsed(t *testing.T) {
-	choice := Select(input(ModePriority, factsWith(weekly("a", 0.99), weekly("b", 0.96)), Candidate{Account: "a", Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95}))
-	if choice.Index != 1 || choice.Reason != ReasonAllOverThreshold {
-		t.Fatalf("choice=%+v", choice)
-	}
-}
-
-func TestNoFactsKeepsOrderAndBalanceStillSpreads(t *testing.T) {
+func TestNoFactsKeepsConfiguredOrder(t *testing.T) {
 	a, b := Candidate{Account: "a", Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95}
-	if got := Select(input(ModePriority, nil, a, b)); got.Index != 0 || got.Evaluations[0].UsageKnown {
+	if got := Select(input(nil, a, b)); got.Index != 0 || got.Evaluations[0].UsageKnown || got.Reason != ReasonConfiguredOrder {
 		t.Fatalf("choice=%+v", got)
 	}
-	in := input(ModeBalance, nil, a, b)
+	in := input(nil, a, b)
 	in.RecentLaunches = map[string]int{"a": 2, "b": 1}
 	if got := Select(in).Index; got != 1 {
 		t.Fatalf("got %d", got)
@@ -100,7 +121,7 @@ func TestWindowsAreFilteredResetAndAged(t *testing.T) {
 		{Name: "aged", UsedRatio: 0.99, ObservedAt: &old},
 		{Name: "live", UsedRatio: 0.4},
 	}})
-	got := Select(input(ModePriority, facts, Candidate{Account: "a", Threshold: 0.95, Windows: []string{"reset", "aged", "live"}})).Evaluations[0]
+	got := Select(input(facts, Candidate{Account: "a", Threshold: 0.95, Windows: []string{"reset", "aged", "live"}})).Evaluations[0]
 	if !got.Eligible || got.UsedRatio != 0.4 || got.Window != "live" {
 		t.Fatalf("evaluation=%+v", got)
 	}

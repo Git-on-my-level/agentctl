@@ -5,15 +5,19 @@ import (
 	"time"
 )
 
-const (
-	ModePriority = "priority"
-	ModeBalance  = "balance"
-)
+// ModeSoonestReset names the one selection rule. It is recorded with every
+// choice so a reader can tell which rule chose the account.
+const ModeSoonestReset = "soonest_reset"
+
+// HeadroomFloor is the least room, as a share of the window, that a candidate
+// must keep below its threshold to stay eligible. It stops an account that is
+// nearly full from winning on a short reset.
+const HeadroomFloor = 0.05
 
 // Reason says why a candidate was chosen. Values are stable identifiers.
 const (
-	ReasonFirstEligible    = "first_eligible"
-	ReasonLowestPressure   = "lowest_pressure"
+	ReasonSoonestReset     = "soonest_reset"
+	ReasonConfiguredOrder  = "configured_order"
 	ReasonAllOverThreshold = "all_over_threshold"
 )
 
@@ -28,7 +32,6 @@ type Candidate struct {
 // Input is everything one choice depends on, so a choice is reproducible from
 // it. Facts is nil when the file is unusable; then no account has known usage.
 type Input struct {
-	Mode           string
 	Candidates     []Candidate
 	Facts          *Facts
 	RecentLaunches map[string]int
@@ -37,7 +40,8 @@ type Input struct {
 	Now            time.Time
 }
 
-// Evaluation explains how one candidate looked at selection time.
+// Evaluation explains how one candidate looked at selection time. Pressure is
+// the used ratio plus the debit for recent launches, the figure eligibility uses.
 type Evaluation struct {
 	Account        string
 	UsageKnown     bool
@@ -60,7 +64,12 @@ type Choice struct {
 
 // Select chooses exactly one candidate from a nonempty list. It never refuses: a
 // pool blocks no work on a number that may be stale, so when every candidate is
-// over its threshold the least used one runs and the reason says so.
+// over its limit the least used one runs and the reason says so.
+//
+// Among eligible candidates, the one whose window resets soonest runs first,
+// because unused quota in that window is lost at reset. Candidates with known
+// usage but no known reset come next, then candidates with unknown usage. Ties
+// keep configured order.
 func Select(input Input) Choice {
 	evaluations := make([]Evaluation, len(input.Candidates))
 	for i, candidate := range input.Candidates {
@@ -74,19 +83,21 @@ func Select(input Input) Choice {
 		}
 	}
 	if len(eligible) == 0 {
-		choice.Index, choice.Reason = lowestPressure(evaluations, allIndexes(len(evaluations))), ReasonAllOverThreshold
+		choice.Index, choice.Reason = leastUsed(evaluations), ReasonAllOverThreshold
 		return choice
 	}
-	if input.Mode == ModeBalance {
-		choice.Index, choice.Reason = lowestPressure(evaluations, eligible), ReasonLowestPressure
-		return choice
+	choice.Index = soonestReset(evaluations, eligible)
+	if evaluations[choice.Index].ResetsAt != nil {
+		choice.Reason = ReasonSoonestReset
+	} else {
+		choice.Reason = ReasonConfiguredOrder
 	}
-	choice.Index, choice.Reason = eligible[0], ReasonFirstEligible
 	return choice
 }
 
 // evaluate takes the tightest limiting window. A window past its reset counts as
-// empty, and one observed longer ago than MaxAge says nothing about now.
+// empty with no known next reset, and one observed longer ago than MaxAge says
+// nothing about now.
 func evaluate(candidate Candidate, input Input) Evaluation {
 	evaluation := Evaluation{Account: candidate.Account, Threshold: candidate.Threshold, Exempt: candidate.Exempt, RecentLaunches: input.RecentLaunches[candidate.Account]}
 	if input.Facts != nil {
@@ -102,19 +113,24 @@ func evaluate(candidate Candidate, input Input) Evaluation {
 				if window.ObservedAt != nil && input.Now.Sub(*window.ObservedAt) > input.MaxAge {
 					continue
 				}
-				ratio := window.UsedRatio
-				if window.ResetsAt != nil && !window.ResetsAt.After(input.Now) {
-					ratio = 0
+				ratio, resets := window.UsedRatio, window.ResetsAt
+				if resets != nil && !resets.After(input.Now) {
+					ratio, resets = 0, nil
 				}
 				if !evaluation.UsageKnown || ratio > evaluation.UsedRatio {
-					evaluation.UsageKnown, evaluation.UsedRatio, evaluation.Window, evaluation.ResetsAt = true, ratio, window.Name, window.ResetsAt
+					evaluation.UsageKnown, evaluation.UsedRatio, evaluation.Window, evaluation.ResetsAt = true, ratio, window.Name, resets
 				}
 			}
 			break
 		}
 	}
-	evaluation.Eligible = candidate.Exempt || !evaluation.UsageKnown || evaluation.UsedRatio < candidate.Threshold
 	evaluation.pressure = evaluation.UsedRatio + input.LaunchDebit*float64(evaluation.RecentLaunches)
+	switch {
+	case candidate.Exempt || !evaluation.UsageKnown:
+		evaluation.Eligible = true
+	default:
+		evaluation.Eligible = evaluation.pressure < candidate.Threshold && candidate.Threshold-evaluation.pressure >= HeadroomFloor
+	}
 	return evaluation
 }
 
@@ -130,30 +146,50 @@ func limits(names []string, window string) bool {
 	return false
 }
 
-// lowestPressure prefers known usage, then the least pressure, then the soonest
-// reset because that quota is lost otherwise, then configured order.
-func lowestPressure(evaluations []Evaluation, indexes []int) int {
+// soonestReset ranks eligible candidates: known usage with a known reset first,
+// soonest reset first and lower pressure on a tie; then known usage without a
+// reset; then unknown usage. Remaining ties keep configured order.
+func soonestReset(evaluations []Evaluation, indexes []int) int {
 	ranked := append([]int(nil), indexes...)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		a, b := evaluations[ranked[i]], evaluations[ranked[j]]
+		if ta, tb := tier(a), tier(b); ta != tb {
+			return ta < tb
+		}
+		if a.ResetsAt != nil && b.ResetsAt != nil && !a.ResetsAt.Equal(*b.ResetsAt) {
+			return a.ResetsAt.Before(*b.ResetsAt)
+		}
+		return a.pressure < b.pressure
+	})
+	return ranked[0]
+}
+
+// leastUsed picks the lowest pressure, with unknown usage last. It runs only
+// when every candidate is over its limit.
+func leastUsed(evaluations []Evaluation) int {
+	ranked := make([]int, len(evaluations))
+	for i := range ranked {
+		ranked[i] = i
+	}
 	sort.SliceStable(ranked, func(i, j int) bool {
 		a, b := evaluations[ranked[i]], evaluations[ranked[j]]
 		if a.UsageKnown != b.UsageKnown {
 			return a.UsageKnown
 		}
-		if a.pressure != b.pressure {
-			return a.pressure < b.pressure
-		}
-		if a.ResetsAt != nil && b.ResetsAt != nil {
-			return a.ResetsAt.Before(*b.ResetsAt)
-		}
-		return a.ResetsAt != nil && b.ResetsAt == nil
+		return a.pressure < b.pressure
 	})
 	return ranked[0]
 }
 
-func allIndexes(n int) []int {
-	indexes := make([]int, n)
-	for i := range indexes {
-		indexes[i] = i
+// tier orders candidates for soonestReset: 0 known usage with a reset, 1 known
+// usage without one, 2 unknown usage.
+func tier(e Evaluation) int {
+	switch {
+	case e.UsageKnown && e.ResetsAt != nil:
+		return 0
+	case e.UsageKnown:
+		return 1
+	default:
+		return 2
 	}
-	return indexes
 }
