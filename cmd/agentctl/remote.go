@@ -98,7 +98,11 @@ func sshStep(ctx context.Context, destination, command string, stdin []byte) (ss
 	if binary == "" {
 		binary = "ssh"
 	}
-	cmd := exec.CommandContext(ctx, binary, "--", destination, command)
+	cmd := exec.CommandContext(ctx, binary,
+		"-o", "ConnectTimeout=10",
+		"-o", "ServerAliveInterval=10",
+		"-o", "ServerAliveCountMax=3",
+		"--", destination, command)
 	cmd.Stdin = bytes.NewReader(stdin)
 	stdout := sshCapture{limit: 8 << 20}
 	stderr := sshCapture{limit: 4096, tail: true}

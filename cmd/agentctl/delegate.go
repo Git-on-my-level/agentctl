@@ -641,7 +641,8 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		var remoteProblem *output.Error
 		var deadline time.Time
 		if execution.DeadlineAt != nil {
-			deadline = *execution.DeadlineAt
+			// Match the local wait path's cancellation and terminal-journaling window.
+			deadline = execution.DeadlineAt.Add(10 * time.Second)
 		}
 		execution, remoteProblem = a.waitRemoteTerminal(ctx, c, execution, nil, deadline)
 		if remoteProblem != nil {

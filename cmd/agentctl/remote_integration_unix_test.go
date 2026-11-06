@@ -45,7 +45,7 @@ func TestRemoteThroughBuiltBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 	ssh := filepath.Join(dir, "fake-ssh")
-	script := "#!/bin/sh\nset -eu\nexport AGENTCTL_CONFIG=" + shellQuote(remoteConfig) + "\nexport AGENTCTL_STATE_HOME=" + shellQuote(remoteState) + "\nexport AGENTCTL_UPDATE_MODE=off\nexport TMPDIR=" + shellQuote(staged) + "\nexport PATH=" + shellQuote(dir) + ":\"$PATH\"\nexec /bin/sh -c \"$3\"\n"
+	script := "#!/bin/sh\nset -eu\nexport AGENTCTL_CONFIG=" + shellQuote(remoteConfig) + "\nexport AGENTCTL_STATE_HOME=" + shellQuote(remoteState) + "\nexport AGENTCTL_UPDATE_MODE=off\nexport TMPDIR=" + shellQuote(staged) + "\nexport PATH=" + shellQuote(dir) + ":\"$PATH\"\nwhile [ \"$1\" = -o ]; do shift 2; done\nexec /bin/sh -c \"$3\"\n"
 	if err := os.WriteFile(ssh, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}

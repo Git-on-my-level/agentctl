@@ -49,6 +49,7 @@ func newRemoteFixture(t *testing.T) remoteFixture {
 set -eu
 cd ` + shellQuote(f.root) + `
 printf '%s\n' "$@" >> ssh-argv
+while [ "$1" = -o ]; do shift 2; done
 if [ -f fail ]; then cat diagnostic >&2; cat fail-output; exit "$(cat fail)"; fi
 case "$3" in
  umask*) cat > staged-request ;;
@@ -93,12 +94,16 @@ func (f remoteFixture) writeOutcome(t *testing.T, state model.State) {
 	}
 	f.writeJSON(t, "result", map[string]any{"outcome": outcome})
 }
+func (f remoteFixture) invoke(prompt string, extra ...string) (int, string) {
+	args := []string{"delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin"}
+	return f.command(prompt, append(args, extra...)...)
+}
 func (f remoteFixture) command(stdin string, args ...string) (int, string) {
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
 	a.stdin = strings.NewReader(stdin)
 	argv := append([]string{"--config", f.config, "--journal", f.journal}, args...)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	code := a.run(ctx, argv)
 	return code, stdout.String()
@@ -206,6 +211,14 @@ func TestRemoteDelegateLifecycle(t *testing.T) {
 	}
 	if got := string(mustRead(t, filepath.Join(f.root, "continued-prompt"))); got != "follow-up bytes" {
 		t.Fatal(got)
+	}
+	// Every step (staging, admission, status, await, result, continuation)
+	// must carry the transport liveness options, ahead of the destination.
+	argv = string(mustRead(t, filepath.Join(f.root, "ssh-argv")))
+	destination := "--\noperator@ssh-alias\n"
+	options := "-o\nConnectTimeout=10\n-o\nServerAliveInterval=10\n-o\nServerAliveCountMax=3\n"
+	if calls := strings.Count(argv, destination); calls < 6 || strings.Count(argv, options+destination) != calls {
+		t.Fatalf("SSH steps missing transport liveness options: %s", argv)
 	}
 }
 func TestRemoteDelegatePoolDoesNotSelectLocally(t *testing.T) {
@@ -701,12 +714,10 @@ func TestRemoteDelegateAndContinueWaitBoundStalledSSH(t *testing.T) {
 				} else {
 					code, out = f.command("next task", "continue", source, "--request-key", "bounded-next", "--prompt-stdin", "--wait", "--content", "--timeout", timeout.String())
 				}
-				elapsed := time.Since(started)
+				finished := time.Now()
+				elapsed := finished.Sub(started)
 				if code != output.ExitCodeFor(output.CodeTimeout) || !strings.Contains(out, "await deadline elapsed") {
 					t.Fatalf("exit=%d elapsed=%s output=%s", code, elapsed, out)
-				}
-				if elapsed > timeout+remoteAwaitReportGrace+time.Second {
-					t.Fatalf("%s --wait exceeded its deadline and reporting grace: %s", command, elapsed)
 				}
 				var document struct {
 					Error struct {
@@ -721,6 +732,11 @@ func TestRemoteDelegateAndContinueWaitBoundStalledSSH(t *testing.T) {
 				execution := f.execution(t, document.Error.Details.ExecutionID)
 				if execution.DeadlineAt == nil || execution.State.Terminal() {
 					t.Fatalf("unexpected timed-out observation: %+v", execution)
+				}
+				// Admission precedes the recorded deadline; bound collection itself.
+				settled := execution.DeadlineAt.Add(10 * time.Second)
+				if finished.Before(settled) || finished.After(settled.Add(remoteAwaitReportGrace+time.Second)) {
+					t.Fatalf("%s --wait did not respect its deadline, settle window, and reporting grace: elapsed=%s deadline=%s finished=%s", command, elapsed, execution.DeadlineAt, finished)
 				}
 				if source != "" && (len(execution.Supersedes) != 1 || execution.Supersedes[0].String() != source) {
 					t.Fatal("continuation lost its local source")
