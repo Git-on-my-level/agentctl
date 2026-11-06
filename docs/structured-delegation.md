@@ -241,27 +241,30 @@ selects that account's launcher, which owns its authentication:
 
 ```json
 {"capacity":{"file":"/var/lib/capacity.json","max_age_seconds":3600,"switch_threshold":0.95,"pools":{
-  "work":{"mode":"balance","candidates":[
+  "work":{"candidates":[
     {"harness":"codex","model":"example-model","account":"account-a"},
     {"harness":"codex","model":"example-model","account":"account-b","executable":"/usr/local/bin/codex-b"}
   ]}
 }}}
 ```
 
-- A candidate is eligible below its threshold: its own `switch_threshold`, else
-  the profile's, else 0.95. `cutoff_exempt` keeps it eligible at any usage, for an
-  account meant to run past its allowance.
+- A candidate is eligible when its pressure, the used ratio plus `launch_debit`
+  (default 0.02) for each launch this journal still has running or started within
+  `max_age_seconds`, is below its threshold by at least 5%. The threshold is its own
+  `switch_threshold`, else the profile's, else 0.95, so the default stops new work
+  at 0.90. `cutoff_exempt` keeps it eligible at any usage, for an account meant to
+  run past its allowance.
 - `windows` names the windows that limit a candidate; absent means all of them. A
-  window past its `resets_at` counts as empty, and one whose `observed_at` is older
-  than `max_age_seconds` is ignored.
-- `priority` (the default) takes the first eligible candidate, in order.
-- `balance` takes the lowest used ratio plus `launch_debit` (default 0.02) for each
-  launch this journal still has running or started within `max_age_seconds`, which
-  spreads a fan-out while facts lag. Ties go to the soonest reset, then to order.
+  window past its `resets_at` counts as empty with no known next reset, and one
+  whose `observed_at` is older than `max_age_seconds` is ignored.
+- Among eligible candidates, the one whose limiting window resets soonest runs
+  first, because unused quota is lost at reset. Candidates with known usage but no
+  known reset come next, then candidates with unknown usage. Ties keep configured
+  order. The recorded `reason` is `soonest_reset` or `configured_order`.
 
 A pool doesn't block work on a number that may be stale. Missing, stale or invalid
-facts use configured order and warn `capacity_facts_unusable`; `balance` still
-spreads by recent launches. If every candidate is over its threshold, the least
+facts use configured order and warn `capacity_facts_unusable`; recent launches
+still spread the choice. If every candidate is over its threshold, the least
 used one runs and warns `capacity_all_over_threshold`. The refusals are an unknown
 pool name (`delegate_unknown_pool`) and no candidate matching the allowlist
 (`delegate_pool_no_candidate`).

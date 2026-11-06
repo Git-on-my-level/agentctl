@@ -21,7 +21,7 @@ type poolFixture struct {
 	facts string
 }
 
-func newPoolFixture(t *testing.T, mode string, candidateExtras ...map[string]any) poolFixture {
+func newPoolFixture(t *testing.T, candidateExtras ...map[string]any) poolFixture {
 	t.Helper()
 	f := poolFixture{delegateFixture: newDelegateFixture(t, delegateSuccessScript)}
 	f.facts = filepath.Join(f.root, "capacity.json")
@@ -54,7 +54,7 @@ func newPoolFixture(t *testing.T, mode string, candidateExtras ...map[string]any
 		t.Fatal(err)
 	}
 	cfg["profiles"].(map[string]any)["test"].(map[string]any)["capacity"] = map[string]any{"file": f.facts,
-		"pools": map[string]any{"work": map[string]any{"mode": mode, "candidates": candidates}}}
+		"pools": map[string]any{"work": map[string]any{"candidates": candidates}}}
 	body, err = json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -106,8 +106,8 @@ func warningCodes(warnings []any) string {
 	return strings.Join(codes, ",")
 }
 
-func TestPoolBalanceRunsTheChosenAccountsExecutable(t *testing.T) {
-	f := newPoolFixture(t, "balance")
+func TestPoolRunsTheChosenAccountsExecutable(t *testing.T) {
+	f := newPoolFixture(t)
 	f.writeFacts(t, map[string]float64{"account-a": 0.9, "account-b": 0.1})
 	code, out := f.invoke("work", "--wait", "--content")
 	if code != 0 {
@@ -122,29 +122,48 @@ func TestPoolBalanceRunsTheChosenAccountsExecutable(t *testing.T) {
 	}
 }
 
-func TestPoolPriorityStaysOnExemptAccountPastItsLimit(t *testing.T) {
-	f := newPoolFixture(t, "priority", map[string]any{"cutoff_exempt": true})
-	f.writeFacts(t, map[string]float64{"account-a": 1.3, "account-b": 0})
+func TestPoolExemptAccountStaysEligiblePastItsLimit(t *testing.T) {
+	f := newPoolFixture(t, map[string]any{"cutoff_exempt": true})
+	f.writeFacts(t, map[string]float64{"account-a": 1.3, "account-b": 0.99})
 	capacity, warnings := f.plan(t)
-	if capacity["account"] != "account-a" || capacity["reason"] != "first_eligible" || len(warnings) != 0 {
+	if capacity["account"] != "account-a" || capacity["reason"] != "configured_order" || len(warnings) != 0 {
 		t.Fatalf("capacity=%v warnings=%v", capacity, warnings)
 	}
 }
 
-func TestPoolDefaultThresholdSwitchesAt95Percent(t *testing.T) {
-	f := newPoolFixture(t, "priority")
+// The default threshold is 0.95, and a candidate needs 5% headroom below it, so
+// an account at 0.92 is out and one at 0.85 is in. Expected results come from
+// the same rule the capacity package tests cover.
+func TestPoolDefaultThresholdAndHeadroomFloor(t *testing.T) {
+	f := newPoolFixture(t)
 	f.writeFacts(t, map[string]float64{"account-a": 0.95, "account-b": 0.2})
 	if capacity, _ := f.plan(t); capacity["account"] != "account-b" {
 		t.Fatalf("capacity=%v", capacity)
 	}
-	f.writeFacts(t, map[string]float64{"account-a": 0.94, "account-b": 0.2})
+	f.writeFacts(t, map[string]float64{"account-a": 0.85, "account-b": 0.92})
 	if capacity, _ := f.plan(t); capacity["account"] != "account-a" {
 		t.Fatalf("capacity=%v", capacity)
 	}
 }
 
+func TestPoolPrefersSoonestResetOverFreshAccount(t *testing.T) {
+	f := newPoolFixture(t)
+	now := time.Now().UTC()
+	body := fmt.Sprintf(`{"schema_version":1,"generated_at":%q,"accounts":[`+
+		`{"id":"account-a","windows":[{"name":"weekly","used_ratio":0.5,"resets_at":%q}]},`+
+		`{"id":"account-b","windows":[{"name":"weekly","used_ratio":0.1,"resets_at":%q}]}]}`,
+		now.Format(time.RFC3339), now.Add(2*time.Hour).Format(time.RFC3339), now.Add(5*24*time.Hour).Format(time.RFC3339))
+	if err := os.WriteFile(f.facts, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	capacity, _ := f.plan(t)
+	if capacity["account"] != "account-a" || capacity["reason"] != "soonest_reset" || capacity["mode"] != "soonest_reset" {
+		t.Fatalf("capacity=%v", capacity)
+	}
+}
+
 func TestPoolCandidateThresholdOverridesDefault(t *testing.T) {
-	f := newPoolFixture(t, "priority", map[string]any{"switch_threshold": 0.5})
+	f := newPoolFixture(t, map[string]any{"switch_threshold": 0.5})
 	f.writeFacts(t, map[string]float64{"account-a": 0.6, "account-b": 0.7})
 	if capacity, _ := f.plan(t); capacity["account"] != "account-b" {
 		t.Fatalf("capacity=%v", capacity)
@@ -152,7 +171,7 @@ func TestPoolCandidateThresholdOverridesDefault(t *testing.T) {
 }
 
 func TestPoolNeverBlocksWhenEveryAccountIsOver(t *testing.T) {
-	f := newPoolFixture(t, "priority")
+	f := newPoolFixture(t)
 	f.writeFacts(t, map[string]float64{"account-a": 0.99, "account-b": 0.97})
 	capacity, warnings := f.plan(t)
 	if capacity["account"] != "account-b" || capacity["reason"] != "all_over_threshold" || !strings.Contains(warningCodes(warnings), "capacity_all_over_threshold") {
@@ -161,7 +180,7 @@ func TestPoolNeverBlocksWhenEveryAccountIsOver(t *testing.T) {
 }
 
 func TestPoolUnusableFactsKeepOrderAndWarn(t *testing.T) {
-	f := newPoolFixture(t, "priority")
+	f := newPoolFixture(t)
 	capacity, warnings := f.plan(t)
 	if capacity["account"] != "account-a" || capacity["facts_status"] != "missing" || !strings.Contains(warningCodes(warnings), "capacity_facts_unusable") {
 		t.Fatalf("capacity=%v warnings=%v", capacity, warnings)
@@ -176,7 +195,7 @@ func TestPoolUnusableFactsKeepOrderAndWarn(t *testing.T) {
 }
 
 func TestPoolReplayKeepsOriginalChoiceAfterFactsChange(t *testing.T) {
-	f := newPoolFixture(t, "balance")
+	f := newPoolFixture(t)
 	f.writeFacts(t, map[string]float64{"account-a": 0.1, "account-b": 0.9})
 	if code, out := f.invoke("work", "--wait", "--content"); code != 0 {
 		t.Fatalf("exit=%d %s", code, out)
@@ -195,7 +214,7 @@ func TestPoolReplayKeepsOriginalChoiceAfterFactsChange(t *testing.T) {
 }
 
 func TestPoolFanOutSpreadsWhileFactsLag(t *testing.T) {
-	f := newPoolFixture(t, "balance")
+	f := newPoolFixture(t)
 	f.writeFacts(t, map[string]float64{"account-a": 0.1, "account-b": 0.1})
 	for i := 0; i < 2; i++ {
 		if err := os.WriteFile(f.request, []byte(fmt.Sprintf(`{"schema_version":1,"request_key":"fan-%d","selector":{"pool":"work"}}`, i)), 0600); err != nil {
@@ -215,7 +234,7 @@ func TestPoolFanOutSpreadsWhileFactsLag(t *testing.T) {
 }
 
 func TestPoolRecordStaysReadableByStrictDecode(t *testing.T) {
-	f := newPoolFixture(t, "priority")
+	f := newPoolFixture(t)
 	f.writeFacts(t, map[string]float64{"account-a": 0.1})
 	code, out := f.invoke("work", "--wait")
 	if code != 0 {
@@ -248,7 +267,7 @@ func TestPoolRefusals(t *testing.T) {
 		"with effort":  {`{"pool":"work","settings":{"effort":"high"}}`, "delegate_invalid_request", output.CodeUsage},
 	} {
 		t.Run(name, func(t *testing.T) {
-			f := newPoolFixture(t, "priority")
+			f := newPoolFixture(t)
 			f.selectRequest(t, tc.selector)
 			code, out := f.invoke("work", "--plan")
 			if code != output.ExitCodeFor(tc.exit) {
@@ -263,7 +282,7 @@ func TestPoolRefusals(t *testing.T) {
 
 func TestPoolCannotWidenTheAllowlist(t *testing.T) {
 	unreviewed := map[string]any{"model": "unreviewed"}
-	f := newPoolFixture(t, "priority", unreviewed, unreviewed)
+	f := newPoolFixture(t, unreviewed, unreviewed)
 	code, out := f.invoke("work", "--plan")
 	if code != output.ExitCodeFor(output.CodeCapabilityUnavailable) {
 		t.Fatalf("exit=%d %s", code, out)
@@ -274,7 +293,7 @@ func TestPoolCannotWidenTheAllowlist(t *testing.T) {
 }
 
 func TestNamingAModelIgnoresPools(t *testing.T) {
-	f := newPoolFixture(t, "balance")
+	f := newPoolFixture(t)
 	f.writeFacts(t, map[string]float64{"account-a": 0.9, "account-b": 0.1})
 	f.selectRequest(t, `{"family":"grok"}`)
 	code, out := f.invoke("work", "--plan")
@@ -298,7 +317,7 @@ func TestPoolCandidateEffortCountsAsDefaulted(t *testing.T) {
 }
 
 func TestPoolDoesNotAddCapacityToNamedModelResults(t *testing.T) {
-	f := newPoolFixture(t, "balance")
+	f := newPoolFixture(t)
 	f.selectRequest(t, `{"family":"grok"}`)
 	code, out := f.invoke("work", "--wait")
 	if code != 0 {

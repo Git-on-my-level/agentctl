@@ -89,11 +89,7 @@ func (a *app) selectDelegatePool(ctx context.Context, c common, profile config.P
 			Message: "recent launches could not be read, so the choice ignored them", Details: map[string]any{"pool": selector.Pool}})
 	}
 
-	mode := pool.Mode
-	if mode == "" {
-		mode = capacity.ModePriority
-	}
-	input := capacity.Input{Mode: mode, Facts: facts, RecentLaunches: recent, LaunchDebit: settings.Debit(), MaxAge: maxAge, Now: now}
+	input := capacity.Input{Facts: facts, RecentLaunches: recent, LaunchDebit: settings.Debit(), MaxAge: maxAge, Now: now}
 	for _, item := range viable {
 		input.Candidates = append(input.Candidates, capacity.Candidate{Account: item.candidate.Account, Windows: item.candidate.Windows, Threshold: settings.Threshold(item.candidate), Exempt: item.candidate.CutoffExempt})
 	}
@@ -118,7 +114,7 @@ func (a *app) selectDelegatePool(ctx context.Context, c common, profile config.P
 	}
 	selection.resolution = chosen.resolution
 	selection.executable = chosen.candidate.Executable
-	selection.capacity = &model.DelegationCapacity{Pool: selector.Pool, Mode: mode, Account: chosen.candidate.Account, Reason: choice.Reason, FactsStatus: status, FactsAgeSeconds: age, Considered: considered}
+	selection.capacity = &model.DelegationCapacity{Pool: selector.Pool, Mode: capacity.ModeSoonestReset, Account: chosen.candidate.Account, Reason: choice.Reason, FactsStatus: status, FactsAgeSeconds: age, Considered: considered}
 	return selection, nil
 }
 

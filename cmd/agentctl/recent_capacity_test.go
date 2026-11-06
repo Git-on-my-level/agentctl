@@ -9,7 +9,7 @@ import (
 )
 
 func TestRecentCapacityMatchesDelegateReceipt(t *testing.T) {
-	f := newPoolFixture(t, "priority")
+	f := newPoolFixture(t)
 	f.writeFacts(t, map[string]float64{"account-a": .1, "account-b": .2})
 	code, out := f.invoke("capacity fixture", "--wait")
 	if code != 0 {

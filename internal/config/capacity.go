@@ -19,7 +19,7 @@ const (
 	// DefaultCapacityMaxAgeSeconds is how long published facts stay usable.
 	DefaultCapacityMaxAgeSeconds = 3600
 	// DefaultLaunchDebit is the used ratio one recent launch is assumed to cost
-	// when ranking, so a fan-out spreads while facts lag.
+	// when choosing, so a fan-out spreads while facts lag.
 	DefaultLaunchDebit = 0.02
 
 	maxCapacityPools      = 32
@@ -39,10 +39,9 @@ type Capacity struct {
 	Pools           map[string]CapacityPool `json:"pools,omitempty"`
 }
 
-// CapacityPool is an ordered candidate list. It is not a role: agentctl gives
-// the name no meaning, and callers choose a pool as they would a model.
+// CapacityPool is a candidate list. It is not a role: agentctl gives the name no
+// meaning, and callers choose a pool as they would a model.
 type CapacityPool struct {
-	Mode       string              `json:"mode,omitempty"`
 	Candidates []CapacityCandidate `json:"candidates"`
 }
 
@@ -117,9 +116,6 @@ func (c Capacity) Validate() error {
 }
 
 func (p CapacityPool) validate(name string) error {
-	if p.Mode != "" && p.Mode != "priority" && p.Mode != "balance" {
-		return fmt.Errorf("capacity pool %q mode must be priority or balance", name)
-	}
 	if len(p.Candidates) == 0 || len(p.Candidates) > maxCapacityCandidates {
 		return fmt.Errorf("capacity pool %q needs 1 to %d candidates", name, maxCapacityCandidates)
 	}
