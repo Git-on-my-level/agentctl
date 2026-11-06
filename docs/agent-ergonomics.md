@@ -10,7 +10,8 @@ contracts, validation, and safe defaults.
 
 Every command that returns a document supports `--output text|json`. JSON is
 the default because it is the deterministic machine contract; callers opt into
-the compact human projection with `--output text`. Commands
+the compact human projection with `--output text`. `--json` is an alias for
+`--output json` and is refused together with `--output text`. Commands
 that use a configured authority, journal, or compiled context additionally
 consume the relevant global selector:
 

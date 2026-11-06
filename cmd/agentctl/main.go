@@ -305,6 +305,10 @@ func (a *app) parseCommon(args []string) (common, []string, error) {
 	c := common{mode: output.JSON}
 	rest := make([]string, 0, len(args))
 	command := ""
+	// `--json` is an alias for `--output json`, the spelling the shared JSON
+	// contract asks every machine-output tool to accept. Mixing it with an
+	// explicit `--output text` is refused rather than letting the last flag win.
+	outputFlag, jsonFlag := "", false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
@@ -340,7 +344,17 @@ func (a *app) parseCommon(args []string) (common, []string, error) {
 			if e != nil {
 				return c, nil, e
 			}
+			if jsonFlag && mode != output.JSON {
+				return c, nil, fmt.Errorf("--json conflicts with --output %s", v)
+			}
+			outputFlag = v
 			c.mode = mode
+		case "--json":
+			if outputFlag != "" && outputFlag != string(output.JSON) {
+				return c, nil, fmt.Errorf("--json conflicts with --output %s", outputFlag)
+			}
+			jsonFlag = true
+			c.mode = output.JSON
 		case "--profile":
 			v, e := take()
 			if e != nil {
