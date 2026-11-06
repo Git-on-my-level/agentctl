@@ -216,7 +216,7 @@ func TestRemoteDelegateLifecycle(t *testing.T) {
 	// must carry the transport liveness options, ahead of the destination.
 	argv = string(mustRead(t, filepath.Join(f.root, "ssh-argv")))
 	destination := "--\noperator@ssh-alias\n"
-	options := "-o\nConnectTimeout=10\n-o\nServerAliveInterval=10\n-o\nServerAliveCountMax=3\n"
+	options := "-o\nBatchMode=yes\n-o\nConnectTimeout=10\n-o\nServerAliveInterval=10\n-o\nServerAliveCountMax=3\n"
 	if calls := strings.Count(argv, destination); calls < 6 || strings.Count(argv, options+destination) != calls {
 		t.Fatalf("SSH steps missing transport liveness options: %s", argv)
 	}

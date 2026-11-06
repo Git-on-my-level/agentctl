@@ -99,6 +99,7 @@ func sshStep(ctx context.Context, destination, command string, stdin []byte) (ss
 		binary = "ssh"
 	}
 	cmd := exec.CommandContext(ctx, binary,
+		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=10",
 		"-o", "ServerAliveCountMax=3",
