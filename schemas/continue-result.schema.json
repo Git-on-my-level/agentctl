@@ -14,6 +14,10 @@
     "continuation"
   ],
   "properties": {
+    "remote": {"$ref": "delegate-result.schema.json#/properties/remote"},
+    "transport": {"$ref": "delegate-result.schema.json#/properties/transport"},
+    "capacity": {"$ref": "delegate-result.schema.json#/properties/capacity"},
+    "launch_status": {"$ref": "delegate-result.schema.json#/properties/launch_status"},
     "continues": {
       "type": "string",
       "description": "The source execution: completed for carry-forward; completed, verified failed, or checkpointed parked for a supported native recovery route."
@@ -53,7 +57,7 @@
       "const": true
     },
     "side_effect_class": {
-      "const": "read_only"
+      "enum": ["read_only", "external_side_effect"]
     },
     "lifecycle": {
       "type": "object"

@@ -292,7 +292,7 @@ func TestDelegateConcurrentSameKeyLaunchesOnce(t *testing.T) {
 	}
 }
 func TestDelegateRejectsConstraintsBeforeProbe(t *testing.T) {
-	for _, selector := range []string{`{"family":"grok","version":"4.5"}`, `{"family":"grok","harness":"codex"}`, `{"family":"grok","settings":{"speed":"fast"}}`, `{"family":"grok","host":"remote"}`, `{"family":"grok","unknown":"x"}`, `{"family":"grok","family":"grok"}`, `{"Family":"grok"}`} {
+	for _, selector := range []string{`{"family":"grok","version":"4.5"}`, `{"family":"grok","harness":"codex"}`, `{"family":"grok","settings":{"speed":"fast"}}`, `{"family":"grok","host":"unconfigured"}`, `{"family":"grok","unknown":"x"}`, `{"family":"grok","family":"grok"}`, `{"Family":"grok"}`} {
 		t.Run(selector, func(t *testing.T) {
 			f := newDelegateFixture(t, delegateSuccessScript)
 			f.selectRequest(t, selector)

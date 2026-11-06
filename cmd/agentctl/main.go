@@ -624,6 +624,10 @@ func (a *app) status(ctx context.Context, renderer output.Renderer, c common, ar
 	if err != nil {
 		return mapStoreError("read execution", err)
 	}
+	if execution.RemoteForwarded() {
+		journal.Close()
+		return a.statusRemote(ctx, renderer, execution)
+	}
 	var acknowledgement *store.ExecutionAcknowledgement
 	ack, ackErr := journal.GetAcknowledgement(ctx, id)
 	if ackErr == nil {
@@ -1245,6 +1249,13 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 			// Allow bounded cancellation and terminal journaling after the native
 			// execution deadline itself elapses.
 			deadline = execution.DeadlineAt.Add(10 * time.Second)
+		}
+		if execution.RemoteForwarded() {
+			problem := a.awaitRemote(ctx, renderer, c, execution, args[1:], contentOnly, deadline)
+			if problem != nil {
+				return a.fail(renderer, problem)
+			}
+			return 0
 		}
 		if execution.Observation.Integrity == model.IntegrityConflicted {
 			return a.fail(renderer, outcomeError(output.CodeUnknownState, "execution evidence is conflicted", execution))

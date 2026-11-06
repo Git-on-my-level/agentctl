@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"go.etcd.io/bbolt"
 )
@@ -238,5 +239,42 @@ func TestDelegationRecoversContinuationDroppedByLegacyProjection(t *testing.T) {
 		} else if err != nil || !reflect.DeepEqual(recovered.Delegation, created.Delegation) {
 			t.Fatalf("recovered=%#v err=%v", recovered.Delegation, err)
 		}
+	}
+}
+
+func TestRemoteBindingSurvivesLegacyProjectionRewrite(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	initial := sampleExecution(now)
+	initial.Delegation = storedDelegationFixture()
+	id, _ := ids.ParseExecutionID("exec-abandon-abandon-abandon-abandon-abandon-aisle")
+	host, _ := ids.ParseHostID("host-yard-total-plastic-uncover-drip-angry")
+	initial.Delegation.RemotePlan = &model.DelegationRemotePlan{Host: initial.Delegation.Resolved.Host, SSHDestination: "operator@studio", ExecutionID: id, OriginHostID: host}
+	mutation := contracts.MutationKey{Scope: "execution:delegate", Key: "remote-request", InputDigest: hash('a')}
+	created, _, err := j.CreateExecution(ctx, initial, mutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = j.db.Update(func(tx *bbolt.Tx) error {
+		legacy := created
+		binding := *legacy.Delegation
+		binding.RemotePlan = nil
+		legacy.Delegation = &binding
+		body, err := json.Marshal(legacy)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bExecutions).Put([]byte(created.ID.String()), body)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := j.GetExecution(ctx, created.ID)
+	if err != nil || !reflect.DeepEqual(recovered.Delegation, created.Delegation) {
+		t.Fatalf("recovered=%+v err=%v", recovered, err)
+	}
+	replay, found, err := j.GetExecutionByMutation(ctx, mutation)
+	if err != nil || !found || replay.Delegation.RemotePlan.SSHDestination != "operator@studio" {
+		t.Fatalf("replay=%+v found=%v err=%v", replay, found, err)
 	}
 }

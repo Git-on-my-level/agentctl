@@ -20,6 +20,7 @@ import (
 // This private, same-binary protocol exists only in an anonymous pipe. In
 // particular, Prompt must never be written to a journal, spool, or argv.
 type detachedLaunch struct {
+	ResumeSession                                  string `json:",omitempty"`
 	Version                                        int
 	Profile, ConfigPath, ConfigBundle, JournalPath string
 	Adapter, CWD                                   string
@@ -80,7 +81,7 @@ func (a *app) startReservedDetachedNative(ctx context.Context, renderer output.R
 	if err != nil {
 		return output.Wrap(output.CodeUsage, "resolve detached config bundle", false, err)
 	}
-	payload := detachedLaunch{Version: 2, Profile: c.profile, ConfigPath: configPath, ConfigBundle: configBundle, JournalPath: journalPath,
+	payload := detachedLaunch{ResumeSession: run.resumeSession, Version: 2, Profile: c.profile, ConfigPath: configPath, ConfigBundle: configBundle, JournalPath: journalPath,
 		Adapter: run.adapter, CWD: run.cwd, Env: run.env, Argv: run.argv, Labels: run.labels, Timeout: run.timeout,
 		Binding: run.delegation, Mutation: *run.mutationOverride, Prompt: *run.preparedPrompt, ReservedExecution: execution.ID, JournalBusyBudget: c.journalBusyBudget, DeadlineAt: execution.DeadlineAt}
 	data, err := json.Marshal(payload)
@@ -210,7 +211,7 @@ func (a *app) detachedNativeWorker(ctx context.Context) int {
 			_ = closer.Close()
 		}
 	}
-	run := runOptions{env: payload.Env, adapter: payload.Adapter, cwd: payload.CWD, argv: payload.Argv, labels: payload.Labels,
+	run := runOptions{resumeSession: payload.ResumeSession, env: payload.Env, adapter: payload.Adapter, cwd: payload.CWD, argv: payload.Argv, labels: payload.Labels,
 		timeout: payload.Timeout, delegation: payload.Binding, mutationOverride: &payload.Mutation, preparedPrompt: &payload.Prompt, started: sendReceipt, reservedExecution: payload.ReservedExecution}
 	problem := a.runNativeOptions(ctx, output.Renderer{Mode: output.JSON, Writer: io.Discard}, c, nil, run)
 	if problem != nil {
