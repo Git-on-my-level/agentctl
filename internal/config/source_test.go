@@ -221,6 +221,24 @@ func TestSourceUpdateAcceptsInsteadOfRewrittenRemote(t *testing.T) {
 	}
 }
 
+// A checkout with a second stored origin URL must not pass as managed: fetch
+// would use the first URL while a check on the last one would look clean.
+func TestSourceUpdateRejectsCheckoutWithExtraOriginURL(t *testing.T) {
+	remote, _, configPath, checkout := sourceFixture(t)
+	ctx := context.Background()
+	if _, err := InitSource(ctx, configPath, SourceSpec{Remote: remote, Ref: "main", CheckoutPath: checkout}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// Git fetches from the first value, but `config --get` reads the last one.
+	// Put the other URL first so only a check of every value sees it.
+	other := filepath.Join(filepath.Dir(remote), "other.git")
+	runGitTest(t, checkout, "config", "--replace-all", "remote.origin.url", other)
+	runGitTest(t, checkout, "config", "--add", "remote.origin.url", remote)
+	if _, err := UpdateSource(ctx, configPath, time.Now()); err == nil || !strings.Contains(err.Error(), "remote differs") {
+		t.Fatalf("extra origin URL error=%v", err)
+	}
+}
+
 func TestRestoreSourceRepairsOnlyLiveConfigWithoutFetching(t *testing.T) {
 	remote, _, configPath, checkout := sourceFixture(t)
 	ctx := context.Background()

@@ -676,11 +676,15 @@ func verifyManagedCheckout(ctx context.Context, git SourceGit, spec SourceSpec) 
 	// Read the stored URL rather than `remote get-url`: that command applies
 	// url.<base>.insteadOf rules, so a remote rewritten by the operator's Git
 	// config would never equal the remote recorded in source state.
-	remoteBytes, err := git.Run(ctx, spec.CheckoutPath, "config", "--get", "remote.origin.url")
+	// Require exactly one stored URL: with several, `git config --get` returns the
+	// last value while `git fetch` uses the first, so the checked URL can differ
+	// from the one that supplies the live configuration.
+	remoteBytes, err := git.Run(ctx, spec.CheckoutPath, "config", "--get-all", "remote.origin.url")
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(string(remoteBytes)) != spec.Remote {
+	urls := strings.Split(strings.TrimSpace(string(remoteBytes)), "\n")
+	if len(urls) != 1 || strings.TrimSpace(urls[0]) != spec.Remote {
 		return fmt.Errorf("%w: managed checkout remote differs from source state", ErrConflict)
 	}
 	statusBytes, err := git.Run(ctx, spec.CheckoutPath, "status", "--porcelain", "--untracked-files=all")
