@@ -53,12 +53,7 @@ printf '%s\n' "$@" >> ssh-argv
 while [ "$1" = -o ]; do shift 2; done
 if [ -f fail ]; then cat diagnostic >&2; cat fail-output; exit "$(cat fail)"; fi
 case "$3" in
- umask*)
-  printf '%s' "$3" > stage-command
-  dir=$(TMPDIR="$PWD" /bin/sh -c "$3")
-  printf '%s' "$dir" > staged-dir
-  cp "$dir/request.json" staged-request
-  printf '%s\n' "$dir" ;;
+ umask*) TMPDIR="$PWD" /bin/sh -c "$3" ;;
  *"'delegate'"*)
   printf '%s' "$3" > launch-command
   cat > delegated-prompt
@@ -78,6 +73,14 @@ esac
 	}
 	t.Setenv("AGENTCTL_SSH", path)
 	return f
+}
+func (f remoteFixture) stagedRequest(t *testing.T) string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(f.root, "agentctl-delegate.*", "request.json"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("expected one private staged request: files=%v err=%v", files, err)
+	}
+	return files[0]
 }
 func (f remoteFixture) writeJSON(t *testing.T, name string, value any) {
 	t.Helper()
@@ -159,9 +162,9 @@ func TestRemoteDelegateLifecycle(t *testing.T) {
 	if !e.RemoteForwarded() || e.Delegation.NativePlan != nil || e.Workspace != nil || e.Delegation.Resolved.Model != "remote-only-model" || e.Delegation.Resolved.Host != "other-workstation" {
 		t.Fatalf("%+v", e)
 	}
-	for _, item := range []struct{ name, want string }{{"delegated-prompt", prompt}, {"staged-request", string(mustRead(t, f.request))}} {
-		if got := string(mustRead(t, filepath.Join(f.root, item.name))); got != item.want {
-			t.Fatalf("%s=%q", item.name, got)
+	for _, item := range []struct{ path, want string }{{filepath.Join(f.root, "delegated-prompt"), prompt}, {f.stagedRequest(t), string(mustRead(t, f.request))}} {
+		if got := string(mustRead(t, item.path)); got != item.want {
+			t.Fatalf("%s=%q", item.path, got)
 		}
 	}
 	argv := string(mustRead(t, filepath.Join(f.root, "ssh-argv")))
@@ -235,7 +238,7 @@ func TestRemoteDelegatePoolDoesNotSelectLocally(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("%d %s", code, out)
 	}
-	if !strings.Contains(string(mustRead(t, filepath.Join(f.root, "staged-request"))), `"pool":"implement"`) {
+	if !strings.Contains(string(mustRead(t, f.stagedRequest(t))), `"pool":"implement"`) {
 		t.Fatal("selector changed")
 	}
 	for _, path := range []string{f.count, f.probe} {
@@ -479,6 +482,17 @@ func TestRemoteConcurrentReplayAndCollection(t *testing.T) {
 	for i, code := range codes {
 		if code != 0 {
 			t.Fatalf("%d: %d %s", i, code, outs[i])
+		}
+	}
+	// Each invocation must retain its own staging directory, with no shared
+	// copy target or last-writer staging-path file in the fake transport.
+	requests, err := filepath.Glob(filepath.Join(f.root, "agentctl-delegate.*", "request.json"))
+	if err != nil || len(requests) != len(outs) {
+		t.Fatalf("concurrent staging was not isolated: files=%v err=%v", requests, err)
+	}
+	for _, request := range requests {
+		if !bytes.Equal(mustRead(t, request), mustRead(t, f.request)) {
+			t.Fatalf("private staged request differs: %s", request)
 		}
 	}
 	local := remoteLocalID(t, outs[0])
@@ -782,7 +796,7 @@ func TestRemoteRequestStagingCommands(t *testing.T) {
 			if code != 0 || (mode == "plan" && !strings.Contains(out, `"request_staged":true`)) {
 				t.Fatalf("%d %s", code, out)
 			}
-			dir := string(mustRead(t, filepath.Join(f.root, "staged-dir")))
+			dir := filepath.Dir(f.stagedRequest(t))
 			for name, want := range map[string]os.FileMode{dir: 0700, filepath.Join(dir, "request.json"): 0600} {
 				info, err := os.Stat(name)
 				if err != nil || info.Mode().Perm() != want {
