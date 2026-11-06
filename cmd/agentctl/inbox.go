@@ -248,6 +248,9 @@ func inboxObservationAge(execution model.Execution, contact, now time.Time) time
 }
 
 func projectInboxAt(execution model.Execution, contact, now time.Time, staleAfter time.Duration, acks store.AcknowledgementIndex, mode output.Mode) (inboxExecution, bool) {
+	if execution.RemoteForwarded() {
+		return inboxExecution{}, false
+	}
 	observationAge := inboxObservationAge(execution, contact, now)
 	unreconciled := acks.Unreconciled(execution)
 	var renotifyAgeSeconds *float64

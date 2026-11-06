@@ -21,7 +21,7 @@ import (
 // default, or an explicit fresh session carrying the prior answer. Both modes
 // share admission, idempotency and lineage; native CLIs own their conversations.
 
-const continueUsage = "usage: agentctl continue <execution-id> --request-key key (--prompt-file path|--prompt-stdin) [--mode native|carry_forward] [--plan] [--wait [--content] [--require-result-source source] [--min-result-bytes n]] [--timeout duration] [--label name ...]"
+const continueUsage = "usage: agentctl continue <execution-id> --request-key key (--prompt-file path|--prompt-stdin) [--mode native|carry_forward] [--plan] [--detach] [--wait [--content] [--require-result-source source] [--min-result-bytes n]] [--timeout duration] [--label name ...]"
 
 // admissionRefusedSource marks an execution journaled only to close a
 // check-then-launch race. Nothing native was started, so its request key
@@ -45,6 +45,8 @@ func parseContinue(args []string) (string, string, delegateOptions, *output.Erro
 			seen[flag] = true
 		}
 		switch flag {
+		case "--detach":
+			opts.detach = true
 		case "--plan":
 			opts.plan = true
 		case "--wait":
@@ -107,6 +109,9 @@ func parseContinue(args []string) (string, string, delegateOptions, *output.Erro
 	}
 	if opts.plan && (opts.contentOnly || opts.wait) {
 		return "", "", opts, delegateError(output.CodeUsage, "continue_plan_content_conflict", "--plan cannot be combined with --wait or result collection options")
+	}
+	if opts.detach && opts.wait {
+		return "", "", opts, delegateError(output.CodeUsage, "continue_detach_wait_conflict", "--detach cannot be combined with --wait")
 	}
 	sort.Strings(opts.labels)
 	return ref, key, opts, nil
@@ -227,6 +232,9 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 	journal.Close()
 	if err != nil {
 		return mapStoreError("read execution to continue", err)
+	}
+	if source.RemoteForwarded() {
+		return a.continueRemote(ctx, renderer, c, source, requestKey, prompt.Bytes, opts, mutation)
 	}
 	if source.Authority != model.AuthorityNative {
 		return continueError(output.CodeCapabilityUnavailable, "continue_authority_unavailable", "only native executions can be continued; Multica owns issue and run continuation", source)
@@ -386,6 +394,11 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 			}
 		}
 		return nil
+	}
+	if opts.detach && !opts.plan {
+		detachedCommon := c
+		detachedCommon.profile = profileName
+		return a.startDetachedNative(ctx, renderer, detachedCommon, run)
 	}
 	var captured bytes.Buffer
 	problem = a.runNativeOptions(ctx, output.Renderer{Mode: output.JSON, Writer: &captured}, c, nil, run)

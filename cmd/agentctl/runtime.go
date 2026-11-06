@@ -310,14 +310,6 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	// a native child: status/subscription commands and the callback supervisor
 	// must be able to observe the execution while it is running.
 	journal.Close()
-	if opts.detachNative {
-		// Parent preflight used the complete invocation. The private payload
-		// carries the prompt separately, so the worker must attach it once.
-		if promptArgs > 0 {
-			opts.argv = opts.argv[:len(opts.argv)-promptArgs]
-		}
-		return a.startReservedDetachedNative(ctx, renderer, c, opts, execution)
-	}
 	if opts.admit != nil {
 		if refusal := opts.admit(execution); refusal != nil {
 			writeJournal, current, openProblem := a.openExecutionWrite(context.Background(), c, execution.ID)
@@ -335,6 +327,14 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			a.anxRegisterTerminal(c, execution.ID)
 			return refusal.WithDetail("execution_id", execution.ID.String())
 		}
+	}
+	if opts.detachNative {
+		// Parent preflight used the complete invocation. The private payload
+		// carries the prompt separately, so the worker must attach it once.
+		if promptArgs > 0 {
+			opts.argv = opts.argv[:len(opts.argv)-promptArgs]
+		}
+		return a.startReservedDetachedNative(ctx, renderer, c, opts, execution)
 	}
 	launchCtx, interruptLaunch := context.WithCancel(operationCtx)
 	defer interruptLaunch()
@@ -1390,6 +1390,9 @@ func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c comm
 	_ = journal.Close()
 	if err != nil {
 		return mapStoreError("read execution", err)
+	}
+	if execution.RemoteForwarded() {
+		return delegateError(output.CodeCapabilityUnavailable, "remote_cancel_unavailable", "remote-forwarded cancellation is not supported; use agentctl on the recorded remote host").WithDetail("execution_id", execution.ID.String()).WithDetail("remote", execution.Delegation.RemotePlan)
 	}
 	if orphanIfGone {
 		return a.orphanNativeIfGone(ctx, renderer, c, execution.ID)

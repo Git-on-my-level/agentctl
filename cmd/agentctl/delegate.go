@@ -131,28 +131,33 @@ func delegateError(code output.Code, diagnostic, message string) *output.Error {
 }
 
 func readDelegateRequest(path string) (delegation.Request, *output.Error) {
+	r, _, problem := readDelegateRequestBody(path)
+	return r, problem
+}
+
+func readDelegateRequestBody(path string) (delegation.Request, []byte, *output.Error) {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > delegation.MaxRequestBytes {
-		return delegation.Request{}, delegateError(output.CodeUsage, "delegate_request_file", "request must be an existing regular non-symlink file of at most 64 KiB")
+		return delegation.Request{}, nil, delegateError(output.CodeUsage, "delegate_request_file", "request must be an existing regular non-symlink file of at most 64 KiB")
 	}
 	f, err := openRegularNoFollow(path)
 	if err != nil {
-		return delegation.Request{}, delegateError(output.CodeUsage, "delegate_request_file", "cannot read request file")
+		return delegation.Request{}, nil, delegateError(output.CodeUsage, "delegate_request_file", "cannot read request file")
 	}
 	defer f.Close()
 	opened, err := f.Stat()
 	if err != nil || !os.SameFile(info, opened) {
-		return delegation.Request{}, delegateError(output.CodeConflict, "delegate_request_changed", "request file changed while opening")
+		return delegation.Request{}, nil, delegateError(output.CodeConflict, "delegate_request_changed", "request file changed while opening")
 	}
 	body, err := io.ReadAll(io.LimitReader(f, delegation.MaxRequestBytes+1))
 	if err != nil {
-		return delegation.Request{}, delegateError(output.CodeUsage, "delegate_request_file", "cannot read request file")
+		return delegation.Request{}, nil, delegateError(output.CodeUsage, "delegate_request_file", "cannot read request file")
 	}
 	request, err := delegation.DecodeRequest(body)
 	if err != nil {
-		return request, mapDelegationError(err)
+		return request, nil, mapDelegationError(err)
 	}
-	return request, nil
+	return request, body, nil
 }
 
 func mapDelegationError(err error) *output.Error {
@@ -273,7 +278,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	if c.contextFile != "" {
 		return delegateError(output.CodeCapabilityUnavailable, "delegate_context_unpinned", "structured delegation does not yet pin external context handles; supply bounded task context in the prompt")
 	}
-	request, problem := readDelegateRequest(opts.requestFile)
+	request, requestBody, problem := readDelegateRequestBody(opts.requestFile)
 	if problem != nil {
 		return problem
 	}
@@ -318,6 +323,9 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 		if opts.plan {
 			return writeDelegatePlan(renderer, *previous.Delegation, nil, previous.ID.String(), previous)
 		}
+		if previous.RemoteForwarded() {
+			return a.delegateRemote(ctx, renderer, c, profile, previous.Delegation.RemotePlan.Host, request, requestBody, prompt.Bytes, opts, mutation, previous)
+		}
 		return a.collectDelegation(ctx, renderer, c, previous, opts, true)
 	}
 	// Admission can race our first read. A local preflight failure must not
@@ -339,6 +347,16 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 			return writeDelegatePlan(renderer, *previous.Delegation, nil, previous.ID.String(), previous)
 		}
 		return a.collectDelegation(ctx, renderer, c, previous, opts, true)
+	}
+	host, local, problem := resolveDelegateHost(request.Selector.Host, profile)
+	if problem != nil {
+		return recoverAdmission(problem)
+	}
+	if !local && opts.authority == "multica" {
+		return recoverAdmission(multicaDelegationUnavailable(host))
+	}
+	if !local {
+		return a.delegateRemote(ctx, renderer, c, profile, host, request, requestBody, prompt.Bytes, opts, mutation)
 	}
 	selector := request.Selector
 	if canonical, err := launchrecipe.CanonicalHarness(selector.Harness); err == nil {
@@ -362,14 +380,8 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 			return recoverAdmission(mapDelegationError(err))
 		}
 	}
-	host, local, problem := resolveDelegateHost(request.Selector.Host, profile)
-	if problem != nil {
-		return recoverAdmission(problem)
-	}
-	if !local || opts.authority == "multica" {
-		return recoverAdmission(delegateError(output.CodeCapabilityUnavailable, "delegate_multica_result_unavailable", "Multica does not yet expose the verified result and settings guarantees required by delegate; use explicit dispatch for lifecycle-only work").
-			WithDetail("host", host).
-			WithActions(output.NextAction{Label: "Inspect explicit Multica dispatch", Argv: []string{"agentctl", "help", "dispatch"}, SideEffectClass: output.ReadOnly}))
+	if opts.authority == "multica" {
+		return recoverAdmission(multicaDelegationUnavailable(host))
 	}
 	selected := resolution.Resolved
 	trust := profile.Delegation != nil && profile.Delegation.CursorWorkspaceTrust
@@ -471,6 +483,10 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 		return delegateError(output.CodeInternal, "delegate_receipt_missing", "native launch returned without a delegated execution receipt")
 	}
 	return a.collectDelegation(ctx, renderer, c, execution, opts, admissionReused)
+}
+
+func multicaDelegationUnavailable(host string) *output.Error {
+	return delegateError(output.CodeCapabilityUnavailable, "delegate_multica_result_unavailable", "Multica does not yet expose the verified result and settings guarantees required by delegate; use explicit dispatch for lifecycle-only work").WithDetail("host", host).WithActions(output.NextAction{Label: "Inspect explicit Multica dispatch", Argv: []string{"agentctl", "help", "dispatch"}, SideEffectClass: output.ReadOnly})
 }
 
 func resolvedAccess(access string) string {
@@ -579,6 +595,10 @@ func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding
 		"provenance":     map[string]any{"configuration_sha256": binding.ConfigurationSHA256, "defaulted": binding.Defaulted},
 		"lifecycle":      map[string]any{"owner": "foreground_process", "restart_durable": false, "background_flag_supported": false, "detach_flag_supported": true, "collection": "--wait --content requires completed work and stored answer", "cross_process_cancel": "only when explicitly advertised by adapter", "steering": "agentctl steer <id>; the route is the steer capability negotiated for this exact invocation", "follow_up": "agentctl continue <id> after completion; native resume when supported; explicit --mode carry_forward with an eligible stored answer", "durable_authority": "Multica dispatch"},
 		"request_sha256": binding.RequestSHA256, "side_effect_class": output.ReadOnly, "reused": reusedID != ""}
+	if binding.RemotePlan != nil {
+		result["remote"] = binding.RemotePlan
+		result["lifecycle"] = map[string]any{"owner": "detached_process", "parent_independent": true, "reboot_recovery": false, "source": "frozen_admission"}
+	}
 	if binding.Capacity != nil {
 		result["capacity"] = binding.Capacity
 	}
@@ -617,6 +637,13 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 			problem.WithDetail("continues", execution.Supersedes[0]).WithDetail("continuation", continuationMetadata(*execution.Delegation))
 		}
 	}()
+	if execution.RemoteForwarded() && opts.wait {
+		var remoteProblem *output.Error
+		execution, remoteProblem = a.observeRemoteTerminal(ctx, c, execution, nil)
+		if remoteProblem != nil {
+			return remoteProblem
+		}
+	}
 	for opts.wait && !execution.State.Terminal() {
 		if execution.State == model.StateAttention || execution.Liveness == model.LivenessBlocked {
 			return delegateExecutionError(output.CodeAttentionRequired, "delegated execution requires attention", execution)
@@ -688,6 +715,9 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		result := map[string]any{"id": execution.ID, "origin_host_id": execution.OriginHostID, "state": execution.State, "liveness": execution.Liveness,
 			"authority": execution.Authority, "reused": reused, "requested": binding.Requested, "resolved": binding.Resolved,
 			"provenance": map[string]any{"configuration_sha256": binding.ConfigurationSHA256, "defaulted": binding.Defaulted}, "request_sha256": binding.RequestSHA256}
+		if binding.RemotePlan != nil {
+			result["remote"] = binding.RemotePlan
+		}
 		if binding.Capacity != nil {
 			result["capacity"] = binding.Capacity
 		}
@@ -716,7 +746,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 			result["replayed"] = true
 			actions = append(actions, retryWithNewKeyAction(execution))
 		}
-		if !execution.State.Terminal() {
+		if !execution.State.Terminal() || (execution.RemoteForwarded() && !opts.wait) {
 			actions = append([]output.NextAction{{Label: "Wait for execution", Argv: []string{"agentctl", "await", execution.ID.String(), "--content"}, Mutates: true, SideEffectClass: output.LocalOperationalWrite}}, actions...)
 		}
 		if err := renderer.Success(output.Success{Result: result, NextActions: actions, Lines: []output.Line{{Lead: execution.ID.String(), Fields: []output.Field{{Name: "state", Value: execution.State}, {Name: "harness", Value: binding.Resolved.Harness}, {Name: "model", Value: binding.Resolved.Model}, {Name: "host", Value: binding.Resolved.Host}, {Name: "reused", Value: reused}}}}}); err != nil {

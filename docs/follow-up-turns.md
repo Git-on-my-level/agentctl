@@ -27,9 +27,15 @@ To redirect an execution that is still running, use [steering](steering.md).
   `delegate`: the same harness, model, settings, and permissions, in the same
   working directory. Only the session selection and the prompt differ. A third
   turn is built from that original recipe, not from the second turn's argv.
-- Foreground-owned, exactly like `delegate`: `--wait`, `--content`, result
+- Foreground-owned by default, exactly like `delegate`: `--wait`, `--content`, result
   assertions, `--timeout`, and labels behave the same. Labels default to the
   continued execution's labels.
+
+`--detach` transfers a local continuation to the existing detached owner; collect
+it with `await <id> --content`. It cannot combine with --wait. A remote-forwarded
+source always continues detached over its frozen SSH destination, with the new
+prompt on stdin. The returned successor has a local id and remote provenance;
+remote agentctl enforces native continuation eligibility and serial admission.
 
 ## Rules
 

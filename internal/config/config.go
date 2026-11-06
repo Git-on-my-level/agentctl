@@ -132,6 +132,7 @@ type Multica struct {
 type Route struct {
 	ThisHost  string            `json:"this_host,omitempty"`
 	Hosts     map[string]string `json:"hosts,omitempty"`
+	SSHHosts  map[string]string `json:"ssh_hosts,omitempty"`
 	Placement *RoutePlacement   `json:"placement,omitempty"`
 }
 
@@ -436,6 +437,17 @@ func (r Route) Validate() error {
 		}
 		if strings.TrimSpace(id) == "" || len(id) > 128 {
 			return fmt.Errorf("hosts[%q] has an invalid id", alias)
+		}
+	}
+	if len(r.SSHHosts) > 64 {
+		return errors.New("ssh_hosts exceeds 64-entry limit")
+	}
+	for id, destination := range r.SSHHosts {
+		if strings.TrimSpace(id) == "" || len(id) > 128 || strings.ContainsAny(id, "\x00\r\n") {
+			return errors.New("ssh_hosts contains an invalid id")
+		}
+		if strings.TrimSpace(destination) == "" || len(destination) > 128 || strings.ContainsAny(destination, "\x00\r\n") {
+			return fmt.Errorf("ssh_hosts[%q] has an invalid destination", id)
 		}
 	}
 	if r.Placement != nil {

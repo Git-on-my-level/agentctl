@@ -624,6 +624,10 @@ func (a *app) status(ctx context.Context, renderer output.Renderer, c common, ar
 	if err != nil {
 		return mapStoreError("read execution", err)
 	}
+	if execution.RemoteForwarded() {
+		journal.Close()
+		return a.statusRemote(ctx, renderer, execution)
+	}
 	var acknowledgement *store.ExecutionAcknowledgement
 	ack, ackErr := journal.GetAcknowledgement(ctx, id)
 	if ackErr == nil {
@@ -1237,6 +1241,13 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		_ = journal.Close()
 		if err != nil {
 			return a.fail(renderer, mapStoreError("read awaited execution", err))
+		}
+		if execution.RemoteForwarded() {
+			problem := a.awaitRemote(ctx, renderer, c, execution, args[1:], contentOnly)
+			if problem != nil {
+				return a.fail(renderer, problem)
+			}
+			return 0
 		}
 		if throughExecutionDeadline && deadline.IsZero() {
 			if execution.DeadlineAt == nil {

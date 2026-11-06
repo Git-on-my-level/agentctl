@@ -64,6 +64,9 @@ func decodeExecution(tx *bbolt.Tx, raw []byte, execution *model.Execution) error
 // projection contradicts it.
 func projectionAgreesWithSnapshot(projection, snapshot *model.DelegationBinding) bool {
 	comparable := *snapshot
+	if projection.RemotePlan == nil {
+		comparable.RemotePlan = nil
+	}
 	if projection.Continuation == nil {
 		comparable.Continuation = nil
 	}

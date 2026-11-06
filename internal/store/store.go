@@ -738,20 +738,26 @@ func (j *Journal) CommitTerminalOutcome(ctx context.Context, next model.Executio
 		}
 		if previous.State.Terminal() {
 			existing := outcomes.Get([]byte(next.ID.String()))
-			if existing == nil {
+			// A forwarded admission can already report a terminal state before
+			// its remote outcome is collected. Only that exact case may fill
+			// a missing outcome; ordinary terminal records stay immutable.
+			if existing == nil && (!previous.RemoteForwarded() || previous.State != next.State) {
 				return ErrTerminalConflict
 			}
-			if err := json.Unmarshal(existing, &storedOutcome); err != nil {
-				return corrupt(err)
+			if existing != nil {
+				if err := json.Unmarshal(existing, &storedOutcome); err != nil {
+					return corrupt(err)
+				}
+				candidate, _ := json.Marshal(outcome)
+				if !bytes.Equal(existing, candidate) {
+					return ErrTerminalConflict
+				}
+				storedExecution = previous
+				storedEvent, reused, err = j.appendEventTx(tx, event, canonicalProjection)
+				return err
 			}
-			candidate, _ := json.Marshal(outcome)
-			if !bytes.Equal(existing, candidate) {
-				return ErrTerminalConflict
-			}
-			storedExecution = previous
-			storedEvent, reused, err = j.appendEventTx(tx, event, canonicalProjection)
-			return err
 		}
+
 		if previous.Revision != expectedRevision {
 			return fmt.Errorf("%w: expected revision %d, current %d", ErrConflict, expectedRevision, previous.Revision)
 		}

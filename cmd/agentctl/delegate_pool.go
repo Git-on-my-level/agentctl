@@ -164,7 +164,7 @@ func (a *app) recentPoolLaunches(ctx context.Context, c common, now time.Time, w
 	}
 	counts := map[string]int{}
 	for _, execution := range executions {
-		if execution.Delegation == nil || execution.Delegation.Capacity == nil {
+		if execution.RemoteForwarded() || execution.Delegation == nil || execution.Delegation.Capacity == nil {
 			continue
 		}
 		if !execution.State.Terminal() || now.Sub(execution.CreatedAt) <= window {

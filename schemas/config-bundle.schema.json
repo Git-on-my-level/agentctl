@@ -145,6 +145,12 @@
           "maxProperties": 64,
           "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 128 }
         },
+        "ssh_hosts": {
+          "description": "Canonical route host id to SSH destination; defaults to the canonical host id. SSH owns keys, aliases, known_hosts and jump hosts.",
+          "type": "object", "maxProperties": 64,
+          "propertyNames": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^(?=.*\\S)[^\\u0000\\r\\n]+$"},
+          "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^(?=.*\\S)[^\\u0000\\r\\n]+$"}
+        },
         "placement": {
           "type": "object",
           "additionalProperties": false,

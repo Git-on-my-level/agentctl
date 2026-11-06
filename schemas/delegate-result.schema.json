@@ -14,6 +14,8 @@
     "reused"
   ],
   "properties": {
+    "remote": {"type": "object", "additionalProperties": false, "description": "Frozen SSH provenance; use the local id for commands. The cross-host reference is agentctl://<origin_host_id>/<execution_id>.", "required": ["host", "ssh_destination", "execution_id", "origin_host_id"], "properties": {"host": {"type": "string", "minLength": 1, "maxLength": 256}, "ssh_destination": {"type": "string", "minLength": 1, "maxLength": 128}, "execution_id": {"$ref": "execution.schema.json#/properties/id"}, "origin_host_id": {"$ref": "execution.schema.json#/properties/origin_host_id"}}},
+    "transport": {"type": "object", "additionalProperties": false, "required": ["host", "ssh_destination", "request_staged", "journal_written"], "properties": {"host": {"type": "string"}, "ssh_destination": {"type": "string"}, "request_staged": {"type": "boolean"}, "journal_written": {"const": false}, "remote_id": {"$ref":"execution.schema.json#/properties/id"}, "remote_origin_host_id": {"$ref":"execution.schema.json#/properties/origin_host_id"}, "remote_continues": {"$ref":"execution.schema.json#/properties/id"}, "remote_reused": {"type":"boolean"}}},
 	"launch_status": {"enum": ["admitted", "launched"], "description": "Detached admission is durable before worker creation. admitted requires status/await to establish native launch or outcome."},
     "capacity": {"type": "object", "additionalProperties": false, "description": "Which account a pool chose and why. Absent when no pool was named.", "required": ["pool", "mode", "account", "reason", "facts_status", "considered"], "properties": {"pool": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f]+$"}, "mode": {"enum": ["soonest_reset", "priority", "balance"]}, "account": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f]+$"}, "reason": {"enum": ["soonest_reset", "configured_order", "all_over_threshold", "first_eligible", "lowest_pressure"]}, "facts_status": {"enum": ["ok", "not_configured", "missing", "stale", "invalid"]}, "facts_age_seconds": {"type": "integer"}, "considered": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "object", "additionalProperties": false, "required": ["account", "model", "threshold", "eligible", "recent_launches"], "properties": {"account": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f]+$"}, "model": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f]+$"}, "used_ratio": {"type": "number", "minimum": 0}, "window": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f]+$"}, "threshold": {"type": "number"}, "cutoff_exempt": {"type": "boolean"}, "eligible": {"type": "boolean"}, "recent_launches": {"type": "integer", "minimum": 0}}}}}},
     "requested": {
@@ -237,7 +239,7 @@
       "const": true
     },
     "side_effect_class": {
-      "const": "read_only"
+      "enum": ["read_only", "external_side_effect"]
     },
     "lifecycle": {
       "type": "object",
