@@ -17,17 +17,17 @@ LDFLAGS ?= -s -w -X main.version=$(VERSION)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || printf '%s' dev)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || printf '%s' unknown)
 
-.PHONY: all ci pre-push hooks security vuln-check fmt fmt-check vet test test-race build check-ids check-schemas check-links check-scripts check-portable-assets check-distribution check-release-skew release check-release-security \
+.PHONY: all ci pre-push hooks security vuln-check fmt fmt-check vet test test-race build check-ids check-schemas check-config-removals check-links check-scripts check-portable-assets check-distribution check-release-skew release check-release-security \
 	install uninstall clean
 
 all: ci
 
-ci: fmt-check vet test check-ids check-schemas check-links check-scripts check-portable-assets check-distribution check-release-skew build
+ci: fmt-check vet test check-ids check-schemas check-config-removals check-links check-scripts check-portable-assets check-distribution check-release-skew build
 
 # Keep the local push gate bounded while reusing the same checks as CI. Hosted
 # CI remains authoritative for distribution validators, builds, race tests, and
 # the network-backed vulnerability scan.
-pre-push: fmt-check vet test check-ids check-schemas check-links check-scripts check-portable-assets
+pre-push: fmt-check vet test check-ids check-schemas check-config-removals check-links check-scripts check-portable-assets
 
 hooks:
 	git config core.hooksPath .githooks
@@ -81,7 +81,13 @@ build:
 
 check-schemas:
 	$(PYTHON) tests/validators/test_schema_json.py
+	$(PYTHON) tests/validators/test_config_removals.py
 	$(PYTHON) $(SCRIPTS_DIR)/check-schemas.py
+
+# A release may not remove a config key or value unless docs/config-key-removals.json
+# records it, so operators know what to delete from host bundles before upgrading.
+check-config-removals:
+	$(PYTHON) $(SCRIPTS_DIR)/check-config-removals.py
 
 check-links:
 	$(PYTHON) $(SCRIPTS_DIR)/check-links.py

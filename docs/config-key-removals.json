@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "removed": [
+    {
+      "key": "profiles.*.capacity.pools.*.mode",
+      "removed_in": "v0.21.5",
+      "note": "The pool mode field and its priority and balance values were replaced by one selection rule (#132). Delete the mode key from every host bundle before a host runs this release. This entry also covers the enum values beneath the key."
+    }
+  ]
+}
