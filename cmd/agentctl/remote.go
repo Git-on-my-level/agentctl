@@ -473,20 +473,15 @@ func (a *app) observeRemoteTerminal(ctx context.Context, c common, execution mod
 // Allow the remote timeout receipt to arrive before cancelling a stalled SSH.
 const remoteAwaitReportGrace = time.Second
 
-func (a *app) awaitRemote(ctx context.Context, renderer output.Renderer, c common, execution model.Execution, flags []string, content bool, deadline time.Time) *output.Error {
+// waitRemoteTerminal bounds every SSH step in collection for all wait commands.
+func (a *app) waitRemoteTerminal(ctx context.Context, c common, execution model.Execution, flags []string, deadline time.Time) (model.Execution, *output.Error) {
 	waitCtx := ctx
 	if !deadline.IsZero() {
 		var cancel context.CancelFunc
 		waitCtx, cancel = context.WithDeadline(ctx, deadline.Add(remoteAwaitReportGrace))
 		defer cancel()
 	}
-	forwarded := []string{}
-	for _, flag := range flags {
-		if flag != "--content" {
-			forwarded = append(forwarded, flag)
-		}
-	}
-	execution, problem := a.observeRemoteTerminal(waitCtx, c, execution, forwarded)
+	execution, problem := a.observeRemoteTerminal(waitCtx, c, execution, flags)
 	if errors.Is(waitCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 		timeout := remoteErrorLocal(outcomeError(output.CodeTimeout, "await deadline elapsed", execution), execution)
 		if problem != nil {
@@ -494,8 +489,19 @@ func (a *app) awaitRemote(ctx context.Context, renderer output.Renderer, c commo
 				timeout.WithDetail("remote_diagnostic_tail", tail)
 			}
 		}
-		return timeout
+		return execution, timeout
 	}
+	return execution, problem
+}
+
+func (a *app) awaitRemote(ctx context.Context, renderer output.Renderer, c common, execution model.Execution, flags []string, content bool, deadline time.Time) *output.Error {
+	forwarded := []string{}
+	for _, flag := range flags {
+		if flag != "--content" {
+			forwarded = append(forwarded, flag)
+		}
+	}
+	execution, problem := a.waitRemoteTerminal(ctx, c, execution, forwarded, deadline)
 	if problem != nil {
 		if problem.Details["remote_terminal_collected"] == true {
 			_ = a.acknowledgeExecution(ctx, c, execution.ID, store.AcknowledgementAwait)

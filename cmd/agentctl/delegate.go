@@ -639,7 +639,11 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 	}()
 	if execution.RemoteForwarded() && opts.wait {
 		var remoteProblem *output.Error
-		execution, remoteProblem = a.observeRemoteTerminal(ctx, c, execution, nil)
+		var deadline time.Time
+		if execution.DeadlineAt != nil {
+			deadline = *execution.DeadlineAt
+		}
+		execution, remoteProblem = a.waitRemoteTerminal(ctx, c, execution, nil, deadline)
 		if remoteProblem != nil {
 			return remoteProblem
 		}

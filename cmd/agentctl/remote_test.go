@@ -660,3 +660,81 @@ func TestRemoteAdmissionPreservesReceiptLiveness(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoteDelegateAndContinueWaitBoundStalledSSH(t *testing.T) {
+	for _, command := range []string{"delegate", "continue"} {
+		for _, stage := range []string{"await", "status", "result"} {
+			t.Run(command+"/"+stage, func(t *testing.T) {
+				f := newRemoteFixture(t)
+				var source string
+				if command == "continue" {
+					code, out := f.invoke("source task", "--wait")
+					if code != 0 {
+						t.Fatal(out)
+					}
+					source = remoteLocalID(t, out)
+					for _, name := range []string{"terminal", "result"} {
+						path := filepath.Join(f.root, name)
+						body := strings.ReplaceAll(string(mustRead(t, path)), remoteTestID, remoteNextID)
+						if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				path := filepath.Join(f.root, "fake-ssh")
+				script := string(mustRead(t, path))
+				// Exec lets CommandContext reap the stall without orphaning a child.
+				script = strings.Replace(script, "case \"$3\" in", "case \"$3\" in\n *\"'"+stage+"'\"*) exec sleep 30 ;;", 1)
+				if stage == "status" {
+					// A failed remote await needs a status lookup before collection.
+					script = strings.Replace(script, `*"'await'"*) cat terminal ;;`, `*"'await'"*) printf '%s' '{"ok":false,"schema_version":1,"error":{"code":"execution_failed","message":"failed","retryable":false,"exit_code":11,"details":{},"next_actions":[]}}'; exit 11 ;;`, 1)
+				}
+				if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+					t.Fatal(err)
+				}
+				const timeout = 100 * time.Millisecond
+				started := time.Now()
+				var code int
+				var out string
+				if command == "delegate" {
+					code, out = f.invoke("task", "--wait", "--content", "--timeout", timeout.String())
+				} else {
+					code, out = f.command("next task", "continue", source, "--request-key", "bounded-next", "--prompt-stdin", "--wait", "--content", "--timeout", timeout.String())
+				}
+				elapsed := time.Since(started)
+				if code != output.ExitCodeFor(output.CodeTimeout) || !strings.Contains(out, "await deadline elapsed") {
+					t.Fatalf("exit=%d elapsed=%s output=%s", code, elapsed, out)
+				}
+				if elapsed > timeout+remoteAwaitReportGrace+time.Second {
+					t.Fatalf("%s --wait exceeded its deadline and reporting grace: %s", command, elapsed)
+				}
+				var document struct {
+					Error struct {
+						Details struct {
+							ExecutionID string `json:"execution_id"`
+						} `json:"details"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal([]byte(out), &document); err != nil {
+					t.Fatal(err)
+				}
+				execution := f.execution(t, document.Error.Details.ExecutionID)
+				if execution.DeadlineAt == nil || execution.State.Terminal() {
+					t.Fatalf("unexpected timed-out observation: %+v", execution)
+				}
+				if source != "" && (len(execution.Supersedes) != 1 || execution.Supersedes[0].String() != source) {
+					t.Fatal("continuation lost its local source")
+				}
+				journal, err := store.Open(f.journal, store.Options{ReadOnly: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, ackErr := journal.GetAcknowledgement(context.Background(), execution.ID)
+				journal.Close()
+				if !errors.Is(ackErr, store.ErrNotFound) {
+					t.Fatal("stalled collection acknowledged an undelivered result", ackErr)
+				}
+			})
+		}
+	}
+}
