@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -97,12 +98,31 @@ func TestANXSecurityDetachedCommandLatency(t *testing.T) {
 			}
 		}
 		if allRetried {
+			waitForDetachedANXWorkers(t, journal)
 			t.Logf("command returned in %s; detached retries recorded", latency)
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("detached flush never ran")
+}
+
+// The detached flush worker outlives the command that started it, and its
+// last spool writes can land after the recorded attempts are visible. Wait for
+// it to exit so the test's TempDir cleanup cannot race those writes.
+func waitForDetachedANXWorkers(t *testing.T, journal string) {
+	t.Helper()
+	pattern := "_anx-flush-worker.*" + regexp.QuoteMeta(journal)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		out, err := exec.Command("pgrep", "-f", pattern).Output()
+		if err != nil || len(bytes.TrimSpace(out)) == 0 {
+			// pgrep exits 1 when no process matches.
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("detached ANX flush worker still running after the test observed its retries")
 }
 
 func TestANXSecurityStatusErrorsAreEnums(t *testing.T) {
