@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"strings"
 	"time"
 
@@ -229,16 +230,24 @@ func (a *app) delegateRemote(ctx context.Context, renderer output.Renderer, c co
 	if len(replay) != 0 {
 		destination = replay[0].Delegation.RemotePlan.SSHDestination
 	}
-	name := "agentctl-delegate-" + strings.TrimPrefix(sha256Digest(requestBody), "sha256:")[:16] + ".json"
-	// TMPDIR is expanded only by the remote shell, with a portable fallback.
-	staged := `"${TMPDIR:-/tmp}/` + name + `"`
-	if _, problem := sshStep(ctx, destination, "umask 077 && cat > "+staged, requestBody); problem != nil {
+	// mktemp creates a fresh 0700 directory; shared TMPDIR entries cannot
+	// redirect the request write. Only the remote request key provides replay.
+	stage, problem := sshStep(ctx, destination, `umask 077 && dir=$(mktemp -d "${TMPDIR:-/tmp}/agentctl-delegate.XXXXXXXXXX") && { cat > "$dir/request.json" && printf '%s\n' "$dir" || { rm -f -- "$dir/request.json"; rmdir -- "$dir"; exit 1; }; }`, requestBody)
+	if problem != nil {
 		return problem
 	}
+	dir := strings.TrimSuffix(string(stage.body), "\n")
+	if len(dir) > 4096 || !path.IsAbs(dir) || !strings.HasPrefix(path.Base(dir), "agentctl-delegate.") || strings.ContainsAny(dir, "\x00\r\n") {
+		return stage.problem(delegateError(output.CodeRemoteFailure, "delegate_remote_receipt_invalid", "remote staging directory is invalid"))
+	}
+	staged := shellQuote(dir + "/request.json")
 	args := append(remoteLaunchFlags(opts), "--authority", "native")
 	command := "cd " + shellQuote(opts.cwd) + " && " + remoteCommand("agentctl", "delegate", "--output", "json", "--cwd", opts.cwd) + " --request-file " + staged + " " + remoteCommand(args...)
 	// Let agentctl classify a missing cwd rather than allowing shell cd to hide it.
 	command = "if [ -d " + shellQuote(opts.cwd) + " ]; then " + command + "; else " + remoteCommand("agentctl", "delegate", "--output", "json", "--cwd", opts.cwd) + " --request-file " + staged + " " + remoteCommand(args...) + "; fi"
+	// Preserve the launch's status while cleaning up on success, failure, or plan.
+	cleanup := "rm -f -- " + staged + "; rmdir -- " + shellQuote(dir)
+	command = "trap " + shellQuote(cleanup) + " 0; " + command
 	body, problem := sshStep(ctx, destination, command, prompt)
 	if problem != nil {
 		return problem
@@ -480,6 +489,20 @@ const remoteAwaitReportGrace = time.Second
 
 // waitRemoteTerminal bounds every SSH step in collection for all wait commands.
 func (a *app) waitRemoteTerminal(ctx context.Context, c common, execution model.Execution, flags []string, deadline time.Time) (model.Execution, *output.Error) {
+	if execution.State.Terminal() {
+		journal, problem := a.openReadContext(ctx, c)
+		if problem != nil {
+			return execution, problem
+		}
+		_, err := journal.GetOutcome(ctx, execution.ID)
+		journal.Close()
+		if err == nil {
+			return execution, nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return execution, mapStoreError("read collected remote outcome", err)
+		}
+	}
 	waitCtx := ctx
 	if !deadline.IsZero() {
 		var cancel context.CancelFunc

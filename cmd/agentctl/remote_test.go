@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -52,8 +53,14 @@ printf '%s\n' "$@" >> ssh-argv
 while [ "$1" = -o ]; do shift 2; done
 if [ -f fail ]; then cat diagnostic >&2; cat fail-output; exit "$(cat fail)"; fi
 case "$3" in
- umask*) cat > staged-request ;;
+ umask*)
+  printf '%s' "$3" > stage-command
+  dir=$(TMPDIR="$PWD" /bin/sh -c "$3")
+  printf '%s' "$dir" > staged-dir
+  cp "$dir/request.json" staged-request
+  printf '%s\n' "$dir" ;;
  *"'delegate'"*)
+  printf '%s' "$3" > launch-command
   cat > delegated-prompt
   echo attempt >> attempts
   if [ ! -f launched ]; then echo launch > launched; fi
@@ -158,7 +165,7 @@ func TestRemoteDelegateLifecycle(t *testing.T) {
 		}
 	}
 	argv := string(mustRead(t, filepath.Join(f.root, "ssh-argv")))
-	for _, want := range []string{"operator@ssh-alias", "cd " + shellQuote(*e.CWD), "agentctl-delegate-", "'--prompt-stdin' '--detach'", "'--label' 'remote.test'", "'--timeout' '2m0s'"} {
+	for _, want := range []string{"operator@ssh-alias", "cd " + shellQuote(*e.CWD), "agentctl-delegate.", "'--prompt-stdin' '--detach'", "'--label' 'remote.test'", "'--timeout' '2m0s'"} {
 		if !strings.Contains(argv, want) {
 			t.Fatalf("missing %s: %s", want, argv)
 		}
@@ -752,5 +759,122 @@ func TestRemoteDelegateAndContinueWaitBoundStalledSSH(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestRemoteRequestStagingCommands(t *testing.T) {
+	for _, mode := range []string{"launch", "failure", "plan"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newRemoteFixture(t)
+			target := filepath.Join(f.root, "keep-me")
+			if err := os.WriteFile(target, []byte("unchanged"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			oldName := "agentctl-delegate-" + strings.TrimPrefix(sha256Digest(mustRead(t, f.request)), "sha256:")[:16] + ".json"
+			if err := os.Symlink(target, filepath.Join(f.root, oldName)); err != nil {
+				t.Fatal(err)
+			}
+			var flags []string
+			if mode == "plan" {
+				flags = []string{"--plan"}
+			}
+			code, out := f.invoke("task", flags...)
+			if code != 0 || (mode == "plan" && !strings.Contains(out, `"request_staged":true`)) {
+				t.Fatalf("%d %s", code, out)
+			}
+			dir := string(mustRead(t, filepath.Join(f.root, "staged-dir")))
+			for name, want := range map[string]os.FileMode{dir: 0700, filepath.Join(dir, "request.json"): 0600} {
+				info, err := os.Stat(name)
+				if err != nil || info.Mode().Perm() != want {
+					t.Fatalf("staging permissions: %s info=%v err=%v", name, info, err)
+				}
+			}
+			if string(mustRead(t, target)) != "unchanged" {
+				t.Fatal("staging followed the predictable symlink")
+			}
+			// Run the actual generated launch wrapper against a harmless CLI stub.
+			bin := t.TempDir()
+			script := "#!/bin/sh\ncat > /dev/null\ncat " + shellQuote(filepath.Join(f.root, "receipt")) + "\n"
+			wantExit := 0
+			if mode == "failure" {
+				wantExit = 11
+				script += "exit 11\n"
+			}
+			if err := os.WriteFile(filepath.Join(bin, "agentctl"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "/bin/sh", "-c", string(mustRead(t, filepath.Join(f.root, "launch-command"))))
+			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			cmd.Stdin = strings.NewReader("task")
+			body, err := cmd.CombinedOutput()
+			gotExit := 0
+			if err != nil {
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) {
+					t.Fatal(err)
+				}
+				gotExit = exit.ExitCode()
+			}
+			if gotExit != wantExit {
+				t.Fatalf("exit=%d want=%d output=%s", gotExit, wantExit, body)
+			}
+			if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("launch left its staging directory", err)
+			}
+		})
+	}
+}
+
+func TestRemoteWaitReplayAfterDeadlineUsesCollectedOutcome(t *testing.T) {
+	for _, command := range []string{"delegate", "continue"} {
+		t.Run(command, func(t *testing.T) {
+			f := newRemoteFixture(t)
+			code, out := f.invoke("task", "--timeout", "1s", "--wait")
+			if code != 0 {
+				t.Fatal(out)
+			}
+			local := remoteLocalID(t, out)
+			args := []string{"delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin", "--timeout", "1s", "--wait"}
+			if command == "continue" {
+				args = []string{"continue", local, "--request-key", "collected-next", "--prompt-stdin", "--timeout", "1s", "--wait"}
+				for _, name := range []string{"terminal", "result"} {
+					p := filepath.Join(f.root, name)
+					if err := os.WriteFile(p, []byte(strings.ReplaceAll(string(mustRead(t, p)), remoteTestID, remoteNextID)), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				code, out = f.command("task", args...)
+				if code != 0 {
+					t.Fatal(out)
+				}
+				local = remoteLocalID(t, out)
+			}
+			execution := f.execution(t, local)
+			past := time.Now().Add(-time.Minute)
+			execution.DeadlineAt = &past
+			journal, err := store.Open(f.journal, store.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = journal.UpdateExecution(context.Background(), execution, execution.Revision)
+			journal.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			called := filepath.Join(f.root, "unexpected-ssh")
+			script := "#!/bin/sh\necho called > " + shellQuote(called) + "\nexit 255\n"
+			if err := os.WriteFile(filepath.Join(f.root, "fake-ssh"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			code, out = f.command("task", append(args, "--content")...)
+			if code != 0 || out != "remote verified answer\n" {
+				t.Fatalf("replay: %d %s", code, out)
+			}
+			if _, err := os.Stat(called); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("collected replay contacted SSH", err)
+			}
+		})
 	}
 }

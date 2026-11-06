@@ -77,6 +77,9 @@ func TestRemoteThroughBuiltBinary(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "verified answer") {
 		t.Fatalf("delegate: %d %s", code, out)
 	}
+	if entries, err := os.ReadDir(staged); err != nil || len(entries) != 0 {
+		t.Fatalf("remote launch left staging files: %v %v", entries, err)
+	}
 	local := remoteLocalID(t, out)
 	code, out = invoke("follow-up ' $(false)\n", "continue", local, "--request-key", "next-real-turn", "--prompt-stdin", "--timeout", "5s", "--wait")
 	if code != 0 || !strings.Contains(out, "verified answer") || !strings.Contains(out, `"continues":"`+local+`"`) {

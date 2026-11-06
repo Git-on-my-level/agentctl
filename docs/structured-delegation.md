@@ -167,7 +167,8 @@ key return the frozen admitted recipe with `source=frozen_admission`; they do no
 repeat preflight or claim current eligibility. Plan and wait flags cannot be combined. The nested native
 preflight describes prospective launch effects; local plans write no state
 and trigger no automatic maintenance. A remote delegate plan stages its bounded
-selector request under remote TMPDIR, then forwards --plan without journal admission;
+selector request in a fresh private directory under remote TMPDIR, then forwards
+--plan without journal admission and removes the directory after that step;
 the response discloses transport.request_staged and external_side_effect. Health probes establish invocation support,
 not provider authentication or observed model identity. Admission rechecks support.
 
@@ -322,13 +323,14 @@ SSH executable, otherwise it is `ssh` from PATH. SSH owns keys, known_hosts,
 aliases and jump hosts. There is no daemon, placement automation, load-based host
 selection, worktree synchronization, or version probe.
 
-The same absolute cwd must already exist remotely. Two SSH calls stage the
-request at `${TMPDIR:-/tmp}/agentctl-delegate-<first 16 SHA256 hex characters>.json`
-with umask 077 and invoke remote `agentctl delegate --prompt-stdin --detach`.
-The suffix uses the first 16 SHA256 **hex characters** of the exact request bytes.
-Only selectors are staged; prompt bytes go through stdin and never the journal.
-The deterministic stage file is retained for replay. Labels, execution timeout,
-and --plan are forwarded. Plan responses disclose the selector staging write;
+The same absolute cwd must already exist remotely. Two SSH calls create a fresh
+0700 directory with `mktemp -d` under `${TMPDIR:-/tmp}`, write `request.json`
+inside it with umask 077, and invoke remote
+`agentctl delegate --prompt-stdin --detach`. The launch step removes the file and
+directory on exit, including failure and --plan. Only selectors are staged;
+prompt bytes go through stdin and never the journal. Replay uses the remote
+request key, not a retained staging path. Labels, execution timeout, and --plan
+are forwarded. Plan responses disclose the temporary selector staging write;
 there is no execution admission during a plan.
 
 The caller uses one **local** execution id. `remote` in delegate/continue
@@ -351,7 +353,9 @@ receipt records its state immediately; await later fills its missing outcome.
 eligibility and concurrency. Local repair and cancellation do not own remote PIDs.
 Use remote agentctl directly for unsupported steering or cancellation.
 
-Same-key delegate replay re-sends the same inputs to the frozen destination,
+A collected terminal outcome is reused locally by delegate/continue --wait
+replay, even after its execution deadline, without SSH. Otherwise, same-key
+delegate replay re-sends the same inputs to the frozen destination,
 checks that remote identity agrees, and reuses the local row. A lost SSH launch
 receipt is retried with the **same key**: the remote consumer is idempotent even
 if admission already happened. A different-input replay conflicts locally.

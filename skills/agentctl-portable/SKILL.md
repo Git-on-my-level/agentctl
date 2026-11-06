@@ -227,8 +227,9 @@ loss of the detached owner. Replay the same request key and inputs after a lost
 receipt; never invent a new key for recovery. A worker-creation failure returns
 the failed execution ID. The resolved journal-busy budget crosses the worker
 boundary, including explicit 0. Replay does not detach work that
-was already launched in the foreground. Local plans are read-only. Remote delegate plans disclose their selector staging
-write as transport.request_staged (no journal admission). External context
+was already launched in the foreground. Local plans are read-only. Remote delegate plans disclose their temporary selector staging
+write as transport.request_staged (no journal admission): request.json is written
+in a fresh 0700 directory under remote TMPDIR and removed after the launch step. External context
 handles remain unsupported. See [the lifecycle contract](https://github.com/Git-on-my-level/agentctl/blob/main/docs/generalized-lifecycle.md).
 Remote native delegation uses `selector.host` resolved through `route.hosts`.
 Optional `route.ssh_hosts` maps the canonical host to an SSH alias or user@host;
@@ -242,6 +243,8 @@ Keep using the local id. Receipts expose `remote` and execution JSON exposes
 `agentctl://<remote origin_host_id>/<remote execution_id>` is provenance.
 `status <id>` contacts SSH without updating the local journal; `await <id>`
 contacts SSH, retains the remote result locally, then acknowledges locally.
+Delegate/continue --wait replay reuses a collected terminal outcome without SSH,
+even after its execution deadline.
 `continue <id>` sends the new prompt to the same SSH host detached and records
 its successor locally. Local continue also accepts --detach. Recent lists only
 local rows (including remote forwarding rows); inbox/reconcile skip remote rows.

@@ -324,6 +324,9 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 			return writeDelegatePlan(renderer, *previous.Delegation, nil, previous.ID.String(), previous)
 		}
 		if previous.RemoteForwarded() {
+			if opts.wait && previous.State.Terminal() {
+				return a.collectDelegation(ctx, renderer, c, previous, opts, true)
+			}
 			return a.delegateRemote(ctx, renderer, c, profile, previous.Delegation.RemotePlan.Host, request, requestBody, prompt.Bytes, opts, mutation, previous)
 		}
 		return a.collectDelegation(ctx, renderer, c, previous, opts, true)
@@ -640,7 +643,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 	if execution.RemoteForwarded() && opts.wait {
 		var remoteProblem *output.Error
 		var deadline time.Time
-		if execution.DeadlineAt != nil {
+		if execution.DeadlineAt != nil && !execution.State.Terminal() {
 			// Match the local wait path's cancellation and terminal-journaling window.
 			deadline = execution.DeadlineAt.Add(10 * time.Second)
 		}
