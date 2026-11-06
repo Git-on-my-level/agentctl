@@ -236,7 +236,7 @@ func (a *app) help(renderer output.Renderer, rawTopic string) int {
 		commands = append(commands, map[string]any{"name": item.Name, "summary": item.Summary, "side_effect_class": item.SideEffectClass})
 		lines = append(lines, output.Line{Lead: "topic", Fields: []output.Field{{Name: "name", Value: item.Name}, {Name: "summary", Value: item.Summary}}})
 	}
-	result := map[string]any{"name": "agentctl", "version": version, "commands": commands, "global_flags": []string{"--output json|text (default json)", "--profile <name>", "--context-file <path>", "--explain", "--config <path>", "--config-bundle <explicit-local-path>", "--journal <path>", "--journal-busy-budget <duration> (default 120s for run, delegate, dispatch, continue, await, and await-any; 0 restores two attempts; env AGENTCTL_JOURNAL_BUSY_BUDGET)"}, "discovery": []string{"agentctl help <topic>", "agentctl doctor"}}
+	result := map[string]any{"name": "agentctl", "version": version, "commands": commands, "global_flags": []string{"--output json|text (default json; --json is an alias for --output json)", "--profile <name>", "--context-file <path>", "--explain", "--config <path>", "--config-bundle <explicit-local-path>", "--journal <path>", "--journal-busy-budget <duration> (default 120s for run, delegate, dispatch, continue, await, and await-any; 0 restores two attempts; env AGENTCTL_JOURNAL_BUSY_BUDGET)"}, "discovery": []string{"agentctl help <topic>", "agentctl doctor"}}
 	_ = renderer.Success(output.Success{Result: result, Lines: lines, NextActions: []output.NextAction{{Label: "Check readiness", Argv: []string{"agentctl", "doctor"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}}}})
 	return 0
 }
