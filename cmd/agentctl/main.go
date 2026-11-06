@@ -1242,13 +1242,6 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		if err != nil {
 			return a.fail(renderer, mapStoreError("read awaited execution", err))
 		}
-		if execution.RemoteForwarded() {
-			problem := a.awaitRemote(ctx, renderer, c, execution, args[1:], contentOnly)
-			if problem != nil {
-				return a.fail(renderer, problem)
-			}
-			return 0
-		}
 		if throughExecutionDeadline && deadline.IsZero() {
 			if execution.DeadlineAt == nil {
 				return a.fail(renderer, output.NewError(output.CodeCapabilityUnavailable, "execution has no recorded deadline", false).WithDetail("execution_id", id.String()).WithDetail("diagnostic_code", "execution_deadline_unavailable"))
@@ -1256,6 +1249,13 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 			// Allow bounded cancellation and terminal journaling after the native
 			// execution deadline itself elapses.
 			deadline = execution.DeadlineAt.Add(10 * time.Second)
+		}
+		if execution.RemoteForwarded() {
+			problem := a.awaitRemote(ctx, renderer, c, execution, args[1:], contentOnly, deadline)
+			if problem != nil {
+				return a.fail(renderer, problem)
+			}
+			return 0
 		}
 		if execution.Observation.Integrity == model.IntegrityConflicted {
 			return a.fail(renderer, outcomeError(output.CodeUnknownState, "execution evidence is conflicted", execution))

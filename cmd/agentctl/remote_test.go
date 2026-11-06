@@ -589,3 +589,74 @@ func TestRemoteCapacityDoesNotDebitLocalAccounts(t *testing.T) {
 		t.Fatalf("remote work debited local accounts: %v %v", counts, err)
 	}
 }
+
+func TestRemoteAwaitBoundsStalledSSH(t *testing.T) {
+	for _, stage := range []string{"await", "result"} {
+		t.Run(stage, func(t *testing.T) {
+			f := newRemoteFixture(t)
+			code, out := f.invoke("task")
+			if code != 0 {
+				t.Fatal(out)
+			}
+			local := remoteLocalID(t, out)
+			before := mustRead(t, f.journal)
+			path := filepath.Join(f.root, "fake-ssh")
+			script := string(mustRead(t, path))
+			// exec keeps the stalled subprocess owned by CommandContext, so
+			// cancellation reaps it without leaving a sleeping shell child.
+			script = strings.Replace(script, "case \"$3\" in", "case \"$3\" in\n *\"'"+stage+"'\"*) exec sleep 30 ;;", 1)
+			if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			const timeout = 100 * time.Millisecond
+			started := time.Now()
+			code, out = f.command("", "await", local, "--timeout", timeout.String(), "--content")
+			elapsed := time.Since(started)
+			if code != output.ExitCodeFor(output.CodeTimeout) || !strings.Contains(out, "await deadline elapsed") || !strings.Contains(out, `"execution_id":"`+local+`"`) {
+				t.Fatalf("exit=%d elapsed=%s output=%s", code, elapsed, out)
+			}
+			if elapsed > timeout+remoteAwaitReportGrace+time.Second {
+				t.Fatalf("await exceeded its deadline and reporting grace: %s", elapsed)
+			}
+			if !bytes.Equal(before, mustRead(t, f.journal)) {
+				t.Fatal("stalled collection changed or acknowledged local execution")
+			}
+		})
+	}
+}
+
+func TestRemoteAdmissionPreservesReceiptLiveness(t *testing.T) {
+	for _, tc := range []struct {
+		receipt string
+		want    model.Liveness
+	}{
+		{"alive", model.LivenessAlive},
+		{"blocked", model.LivenessBlocked},
+		{"", model.LivenessUnknown},
+	} {
+		t.Run(string(tc.want), func(t *testing.T) {
+			f := newRemoteFixture(t)
+			var document map[string]any
+			if err := json.Unmarshal(mustRead(t, filepath.Join(f.root, "receipt")), &document); err != nil {
+				t.Fatal(err)
+			}
+			receipt := document["result"].(map[string]any)
+			if tc.receipt != "" {
+				receipt["liveness"] = tc.receipt
+			}
+			f.writeJSON(t, "receipt", receipt)
+			code, out := f.invoke("task")
+			if code != 0 || !strings.Contains(out, `"liveness":"`+string(tc.want)+`"`) {
+				t.Fatalf("%d %s", code, out)
+			}
+			local := remoteLocalID(t, out)
+			if got := f.execution(t, local).Liveness; got != tc.want {
+				t.Fatalf("stored liveness=%s want=%s", got, tc.want)
+			}
+			code, out = f.command("", "recent")
+			if code != 0 || !strings.Contains(out, `"liveness":"`+string(tc.want)+`"`) {
+				t.Fatalf("recent: %d %s", code, out)
+			}
+		})
+	}
+}

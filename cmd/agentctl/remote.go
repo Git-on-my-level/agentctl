@@ -313,7 +313,11 @@ func (a *app) recordRemote(ctx context.Context, renderer output.Renderer, c comm
 	}
 	now := a.now().UTC()
 	state := receipt.State
-	execution := model.Execution{Authority: model.AuthorityNative, Adapter: resolved.Harness, Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: state, Liveness: model.LivenessUnknown, Labels: opts.labels, CWD: &opts.cwd, Delegation: binding, Capabilities: model.CapabilitySnapshot{AdapterVersion: "remote-receipt-v1", NegotiatedAt: now}, Observation: model.Observation{Source: model.ObservationStatusAPI, Integrity: model.IntegrityVerified, ObservedAt: now}}
+	liveness := receipt.Liveness
+	if liveness == "" {
+		liveness = model.LivenessUnknown
+	}
+	execution := model.Execution{Authority: model.AuthorityNative, Adapter: resolved.Harness, Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: state, Liveness: liveness, Labels: opts.labels, CWD: &opts.cwd, Delegation: binding, Capabilities: model.CapabilitySnapshot{AdapterVersion: "remote-receipt-v1", NegotiatedAt: now}, Observation: model.Observation{Source: model.ObservationStatusAPI, Integrity: model.IntegrityVerified, ObservedAt: now}}
 	if state.Terminal() {
 		execution.TerminalAt = &now
 	}
@@ -466,14 +470,32 @@ func (a *app) observeRemoteTerminal(ctx context.Context, c common, execution mod
 	return next, awaitProblem
 }
 
-func (a *app) awaitRemote(ctx context.Context, renderer output.Renderer, c common, execution model.Execution, flags []string, content bool) *output.Error {
+// Allow the remote timeout receipt to arrive before cancelling a stalled SSH.
+const remoteAwaitReportGrace = time.Second
+
+func (a *app) awaitRemote(ctx context.Context, renderer output.Renderer, c common, execution model.Execution, flags []string, content bool, deadline time.Time) *output.Error {
+	waitCtx := ctx
+	if !deadline.IsZero() {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithDeadline(ctx, deadline.Add(remoteAwaitReportGrace))
+		defer cancel()
+	}
 	forwarded := []string{}
 	for _, flag := range flags {
 		if flag != "--content" {
 			forwarded = append(forwarded, flag)
 		}
 	}
-	execution, problem := a.observeRemoteTerminal(ctx, c, execution, forwarded)
+	execution, problem := a.observeRemoteTerminal(waitCtx, c, execution, forwarded)
+	if errors.Is(waitCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+		timeout := remoteErrorLocal(outcomeError(output.CodeTimeout, "await deadline elapsed", execution), execution)
+		if problem != nil {
+			if tail, ok := problem.Details["remote_diagnostic_tail"]; ok {
+				timeout.WithDetail("remote_diagnostic_tail", tail)
+			}
+		}
+		return timeout
+	}
 	if problem != nil {
 		if problem.Details["remote_terminal_collected"] == true {
 			_ = a.acknowledgeExecution(ctx, c, execution.ID, store.AcknowledgementAwait)
