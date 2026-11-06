@@ -197,6 +197,30 @@ func TestSourceUpdateFailsClosedOnLiveOrCheckoutDrift(t *testing.T) {
 	}
 }
 
+// The operator's git rules can rewrite a configured SCP-style remote to a
+// different transport. The checkout must still count as the managed one.
+func TestSourceUpdateAcceptsInsteadOfRewrittenRemote(t *testing.T) {
+	remote, _, configPath, checkout := sourceFixture(t)
+	ctx := context.Background()
+	gitconfig := filepath.Join(t.TempDir(), "gitconfig")
+	rewrite := "[url \"" + filepath.Dir(remote) + "/\"]\n\tinsteadOf = git@agentctl-test.invalid:\n"
+	if err := os.WriteFile(gitconfig, []byte(rewrite), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", gitconfig)
+	spec := SourceSpec{Remote: "git@agentctl-test.invalid:" + filepath.Base(remote), Ref: "main", CheckoutPath: checkout}
+	if _, err := InitSource(ctx, configPath, spec, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	update, err := UpdateSource(ctx, configPath, time.Now())
+	if err != nil {
+		t.Fatalf("update through insteadOf remote: %v", err)
+	}
+	if update.Changed || !update.Status.InSync {
+		t.Fatalf("unexpected update: %#v", update)
+	}
+}
+
 func TestRestoreSourceRepairsOnlyLiveConfigWithoutFetching(t *testing.T) {
 	remote, _, configPath, checkout := sourceFixture(t)
 	ctx := context.Background()

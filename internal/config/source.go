@@ -673,7 +673,10 @@ func fetchSource(ctx context.Context, git SourceGit, spec SourceSpec) (string, B
 }
 
 func verifyManagedCheckout(ctx context.Context, git SourceGit, spec SourceSpec) error {
-	remoteBytes, err := git.Run(ctx, spec.CheckoutPath, "remote", "get-url", "origin")
+	// Read the stored URL rather than `remote get-url`: that command applies
+	// url.<base>.insteadOf rules, so a remote rewritten by the operator's Git
+	// config would never equal the remote recorded in source state.
+	remoteBytes, err := git.Run(ctx, spec.CheckoutPath, "config", "--get", "remote.origin.url")
 	if err != nil {
 		return err
 	}
