@@ -20,9 +20,12 @@ export GOTOOLCHAIN=local
 
 seen=$(HOME="$operator_home" AGENTCTL_CONFIG="$operator_home/.config/agentctl/config.json" \
   XDG_CONFIG_HOME="$operator_home/.config" CLAUDECODE=1 \
-  "$WRAP" sh -c 'printf "%s|%s|%s|%s" "$HOME" "${AGENTCTL_CONFIG-unset}" "${XDG_CONFIG_HOME-unset}" "${CLAUDECODE-unset}"')
+  GIT_CONFIG_GLOBAL="$operator_home/gitconfig" GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.x.insteadOf GIT_CONFIG_VALUE_0=y \
+  "$WRAP" sh -c 'printf "%s|%s|%s|%s|%s|%s" "$HOME" "${AGENTCTL_CONFIG-unset}" "${XDG_CONFIG_HOME-unset}" "${CLAUDECODE-unset}" "${GIT_CONFIG_GLOBAL-unset}" "${GIT_CONFIG_COUNT-unset}"')
 
-IFS='|' read -r child_home child_config child_xdg child_marker <<<"$seen"
+IFS='|' read -r child_home child_config child_xdg child_marker child_git_global child_git_count <<<"$seen"
+[ "$child_git_global" = /dev/null ] || fail "operator GIT_CONFIG_GLOBAL leaked into the child: $child_git_global"
+[ "$child_git_count" = unset ] || fail "GIT_CONFIG_COUNT leaked into the child"
 [ "$child_home" != "$operator_home" ] || fail "child inherited operator HOME"
 [ "$child_config" = unset ] || fail "AGENTCTL_CONFIG leaked into the child"
 [ "$child_xdg" != "$operator_home/.config" ] || fail "XDG_CONFIG_HOME leaked into the child"

@@ -43,6 +43,16 @@ for name in $(env | sed -n 's/^\(AGENTCTL_[A-Za-z0-9_]*\)=.*/\1/p') \
   unset "$name"
 done
 
+# Git also reads explicit configuration from the environment, which HOME and
+# XDG roots do not reach. Drop every GIT_CONFIG* override, then point the global
+# config at an empty file and skip the system config, so each test sets its own.
+for name in $(env | sed -n 's/^\(GIT_CONFIG[A-Za-z0-9_]*\)=.*/\1/p'); do
+  unset "$name"
+done
+GIT_CONFIG_GLOBAL=/dev/null
+GIT_CONFIG_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
+
 # Not exec: the EXIT trap must still run to remove the scratch tree.
 status=0
 "$@" || status=$?
