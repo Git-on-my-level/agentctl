@@ -683,8 +683,9 @@ func verifyManagedCheckout(ctx context.Context, git SourceGit, spec SourceSpec) 
 	if err != nil {
 		return err
 	}
-	urls := strings.Split(strings.TrimSpace(string(remoteBytes)), "\n")
-	if len(urls) != 1 || strings.TrimSpace(urls[0]) != spec.Remote {
+	// Trim only the final newline: an empty extra value is still an extra URL.
+	urls := strings.Split(strings.TrimSuffix(string(remoteBytes), "\n"), "\n")
+	if len(urls) != 1 || urls[0] != spec.Remote {
 		return fmt.Errorf("%w: managed checkout remote differs from source state", ErrConflict)
 	}
 	statusBytes, err := git.Run(ctx, spec.CheckoutPath, "status", "--porcelain", "--untracked-files=all")

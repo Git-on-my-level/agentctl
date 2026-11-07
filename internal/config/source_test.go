@@ -237,6 +237,12 @@ func TestSourceUpdateRejectsCheckoutWithExtraOriginURL(t *testing.T) {
 	if _, err := UpdateSource(ctx, configPath, time.Now()); err == nil || !strings.Contains(err.Error(), "remote differs") {
 		t.Fatalf("extra origin URL error=%v", err)
 	}
+	// An empty extra value is still a second URL.
+	runGitTest(t, checkout, "config", "--replace-all", "remote.origin.url", remote)
+	runGitTest(t, checkout, "config", "--add", "remote.origin.url", "")
+	if _, err := UpdateSource(ctx, configPath, time.Now()); err == nil || !strings.Contains(err.Error(), "remote differs") {
+		t.Fatalf("empty extra origin URL error=%v", err)
+	}
 }
 
 func TestRestoreSourceRepairsOnlyLiveConfigWithoutFetching(t *testing.T) {
