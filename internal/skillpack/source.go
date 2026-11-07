@@ -135,7 +135,7 @@ func HubSourceStatusWithGit(ctx context.Context, git config.SourceGit, home stri
 	}
 	// Read the stored URLs rather than `remote get-url`, which applies insteadOf
 	// rules, and require exactly one: fetch uses the first value, `--get` the last.
-	if output, err := git.Run(ctx, checkoutPath, "config", "--get-all", "remote.origin.url"); err != nil || strings.TrimSpace(string(output)) != selection.Remote {
+	if output, err := git.Run(ctx, checkoutPath, "config", "--get-all", "remote.origin.url"); err != nil || strings.TrimSuffix(string(output), "\n") != selection.Remote {
 		status.Drift = append(status.Drift, "checkout_remote")
 	}
 	if status.CheckoutClean && status.CheckoutCommit == state.AppliedCommit {

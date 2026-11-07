@@ -58,4 +58,11 @@ func TestHubStatusReportsExtraOriginURL(t *testing.T) {
 	if err != nil || status.InSync {
 		t.Fatalf("extra origin URL not reported: %#v %v", status, err)
 	}
+	// An empty extra value is still a second URL.
+	fixtureGit(t, checkout, "config", "--replace-all", "remote.origin.url", hub)
+	fixtureGit(t, checkout, "config", "--add", "remote.origin.url", "")
+	status, err = HubSourceStatusReadOnly(context.Background(), home, selection)
+	if err != nil || status.InSync {
+		t.Fatalf("empty extra origin URL not reported: %#v %v", status, err)
+	}
 }
