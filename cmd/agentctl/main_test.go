@@ -1655,6 +1655,34 @@ func TestParseCommonPreservesEveryArgumentAfterDelimiter(t *testing.T) {
 	}
 }
 
+func TestParseCommonAcceptsJSONAsOutputAlias(t *testing.T) {
+	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
+	for _, argv := range [][]string{
+		{"--json", "status", "exec-1"},
+		{"status", "exec-1", "--json"},
+		{"--output", "json", "--json", "status", "exec-1"},
+	} {
+		common, rest, err := a.parseCommon(argv)
+		if err != nil {
+			t.Fatalf("%q: %v", argv, err)
+		}
+		if common.mode != output.JSON {
+			t.Fatalf("%q: mode=%s", argv, common.mode)
+		}
+		if !reflect.DeepEqual(rest, []string{"status", "exec-1"}) {
+			t.Fatalf("%q: rest=%q", argv, rest)
+		}
+	}
+	for _, argv := range [][]string{
+		{"--json", "--output", "text", "status", "exec-1"},
+		{"--output", "text", "--json", "status", "exec-1"},
+	} {
+		if _, _, err := a.parseCommon(argv); err == nil {
+			t.Fatalf("%q: conflicting --json and --output text were accepted", argv)
+		}
+	}
+}
+
 func TestParseCommonLeavesKnowledgeBundleOutputForSubcommand(t *testing.T) {
 	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
 	common, rest, err := a.parseCommon([]string{"--output", "json", "knowledge", "compile", "--source", "source.json=/checkout", "--output", "/bundle"})

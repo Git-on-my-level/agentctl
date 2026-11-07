@@ -325,6 +325,9 @@ func parseReconcileDuration(value string) (time.Duration, error) {
 func classifyReconcile(executions []model.Execution, acks store.AcknowledgementIndex, host ids.HostID, now time.Time, opts reconcileOptions, prove func(processIdentity) processProof) reconcileReport {
 	report := newReconcileReport(now, opts)
 	for _, execution := range executions {
+		if execution.RemoteForwarded() {
+			continue
+		}
 		if execution.NativeRecoveryParked() {
 			continue // a deliberate exited-child pause is not a lost owner
 		}

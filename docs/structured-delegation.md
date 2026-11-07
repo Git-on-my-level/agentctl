@@ -52,8 +52,8 @@ keys, or labels. Only the key digest is stored. Prompt bytes are not journaled.
 These are interpretation examples, not a permutation dictionary. A version is a
 string, never a number or range. Preserve explicit speed/effort in `settings`;
 do not fill omitted fields from memory. At least `family` or exact native `model`
-is required. Host aliases match exactly; remote delegation currently fails with
-a capability diagnostic and a pointer to explicit Multica dispatch.
+is required, or a configured pool may be named. Host aliases match exactly;
+remote native delegation forwards over SSH to the configured host.
 
 ## Reviewed configuration
 
@@ -165,8 +165,11 @@ New plans expose the exact native argv without prompt bytes, delivery mode, adap
 preflight, tuple, configuration SHA-256, and defaulted fields. Plans for an existing
 key return the frozen admitted recipe with `source=frozen_admission`; they do not
 repeat preflight or claim current eligibility. Plan and wait flags cannot be combined. The nested native
-preflight describes prospective launch effects; the plan itself writes no state
-and triggers no automatic maintenance. Health probes establish invocation support,
+preflight describes prospective launch effects; local plans write no state
+and trigger no automatic maintenance. A remote delegate plan stages its bounded
+selector request in a fresh private directory under remote TMPDIR, then forwards
+--plan without journal admission and removes the directory after that step;
+the response discloses transport.request_staged and external_side_effect. Health probes establish invocation support,
 not provider authentication or observed model identity. Admission rechecks support.
 
 The nested preflight also reports the `steer` capability negotiated for that
@@ -295,11 +298,75 @@ agentctl requested. Native providers can still report opaque or substituted mode
 identity; this release does not claim model attestation.
 
 Multica remains the authority for durable remote tasks. Its current adapter lacks
-a verified final-answer route and settings contract, so `delegate` rejects remote
-and explicit Multica requests before creating anything. Existing `dispatch`
+a verified final-answer route and settings contract, so `delegate` rejects
+explicit Multica requests before creating anything. Existing `dispatch`
 retains live exact assignee/runtime binding, authority idempotency, and lifecycle
-tracking; there is no local fallback. Uniform remote delegation requires those
+tracking; there is no local fallback. Multica delegation requires those
 missing capabilities first.
+
+## Remote native delegation over SSH
+
+Set `route.this_host` and `route.hosts` as usual. Optional `route.ssh_hosts`
+maps canonical host ids to operator SSH destinations (up to 64 entries, ids and
+values 1–128 bytes). For example:
+
+```json
+{"route":{"this_host":"laptop","hosts":{"studio":"build-host"},"ssh_hosts":{"build-host":"operator@studio-alias"}}}
+```
+
+An explicit remote `selector.host` forwards the unchanged selector and prompt.
+The remote configuration must recognize that host alias as its own local host.
+Pool, account, model, and permission selection use the remote configuration and
+capacity facts; no local model/pool probe runs. Omitted host still means local.
+The destination defaults to the canonical host id; `AGENTCTL_SSH` overrides the
+SSH executable, otherwise it is `ssh` from PATH. SSH owns keys, known_hosts,
+aliases and jump hosts. There is no daemon, placement automation, load-based host
+selection, worktree synchronization, or version probe.
+
+The same absolute cwd must already exist remotely. Two SSH calls create a fresh
+0700 directory with `mktemp -d` under `${TMPDIR:-/tmp}`, write `request.json`
+inside it with umask 077, and invoke remote
+`agentctl delegate --prompt-stdin --detach`. The launch step removes the file and
+directory on exit, including failure and --plan. Only selectors are staged;
+prompt bytes go through stdin and never the journal. Replay uses the remote
+request key, not a retained staging path. Labels, execution timeout, and --plan
+are forwarded. Plan responses disclose the temporary selector staging write;
+there is no execution admission during a plan.
+
+The caller uses one **local** execution id. `remote` in delegate/continue
+receipts, `delegation.remote` in execution JSON, and recent rows retain `host`,
+`ssh_destination`, `execution_id`, and typed `origin_host_id`. The cross-host
+reference is `agentctl://<remote origin_host_id>/<remote execution_id>`.
+`resolved.host` and recent's `host` show canonical placement. Remote provenance
+is frozen with the mutation binding. Recent lists local forwarding rows only,
+and never imports remote journal rows. Inbox and reconcile skip forwarding rows.
+
+`status <local-id>` contacts SSH read-only, reports current remote state under the
+local id, and never refreshes the local journal. `await <local-id>` forwards its
+wait flags, then reads the structured remote result (because remote await
+--content is raw text), stores terminal state/outcome locally, and acknowledges
+locally after delivery. `delegate --wait` uses that collection path; content and
+result assertions use the retained native provenance. A terminal admission
+receipt records its state immediately; await later fills its missing outcome.
+`continue <local-id>` sends the new prompt to the original destination with
+--detach and records a local successor; the remote authority enforces session
+eligibility and concurrency. Local repair and cancellation do not own remote PIDs.
+Use remote agentctl directly for unsupported steering or cancellation.
+
+A collected terminal outcome is reused locally by delegate/continue --wait
+replay, even after its execution deadline, without SSH. Otherwise, same-key
+delegate replay re-sends the same inputs to the frozen destination,
+checks that remote identity agrees, and reuses the local row. A lost SSH launch
+receipt is retried with the **same key**: the remote consumer is idempotent even
+if admission already happened. A different-input replay conflicts locally.
+SSH connection failures (including exit 255) return retryable `remote_failure`
+(exit 11). Exit 127/command-not-found yields nonretryable
+`delegate_remote_agentctl_missing` (exit 6; bootstrap the destination). Invalid
+JSON, identity/state, or resolution receipts yield
+`delegate_remote_receipt_invalid` (exit 11). Remote errors such as
+`delegate_invalid_cwd` retain their diagnostic and exit class. Failure responses
+retain a bounded remote stderr tail. Only receipt shape is validated in v1;
+Multica's result/settings guarantees remain unavailable.
 
 ## Errors and discovery
 

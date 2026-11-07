@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"strings"
 	"testing"
 )
@@ -65,6 +66,32 @@ func TestContinuationMetadataRejectsFalseSessionClaims(t *testing.T) {
 		binding.Continuation = continuation
 		if err := binding.Validate(); err == nil {
 			t.Fatalf("invalid continuation accepted: %#v", continuation)
+		}
+	}
+}
+
+func TestRemoteDelegationBindingValidationAndImmutability(t *testing.T) {
+	b := fixtureDelegation()
+	remoteID, _ := ids.ParseExecutionID("exec-abandon-abandon-abandon-abandon-abandon-aisle")
+	remoteHost, _ := ids.ParseHostID("host-yard-total-plastic-uncover-drip-angry")
+	b.RemotePlan = &DelegationRemotePlan{Host: b.Resolved.Host, SSHDestination: "operator@studio", ExecutionID: remoteID, OriginHostID: remoteHost}
+	if err := b.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*DelegationBinding){
+		func(b *DelegationBinding) { b.RemotePlan.Host = "elsewhere" },
+		func(b *DelegationBinding) { b.RemotePlan.SSHDestination = "" },
+		func(b *DelegationBinding) { b.RemotePlan.ExecutionID = "" },
+		func(b *DelegationBinding) {
+			b.NativePlan = &DelegationNativePlan{Argv: []string{"cursor-agent"}, PromptDelivery: "argv"}
+		},
+	} {
+		copy := *b
+		plan := *b.RemotePlan
+		copy.RemotePlan = &plan
+		mutate(&copy)
+		if err := copy.Validate(); err == nil {
+			t.Fatalf("accepted %+v", copy)
 		}
 	}
 }

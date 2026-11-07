@@ -106,7 +106,13 @@ built-in adapter family aliases such as `glm` or `codex`.
 
 Optional `route` data feeds `agentctl route explain <query>`. `this_host` is the
 local machine id. `hosts` maps nicknames onto those ids. `placement.kind` names
-whatever remote authority the operator configured (Multica is one kind). None
+whatever remote authority the operator configured (Multica is one kind).
+For native delegate, optional `ssh_hosts` maps canonical host ids to SSH
+destinations; absent entries use the canonical host id. It accepts up to 64
+entries with nonempty ids/destinations of at most 128 bytes. SSH configuration
+owns authentication and jump hosts; `AGENTCTL_SSH` overrides the executable.
+Remote selectors and pools resolve on the destination, which must recognize the
+forwarded host alias as local and already have the same absolute cwd. None
 of these fields are required. Without `preferred[]`, the matcher still ranks
 built-in adapter family aliases such as `glm` or `codex`. With `preferred[]`,
 only those reviewed models match.

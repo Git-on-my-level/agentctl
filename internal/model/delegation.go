@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/Git-on-my-level/agentctl/internal/delegation"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -12,6 +13,7 @@ import (
 // DelegationBinding pins resolution metadata to an admitted execution. It
 // exposes no prompt, executable path, native argv, or credentials in JSON.
 type DelegationBinding struct {
+	RemotePlan          *DelegationRemotePlan `json:"remote,omitempty"`
 	NativePlan          *DelegationNativePlan `json:"-"`
 	Continuation        *FollowUpContinuation `json:"continuation,omitempty"`
 	RequestSHA256       string                `json:"request_sha256"`
@@ -27,6 +29,19 @@ type DelegationBinding struct {
 	// stored selector stays the resolved harness and model so they can still read
 	// the record after a rollback.
 	Capacity *DelegationCapacity `json:"capacity,omitempty"`
+}
+
+// DelegationRemotePlan freezes SSH routing and remote identity at admission.
+// SSH owns authentication; destinations are operator configuration, never keys.
+type DelegationRemotePlan struct {
+	Host           string          `json:"host"`
+	SSHDestination string          `json:"ssh_destination"`
+	ExecutionID    ids.ExecutionID `json:"execution_id"`
+	OriginHostID   ids.HostID      `json:"origin_host_id"`
+}
+
+func (e Execution) RemoteForwarded() bool {
+	return e.Delegation != nil && e.Delegation.RemotePlan != nil
 }
 
 // DelegationCapacity explains which account a pool chose and why. It holds no
@@ -171,6 +186,17 @@ func (b DelegationBinding) Validate() error {
 			if c.PriorResult == nil || c.PriorResult.Source == "" || len(c.PriorResult.Source) > 128 || !hashPattern.MatchString(c.PriorResult.SHA256) || c.PriorResult.Bytes < 1 || c.PriorResult.Bytes > 64<<10 {
 				return errors.New("invalid carry-forward provenance")
 			}
+		}
+	}
+	if r := b.RemotePlan; r != nil {
+		if b.NativePlan != nil || r.Host != b.Resolved.Host || r.SSHDestination == "" || len(r.SSHDestination) > 128 || strings.ContainsAny(r.SSHDestination, "\x00\r\n") {
+			return errors.New("invalid delegation remote plan")
+		}
+		if _, err := ids.ParseExecutionID(r.ExecutionID.String()); err != nil {
+			return err
+		}
+		if _, err := ids.ParseHostID(r.OriginHostID.String()); err != nil {
+			return err
 		}
 	}
 	if b.NativePlan != nil {

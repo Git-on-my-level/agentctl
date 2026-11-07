@@ -34,24 +34,26 @@ type recentOptions struct {
 }
 
 type recentExecution struct {
-	Capacity              *model.DelegationCapacity `json:"capacity,omitempty"`
-	Caller                *model.ExecutionCaller    `json:"caller,omitempty"`
-	ID                    ids.ExecutionID           `json:"id"`
-	Labels                []string                  `json:"labels"`
-	Authority             model.Authority           `json:"authority"`
-	Adapter               string                    `json:"adapter"`
-	Mode                  model.Mode                `json:"mode"`
-	State                 model.State               `json:"state"`
-	Liveness              model.Liveness            `json:"liveness"`
-	CreatedAt             time.Time                 `json:"created_at"`
-	StartedAt             *time.Time                `json:"started_at,omitempty"`
-	ProgressAt            *time.Time                `json:"progress_at"`
-	UpdatedAt             time.Time                 `json:"updated_at"`
-	TerminalAt            *time.Time                `json:"terminal_at,omitempty"`
-	DurationSeconds       float64                   `json:"duration_seconds"`
-	Unreconciled          bool                      `json:"unreconciled"`
-	AcknowledgedAt        *time.Time                `json:"acknowledged_at,omitempty"`
-	AcknowledgementSource string                    `json:"acknowledgement_source,omitempty"`
+	Host                  string                      `json:"host,omitempty"`
+	Remote                *model.DelegationRemotePlan `json:"remote,omitempty"`
+	Capacity              *model.DelegationCapacity   `json:"capacity,omitempty"`
+	Caller                *model.ExecutionCaller      `json:"caller,omitempty"`
+	ID                    ids.ExecutionID             `json:"id"`
+	Labels                []string                    `json:"labels"`
+	Authority             model.Authority             `json:"authority"`
+	Adapter               string                      `json:"adapter"`
+	Mode                  model.Mode                  `json:"mode"`
+	State                 model.State                 `json:"state"`
+	Liveness              model.Liveness              `json:"liveness"`
+	CreatedAt             time.Time                   `json:"created_at"`
+	StartedAt             *time.Time                  `json:"started_at,omitempty"`
+	ProgressAt            *time.Time                  `json:"progress_at"`
+	UpdatedAt             time.Time                   `json:"updated_at"`
+	TerminalAt            *time.Time                  `json:"terminal_at,omitempty"`
+	DurationSeconds       float64                     `json:"duration_seconds"`
+	Unreconciled          bool                        `json:"unreconciled"`
+	AcknowledgedAt        *time.Time                  `json:"acknowledged_at,omitempty"`
+	AcknowledgementSource string                      `json:"acknowledgement_source,omitempty"`
 }
 
 func (a *app) recent(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
@@ -134,6 +136,9 @@ func (a *app) recent(ctx context.Context, renderer output.Renderer, c common, ar
 	lines := make([]output.Line, 0, len(items))
 	for _, item := range items {
 		fields := []output.Field{{Name: "state", Value: item.State}, {Name: "adapter", Value: item.Adapter}, {Name: "liveness", Value: item.Liveness}, {Name: "duration", Value: time.Duration(item.DurationSeconds * float64(time.Second)).Round(time.Second)}}
+		if item.Host != "" {
+			fields = append(fields, output.Field{Name: "host", Value: item.Host})
+		}
 		if item.Unreconciled {
 			fields = append(fields, output.Field{Name: "unreconciled", Value: true})
 		}
@@ -405,6 +410,8 @@ func projectRecent(execution model.Execution, now time.Time, acks store.Acknowle
 	item := recentExecution{Caller: execution.Caller, ID: execution.ID, Labels: labels, Authority: execution.Authority, Adapter: execution.Adapter, Mode: execution.Mode, State: execution.State, Liveness: execution.Liveness, CreatedAt: execution.CreatedAt, StartedAt: execution.StartedAt, UpdatedAt: execution.UpdatedAt, ProgressAt: execution.ProgressAt, TerminalAt: execution.TerminalAt, DurationSeconds: duration.Seconds(), Unreconciled: acks.Unreconciled(execution)}
 	if execution.Delegation != nil {
 		item.Capacity = execution.Delegation.Capacity
+		item.Host = execution.Delegation.Resolved.Host
+		item.Remote = execution.Delegation.RemotePlan
 	}
 	if ack, ok := acks.ByID[execution.ID]; ok {
 		acknowledgedAt := ack.AcknowledgedAt

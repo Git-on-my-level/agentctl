@@ -305,6 +305,10 @@ func (a *app) parseCommon(args []string) (common, []string, error) {
 	c := common{mode: output.JSON}
 	rest := make([]string, 0, len(args))
 	command := ""
+	// `--json` is an alias for `--output json`, the spelling the shared JSON
+	// contract asks every machine-output tool to accept. Mixing it with an
+	// explicit `--output text` is refused rather than letting the last flag win.
+	outputFlag, jsonFlag := "", false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
@@ -340,7 +344,17 @@ func (a *app) parseCommon(args []string) (common, []string, error) {
 			if e != nil {
 				return c, nil, e
 			}
+			if jsonFlag && mode != output.JSON {
+				return c, nil, fmt.Errorf("--json conflicts with --output %s", v)
+			}
+			outputFlag = v
 			c.mode = mode
+		case "--json":
+			if outputFlag != "" && outputFlag != string(output.JSON) {
+				return c, nil, fmt.Errorf("--json conflicts with --output %s", outputFlag)
+			}
+			jsonFlag = true
+			c.mode = output.JSON
 		case "--profile":
 			v, e := take()
 			if e != nil {
@@ -609,6 +623,10 @@ func (a *app) status(ctx context.Context, renderer output.Renderer, c common, ar
 	execution, err := journal.GetExecution(ctx, id)
 	if err != nil {
 		return mapStoreError("read execution", err)
+	}
+	if execution.RemoteForwarded() {
+		journal.Close()
+		return a.statusRemote(ctx, renderer, execution)
 	}
 	var acknowledgement *store.ExecutionAcknowledgement
 	ack, ackErr := journal.GetAcknowledgement(ctx, id)
@@ -1231,6 +1249,13 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 			// Allow bounded cancellation and terminal journaling after the native
 			// execution deadline itself elapses.
 			deadline = execution.DeadlineAt.Add(10 * time.Second)
+		}
+		if execution.RemoteForwarded() {
+			problem := a.awaitRemote(ctx, renderer, c, execution, args[1:], contentOnly, deadline)
+			if problem != nil {
+				return a.fail(renderer, problem)
+			}
+			return 0
 		}
 		if execution.Observation.Integrity == model.IntegrityConflicted {
 			return a.fail(renderer, outcomeError(output.CodeUnknownState, "execution evidence is conflicted", execution))
