@@ -57,6 +57,16 @@ class KeyPathTests(unittest.TestCase):
             ['profiles.*.capacity.pools.*.mode', 'profiles.*.capacity.pools.*.mode="priority"'],
         )
 
+    def test_free_form_property_becoming_enum_is_restricted(self):
+        free = {"type": "object", "properties": {"executable": {"type": "string"}}}
+        narrowed = {"type": "object", "properties": {"executable": {"type": "string", "enum": ["/usr/bin/codex"]}}}
+        before_keys, before_restricted, before_nodes = checker.walk_schema(free)
+        after_keys, after_restricted, _ = checker.walk_schema(narrowed)
+        self.assertEqual(before_keys - after_keys, set())
+        self.assertIn("executable", before_nodes)
+        self.assertEqual(sorted(p for p in after_restricted - before_restricted if p in before_nodes), ["executable"])
+        self.assertIn("executable", checker.covering_names("executable!restricted"))
+
     def test_recursive_definitions_terminate(self):
         loop = {"$defs": {"node": {"type": "object", "properties": {"child": {"$ref": "#/$defs/node"}}}},
                 "type": "object", "properties": {"root": {"$ref": "#/$defs/node"}}}
@@ -86,7 +96,7 @@ class EndToEndTests(unittest.TestCase):
             if ledger is not None:
                 (root / "docs" / "config-key-removals.json").write_text(json.dumps(ledger))
             git(root, "add", "-A")
-            git(root, "commit", "--quiet", "-m", tag)
+            git(root, "commit", "--quiet", "--allow-empty", "-m", tag)
             git(root, "tag", tag)
 
     def run_check(self, root):
@@ -107,6 +117,15 @@ class EndToEndTests(unittest.TestCase):
             self.make_repo(root, [("v1.0.0", schema(["priority"])), ("v1.1.0", schema(None))], ledger)
             passed = self.run_check(root)
             self.assertEqual(passed.returncode, 0, passed.stdout)
+
+    def test_uncommitted_schema_removal_is_checked_in_working_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.make_repo(root, [("v1.0.0", schema(["priority"])), ("v1.1.0", schema(["priority"]))])
+            (root / "schemas" / "config-bundle.schema.json").write_text(json.dumps(schema(None)))
+            result = self.run_check(root)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("capacity.pools.*.mode", result.stdout)
 
     def test_no_earlier_tag_passes(self):
         with tempfile.TemporaryDirectory() as tmp:

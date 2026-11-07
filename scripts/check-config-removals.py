@@ -9,8 +9,12 @@ operator which key to delete from bundles before the release reaches a host, and
 agentctl-config's bundle check (run against that release) confirms the cleanup.
 
 Usage: scripts/check-config-removals.py [--root DIR] [--base REV] [--head REV]
-  --base defaults to the newest v* tag that is an ancestor of --head and does not
+  --base defaults to the newest v* tag that is an ancestor of HEAD and does not
   point at it. With no earlier tag there is nothing to compare and the check passes.
+  Without --head the working-tree schema is checked, so an uncommitted removal fails
+  locally; --head REV checks a committed revision, as release tags do.
+  A property that gains an enum (or const) where it accepted any value is reported
+  as "PATH!restricted": bundles holding other values stop validating.
   The ledger is a permanent record: entries for removals in older releases stay.
 Exit 0 when every removal is recorded, 1 otherwise. Prints one JSON summary line.
 """
@@ -36,15 +40,18 @@ def previous_release(root, head):
     return None
 
 
-def key_paths(schema):
-    """Return every config key path and enum value the schema accepts.
+def walk_schema(schema):
+    """Return (key paths and enum values, restricted paths, all node paths).
 
     $ref targets are expanded inline at each use site, so a key is reported at the
     exact location a host bundle would write it. Recursive definitions stop at the
-    first repeat on the current path.
+    first repeat on the current path. A path is restricted when its node carries an
+    enum or const; nodes lists every property, item, and map-value path seen.
     """
     defs = schema.get("$defs", {})
     found = set()
+    restricted = set()
+    nodes = set()
 
     def resolve(node, stack):
         ref = node.get("$ref")
@@ -64,6 +71,10 @@ def key_paths(schema):
         values = list(node.get("enum", []))
         if "const" in node:
             values.append(node["const"])
+        if path:
+            nodes.add(path)
+        if values and path:
+            restricted.add(path)
         for value in values:
             found.add(f"{path}={json.dumps(value)}")
         for name, child in (node.get("properties") or {}).items():
@@ -79,18 +90,28 @@ def key_paths(schema):
                 walk(branch, path, stack)
 
     walk(schema, "", ())
-    return found
+    return found, restricted, nodes
+
+
+def key_paths(schema):
+    """Return every config key path and enum value the schema accepts."""
+    return walk_schema(schema)[0]
 
 
 def covering_names(key):
-    """Ledger names that record a removal: the key itself, or for an enum value the
-    property it belongs to. A parent object is not named, so a ledger entry for one
-    field never silently covers a different removal inside it.
+    """Ledger names that record a removal: the key itself, or for an enum value or a
+    restriction the path it belongs to. A parent object is not named, so a ledger
+    entry for one field never silently covers a different removal inside it.
     """
+    if key.endswith("!restricted"):
+        return [key, key[: -len("!restricted")]]
     return [key, key.split("=", 1)[0]]
 
 
 def load_schema_at(root, rev):
+    """Schema at a git revision, or the working-tree file when rev is None."""
+    if rev is None:
+        return json.loads((root / SCHEMA).read_text())
     return json.loads(git(root, "show", f"{rev}:{SCHEMA}"))
 
 
@@ -114,18 +135,20 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=pathlib.Path(__file__).resolve().parent.parent, type=pathlib.Path)
     ap.add_argument("--base", default=None)
-    ap.add_argument("--head", default="HEAD")
+    ap.add_argument("--head", default=None)
     args = ap.parse_args()
     root = args.root.resolve()
 
-    base = args.base or previous_release(root, args.head)
+    base = args.base or previous_release(root, args.head or "HEAD")
     if base is None:
         print(json.dumps({"ok": True, "base": None, "removed": [], "errors": [], "note": "no earlier release tag to compare"}))
         return 0
 
-    before = key_paths(load_schema_at(root, base))
-    after = key_paths(load_schema_at(root, args.head))
-    removed = sorted(before - after)
+    before_keys, before_restricted, before_nodes = walk_schema(load_schema_at(root, base))
+    after_keys, after_restricted, _ = walk_schema(load_schema_at(root, args.head))
+    removed = sorted(before_keys - after_keys)
+    # A node that already existed and newly gains an enum now rejects values it used to accept.
+    removed += sorted(f"{path}!restricted" for path in (after_restricted - before_restricted) if path in before_nodes)
     ledger, ledger_error = load_ledger(root)
     errors = [ledger_error] if ledger_error else []
     for key in removed:
