@@ -353,3 +353,35 @@ func TestCleanupPartialDigestCannotAuthorizeTheNextPrefix(t *testing.T) {
 		t.Fatalf("stale prefix digest accepted: %v", err)
 	}
 }
+
+func TestCleanupPartialPreservesSequenceHighWatermark(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	old := seedTerminalForRetention(t, j, now.Add(-72*time.Hour), contracts.MutationKey{})
+	addRetentionEvents(t, j, old, cleanupEventBatch)
+	high, err := j.LastEventSequence(ctx, old.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cutoff := now.Add(-24 * time.Hour)
+	plan, err := j.PlanCleanup(ctx, cutoff, CleanupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.HasMore {
+		t.Fatal("expected partial cleanup")
+	}
+	if _, err := j.ApplyCleanup(ctx, cutoff, plan.PlanDigest, CleanupOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := j.LastEventSequence(ctx, old.ID)
+	if err != nil || after != high {
+		t.Fatalf("sequence regressed %d -> %d: %v", high, after, err)
+	}
+	projection := map[string]any{"late_after_partial": "artifact"}
+	key, canonical := semanticEvent(t, old.Adapter, projection)
+	event, _, err := j.AppendEvent(ctx, model.Event{ExecutionID: old.ID, Authority: old.Authority, Adapter: old.Adapter, Ordering: model.OrderingObservation, Kind: model.EventArtifact, ObservedAt: *old.TerminalAt, DedupeKey: key, DedupeVersion: 1, Payload: projection}, canonical)
+	if err != nil || event.Sequence <= high {
+		t.Fatalf("append reused a deleted sequence: %d <= %d err=%v", event.Sequence, high, err)
+	}
+}

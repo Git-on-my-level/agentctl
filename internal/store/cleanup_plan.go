@@ -168,6 +168,10 @@ func (r *cleanupReader) target(execution model.Execution, mutations []cleanupRec
 				}
 			}
 		}
+		if nested := tx.Bucket(bEventsByExecution).Bucket(id); nested != nil {
+			_, latestID := nested.Cursor().Last()
+			target.lastEventID = string(latestID)
+		}
 		return nil
 	})
 	if err != nil {
@@ -189,7 +193,7 @@ func (r *cleanupReader) target(execution model.Execution, mutations []cleanupRec
 		target.Records.IdempotencyKeys++
 	}
 	var after []byte
-	var terminal *cleanupEvent
+	var terminal, latest *cleanupEvent
 	for {
 		page := []cleanupEvent{}
 		var last []byte
@@ -246,9 +250,18 @@ func (r *cleanupReader) target(execution model.Execution, mutations []cleanupRec
 			return target, err
 		}
 		for _, event := range page {
+			anchor := false
 			if event.id == string(terminalID) {
 				copy := event
 				terminal = &copy
+				anchor = true
+			}
+			if event.id == target.lastEventID {
+				copy := event
+				latest = &copy
+				anchor = true
+			}
+			if anchor {
 				continue
 			}
 			target.events = append(target.events, event)
@@ -262,11 +275,24 @@ func (r *cleanupReader) target(execution model.Execution, mutations []cleanupRec
 		}
 		after = last
 	}
-	// Keep the terminal event/index and outcome until the final commit, so a
-	// cancelled or deferred cleanup still has a valid, collectable execution.
-	if target.complete && terminal != nil {
-		target.events = append(target.events, *terminal)
+	// Retain both terminal evidence and the highest sequence until the final
+	// commit. Older writers derive their next sequence from the last index row,
+	// so a partial cleanup must never remove that high watermark.
+	anchors := []cleanupEvent{}
+	if terminal != nil {
+		anchors = append(anchors, *terminal)
 	}
+	if latest != nil && (terminal == nil || latest.id != terminal.id) {
+		anchors = append(anchors, *latest)
+	}
+	if target.complete && eventLimit > 0 && len(target.events)+len(anchors) > eventLimit {
+		target.complete = false
+	}
+	if target.complete {
+		target.anchorCount = len(anchors)
+		target.events = append(target.events, anchors...)
+	}
+
 	for _, event := range target.events {
 		target.Records.Events++
 		target.Records.EventIndexes++

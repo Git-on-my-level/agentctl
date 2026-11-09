@@ -118,6 +118,8 @@ type cleanupEvent struct {
 
 type cleanupTarget struct {
 	CleanupExecution
+	lastEventID     string
+	anchorCount     int
 	outputRef       string
 	rawRecords      []cleanupRecord
 	complete        bool

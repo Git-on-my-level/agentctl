@@ -18,6 +18,8 @@ was performed.
   bucket is indexed once per plan. CLI handles close after every page/commit.
   Event-heavy executions drain through reviewed partial batches. Event IDs
   participate in the digest so equal-sized prefixes cannot reuse an old digest.
+  The latest event stays until the final commit so older writers cannot reuse
+  a deleted sequence; this edge case was reproduced before the fix.
 - Each deletion requires a consistent protection snapshot and an unchanged
   bbolt transaction generation. Late subscriptions, lineage links, events,
   acknowledgements, outcomes and diagnostic files fail closed. This works with

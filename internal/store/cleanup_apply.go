@@ -111,6 +111,14 @@ func (r *cleanupReader) remove(before time.Time, options CleanupOptions, targets
 					break
 				}
 			}
+			// Terminal and high-watermark anchors commit with the identity, never
+			// in an intermediate prefix split by the byte budget.
+			if target.complete && n < len(events) && n > len(events)-target.anchorCount {
+				n = len(events) - target.anchorCount
+				if n == 0 {
+					n = len(events)
+				}
+			}
 			final := target.complete && n == len(events)
 			// Mutation keys are normally one or two records. Keep even an unusual
 			// imported execution bounded; defer it rather than perform an unbounded
@@ -156,6 +164,12 @@ func (r *cleanupReader) remove(before time.Time, options CleanupOptions, targets
 						}
 					}
 					nested := tx.Bucket(bEventsByExecution).Bucket([]byte(target.ExecutionID))
+					if nested != nil {
+						_, latestID := nested.Cursor().Last()
+						if string(latestID) != target.lastEventID {
+							return fmt.Errorf("%w: cleanup high watermark changed", ErrConflict)
+						}
+					}
 					if final && nested != nil {
 						count := 0
 						cursor := nested.Cursor()

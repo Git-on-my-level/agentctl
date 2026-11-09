@@ -664,7 +664,7 @@ Journal cleanup plans select at most eight executions and 128 events per
 execution, using short paged reads with the journal closed between pages.
 Review the digest, apply it, then review a fresh plan while `has_more=true`.
 An eligible `partial=true` removes only selected event triples; identity,
-outcome and the terminal event remain collectable until a final batch. All
+outcome, terminal event and highest sequence remain collectable until a final batch. All
 lineage-linked executions and uncollected results remain protected. Apply
 rechecks protections per commit; a busy journal, cancellation or new reference
 can stop after committed progress, reported as `cleanup_progress` on the error.

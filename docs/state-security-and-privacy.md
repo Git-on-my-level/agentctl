@@ -179,7 +179,7 @@ plan digest. Planning creates no files, including cache locks. Each plan selects
 at most eight executions, each with up to 128 events. `has_more` means another
 plan is needed after applying this batch. An eligible item's `partial=true`
 means only its selected event/index/dedupe triples are removed; the execution,
-outcome, terminal event, acknowledgement and mutation bindings remain until a
+outcome, terminal event, latest event, acknowledgement and mutation bindings remain until a
 later final batch. Counts describe the selected records, not the full history.
 Metadata and event scans use pages of at most 128 rows or 256 KiB (one oversized
 row is permitted). The journal handle closes between pages and commits.
