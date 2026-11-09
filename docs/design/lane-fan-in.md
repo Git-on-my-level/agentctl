@@ -326,7 +326,7 @@ agentctl delegate --retry-of EXEC_ID [--request-file R] (--prompt-file P | --pro
 | Failure | Behavior |
 | --- | --- |
 | Journal held longer than the budget | exit 6 `journal_busy` with attempt accounting; the caller may retry the identical invocation |
-| Label-mode `await-any` over a large journal | one `ListExecutions` per second; cost grows with retained history. Use `data` retention or a narrower prefix |
+| Label-mode `await-any` over a large journal | lightweight label-filtered snapshots, with jittered backoff up to four seconds; scan cost still grows with retained history. Use `data` retention or a narrower prefix |
 | Multica-authority execution in `await-any` | reads the cached local mirror; refreshes require the supervisor (or a per-execution `await`, which reprobes) |
 | Event appended for an execution whose record is missing | label-prefix subscriptions do not match it |
 | Subscription created after the event | no backfill; use `await-any` or `inbox` |

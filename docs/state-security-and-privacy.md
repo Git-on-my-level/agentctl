@@ -34,8 +34,9 @@
 - bounded daily release-check timestamps and public release metadata.
 
 This state is namespaced by stable host word ID and local store generation. It
-is not database-replicated between machines. Automatic journal retention is not
-implemented in the preview. Cross-host callbacks exchange bounded metadata
+is not database-replicated between machines. The managed supervisor applies
+protected retention, described in [journal maintenance](journal-maintenance.md).
+Cross-host callbacks exchange bounded metadata
 documents and converge on full semantic dedupe keys; portable URIs keep the
 origin host explicit.
 
@@ -159,7 +160,7 @@ retrieval reference without copying content.
 
 ### Retention and cleanup
 
-Automatic journal retention is not implemented in the preview. Operators must include
+The managed supervisor applies protected 30-day journal retention. Operators must include
 the journal in their local data-handling and backup policy and should not run
 sensitive work unless this persistence is acceptable.
 
@@ -173,7 +174,7 @@ siblings appear as `diagnostic_file` (name, bytes, SHA-256) per execution, with
 `diagnostic_files` and `diagnostic_bytes` totals. Those proofs participate in the
 plan digest. Planning creates no files, including cache locks.
 
-Deletion requires `--apply --plan-digest <sha256:...>`. Apply recomputes the
+Explicit cleanup requires `--apply --plan-digest <sha256:...>`. Apply recomputes the
 plan in one journal write transaction and rejects it if the reviewed digest no
 longer matches. The mutation deletes the execution, outcome, events, event
 indexes/dedupe records, terminal index, execution idempotency keys, and any

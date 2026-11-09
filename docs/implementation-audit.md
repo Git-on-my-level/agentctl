@@ -101,7 +101,7 @@ These are explicit limits, not silently degraded promises:
   already-managed supervisor but does not create one by detection alone.
 - Bundle compilation/install is local. Publishing it into an operator's network
   or fleet bootstrap is a separate reviewed deployment step.
-- Journal retention is not automatic in the preview. `data inventory` and digest-bound
+- Journal retention is automatic in the managed supervisor (protected 30-day batches). `data inventory` and digest-bound
   `data cleanup --plan|--apply` expose an explicit terminal-graph lifecycle. No
   nonterminal, active-subscription, delivery/receipt, partial-lineage, or
   promotion-linked execution is silently deleted.
@@ -137,7 +137,7 @@ Before tagging a public preview:
    without changing unmanaged files;
 5. scan the complete Git history and release archives for credentials and
    machine-specific data; and
-6. preserve the prominent 1 MiB result-storage and absent-automatic-retention
+6. preserve the prominent 1 MiB result-storage and automatic-retention
    disclosures while cleanup remains an explicit operator-reviewed lifecycle.
 
 Optional Multica, network, and fleet integrations have their own compatibility
@@ -150,9 +150,8 @@ support, but its capability must be reported accurately.
    URI attach contract.
 2. Add a reviewed publisher interface for operator deployment/checksum chains
    without making any network index an agent control plane.
-3. Evaluate an automatic retention policy and physical journal compaction only
-   after the explicit inventory and digest-bound cleanup workflow has
-   operational evidence.
+3. Evaluate physical journal compaction with an all-owners-quiescent protocol;
+   protected online logical compaction is implemented by the supervisor.
 4. Expand golden schemas for subscriptions, deliveries, context results, and
    Multica cursor pages.
 5. Add an independent canonical-event fixture reader alongside the implemented

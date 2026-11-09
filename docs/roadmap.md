@@ -117,8 +117,9 @@ does not duplicate agentctl callback destinations, receipts, or retry policy.
 - remote host capability discovery and cross-host URI attach;
 - an operator-facing publisher interface for integrating compiled bundles into
   a reviewed deployment/checksum chain;
-- automatic retention policy only after the explicit inventory and
-  digest-bound terminal-graph cleanup command has operational mileage;
+- physical compaction only with a reviewed all-owners-quiescent protocol; protected
+  automatic logical retention is implemented alongside the explicit inventory and
+  digest-bound terminal-graph cleanup command;
 - native cross-restart attach where a backend gains a reviewed API;
 - follow-up turns for executions launched with expert `run`, which record no
   launch recipe today, and for Devin and ZCode once they expose an exact

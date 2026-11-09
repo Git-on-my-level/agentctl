@@ -1,8 +1,8 @@
 package store
 
-// Retention is deliberately an explicit maintenance operation. The journal
-// never deletes records on open or on a timer. Planning is read-only; applying
-// recomputes the same protected execution graph inside one write transaction.
+// Retention protects execution graphs and uncollected evidence. Explicit
+// cleanup is digest-bound; automatic maintenance plans a bounded batch under
+// a read handle and applies only if its exact database revision is unchanged.
 
 import (
 	"context"
@@ -107,6 +107,9 @@ type CleanupOptions struct {
 	// acknowledged by result or await. It is destructive of uncollected
 	// evidence and must come from an explicit caller flag.
 	IncludeUnreconciled bool
+	// Internal automatic-maintenance limits; explicit cleanup remains unchanged.
+	maxExecutions int
+	maxEvents     int
 }
 
 type cleanupEvent struct {
@@ -217,7 +220,7 @@ func (j *Journal) PlanCleanup(ctx context.Context, before time.Time, options Cle
 	var plan CleanupPlan
 	err := j.db.View(func(tx *bbolt.Tx) error {
 		var err error
-		plan, _, err = j.cleanupPlanTx(tx, before.UTC(), options)
+		plan, _, err = j.cleanupPlanTx(ctx, tx, before.UTC(), options)
 		return err
 	})
 	return plan, err
@@ -248,7 +251,7 @@ func (j *Journal) ApplyCleanup(ctx context.Context, before time.Time, expectedPl
 	err = j.db.Update(func(tx *bbolt.Tx) error {
 		var targets []cleanupTarget
 		var err error
-		plan, targets, err = j.cleanupPlanTx(tx, before.UTC(), options)
+		plan, targets, err = j.cleanupPlanTx(ctx, tx, before.UTC(), options)
 		if err != nil {
 			return err
 		}
@@ -265,40 +268,8 @@ func (j *Journal) ApplyCleanup(ctx context.Context, before time.Time, expectedPl
 				}
 			}
 		}
-		for _, target := range targets {
-			for _, event := range target.events {
-				if err := tx.Bucket(bEvents).Delete([]byte(event.id)); err != nil {
-					return err
-				}
-				if err := tx.Bucket(bDedupe).Delete([]byte(event.dedupeKey)); err != nil {
-					return err
-				}
-			}
-			if nested := tx.Bucket(bEventsByExecution).Bucket([]byte(target.ExecutionID)); nested != nil {
-				if err := tx.Bucket(bEventsByExecution).DeleteBucket([]byte(target.ExecutionID)); err != nil {
-					return err
-				}
-			}
-			for _, key := range target.idempotencyKeys {
-				if err := tx.Bucket(bIdempotency).Delete(key); err != nil {
-					return err
-				}
-			}
-			for _, bucket := range [][]byte{bTerminal, bOutcomes, bExecutions} {
-				if err := tx.Bucket(bucket).Delete([]byte(target.ExecutionID)); err != nil {
-					return err
-				}
-			}
-			if acks := tx.Bucket(bAcknowledgements); acks != nil {
-				if err := acks.Delete([]byte(target.ExecutionID)); err != nil {
-					return err
-				}
-			}
-			if contacts := tx.Bucket(bStatusContacts); contacts != nil {
-				if err := contacts.Delete([]byte(target.ExecutionID)); err != nil {
-					return err
-				}
-			}
+		if err := deleteCleanupTargets(ctx, tx, targets); err != nil {
+			return err
 		}
 		plan.Applied = true
 		return nil
@@ -306,12 +277,15 @@ func (j *Journal) ApplyCleanup(ctx context.Context, before time.Time, expectedPl
 	return plan, err
 }
 
-func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupOptions) (CleanupPlan, []cleanupTarget, error) {
+func (j *Journal) cleanupPlanTx(ctx context.Context, tx *bbolt.Tx, before time.Time, options CleanupOptions) (CleanupPlan, []cleanupTarget, error) {
 	now := j.clock().UTC()
 	plan := CleanupPlan{SchemaVersion: RetentionSchemaVersion, Before: before, GeneratedAt: now, Eligible: []CleanupExecution{}, Protected: []ProtectedExecution{}, IncludeUnreconciled: options.IncludeUnreconciled}
 	executions := map[string]model.Execution{}
 	base := map[string]bool{}
 	if err := tx.Bucket(bExecutions).ForEach(func(key, raw []byte) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		var value model.Execution
 		if err := json.Unmarshal(raw, &value); err != nil {
 			return corrupt(err)
@@ -354,6 +328,9 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 		adjacency[a][b], adjacency[b][a] = true, true
 	}
 	for id, value := range executions {
+		if err := ctx.Err(); err != nil {
+			return CleanupPlan{}, nil, err
+		}
 		if value.ParentExecutionID != nil {
 			link(id, value.ParentExecutionID.String())
 		}
@@ -371,6 +348,9 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 	}
 	visited := map[string]bool{}
 	for id := range executions {
+		if err := ctx.Err(); err != nil {
+			return CleanupPlan{}, nil, err
+		}
 		if visited[id] {
 			continue
 		}
@@ -378,6 +358,9 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 		component := []string{}
 		allEligible := true
 		for len(queue) > 0 {
+			if err := ctx.Err(); err != nil {
+				return CleanupPlan{}, nil, err
+			}
 			current := queue[0]
 			queue = queue[1:]
 			if visited[current] {
@@ -443,6 +426,9 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 			return nil
 		}
 		return bucket.ForEach(func(key, raw []byte) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			item, err := decodeDelivery(raw)
 			if err != nil {
 				return err
@@ -546,7 +532,55 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 		}
 	}
 	sort.Strings(ids)
+	if options.maxExecutions > 0 {
+		selected, eventCount := 0, 0
+		seen := map[string]bool{}
+		for _, id := range ids {
+			if err := ctx.Err(); err != nil {
+				return CleanupPlan{}, nil, err
+			}
+			if seen[id] || len(protected[id]) > 0 {
+				continue
+			}
+			component, queue, events := []string{}, []string{id}, 0
+			for len(queue) > 0 {
+				current := queue[0]
+				queue = queue[1:]
+				if seen[current] {
+					continue
+				}
+				seen[current] = true
+				component = append(component, current)
+				if nested := tx.Bucket(bEventsByExecution).Bucket([]byte(current)); nested != nil {
+					c := nested.Cursor()
+					for k, _ := c.First(); k != nil; k, _ = c.Next() {
+						events++
+						if events > options.maxEvents {
+							break
+						}
+					}
+				}
+				for other := range adjacency[current] {
+					if !seen[other] {
+						queue = append(queue, other)
+					}
+				}
+			}
+			if selected+len(component) > options.maxExecutions || eventCount+events > options.maxEvents {
+				for _, member := range component {
+					protect(member, "automatic_chunk_limit")
+				}
+			} else {
+				selected += len(component)
+				eventCount += events
+			}
+		}
+	}
 	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return CleanupPlan{}, nil, err
+		}
+
 		value := executions[id]
 		if reasons := protected[id]; len(reasons) > 0 {
 			list := make([]string, 0, len(reasons))
@@ -560,11 +594,38 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 			plan.Protected = append(plan.Protected, ProtectedExecution{ExecutionID: id, TerminalAt: *value.TerminalAt, Reasons: list})
 			continue
 		}
-		target, err := j.buildCleanupTarget(tx, value)
+		target, err := j.buildCleanupTarget(ctx, tx, value)
 		if err != nil {
 			return CleanupPlan{}, nil, err
 		}
 		targets = append(targets, target)
+	}
+	// Join idempotency once per plan, rather than scanning every immutable
+	// binding again for each eligible execution (quadratic in retained history).
+	byID := make(map[string]int, len(targets))
+	for i := range targets {
+		byID[targets[i].ExecutionID] = i
+	}
+	if len(targets) > 0 {
+		if err := tx.Bucket(bIdempotency).ForEach(func(key, raw []byte) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			var record mutationRecord
+			if err := json.Unmarshal(raw, &record); err != nil {
+				return corrupt(err)
+			}
+			if i, ok := byID[record.ObjectID]; ok && record.ObjectType == "execution" {
+				targets[i].idempotencyKeys = append(targets[i].idempotencyKeys, append([]byte(nil), key...))
+				targets[i].Records.IdempotencyKeys++
+				targets[i].LogicalBytes += int64(len(key) + len(raw))
+			}
+			return nil
+		}); err != nil {
+			return CleanupPlan{}, nil, err
+		}
+	}
+	for _, target := range targets {
 		plan.Eligible = append(plan.Eligible, target.CleanupExecution)
 		addCleanupCounts(&plan.Records, target.Records)
 		plan.LogicalBytes += target.LogicalBytes
@@ -573,6 +634,7 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 			plan.DiagnosticBytes += target.DiagnosticFile.Bytes
 		}
 	}
+
 	digestInput := struct {
 		SchemaVersion       int                `json:"schema_version"`
 		Before              time.Time          `json:"before"`
@@ -588,7 +650,7 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 	return plan, targets, nil
 }
 
-func (j *Journal) buildCleanupTarget(tx *bbolt.Tx, execution model.Execution) (cleanupTarget, error) {
+func (j *Journal) buildCleanupTarget(ctx context.Context, tx *bbolt.Tx, execution model.Execution) (cleanupTarget, error) {
 	id := execution.ID.String()
 	target := cleanupTarget{CleanupExecution: CleanupExecution{ExecutionID: id, TerminalAt: *execution.TerminalAt}, events: []cleanupEvent{}, idempotencyKeys: [][]byte{}}
 	add := func(key, value []byte) { target.LogicalBytes += int64(len(key) + len(value)) }
@@ -667,22 +729,7 @@ func (j *Journal) buildCleanupTarget(tx *bbolt.Tx, execution model.Execution) (c
 			return cleanupTarget{}, err
 		}
 	}
-	if bucket := tx.Bucket(bIdempotency); bucket != nil {
-		if err := bucket.ForEach(func(key, raw []byte) error {
-			var record mutationRecord
-			if err := json.Unmarshal(raw, &record); err != nil {
-				return corrupt(err)
-			}
-			if record.ObjectType == "execution" && record.ObjectID == id {
-				target.idempotencyKeys = append(target.idempotencyKeys, append([]byte(nil), key...))
-				target.Records.IdempotencyKeys++
-				add(key, raw)
-			}
-			return nil
-		}); err != nil {
-			return cleanupTarget{}, err
-		}
-	}
+
 	return target, nil
 }
 
@@ -696,4 +743,49 @@ func addCleanupCounts(target *CleanupRecordCounts, value CleanupRecordCounts) {
 	target.IdempotencyKeys += value.IdempotencyKeys
 	target.Acknowledgements += value.Acknowledgements
 	target.StatusContacts += value.StatusContacts
+}
+
+func deleteCleanupTargets(ctx context.Context, tx *bbolt.Tx, targets []cleanupTarget) error {
+	for _, target := range targets {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		for _, event := range target.events {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := tx.Bucket(bEvents).Delete([]byte(event.id)); err != nil {
+				return err
+			}
+			if err := tx.Bucket(bDedupe).Delete([]byte(event.dedupeKey)); err != nil {
+				return err
+			}
+		}
+		if nested := tx.Bucket(bEventsByExecution).Bucket([]byte(target.ExecutionID)); nested != nil {
+			if err := tx.Bucket(bEventsByExecution).DeleteBucket([]byte(target.ExecutionID)); err != nil {
+				return err
+			}
+		}
+		for _, key := range target.idempotencyKeys {
+			if err := tx.Bucket(bIdempotency).Delete(key); err != nil {
+				return err
+			}
+		}
+		for _, bucket := range [][]byte{bTerminal, bOutcomes, bExecutions} {
+			if err := tx.Bucket(bucket).Delete([]byte(target.ExecutionID)); err != nil {
+				return err
+			}
+		}
+		if acks := tx.Bucket(bAcknowledgements); acks != nil {
+			if err := acks.Delete([]byte(target.ExecutionID)); err != nil {
+				return err
+			}
+		}
+		if contacts := tx.Bucket(bStatusContacts); contacts != nil {
+			if err := contacts.Delete([]byte(target.ExecutionID)); err != nil {
+				return err
+			}
+		}
+	}
+	return ctx.Err()
 }

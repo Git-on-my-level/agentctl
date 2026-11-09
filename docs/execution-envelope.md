@@ -364,7 +364,8 @@ and independently observable.
 
 ## Retention
 
-Automatic retention is not implemented in the preview. Result bodies are
+The managed supervisor applies protected 30-day retention; see
+[journal maintenance](journal-maintenance.md). Result bodies are
 stored by default up to 1 MiB per execution and remain in the owner-only local
 journal until an explicit digest-bound `agentctl data cleanup` operation.
 Artifact content is not copied by default.

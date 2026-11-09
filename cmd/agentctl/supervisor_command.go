@@ -48,6 +48,14 @@ func (a *app) supervisorRun(ctx context.Context, renderer output.Renderer, c com
 		}
 	}
 	once := false
+	retention := true
+	switch strings.TrimSpace(a.getenv("AGENTCTL_JOURNAL_RETENTION")) {
+	case "", "on":
+	case "off":
+		retention = false
+	default:
+		return output.NewError(output.CodeUsage, "AGENTCTL_JOURNAL_RETENTION must be on or off", false)
+	}
 	for i := 0; i < len(args); i++ {
 		take := func() (string, *output.Error) {
 			if i+1 >= len(args) {
@@ -57,6 +65,8 @@ func (a *app) supervisorRun(ctx context.Context, renderer output.Renderer, c com
 			return args[i], nil
 		}
 		switch args[i] {
+		case "--no-journal-retention":
+			retention = false
 		case "--once":
 			once = true
 		case "--socket":
@@ -92,7 +102,13 @@ func (a *app) supervisorRun(ctx context.Context, renderer output.Renderer, c com
 	// Every bridge opens the journal only around one state transition. Callback
 	// transport I/O and authority reprobes must not hold bbolt's process lock.
 	resolvedStateDir := cfg.StateDir
+	nextMaintenance := a.now().Add(time.Minute)
 	factory := supervisor.DependenciesFactoryFunc(func(cycleCtx context.Context) (supervisor.CycleDependencies, error) {
+		if retention && !a.now().Before(nextMaintenance) {
+			nextMaintenance = a.now().Add(5 * time.Minute)
+			removed, err := maintainJournal(cycleCtx, journalPath, a.now())
+			journalMaintenanceLog(a.stderr, removed, err)
+		}
 		bridge := pathSupervisorExecutions{path: journalPath, probeTimeout: 10 * time.Second, app: a}
 		deps := supervisor.Dependencies{
 			Executions: bridge,
@@ -294,7 +310,7 @@ type pathSupervisorExecutions struct {
 	app          *app
 }
 
-const supervisorJournalBusyBudget = 2 * time.Second
+const supervisorJournalBusyBudget = 10 * time.Second
 
 func (a *app) reprobeAwaitedMultica(ctx context.Context, c common, execution model.Execution) *output.Error {
 	journalPath, err := a.journalPath(c)
@@ -382,13 +398,21 @@ func (b pathSupervisorExecutions) probeNativeOwner(ctx context.Context, id strin
 	if current.State.Terminal() || current.NativeRecoveryParked() || runnerLeaseActive(current, now) {
 		return result, true, nil
 	}
-	if current.State == model.StateStarting && len(current.SourceBindings) == 0 {
+	pendingOwner := current.State == model.StateStarting && len(current.SourceBindings) == 0 && current.Launch == nil && current.OwnerLaunch != nil
+	if current.State == model.StateStarting && len(current.SourceBindings) == 0 && !pendingOwner {
 		// Admission is durable before the worker has a native status binding.
 		// There is no authority route to probe yet; an unchanged pending row
 		// is not a failed reprobe and never authorizes another launch.
 		return result, true, nil
 	}
+	if pendingOwner && observationAge(current, now) < 5*time.Minute {
+		return result, true, nil
+	}
 	identity, recorded := recordedLaunch(current)
+	if pendingOwner {
+		owner := current.OwnerLaunch
+		identity, recorded = processIdentity{PID: owner.PID, StartedAt: owner.StartedAt, StartTicks: owner.StartTicks, PIDNamespaceIno: owner.PIDNamespaceIno, ProcfsPIDNamespaceIno: owner.ProcfsPIDNamespaceIno}, true
+	}
 	if !recorded || current.OwnerLaunch == nil || observationAge(current, now) < 5*time.Minute {
 		return supervisor.ProbeResult{}, false, nil
 	}
@@ -400,6 +424,9 @@ func (b pathSupervisorExecutions) probeNativeOwner(ctx context.Context, id strin
 	}
 	proof := prove(identity)
 	if !proof.Gone {
+		if pendingOwner {
+			return result, true, nil
+		}
 		return supervisor.ProbeResult{}, false, nil
 	}
 	// Wall-clock boot comparisons cannot establish a legacy collector's
@@ -442,8 +469,8 @@ func (b pathSupervisorExecutions) ApplyProbe(ctx context.Context, id string, res
 
 type journalSupervisorOutbox struct{ path string }
 
-func (b journalSupervisorOutbox) withJournal(ctx context.Context, fn func(*store.Journal) error) error {
-	journal, err := openJournalWithBusyBudget(ctx, b.path, store.Options{}, true, supervisorJournalBusyBudget)
+func (b journalSupervisorOutbox) withJournal(ctx context.Context, readOnly bool, fn func(*store.Journal) error) error {
+	journal, err := openJournalWithBusyBudget(ctx, b.path, store.Options{ReadOnly: readOnly}, true, supervisorJournalBusyBudget)
 	if err != nil {
 		return err
 	}
@@ -453,7 +480,7 @@ func (b journalSupervisorOutbox) withJournal(ctx context.Context, fn func(*store
 
 func (b journalSupervisorOutbox) ListPending(ctx context.Context) ([]agentruntime.OutboxRecord, error) {
 	var items []store.DeliveryRecord
-	err := b.withJournal(ctx, func(journal *store.Journal) error {
+	err := b.withJournal(ctx, true, func(journal *store.Journal) error {
 		var err error
 		items, err = journal.ListPendingDeliveries(ctx)
 		return err
@@ -468,18 +495,18 @@ func (b journalSupervisorOutbox) ListPending(ctx context.Context) ([]agentruntim
 	return result, nil
 }
 func (b journalSupervisorOutbox) MarkAcknowledged(ctx context.Context, id string) error {
-	return b.withJournal(ctx, func(journal *store.Journal) error { return journal.Ack(ctx, id) })
+	return b.withJournal(ctx, false, func(journal *store.Journal) error { return journal.Ack(ctx, id) })
 }
 func (b journalSupervisorOutbox) ScheduleRetry(ctx context.Context, id string, next time.Time, reason string) error {
-	return b.withJournal(ctx, func(journal *store.Journal) error { return journal.Retry(ctx, id, next, reason) })
+	return b.withJournal(ctx, false, func(journal *store.Journal) error { return journal.Retry(ctx, id, next, reason) })
 }
 func (b journalSupervisorOutbox) MarkDeadLetter(ctx context.Context, id, reason string) error {
-	return b.withJournal(ctx, func(journal *store.Journal) error { return journal.DeadLetter(ctx, id, reason) })
+	return b.withJournal(ctx, false, func(journal *store.Journal) error { return journal.DeadLetter(ctx, id, reason) })
 }
 
 func (b journalSupervisorOutbox) BeginAttempt(ctx context.Context, id string) (agentruntime.OutboxRecord, error) {
 	var item store.DeliveryRecord
-	err := b.withJournal(ctx, func(journal *store.Journal) error {
+	err := b.withJournal(ctx, false, func(journal *store.Journal) error {
 		var err error
 		item, err = journal.BeginDeliveryAttempt(ctx, id)
 		return err

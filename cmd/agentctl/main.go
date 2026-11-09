@@ -1214,6 +1214,8 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 	}
 	deadline := time.Time{}
 	lastMulticaReprobe := time.Time{}
+	var poll time.Duration
+	var lastRevision uint64
 	consecutiveMulticaReprobeErrors := 0
 	if timeoutSet {
 		deadline = a.now().Add(timeout)
@@ -1242,6 +1244,8 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		if err != nil {
 			return a.fail(renderer, mapStoreError("read awaited execution", err))
 		}
+		poll = nextAwaitPoll(poll, execution.Revision != lastRevision)
+		lastRevision = execution.Revision
 		if throughExecutionDeadline && deadline.IsZero() {
 			if execution.DeadlineAt == nil {
 				return a.fail(renderer, output.NewError(output.CodeCapabilityUnavailable, "execution has no recorded deadline", false).WithDetail("execution_id", id.String()).WithDetail("diagnostic_code", "execution_deadline_unavailable"))
@@ -1327,7 +1331,7 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 			lastMulticaReprobe = a.now()
 			continue
 		}
-		timer := time.NewTimer(500 * time.Millisecond)
+		timer := time.NewTimer(awaitPollPause(poll, deadline.Sub(a.now()), !deadline.IsZero()))
 		select {
 		case <-ctx.Done():
 			timer.Stop()

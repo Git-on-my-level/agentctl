@@ -777,3 +777,29 @@ Native event-write errors reap the child and report `terminal_recorded`; if fals
 the journal needs repair before it can durably represent the result. Delegate
 failures include a native exit code when available and an allowlisted diagnostic
 plus fingerprint of the first stderr line, never arbitrary stderr text.
+
+### Journal contention and retention
+
+`await` and `await-any` close read-only journal handles before sleeping and
+back off unchanged polls with jitter, up to four seconds. Cached queries never
+perform retention. Work-creating commands retain the bounded jittered 120s
+journal busy budget (`--journal-busy-budget` / `AGENTCTL_JOURNAL_BUSY_BUDGET`);
+managed-supervisor opens use 10s within each probe/cycle deadline.
+
+The running supervisor maintains terminal history older than 30 days by default,
+after a one-minute startup grace and then every five minutes. Opt out with
+`supervisor run --no-journal-retention` or `AGENTCTL_JOURNAL_RETENTION=off` in
+its service environment. Each batch preserves whole execution lineages, unread
+results, active exact subscriptions and retained outbox/receipt references, and
+is capped at 32 executions / 4096 events. Planning uses a read-only handle; the
+exclusive transaction applies only if the database generation is unchanged.
+Contention or concurrent writes defer the batch. Large components require
+explicit digest-bound `data cleanup`. Deletion frees reusable pages, including
+associated events, dedupe, results and idempotency keys; it does not shrink the
+physical bbolt file. Physical replacement requires all journal owners to be
+quiescent; never rename a compacted file under live owners or waiting openers.
+
+The supervisor can reconcile stale native admissions with no child binding only
+when their recorded collector identity is provably gone. Established native
+launches still require both child and collector absence; leases, legacy rows
+without identity, live/unknown processes and Multica authority remain protected.

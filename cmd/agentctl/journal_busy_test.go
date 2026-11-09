@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -192,5 +193,50 @@ func TestJournalBusyBudgetDoesNotOpenAfterBudget(t *testing.T) {
 	}
 	if !errors.Is(err, store.ErrBusy) {
 		t.Fatalf("error=%v want ErrBusy", err)
+	}
+}
+
+func TestScopedWriterProgressWithConcurrentReadSnapshots(t *testing.T) {
+	path, holder := holdJournal(t)
+	holder.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var readers sync.WaitGroup
+	ready := make(chan struct{}, 16)
+	for range 16 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			ready <- struct{}{}
+			for ctx.Err() == nil {
+				j, err := openJournalWithBusyBudget(ctx, path, store.Options{ReadOnly: true}, true, time.Second)
+				if err == nil {
+					_, _ = j.HostID(ctx)
+					j.Close()
+				}
+				timer := time.NewTimer(journalBusyJitter(20 * time.Millisecond))
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+			}
+		}()
+	}
+	for range 16 {
+		<-ready
+	}
+	var writeErr error
+	for range 8 {
+		writeErr = (scopedJournal{path: path, busyBudget: 5 * time.Second}).with(ctx, false, func(j *store.Journal) error { _, err := j.HostID(ctx); return err })
+		if writeErr != nil {
+			break
+		}
+	}
+	cancel()
+	readers.Wait()
+	if writeErr != nil {
+		t.Fatalf("scoped writer starved under readers: %v", writeErr)
 	}
 }

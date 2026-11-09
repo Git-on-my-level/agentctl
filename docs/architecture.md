@@ -102,8 +102,9 @@ as an argv array after `--`.
 The local journal is owner-only and append-oriented. It contains normalized
 operational metadata plus an explicitly retrievable final result body of at
 most 1 MiB per execution by default. It does not store raw prompts,
-intermediate output, reasoning, or transcripts. Automatic retention is not
-implemented in the preview. Word aliases, results, delivery receipts, and
+intermediate output, reasoning, or transcripts. The managed supervisor applies
+protected 30-day retention in bounded batches; see
+[journal maintenance](journal-maintenance.md). Word aliases, results, delivery receipts, and
 observation-order events may not be reconstructable, so rebuildability is
 reported per record rather than promised globally.
 

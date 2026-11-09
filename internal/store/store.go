@@ -452,6 +452,16 @@ func (j *Journal) UpdateExecution(ctx context.Context, next model.Execution, exp
 }
 
 func (j *Journal) ListExecutions(ctx context.Context, nonTerminalOnly bool) ([]model.Execution, error) {
+	return j.listExecutions(ctx, nonTerminalOnly, "")
+}
+
+// ListExecutionsByLabelPrefix filters the lightweight stored projection before
+// loading immutable bindings. It is a cached read, including for Multica.
+func (j *Journal) ListExecutionsByLabelPrefix(ctx context.Context, prefix string) ([]model.Execution, error) {
+	return j.listExecutions(ctx, false, prefix)
+}
+
+func (j *Journal) listExecutions(ctx context.Context, nonTerminalOnly bool, prefix string) ([]model.Execution, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -462,6 +472,35 @@ func (j *Journal) ListExecutions(ctx context.Context, nonTerminalOnly bool) ([]m
 			// (and its shared lock) for the whole enumeration.
 			if err := ctx.Err(); err != nil {
 				return err
+			}
+			// Recovery only needs active envelopes. Decode the small state
+			// projection before hydrating/validating immutable delegation and
+			// caller bindings for thousands of retained terminal executions.
+			// A terminal event index alone is insufficient: legacy append-only
+			// events do not necessarily update the execution projection.
+			if nonTerminalOnly || prefix != "" {
+				var header struct {
+					State  model.State `json:"state"`
+					Labels []string    `json:"labels"`
+				}
+				if err := json.Unmarshal(raw, &header); err != nil {
+					return corrupt(err)
+				}
+				if nonTerminalOnly && header.State.Terminal() {
+					return nil
+				}
+				if prefix != "" {
+					matched := false
+					for _, label := range header.Labels {
+						if strings.HasPrefix(label, prefix) {
+							matched = true
+							break
+						}
+					}
+					if !matched {
+						return nil
+					}
+				}
 			}
 			var value model.Execution
 			if err := decodeExecution(tx, raw, &value); err != nil {

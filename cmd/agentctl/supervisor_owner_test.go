@@ -12,7 +12,7 @@ import (
 )
 
 func TestSupervisorOrphansOnlyProvenGoneStaleNativeLaunch(t *testing.T) {
-	for _, scenario := range []string{"gone", "alive", "unproven", "lease", "legacy", "recent", "renewed", "owner_missing", "clock_shift_legacy", "owner_alive", "owner_gone", "owner_unproven", "pending"} {
+	for _, scenario := range []string{"gone", "alive", "unproven", "lease", "legacy", "recent", "renewed", "owner_missing", "clock_shift_legacy", "owner_alive", "owner_gone", "owner_unproven", "pending", "pending_owner_gone", "pending_owner_alive"} {
 		t.Run(scenario, func(t *testing.T) {
 			world := seedReconcileWorld(t)
 			row := world.gone
@@ -22,11 +22,13 @@ func TestSupervisorOrphansOnlyProvenGoneStaleNativeLaunch(t *testing.T) {
 				t.Fatal(err)
 			}
 			switch scenario {
-			case "pending":
+			case "pending", "pending_owner_gone", "pending_owner_alive":
 				row.State = model.StateStarting
 				row.SourceBindings = nil
 				row.Launch = nil
-				row.OwnerLaunch = nil
+				if scenario == "pending" {
+					row.OwnerLaunch = nil
+				}
 			case "owner_missing", "clock_shift_legacy":
 				// Even an apparently pre-boot wall-clock launch must not
 				// substitute for a missing collector identity.
@@ -58,7 +60,7 @@ func TestSupervisorOrphansOnlyProvenGoneStaleNativeLaunch(t *testing.T) {
 			a.processProof = func(identity processIdentity) processProof {
 				proofCalls++
 				if identity.PID == 9999 {
-					return processProof{Gone: scenario == "gone" || scenario == "renewed" || scenario == "owner_gone", Alive: scenario == "owner_alive", Proof: "owner_proof"}
+					return processProof{Gone: scenario == "gone" || scenario == "renewed" || scenario == "owner_gone" || scenario == "pending_owner_gone", Alive: scenario == "owner_alive" || scenario == "pending_owner_alive", Proof: "owner_proof"}
 				}
 				if scenario == "renewed" {
 					// The proof must run outside the journal lock, and progress
@@ -100,7 +102,7 @@ func TestSupervisorOrphansOnlyProvenGoneStaleNativeLaunch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if scenario == "gone" || scenario == "owner_gone" {
+			if scenario == "gone" || scenario == "owner_gone" || scenario == "pending_owner_gone" {
 				if current.State != model.StateOrphaned {
 					t.Fatalf("state=%s", current.State)
 				}
@@ -115,5 +117,20 @@ func TestSupervisorOrphansOnlyProvenGoneStaleNativeLaunch(t *testing.T) {
 				t.Fatalf("unnecessary kernel probe for %s", scenario)
 			}
 		})
+	}
+}
+
+func TestSupervisorPendingOutboxSharesReadHandle(t *testing.T) {
+	path, holder := holdJournal(t)
+	holder.Close()
+	reader, err := store.Open(path, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := (journalSupervisorOutbox{path: path}).ListPending(ctx); err != nil {
+		t.Fatalf("pending scan tried to acquire exclusive lock: %v", err)
 	}
 }
