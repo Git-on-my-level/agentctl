@@ -2,6 +2,7 @@ package portableasset
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +12,21 @@ func TestEmbeddedDistributionMatchesCanonicalSources(t *testing.T) {
 	assets, err := Distribution()
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Byte-for-byte copies can agree while the Multica bundle still points
+	// at a previous skill. Keep this cross-asset contract in the cheap push gate.
+	var bundle struct {
+		Revision string `json:"revision"`
+		Skill    struct {
+			SHA256 string `json:"sha256"`
+		} `json:"skill"`
+	}
+	if err := json.Unmarshal(assets["multica-runtime-bundle"].Bytes, &bundle); err != nil {
+		t.Fatal(err)
+	}
+	skill := assets["portable-skill"]
+	if "sha256:"+bundle.Skill.SHA256 != skill.Digest || bundle.Revision != skill.Revision {
+		t.Fatalf("Multica bundle does not bind the embedded skill: hash=%s revision=%s", bundle.Skill.SHA256, bundle.Revision)
 	}
 	root := filepath.Join("..", "..")
 	for id, relative := range map[string]string{

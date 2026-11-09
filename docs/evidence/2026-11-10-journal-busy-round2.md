@@ -78,3 +78,10 @@ respectively. The six-second lease observation and two-second cleanup assertion
 remain; startup has its own bounded allowance and all fixture processes are
 released or cancelled during cleanup. These changes preserve the lifecycle
 assertions while removing dependence on launch speed under host load.
+
+The normal pre-push hook passed in full and published the source fix. The
+remaining distribution stage then caught the Multica runtime bundle's internal
+skill-hash reference. Both bundle copies and their manifest entries were
+regenerated. The embedded-distribution unit contract now checks the bundle's
+skill hash and revision as well as byte equality, so the ordinary pre-push gate
+catches this cross-asset mismatch before publication.
