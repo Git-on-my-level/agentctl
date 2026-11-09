@@ -2162,8 +2162,9 @@ func TestNativeRunWithPreallocatedIDReleasesJournalWhileRunning(t *testing.T) {
 func TestNativeRunRenewsLeaseWhileReapingAfterEarlyResult(t *testing.T) {
 	root := testutil.TempDir(t)
 	journalPath := filepath.Join(root, "state", "journal.db")
+	release := filepath.Join(root, "release")
 	script := filepath.Join(root, "slow-exit-agent")
-	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"result\",\"status\":\"completed\",\"result\":\"done\"}'\nsleep 7\n"
+	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"result\",\"status\":\"completed\",\"result\":\"done\"}'\nwhile [ ! -f '" + release + "' ]; do sleep 0.05; done\n"
 	if err := os.WriteFile(script, []byte(contents), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -2177,12 +2178,24 @@ func TestNativeRunRenewsLeaseWhileReapingAfterEarlyResult(t *testing.T) {
 	}
 	var runOut, runErr bytes.Buffer
 	runner := testApp(&runOut, &runErr)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	done := make(chan int, 1)
+	finished := make(chan struct{})
+	t.Cleanup(func() {
+		_ = os.WriteFile(release, nil, 0600)
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(15 * time.Second):
+			t.Error("native fixture did not stop")
+		}
+	})
 	go func() {
-		done <- runner.run(context.Background(), []string{"--journal", journalPath, "run", "--adapter", "generic-process", "--execution-id", executionID.String(), "--", script})
+		defer close(finished)
+		done <- runner.run(ctx, []string{"--journal", journalPath, "run", "--adapter", "generic-process", "--execution-id", executionID.String(), "--", script})
 	}()
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		journal, openErr := store.Open(journalPath, store.Options{ReadOnly: true})
 		if openErr == nil {
@@ -2215,12 +2228,15 @@ func TestNativeRunRenewsLeaseWhileReapingAfterEarlyResult(t *testing.T) {
 	if live.State != model.StateRunning || live.Liveness != model.LivenessAlive || live.Observation.Source != model.ObservationNativeStream || live.Observation.Integrity != model.IntegrityVerified {
 		t.Fatalf("supervisor corrupted lease during native exit cleanup: %#v", live)
 	}
+	if err := os.WriteFile(release, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case code := <-done:
 		if code != 0 {
 			t.Fatalf("run exit=%d output=%s stderr=%s", code, runOut.String(), runErr.String())
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("run did not finish after slow exit")
 	}
 }

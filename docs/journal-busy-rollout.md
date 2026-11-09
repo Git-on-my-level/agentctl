@@ -21,7 +21,8 @@ test "$(git rev-parse HEAD)" = "$reviewed_sha" &&
   nice -n 10 make build VERSION="journal-busy-$(git rev-parse --short=12 HEAD)"
 ```
 
-Before the first new-supervisor minute, preserve both binary and journal. This
+Before installation, preserve both binary and journal, even with the automatic
+seven-day preview. Binary rollback cannot undo retention. This
 is an atomic APFS clone, not a sequential copy of a changing database. Keep the
 backup private and outside sweepable scratch. These are operator commands;
 they create backup files but do not open the source with bbolt or lock it.
@@ -62,15 +63,39 @@ artifact (`shasum -a 256 build/agentctl`); do not rely solely on `agentctl --ver
 After at least one maintenance pass and several recovery cycles, check fresh
 cycle timestamps, failure/retry counters, journal_busy errors and successful
 normal delegate/await work. Use a harmless normal task with a new request key
-as the canary. Retention logs name only aggregate removed counts. File bytes
+as the canary. Retention logs name aggregate preview/deletion counts. During the preview,
+inspect `<journal path>.retention-report.json` (owner-only, atomically replaced
+on each pass): `would_delete` counts each record category, `diagnostic_files`
+and `diagnostic_bytes` describe the cache, `oldest_terminal_at` and
+`newest_terminal_at` bound eligible history (null when empty), and
+`protected_by_reason` counts protection reasons. No prompts, result text or
+execution IDs enter this report. Verify `mode=plan_only` and its `enforce_at`
+before allowing the upgrade window to expire. File bytes
 need not fall: deleted pages become reusable. Existing uncollected, subscribed,
 promoted or oversized histories may remain protected. This PR does not include
 an online physical file replacement operation.
 
-The new service defaults retention on: terminal history older than 30 days,
-32 executions / 4096 events per batch, startup grace one minute, then five-minute
-cadence. To opt out before installation, set its inherited service environment
-and verify that no plist/wrapper overrides it:
+Retention is **on by default**, with these first-install rules:
+
+- A new journal created by this version is eligible for enforcement immediately,
+  after the supervisor's one-minute startup grace.
+- An existing journal without this version's retention metadata enters **plan-only
+  mode for seven days** from its first writable open by this version. Every
+  maintenance pass computes the entire eligible set and writes the report above;
+  it deletes neither records nor diagnostic files. Read-only opens do not start
+  the window. The enforcement date survives restarts and binary rollback.
+- At that date, enforcement starts automatically with no configuration change:
+  terminal history older than 30 days, whole graphs of at most 32 executions /
+  4096 events per batch, every five minutes. Unacknowledged results are protected
+  even when they predate acknowledgement tracking. `anx.card.*` labels and ANX
+  run links protect executions, outcomes and events after collection as well.
+- To deliberately bypass only the upgrade preview, use
+  `supervisor run --journal-retention-immediate` or the inherited service
+  environment `AGENTCTL_JOURNAL_RETENTION=immediate`. This does not bypass unread,
+  ANX or graph protections. Take the backup first and review a cleanup plan.
+
+To opt out before installation, set its inherited service environment and verify
+that no plist/wrapper overrides it:
 
 ```sh
 launchctl setenv AGENTCTL_JOURNAL_RETENTION off

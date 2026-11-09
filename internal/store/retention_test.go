@@ -20,7 +20,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
-func seedTerminalForRetention(t *testing.T, journal *Journal, createdAt time.Time, mutation contracts.MutationKey) model.Execution {
+func seedTerminalForRetention(t *testing.T, journal *Journal, createdAt time.Time, mutation contracts.MutationKey, configure ...func(*model.Execution)) model.Execution {
 	t.Helper()
 	ctx := context.Background()
 	initial := sampleExecution(createdAt)
@@ -28,6 +28,9 @@ func seedTerminalForRetention(t *testing.T, journal *Journal, createdAt time.Tim
 	initial.UpdatedAt = createdAt
 	initial.Observation.ObservedAt = createdAt
 	initial.Capabilities.NegotiatedAt = createdAt
+	for _, apply := range configure {
+		apply(&initial)
+	}
 	execution, _, err := journal.CreateExecution(ctx, initial, mutation)
 	if err != nil {
 		t.Fatal(err)
@@ -57,10 +60,21 @@ func seedTerminalForRetention(t *testing.T, journal *Journal, createdAt time.Tim
 	return stored
 }
 
+// Collected fixtures model history eligible for automatic cleanup. Unread
+// safety cases use seedTerminalForRetention directly, regardless of epoch.
+func seedCollectedForRetention(t *testing.T, journal *Journal, at time.Time, mutation contracts.MutationKey, configure ...func(*model.Execution)) model.Execution {
+	t.Helper()
+	value := seedTerminalForRetention(t, journal, at, mutation, configure...)
+	if _, _, err := journal.AcknowledgeExecution(context.Background(), value.ID, AcknowledgementResult); err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
 func TestInventoryIsAggregateAndReadOnly(t *testing.T) {
 	ctx := context.Background()
 	journal, _, now := openTestJournal(t)
-	seedTerminalForRetention(t, journal, now.Add(-48*time.Hour), contracts.MutationKey{})
+	seedCollectedForRetention(t, journal, now.Add(-48*time.Hour), contracts.MutationKey{})
 	infoBefore, err := InventoryFileState(journal.path)
 	if err != nil {
 		t.Fatal(err)
@@ -101,8 +115,8 @@ func TestCleanupPlanApplyIsExactAtomicAndIdempotent(t *testing.T) {
 	ctx := context.Background()
 	journal, _, now := openTestJournal(t)
 	mutation := contracts.MutationKey{Scope: "execution:run", Key: "retention-old", InputDigest: hash('b')}
-	old := seedTerminalForRetention(t, journal, now.Add(-72*time.Hour), mutation)
-	recent := seedTerminalForRetention(t, journal, now.Add(-2*time.Hour), contracts.MutationKey{})
+	old := seedCollectedForRetention(t, journal, now.Add(-72*time.Hour), mutation)
+	recent := seedCollectedForRetention(t, journal, now.Add(-2*time.Hour), contracts.MutationKey{})
 	running, _, err := journal.CreateExecution(ctx, sampleExecution(now), contracts.MutationKey{})
 	if err != nil {
 		t.Fatal(err)
@@ -155,13 +169,13 @@ func TestCleanupPlanApplyIsExactAtomicAndIdempotent(t *testing.T) {
 func TestCleanupApplyRejectsStaleReviewedPlan(t *testing.T) {
 	ctx := context.Background()
 	journal, _, now := openTestJournal(t)
-	seedTerminalForRetention(t, journal, now.Add(-72*time.Hour), contracts.MutationKey{})
+	seedCollectedForRetention(t, journal, now.Add(-72*time.Hour), contracts.MutationKey{})
 	cutoff := now.Add(-24 * time.Hour)
 	plan, err := journal.PlanCleanup(ctx, cutoff, CleanupOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	additional := seedTerminalForRetention(t, journal, now.Add(-48*time.Hour), contracts.MutationKey{})
+	additional := seedCollectedForRetention(t, journal, now.Add(-48*time.Hour), contracts.MutationKey{})
 	if _, err := journal.ApplyCleanup(ctx, cutoff, plan.PlanDigest, CleanupOptions{}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale reviewed plan was accepted: %v", err)
 	}
@@ -174,7 +188,7 @@ func TestCleanupProtectsActiveSubscriptionAndOutboxReceipt(t *testing.T) {
 	ctx := context.Background()
 	journal, _, now := openTestJournal(t)
 
-	activeProtected := seedTerminalForRetention(t, journal, now.Add(-96*time.Hour), contracts.MutationKey{})
+	activeProtected := seedCollectedForRetention(t, journal, now.Add(-96*time.Hour), contracts.MutationKey{})
 	active := durableTestSubscription(durableTestID(ids.TypeSubscription, 990))
 	active.Filter.ExecutionIDs = []string{activeProtected.ID.String()}
 	// Attention only: an all-kinds subscription to this already-terminal
@@ -296,7 +310,7 @@ func TestCleanupProtectsPromotionGraph(t *testing.T) {
 func TestCleanupPropagatesReferenceProtectionAcrossEligibleGraph(t *testing.T) {
 	ctx := context.Background()
 	journal, _, now := openTestJournal(t)
-	parent := seedTerminalForRetention(t, journal, now.Add(-72*time.Hour), contracts.MutationKey{})
+	parent := seedCollectedForRetention(t, journal, now.Add(-72*time.Hour), contracts.MutationKey{})
 	createdAt := now.Add(-71 * time.Hour)
 	childValue := sampleExecution(createdAt)
 	childValue.CreatedAt, childValue.UpdatedAt, childValue.Observation.ObservedAt, childValue.Capabilities.NegotiatedAt = createdAt, createdAt, createdAt, createdAt
@@ -391,16 +405,14 @@ func TestCleanupProtectsUnreconciledTerminalResults(t *testing.T) {
 	if reasons := planReasons(plan, uncollected.ID); len(reasons) != 1 || reasons[0] != "result_unreconciled" {
 		t.Fatalf("uncollected terminal is not protected as unreconciled: %#v", plan.Protected)
 	}
-	if plan.ProtectedUnreconciled != 1 {
-		t.Fatalf("protected_unreconciled=%d want 1: %#v", plan.ProtectedUnreconciled, plan)
+	if plan.ProtectedUnreconciled != 2 {
+		t.Fatalf("protected_unreconciled=%d want 2: %#v", plan.ProtectedUnreconciled, plan)
 	}
 	if plan.IncludeUnreconciled {
 		t.Fatalf("default plan opted into unreconciled deletion: %#v", plan)
 	}
-	// A journal older than acknowledgement tracking must stay cleanable, and a
-	// collected result must not be retained forever by this rule.
-	if !planIsEligible(plan, preEpoch.ID) {
-		t.Fatalf("pre-epoch terminal became uncleanable: %#v", plan)
+	if reasons := planReasons(plan, preEpoch.ID); len(reasons) != 1 || reasons[0] != "result_unreconciled" {
+		t.Fatalf("pre-epoch uncollected terminal is not protected: %#v", plan)
 	}
 	if !planIsEligible(plan, collected.ID) {
 		t.Fatalf("acknowledged terminal was protected: %#v", plan)
@@ -413,8 +425,16 @@ func TestCleanupProtectsUnreconciledTerminalResults(t *testing.T) {
 	if _, err := journal.GetOutcome(ctx, uncollected.ID); err != nil {
 		t.Fatalf("uncollected result was deleted: %v", err)
 	}
-	if _, err := journal.GetExecution(ctx, preEpoch.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("pre-epoch terminal survived: %v", err)
+	if _, err := journal.GetOutcome(ctx, preEpoch.ID); err != nil {
+		t.Fatalf("pre-epoch uncollected outcome deleted: %v", err)
+	}
+	// Positive collection evidence unlocks even pre-epoch history.
+	if _, _, err := journal.AcknowledgeExecution(ctx, preEpoch.ID, AcknowledgementAwait); err != nil {
+		t.Fatal(err)
+	}
+	collectedPlan, err := journal.PlanCleanup(ctx, cutoff, CleanupOptions{})
+	if err != nil || !planIsEligible(collectedPlan, preEpoch.ID) {
+		t.Fatalf("collected pre-epoch terminal not eligible: %+v %v", collectedPlan, err)
 	}
 	if _, err := journal.GetExecution(ctx, collected.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("acknowledged terminal survived: %v", err)
@@ -464,7 +484,7 @@ func TestCleanupIncludeUnreconciledIsAnExplicitOptOutWithADistinctDigest(t *test
 func TestCleanupPlansAndRemovesDiagnosticSibling(t *testing.T) {
 	ctx := context.Background()
 	j, _, now := openTestJournal(t)
-	execution := seedTerminalForRetention(t, j, now.Add(-48*time.Hour), contracts.MutationKey{})
+	execution := seedCollectedForRetention(t, j, now.Add(-48*time.Hour), contracts.MutationKey{})
 	dir := filepath.Dir(j.path)
 	o, err := diagnostic.OpenOutputs(dir, true)
 	if err != nil {
@@ -526,7 +546,7 @@ func TestCleanupPlansAndRemovesDiagnosticSibling(t *testing.T) {
 func TestCleanupIncludesLegacyDiagnosticPointer(t *testing.T) {
 	ctx := context.Background()
 	j, _, now := openTestJournal(t)
-	execution := seedTerminalForRetention(t, j, now.Add(-48*time.Hour), contracts.MutationKey{})
+	execution := seedCollectedForRetention(t, j, now.Add(-48*time.Hour), contracts.MutationKey{})
 	path := filepath.Join(filepath.Dir(j.path), "failed-output-12345.txt")
 	if err := os.WriteFile(path, []byte("legacy output"), 0600); err != nil {
 		t.Fatal(err)
@@ -557,7 +577,7 @@ func TestCleanupIncludesLegacyDiagnosticPointer(t *testing.T) {
 func TestCleanupHandlesEvictedDiagnosticWithoutDroppingRecordOnBusyCache(t *testing.T) {
 	ctx := context.Background()
 	j, _, now := openTestJournal(t)
-	execution := seedTerminalForRetention(t, j, now.Add(-48*time.Hour), contracts.MutationKey{})
+	execution := seedCollectedForRetention(t, j, now.Add(-48*time.Hour), contracts.MutationKey{})
 	outputs, err := diagnostic.OpenOutputs(filepath.Dir(j.path), true)
 	if err != nil {
 		t.Fatal(err)
@@ -588,5 +608,70 @@ func TestCleanupHandlesEvictedDiagnosticWithoutDroppingRecordOnBusyCache(t *test
 	}
 	if _, err := j.ApplyCleanup(ctx, now, plan.PlanDigest, CleanupOptions{}); err != nil {
 		t.Fatal("missing diagnostic blocked cleanup", err)
+	}
+}
+
+func TestCleanupProtectsANXHistoryAcrossAuthorities(t *testing.T) {
+	for _, authority := range []model.Authority{model.AuthorityNative, model.AuthorityMultica} {
+		for _, reference := range []string{"label", "link", "legacy_spool"} {
+			t.Run(string(authority)+"/"+reference, func(t *testing.T) {
+				ctx := context.Background()
+				j, _, now := openTestJournal(t)
+				row := seedCollectedForRetention(t, j, now.Add(-60*24*time.Hour), contracts.MutationKey{}, func(initial *model.Execution) {
+					initial.Authority = authority
+					if authority == model.AuthorityMultica {
+						initial.Mode = model.ModeMultica
+					}
+					if reference == "label" {
+						initial.Labels = []string{"anx.card.keep-history"}
+					}
+				})
+				options := CleanupOptions{IncludeUnreconciled: true}
+				if reference == "link" {
+					for range 2 {
+						if err := j.ProtectANXRun(ctx, row.ID); err != nil {
+							t.Fatal(err)
+						}
+					}
+				} else if reference == "legacy_spool" {
+					options.ANXRunLinks = []ids.ExecutionID{row.ID}
+				}
+				cutoff := now.Add(-30 * 24 * time.Hour)
+				plan, err := j.PlanCleanup(ctx, cutoff, options)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(plan.Eligible) != 0 || len(planReasons(plan, row.ID)) != 1 || planReasons(plan, row.ID)[0] != "anx_run_link" {
+					t.Fatalf("ANX history eligible: %+v", plan)
+				}
+				if _, err := j.ApplyCleanup(ctx, cutoff, plan.PlanDigest, options); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := j.GetOutcome(ctx, row.ID); err != nil {
+					t.Fatal(err)
+				}
+				events, err := j.ListEvents(ctx, row.ID, contracts.EventQuery{})
+				if err != nil || len(events) == 0 {
+					t.Fatalf("events=%d err=%v", len(events), err)
+				}
+				batch, err := j.PlanCleanupBatch(ctx, cutoff, options.ANXRunLinks...)
+				if err != nil || batch.Executions() != 0 {
+					t.Fatalf("batch=%d err=%v", batch.Executions(), err)
+				}
+			})
+		}
+	}
+}
+
+func TestCleanupProtectsUnreadWithoutAcknowledgementEpoch(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	row := seedTerminalForRetention(t, j, now.Add(-60*24*time.Hour), contracts.MutationKey{})
+	if err := j.db.Update(func(tx *bbolt.Tx) error { return tx.Bucket(bMetadata).Delete(keyAckEpoch) }); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := j.PlanCleanup(ctx, now, CleanupOptions{})
+	if err != nil || planIsEligible(plan, row.ID) || plan.ProtectedUnreconciled != 1 {
+		t.Fatalf("plan=%+v err=%v", plan, err)
 	}
 }

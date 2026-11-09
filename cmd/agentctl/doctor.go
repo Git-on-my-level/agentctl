@@ -13,6 +13,7 @@ import (
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
 	"github.com/Git-on-my-level/agentctl/internal/config"
+	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
 	"github.com/Git-on-my-level/agentctl/internal/supervisor"
@@ -20,9 +21,10 @@ import (
 )
 
 type doctorJournal struct {
-	Path         string `json:"path"`
-	Status       string `json:"status"`
-	OriginHostID string `json:"origin_host_id,omitempty"`
+	NeedsReconcile []string `json:"needs_reconcile,omitempty"`
+	Path           string   `json:"path"`
+	Status         string   `json:"status"`
+	OriginHostID   string   `json:"origin_host_id,omitempty"`
 }
 
 type doctorConfig struct {
@@ -98,7 +100,21 @@ func (a *app) doctorReadiness(ctx context.Context, renderer output.Renderer, c c
 	report.Journal = doctorJournal{Path: journalPath, Status: "absent_ready_to_create"}
 	if journal, journalErr := store.Open(journalPath, store.Options{ReadOnly: true}); journalErr == nil {
 		host, hostErr := journal.HostID(ctx)
+		rows, rowsErr := journal.ListExecutions(ctx, true)
 		_ = journal.Close()
+		if rowsErr != nil {
+			return mapStoreError("inspect journal executions", rowsErr)
+		}
+		for _, row := range rows {
+			if row.Authority == model.AuthorityNative && row.State == model.StateStarting && row.Launch == nil && len(row.SourceBindings) == 0 && observationAge(row, a.now()) >= 5*time.Minute {
+				report.Journal.NeedsReconcile = append(report.Journal.NeedsReconcile, row.ID.String())
+			}
+		}
+		if len(report.Journal.NeedsReconcile) > 0 {
+			sort.Strings(report.Journal.NeedsReconcile)
+			report.Healthy = false
+			report.Problems = append(report.Problems, "journal_native_child_unknown")
+		}
 		if hostErr != nil {
 			return mapStoreError("read journal host", hostErr)
 		}
@@ -218,7 +234,7 @@ func (a *app) doctorReadiness(ctx context.Context, renderer output.Renderer, c c
 	sort.Strings(report.Problems)
 	report.Problems = uniqueStrings(report.Problems)
 	report.Update = a.doctorUpdate()
-	lines := []output.Line{{Lead: "doctor", Fields: []output.Field{{Name: "healthy", Value: report.Healthy}, {Name: "journal", Value: report.Journal.Status}, {Name: "config", Value: report.Config.Status}, {Name: "supervisor", Value: report.Supervisor["status"]}, {Name: "adapters", Value: len(report.Adapters)}}}}
+	lines := []output.Line{{Lead: "doctor", Fields: []output.Field{{Name: "healthy", Value: report.Healthy}, {Name: "journal", Value: report.Journal.Status}, {Name: "needs_reconcile", Value: len(report.Journal.NeedsReconcile)}, {Name: "config", Value: report.Config.Status}, {Name: "supervisor", Value: report.Supervisor["status"]}, {Name: "adapters", Value: len(report.Adapters)}}}}
 	for _, value := range report.Adapters {
 		lines = append(lines, output.Line{Lead: "adapter", Fields: []output.Field{{Name: "name", Value: value.Name}, {Name: "status", Value: value.Status}, {Name: "executable", Value: value.Executable}}})
 	}

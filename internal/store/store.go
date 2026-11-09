@@ -36,19 +36,21 @@ var (
 )
 
 var (
-	bMetadata          = []byte("metadata")
-	bExecutions        = []byte("executions")
-	bEvents            = []byte("events")
-	bEventsByExecution = []byte("events_by_execution")
-	bDedupe            = []byte("event_dedupe")
-	bTerminal          = []byte("terminal_events")
-	bIdempotency       = []byte("idempotency")
-	bOutcomes          = []byte("outcomes")
-	bAcknowledgements  = []byte("execution_acknowledgements")
-	bStatusContacts    = []byte("status_contacts")
-	keySchema          = []byte("schema_version")
-	keyHost            = []byte("origin_host_id")
-	keyAckEpoch        = []byte("acknowledgement_epoch")
+	bMetadata             = []byte("metadata")
+	bExecutions           = []byte("executions")
+	bEvents               = []byte("events")
+	bEventsByExecution    = []byte("events_by_execution")
+	bDedupe               = []byte("event_dedupe")
+	bTerminal             = []byte("terminal_events")
+	bIdempotency          = []byte("idempotency")
+	bOutcomes             = []byte("outcomes")
+	bAcknowledgements     = []byte("execution_acknowledgements")
+	bStatusContacts       = []byte("status_contacts")
+	keySchema             = []byte("schema_version")
+	keyHost               = []byte("origin_host_id")
+	keyAckEpoch           = []byte("acknowledgement_epoch")
+	keyRetentionEnforceAt = []byte("retention_enforce_at")
+	bANXRunLinks          = []byte("anx_run_links")
 )
 
 type Options struct {
@@ -177,9 +179,11 @@ func (j *Journal) initialize() error {
 	// process lock. Older schema-1 journals with missing optional buckets still
 	// take the existing additive initialization path below.
 	complete := false
+	newJournal := false
 	if err := j.db.View(func(tx *bbolt.Tx) error {
 		metadata := tx.Bucket(bMetadata)
 		if metadata == nil {
+			newJournal = true
 			return nil
 		}
 		if current := metadata.Get(keySchema); current != nil && string(current) != "1" {
@@ -190,7 +194,7 @@ func (j *Journal) initialize() error {
 				return nil
 			}
 		}
-		complete = string(metadata.Get(keySchema)) == "1" && metadata.Get(keyHost) != nil && metadata.Get(keyAckEpoch) != nil
+		complete = string(metadata.Get(keySchema)) == "1" && metadata.Get(keyHost) != nil && metadata.Get(keyAckEpoch) != nil && metadata.Get(keyRetentionEnforceAt) != nil
 		return nil
 	}); err != nil {
 		return err
@@ -217,6 +221,15 @@ func (j *Journal) initialize() error {
 				return err
 			}
 			if err := metadata.Put(keyHost, []byte(host)); err != nil {
+				return err
+			}
+		}
+		if metadata.Get(keyRetentionEnforceAt) == nil {
+			enforceAt := j.clock().UTC()
+			if !newJournal {
+				enforceAt = enforceAt.Add(RetentionPreviewWindow)
+			}
+			if err := metadata.Put(keyRetentionEnforceAt, []byte(enforceAt.Format(time.RFC3339Nano))); err != nil {
 				return err
 			}
 		}

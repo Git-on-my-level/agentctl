@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentctl:schema:journal-retention-report:v1",
+  "title": "Automatic journal retention preview report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "mode",
+    "generated_at",
+    "enforce_at",
+    "before",
+    "would_delete",
+    "diagnostic_files",
+    "diagnostic_bytes",
+    "oldest_terminal_at",
+    "newest_terminal_at",
+    "protected_by_reason"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "mode": {
+      "const": "plan_only"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "enforce_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "before": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "oldest_terminal_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "newest_terminal_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "would_delete": {
+      "$ref": "data-cleanup-plan.schema.json#/$defs/recordCounts"
+    },
+    "diagnostic_files": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "diagnostic_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "protected_by_reason": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  },
+  "x-agentctl-docs": "../docs/journal-maintenance.md#automatic-retention"
+}

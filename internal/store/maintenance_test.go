@@ -15,7 +15,7 @@ func TestCleanupBatchBoundedGenerationCheckedAndReplaySafe(t *testing.T) {
 	ctx := context.Background()
 	j, _, now := openTestJournal(t)
 	for range 35 {
-		seedTerminalForRetention(t, j, now.Add(-60*24*time.Hour), contracts.MutationKey{})
+		seedCollectedForRetention(t, j, now.Add(-60*24*time.Hour), contracts.MutationKey{})
 	}
 	batch, err := j.PlanCleanupBatch(ctx, now.Add(-30*24*time.Hour))
 	if err != nil || batch.Executions() != 32 {
@@ -73,7 +73,7 @@ func TestCleanupBatchPreservesUnreadAndWholeLineage(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	parent := seedTerminalForRetention(t, j, old, contracts.MutationKey{})
+	parent := seedCollectedForRetention(t, j, old, contracts.MutationKey{})
 	child := sampleExecution(now)
 	child.ParentExecutionID = &parent.ID
 	if _, _, err := j.CreateExecution(ctx, child, contracts.MutationKey{}); err != nil {
@@ -103,9 +103,9 @@ func TestCleanupBatchNeverSplitsOversizedComponents(t *testing.T) {
 	ctx := context.Background()
 	j, _, now := openTestJournal(t)
 	old := now.Add(-60 * 24 * time.Hour)
-	parent := seedTerminalForRetention(t, j, old, contracts.MutationKey{})
+	parent := seedCollectedForRetention(t, j, old, contracts.MutationKey{})
 	for range 32 {
-		child := seedTerminalForRetention(t, j, old, contracts.MutationKey{})
+		child := seedCollectedForRetention(t, j, old, contracts.MutationKey{})
 		child.ParentExecutionID = &parent.ID
 		if _, err := j.UpdateExecution(ctx, child, child.Revision); err != nil {
 			t.Fatal(err)
@@ -123,7 +123,7 @@ func TestCleanupBatchNeverSplitsOversizedComponents(t *testing.T) {
 func TestCleanupBatchEventLimitDefersWholeExecution(t *testing.T) {
 	ctx := context.Background()
 	j, _, now := openTestJournal(t)
-	old := seedTerminalForRetention(t, j, now.Add(-60*24*time.Hour), contracts.MutationKey{})
+	old := seedCollectedForRetention(t, j, now.Add(-60*24*time.Hour), contracts.MutationKey{})
 	// The index limit must reject this target before looking up event bodies.
 	// These deliberately missing fixture bodies would be corruption if selected.
 	if err := j.db.Update(func(tx *bbolt.Tx) error {

@@ -784,14 +784,23 @@ plus fingerprint of the first stderr line, never arbitrary stderr text.
 back off unchanged polls with jitter, up to four seconds. Cached queries never
 perform retention. Work-creating commands retain the bounded jittered 120s
 journal busy budget (`--journal-busy-budget` / `AGENTCTL_JOURNAL_BUSY_BUDGET`);
-managed-supervisor opens use 10s within each probe/cycle deadline.
+managed-supervisor cycle opens use 10s within each probe/cycle deadline.
+Interactive authority reprobes (including Multica `await`) use a separate
+jittered 2s journal budget.
 
 The running supervisor maintains terminal history older than 30 days by default,
 after a one-minute startup grace and then every five minutes. Opt out with
 `supervisor run --no-journal-retention` or `AGENTCTL_JOURNAL_RETENTION=off` in
-its service environment. Each batch preserves whole execution lineages, unread
-results, active exact subscriptions and retained outbox/receipt references, and
-is capped at 32 executions / 4096 events. Planning uses a read-only handle; the
+its service environment. Existing journals preview for seven days from this
+version's first writable open; new journals enforce after startup grace. The
+persistent deadline survives restarts, then enforcement begins automatically.
+Preview passes write aggregate category counts and oldest/newest terminal dates
+to `<journal path>.retention-report.json` without deleting anything. Take a
+journal/binary backup before installation. `--journal-retention-immediate` or
+`AGENTCTL_JOURNAL_RETENTION=immediate` bypasses only the preview window.
+Each batch preserves whole execution lineages, uncollected results (including
+before the acknowledgement epoch), ANX-labeled/linked executions and outcomes,
+active exact subscriptions and retained outbox/receipt references, and is capped at 32 executions / 4096 events. Planning uses a read-only handle; the
 exclusive transaction applies only if the database generation is unchanged.
 Contention or concurrent writes defer the batch. Large components require
 explicit digest-bound `data cleanup`. Deletion frees reusable pages, including
@@ -799,7 +808,9 @@ associated events, dedupe, results and idempotency keys; it does not shrink the
 physical bbolt file. Physical replacement requires all journal owners to be
 quiescent; never rename a compacted file under live owners or waiting openers.
 
-The supervisor can reconcile stale native admissions with no child binding only
-when their recorded collector identity is provably gone. Established native
-launches still require both child and collector absence; leases, legacy rows
-without identity, live/unknown processes and Multica authority remain protected.
+A gone collector alone cannot orphan a native `starting` execution lacking child
+launch identity/source bindings. These remain unknown; inspect `doctor`'s
+`journal.needs_reconcile` / `journal_native_child_unknown` before reconciliation.
+Established native launches require both child and collector absence; leases,
+legacy rows without identity, live/unknown processes and Multica authority
+remain protected.

@@ -24,12 +24,31 @@ than 30 days. `supervisor run --no-journal-retention` or the service environment
 `AGENTCTL_JOURNAL_RETENTION=off` opts out. No read-only command, open, or installer
 starts cleanup. `--once` does not bypass the startup grace.
 
-Batches preserve the existing cleanup protections: unread results since the
-acknowledgement epoch, nonterminal or partly retained lineages, promotions,
-active exact subscriptions/cursors and every retained delivery/receipt. Legacy
-terminals predating acknowledgement tracking remain eligible, as in explicit
-cleanup. Automatic maintenance never acknowledges unread results to make them
-eligible. Native and Multica histories use the same protection graph; retention
+New journals enforce after the startup grace. Existing journals enter a
+persistent seven-day plan-only window on the first writable open by this
+version; enforcement begins automatically at its stored deadline. Each preview
+pass writes `<journal path>.retention-report.json` atomically with owner-only
+permissions: counts by record category, diagnostic counts/bytes, oldest/newest
+eligible terminal timestamps (null if empty), and protection counts by reason.
+Its JSON shape is defined by [the retention report schema](../schemas/journal-retention-report.schema.json).
+It contains no execution IDs or content and previews all eligible records,
+without deleting records or diagnostics. Restarts do not reset the window and
+read-only opens never start it. `--journal-retention-immediate` or
+`AGENTCTL_JOURNAL_RETENTION=immediate` bypasses this window only. Back up the
+binary and journal before installation; see the [rollout guide](journal-busy-rollout.md).
+
+Batches preserve uncollected results regardless of acknowledgement epoch,
+nonterminal or partly retained lineages, promotions, active exact
+subscriptions/cursors and every retained delivery/receipt. Missing collection
+evidence protects pre-epoch results; explicit `result`/`await` or operator
+acknowledgement can make them eligible. `anx.card.*` labels or durable ANX run
+links protect execution/outcome/event history even after collection, including
+with explicit `--include-unreconciled` cleanup. Run-link registration stamps this
+protection before spooling or delivery; legacy pending/dead/delivered spool
+references are read locally during cleanup, including when registration is off.
+Spool read failures defer cleanup. Automatic maintenance never acknowledges
+unread results to make them eligible. Native and Multica histories use the same
+protection graph; retention
 never changes the Multica issue/run or the native CLI's conversation store.
 
 Each batch contains whole components, at most 32 executions and 4096 events.
@@ -70,3 +89,10 @@ a live or uncertain identity, a missing collector identity, a foreign journal
 host, a parked recovery or a recent observation never authorizes orphaning.
 Orphaned means outcome unknown. No process is killed and no success/failure is
 inferred. Legacy ownership remains unproven; Multica requires its own authority.
+
+A stale native `starting` row without a child launch identity or source binding
+remains unknown even when its collector is gone. Owner absence cannot prove an
+independent detached child is absent. `doctor` reports these execution IDs under
+`journal.needs_reconcile` and the problem `journal_native_child_unknown`; the
+supervisor leaves their durable state unchanged. Recorded child and collector
+absence are both required for automatic orphaning.

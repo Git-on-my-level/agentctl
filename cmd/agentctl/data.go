@@ -102,6 +102,10 @@ func (a *app) dataCleanup(ctx context.Context, renderer output.Renderer, c commo
 		return output.Wrap(output.CodeUsage, "invalid --before timestamp; use RFC3339", false, err).WithDetail("before", beforeRaw)
 	}
 	before = before.UTC()
+	links, linkErr := a.anxRetentionLinks(c)
+	if linkErr != nil {
+		return output.Wrap(output.CodeInternal, "inspect ANX retention references", true, linkErr)
+	}
 	var plan store.CleanupPlan
 	if planOnly {
 		journal, problem := a.openRead(c)
@@ -109,7 +113,7 @@ func (a *app) dataCleanup(ctx context.Context, renderer output.Renderer, c commo
 			return problem
 		}
 		defer journal.Close()
-		plan, err = journal.PlanCleanup(ctx, before, store.CleanupOptions{IncludeUnreconciled: includeUnreconciled})
+		plan, err = journal.PlanCleanup(ctx, before, store.CleanupOptions{IncludeUnreconciled: includeUnreconciled, ANXRunLinks: links})
 	} else {
 		path, pathErr := a.journalPath(c)
 		if pathErr != nil {
@@ -127,7 +131,7 @@ func (a *app) dataCleanup(ctx context.Context, renderer output.Renderer, c commo
 			return mapStoreError("open journal", openErr)
 		}
 		defer journal.Close()
-		plan, err = journal.ApplyCleanup(ctx, before, planDigest, store.CleanupOptions{IncludeUnreconciled: includeUnreconciled})
+		plan, err = journal.ApplyCleanup(ctx, before, planDigest, store.CleanupOptions{IncludeUnreconciled: includeUnreconciled, ANXRunLinks: links})
 	}
 	if err != nil {
 		return mapStoreError("cleanup journal data", err)

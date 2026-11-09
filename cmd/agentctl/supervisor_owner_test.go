@@ -3,10 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/model"
+	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
 	"github.com/Git-on-my-level/agentctl/internal/supervisor"
 )
@@ -102,7 +107,7 @@ func TestSupervisorOrphansOnlyProvenGoneStaleNativeLaunch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if scenario == "gone" || scenario == "owner_gone" || scenario == "pending_owner_gone" {
+			if scenario == "gone" || scenario == "owner_gone" {
 				if current.State != model.StateOrphaned {
 					t.Fatalf("state=%s", current.State)
 				}
@@ -132,5 +137,62 @@ func TestSupervisorPendingOutboxSharesReadHandle(t *testing.T) {
 	defer cancel()
 	if _, err := (journalSupervisorOutbox{path: path}).ListPending(ctx); err != nil {
 		t.Fatalf("pending scan tried to acquire exclusive lock: %v", err)
+	}
+}
+
+func TestSupervisorStartingLiveChildWithGoneOwnerNeedsReconcile(t *testing.T) {
+	world := seedReconcileWorld(t)
+	row := world.gone
+	row.State = model.StateStarting
+	row.SourceBindings = nil
+	row.Launch = nil
+	row.OwnerLaunch = &model.LaunchIdentity{PID: 9999, StartedAt: world.now.Add(-time.Hour)}
+	j, err := store.Open(world.path, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err = j.UpdateExecution(context.Background(), row, row.Revision)
+	j.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := exec.Command("/bin/sleep", "60")
+	prepareDetachedCommand(child)
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = child.Process.Kill(); _ = child.Wait() }()
+	var out, stderr bytes.Buffer
+	a := testApp(&out, &stderr)
+	a.now = func() time.Time { return world.now }
+	a.processProof = func(identity processIdentity) processProof {
+		if identity.PID != 9999 {
+			t.Fatalf("no child identity was recorded: %+v", identity)
+		}
+		return processProof{Gone: true, Proof: "pid_absent"}
+	}
+	bridge := pathSupervisorExecutions{path: world.path, app: a}
+	result, err := bridge.Reprobe(context.Background(), supervisor.Execution{ID: row.ID.String()})
+	if err != nil || !result.AlreadyApplied || result.State != "starting" || result.Liveness != "unknown" {
+		t.Fatalf("probe=%+v err=%v", result, err)
+	}
+	if err := child.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("child not live: %v", err)
+	}
+	j, err = store.Open(world.path, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := j.GetExecution(context.Background(), row.ID)
+	j.Close()
+	if err != nil || current.State != model.StateStarting || current.Revision != row.Revision {
+		t.Fatalf("starting row orphaned: %+v %v", current, err)
+	}
+	out.Reset()
+	if problem := a.doctorReadiness(context.Background(), output.Renderer{Mode: output.JSON, Writer: &out}, common{journalPath: world.path, configPath: filepath.Join(t.TempDir(), "absent.json")}, []string{"--static"}); problem != nil {
+		t.Fatal(problem)
+	}
+	if !strings.Contains(out.String(), "journal_native_child_unknown") || !strings.Contains(out.String(), row.ID.String()) || !strings.Contains(out.String(), "needs_reconcile") {
+		t.Fatalf("doctor omitted uncertain child: %s", out.String())
 	}
 }

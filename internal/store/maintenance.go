@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"go.etcd.io/bbolt"
 )
 
@@ -24,7 +25,7 @@ func (b CleanupBatch) Executions() int { return len(b.targets) }
 // PlanCleanupBatch retains the normal graph, delivery, diagnostic and unread
 // result protections. Whole components exceeding a batch are deferred to the
 // explicit cleanup command. Planning is cancellable and never writes.
-func (j *Journal) PlanCleanupBatch(ctx context.Context, before time.Time) (CleanupBatch, error) {
+func (j *Journal) PlanCleanupBatch(ctx context.Context, before time.Time, links ...ids.ExecutionID) (CleanupBatch, error) {
 	batch := CleanupBatch{path: j.path}
 	if err := ctx.Err(); err != nil {
 		return batch, err
@@ -35,7 +36,7 @@ func (j *Journal) PlanCleanupBatch(ctx context.Context, before time.Time) (Clean
 	err := j.db.View(func(tx *bbolt.Tx) error {
 		batch.txID = tx.ID()
 		var err error
-		batch.plan, batch.targets, err = j.cleanupPlanTx(ctx, tx, before.UTC(), CleanupOptions{maxExecutions: 32, maxEvents: 4096})
+		batch.plan, batch.targets, err = j.cleanupPlanTx(ctx, tx, before.UTC(), CleanupOptions{maxExecutions: 32, maxEvents: 4096, ANXRunLinks: links})
 		return err
 	})
 	return batch, err

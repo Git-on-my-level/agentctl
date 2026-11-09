@@ -62,13 +62,37 @@ func TestANXSecurityDetachedCommandLatency(t *testing.T) {
 	if output, err := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v %s", err, output)
 	}
+	release := filepath.Join(root, "release-anx")
+	// ANX cannot respond until the caller explicitly releases it. Its own
+	// 60-second timeout exceeds the command's 30-second deadline, so joining
+	// transport I/O cannot masquerade as a successful detached return.
+	defer func() { _ = os.WriteFile(release, nil, 0600) }()
 	script := filepath.Join(root, "unreachable-anx")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nexec sleep 2\n"), 0700); err != nil {
+	body := "#!/bin/sh\nwhile [ ! -f '" + release + "' ]; do sleep 0.05; done\n"
+	if err := os.WriteFile(script, []byte(body), 0700); err != nil {
 		t.Fatal(err)
 	}
 	configPath := writeAnxConfig(t, script)
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["anx"].(map[string]any)["run_links"].(map[string]any)["flush_timeout_seconds"] = 60
+	raw, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	journal := filepath.Join(root, "state", "journal.db")
-	command := exec.Command(binary, "--config", configPath, "--journal", journal, "run", "--adapter", "generic-process", "--anx-card", "dogfooding", "--", "/bin/echo", `{"type":"result","session_id":"fixture-session","status":"completed","result":"done"}`)
+	command := exec.CommandContext(ctx, binary, "--config", configPath, "--journal", journal, "run", "--adapter", "generic-process", "--anx-card", "dogfooding", "--", "/bin/echo", `{"type":"result","session_id":"fixture-session","status":"completed","result":"done"}`)
 	// Measure detached ANX behavior without managed-Git discovery in the
 	// caller's repository contributing to this wall-clock assertion.
 	command.Dir = root
@@ -78,8 +102,8 @@ func TestANXSecurityDetachedCommandLatency(t *testing.T) {
 		t.Fatalf("run: %v %s", err, out)
 	}
 	latency := time.Since(started)
-	if latency > 1500*time.Millisecond {
-		t.Fatalf("command return waited on ANX: %s", latency)
+	if err := os.WriteFile(release, nil, 0600); err != nil {
+		t.Fatal(err)
 	}
 	deadline := time.Now().Add(12 * time.Second)
 	for time.Now().Before(deadline) {

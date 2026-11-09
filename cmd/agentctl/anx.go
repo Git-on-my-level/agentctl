@@ -25,6 +25,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/route"
+	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
 // anxSettings resolves the effective run-links configuration. A missing
@@ -150,7 +151,14 @@ func (a *app) anxJournalSender(c common, settings anxSettings) *anxrun.CLISender
 				r.Outcome = anxrun.ProjectOutcome(outcome)
 			}
 		}
+		protected, protectionErr := journal.ANXRunProtected(ctx, id)
 		journal.Close()
+		if protectionErr != nil {
+			return r, nil, protectionErr
+		}
+		if !protected && !a.anxProtectRun(c, id) {
+			return r, nil, fmt.Errorf("local_io:0")
+		}
 		var origin *anxrun.Repository
 		r.CWD = ""
 		if execution.CWD != nil {
@@ -160,6 +168,24 @@ func (a *app) anxJournalSender(c common, settings anxSettings) *anxrun.CLISender
 		return r, origin, nil
 	}
 	return sender
+}
+
+// Keep the local target before a run link can escape to ANX. A journal failure
+// defers registration without changing execution success or failure.
+func (a *app) anxProtectRun(c common, id ids.ExecutionID) bool {
+	path, err := a.journalPath(c)
+	if err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), interactiveJournalBusyBudget)
+		defer cancel()
+		err = (scopedJournal{path: path, busyBudget: interactiveJournalBusyBudget}).with(ctx, false, func(j *store.Journal) error {
+			return j.ProtectANXRun(ctx, id)
+		})
+	}
+	if err != nil {
+		a.anxNote("local_io:0")
+		return false
+	}
+	return true
 }
 
 // anxRegisterStart spools the PhaseStart registration after an execution is
@@ -172,6 +198,9 @@ func (a *app) anxRegisterStart(c common, execution model.Execution) {
 	}
 	settings, ok := a.anxSettings(c)
 	if !ok || !settings.registers(execution.Labels) {
+		return
+	}
+	if !a.anxProtectRun(c, execution.ID) {
 		return
 	}
 	spool, err := a.anxOpenSpool(settings)
@@ -222,12 +251,20 @@ func (a *app) anxRegisterTerminal(c common, id ids.ExecutionID) {
 	if _, ackErr := journal.GetAcknowledgement(ctx, id); ackErr != nil {
 		collected = false
 	}
+	protected, protectionErr := journal.ANXRunProtected(ctx, id)
 	journal.Close()
+	if protectionErr != nil {
+		a.anxNote("local_io:0")
+		return
+	}
 	if !settings.registers(execution.Labels) {
 		return
 	}
 	registration := anxRegistrationModel(anxrun.BuildTerminal(execution, outcome, collected, a.now()), execution)
 	registration.WorkspaceAlias = settings.WorkspaceAlias
+	if !protected && !a.anxProtectRun(c, execution.ID) {
+		return
+	}
 	spool, err := a.anxOpenSpool(settings)
 	if err != nil {
 		a.anxNote("local_io:0")
@@ -485,4 +522,34 @@ func anxWorkerEnvironment(adapter string) []string {
 		}
 	}
 	return append(env, "ANX_AS="+anxrun.CanonicalProvider(adapter))
+}
+
+// Read legacy link evidence even when current registration is disabled. Pending,
+// dead and delivered registrations all protect their journal target. Inspect
+// both the conventional spool and a configured override without creating either.
+func (a *app) anxRetentionLinks(c common) ([]ids.ExecutionID, error) {
+	path, err := a.journalPath(c)
+	if err != nil {
+		return nil, err
+	}
+	roots := []string{filepath.Join(filepath.Dir(path), "anx-run-links")}
+	if settings, ok := a.anxSettings(c); ok && settings.SpoolDir != roots[0] {
+		roots = append(roots, settings.SpoolDir)
+	}
+	var links []ids.ExecutionID
+	for _, root := range roots {
+		spool, present, err := anxrun.OpenSpoolIfPresent(root)
+		if err != nil {
+			return nil, err
+		}
+		if !present {
+			continue
+		}
+		ids, err := spool.LinkedExecutions()
+		if err != nil {
+			return nil, err
+		}
+		links = append(links, ids...)
+	}
+	return links, nil
 }

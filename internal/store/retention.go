@@ -13,11 +13,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"go.etcd.io/bbolt"
 
 	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/subscription"
 )
@@ -103,6 +105,8 @@ type CleanupPlan struct {
 // CleanupOptions carries the explicit caller intent that widens deletion
 // beyond the safe default. A zero value is the protective policy.
 type CleanupOptions struct {
+	// ANXRunLinks is a read-only snapshot of legacy spool references.
+	ANXRunLinks []ids.ExecutionID
 	// IncludeUnreconciled deletes terminal executions whose result was never
 	// acknowledged by result or await. It is destructive of uncollected
 	// evidence and must come from an explicit caller flag.
@@ -469,35 +473,29 @@ func (j *Journal) cleanupPlanTx(ctx context.Context, tx *bbolt.Tx, before time.T
 		}
 	}
 
-	// A terminal result nobody collected is uncollected evidence, not garbage.
-	// Cleanup reclaims space; it must not double as an acknowledgement that a
-	// human or agent already read the outcome. The epoch guard keeps this from
-	// freezing old journals: terminals that predate acknowledgement tracking on
-	// this journal can never gain a stamp retroactively, so they stay eligible.
+	// No acknowledgement means uncollected, including pre-epoch terminals
+	// and journals that have never enabled acknowledgement tracking.
 	if !options.IncludeUnreconciled {
-		epoch, err := acknowledgementEpoch(tx)
-		if err != nil {
-			return CleanupPlan{}, nil, err
+		for id := range executions {
+			if acks := tx.Bucket(bAcknowledgements); acks != nil && acks.Get([]byte(id)) != nil {
+				continue
+			}
+			protect(id, "result_unreconciled")
 		}
-		if !epoch.IsZero() {
-			acknowledged := map[string]bool{}
-			if bucket := tx.Bucket(bAcknowledgements); bucket != nil {
-				if err := bucket.ForEach(func(key, _ []byte) error {
-					acknowledged[string(key)] = true
-					return nil
-				}); err != nil {
-					return CleanupPlan{}, nil, err
-				}
+	}
+	// ANX's durable links outlive the spool and must retain their local target,
+	// outcome and events, even after collection or an explicit unread override.
+	for _, id := range options.ANXRunLinks {
+		protect(id.String(), "anx_run_link")
+	}
+	for id, value := range executions {
+		for _, label := range value.Labels {
+			if strings.HasPrefix(label, "anx.card.") {
+				protect(id, "anx_run_link")
 			}
-			for id, value := range executions {
-				if !base[id] || acknowledged[id] {
-					continue
-				}
-				if value.TerminalAt == nil || value.TerminalAt.Before(epoch) {
-					continue
-				}
-				protect(id, "result_unreconciled")
-			}
+		}
+		if links := tx.Bucket(bANXRunLinks); links != nil && links.Get([]byte(id)) != nil {
+			protect(id, "anx_run_link")
 		}
 	}
 

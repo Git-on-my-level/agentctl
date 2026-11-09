@@ -240,3 +240,28 @@ func TestScopedWriterProgressWithConcurrentReadSnapshots(t *testing.T) {
 		t.Fatalf("scoped writer starved under readers: %v", writeErr)
 	}
 }
+
+func TestAwaitMulticaReprobeUsesInteractiveJournalBudget(t *testing.T) {
+	path, _ := holdJournal(t)
+	world := seedReconcileWorld(t)
+	// A held exclusive journal makes reprobe fail before authority I/O. Inspect
+	// the typed accounting through the public await helper, not a bridge constant.
+	var out, stderr bytes.Buffer
+	a := testApp(&out, &stderr)
+	start := time.Now()
+	problem := a.reprobeAwaitedMultica(context.Background(), common{journalPath: path}, world.gone)
+	if problem == nil {
+		t.Fatal("expected journal contention")
+	}
+	var busy *journalBusyError
+	if !errors.As(problem, &busy) {
+		// output.Error preserves the underlying cause through Unwrap.
+		t.Fatalf("missing typed contention: %+v", problem)
+	}
+	if busy.budget != 2*time.Second {
+		t.Fatalf("budget=%s", busy.budget)
+	}
+	if elapsed := time.Since(start); elapsed > 6*time.Second {
+		t.Fatalf("interactive reprobe used background budget: %s", elapsed)
+	}
+}

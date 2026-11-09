@@ -49,12 +49,15 @@ func (a *app) supervisorRun(ctx context.Context, renderer output.Renderer, c com
 	}
 	once := false
 	retention := true
+	retentionImmediate := false
 	switch strings.TrimSpace(a.getenv("AGENTCTL_JOURNAL_RETENTION")) {
 	case "", "on":
 	case "off":
 		retention = false
+	case "immediate":
+		retentionImmediate = true
 	default:
-		return output.NewError(output.CodeUsage, "AGENTCTL_JOURNAL_RETENTION must be on or off", false)
+		return output.NewError(output.CodeUsage, "AGENTCTL_JOURNAL_RETENTION must be on, off or immediate", false)
 	}
 	for i := 0; i < len(args); i++ {
 		take := func() (string, *output.Error) {
@@ -65,6 +68,8 @@ func (a *app) supervisorRun(ctx context.Context, renderer output.Renderer, c com
 			return args[i], nil
 		}
 		switch args[i] {
+		case "--journal-retention-immediate":
+			retentionImmediate = true
 		case "--no-journal-retention":
 			retention = false
 		case "--once":
@@ -106,10 +111,14 @@ func (a *app) supervisorRun(ctx context.Context, renderer output.Renderer, c com
 	factory := supervisor.DependenciesFactoryFunc(func(cycleCtx context.Context) (supervisor.CycleDependencies, error) {
 		if retention && !a.now().Before(nextMaintenance) {
 			nextMaintenance = a.now().Add(5 * time.Minute)
-			removed, err := maintainJournal(cycleCtx, journalPath, a.now())
+			links, err := a.anxRetentionLinks(c)
+			removed := 0
+			if err == nil {
+				removed, err = maintainJournal(cycleCtx, journalPath, a.now(), retentionImmediate, links, a.stderr)
+			}
 			journalMaintenanceLog(a.stderr, removed, err)
 		}
-		bridge := pathSupervisorExecutions{path: journalPath, probeTimeout: 10 * time.Second, app: a}
+		bridge := pathSupervisorExecutions{path: journalPath, busyBudget: supervisorJournalBusyBudget, probeTimeout: 10 * time.Second, app: a}
 		deps := supervisor.Dependencies{
 			Executions: bridge,
 			Reprober:   bridge,
@@ -306,11 +315,22 @@ func (a *app) supervisorPlan(renderer output.Renderer, args []string) *output.Er
 
 type pathSupervisorExecutions struct {
 	path         string
+	busyBudget   time.Duration
 	probeTimeout time.Duration
 	app          *app
 }
 
-const supervisorJournalBusyBudget = 10 * time.Second
+const (
+	interactiveJournalBusyBudget = 2 * time.Second
+	supervisorJournalBusyBudget  = 10 * time.Second
+)
+
+func (b pathSupervisorExecutions) journalBudget() time.Duration {
+	if b.busyBudget > 0 {
+		return b.busyBudget
+	}
+	return interactiveJournalBusyBudget
+}
 
 func (a *app) reprobeAwaitedMultica(ctx context.Context, c common, execution model.Execution) *output.Error {
 	journalPath, err := a.journalPath(c)
@@ -338,7 +358,7 @@ func (a *app) reprobeAwaitedMultica(ctx context.Context, c common, execution mod
 }
 
 func (b pathSupervisorExecutions) withBridge(ctx context.Context, fn func(agentruntime.SupervisorExecutions) error) error {
-	engine, err := agentruntime.New(scopedJournal{path: b.path, busyBudget: supervisorJournalBusyBudget}, agentruntime.Options{})
+	engine, err := agentruntime.New(scopedJournal{path: b.path, busyBudget: b.journalBudget()}, agentruntime.Options{})
 	if err != nil {
 		return err
 	}
@@ -382,7 +402,7 @@ func (b pathSupervisorExecutions) probeNativeOwner(ctx context.Context, id strin
 	if err != nil {
 		return supervisor.ProbeResult{}, false, err
 	}
-	journal := scopedJournal{path: b.path, busyBudget: supervisorJournalBusyBudget}
+	journal := scopedJournal{path: b.path, busyBudget: b.journalBudget()}
 	current, err := journal.GetExecution(ctx, executionID)
 	if err != nil {
 		return supervisor.ProbeResult{}, false, err
@@ -398,21 +418,13 @@ func (b pathSupervisorExecutions) probeNativeOwner(ctx context.Context, id strin
 	if current.State.Terminal() || current.NativeRecoveryParked() || runnerLeaseActive(current, now) {
 		return result, true, nil
 	}
-	pendingOwner := current.State == model.StateStarting && len(current.SourceBindings) == 0 && current.Launch == nil && current.OwnerLaunch != nil
-	if current.State == model.StateStarting && len(current.SourceBindings) == 0 && !pendingOwner {
-		// Admission is durable before the worker has a native status binding.
-		// There is no authority route to probe yet; an unchanged pending row
-		// is not a failed reprobe and never authorizes another launch.
-		return result, true, nil
-	}
-	if pendingOwner && observationAge(current, now) < 5*time.Minute {
+	if current.State == model.StateStarting && len(current.SourceBindings) == 0 && current.Launch == nil {
+		// A dead collector does not prove that its detached child/session is
+		// empty. Without child identity there is no safe absence proof.
+		result.Liveness = string(model.LivenessUnknown)
 		return result, true, nil
 	}
 	identity, recorded := recordedLaunch(current)
-	if pendingOwner {
-		owner := current.OwnerLaunch
-		identity, recorded = processIdentity{PID: owner.PID, StartedAt: owner.StartedAt, StartTicks: owner.StartTicks, PIDNamespaceIno: owner.PIDNamespaceIno, ProcfsPIDNamespaceIno: owner.ProcfsPIDNamespaceIno}, true
-	}
 	if !recorded || current.OwnerLaunch == nil || observationAge(current, now) < 5*time.Minute {
 		return supervisor.ProbeResult{}, false, nil
 	}
@@ -424,9 +436,6 @@ func (b pathSupervisorExecutions) probeNativeOwner(ctx context.Context, id strin
 	}
 	proof := prove(identity)
 	if !proof.Gone {
-		if pendingOwner {
-			return result, true, nil
-		}
 		return supervisor.ProbeResult{}, false, nil
 	}
 	// Wall-clock boot comparisons cannot establish a legacy collector's
