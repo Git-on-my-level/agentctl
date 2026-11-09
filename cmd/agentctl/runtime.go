@@ -1004,7 +1004,7 @@ func promptNotFoundError(command string, opts runOptions, path, requested string
 	// Only advertise a pipe-from-file repair whose source can actually be
 	// opened (for example the resolved home path of a literal ~/ prompt). A
 	// missing file has no executable repair; the caller must supply the prompt.
-	if info, err := os.Stat(stdinPath); err != nil || !info.Mode().IsRegular() {
+	if !readableRegularFile(stdinPath) {
 		return problem.WithActions(promptHelpAction(command))
 	}
 	repair, action := promptStdinRepair(command, opts, stdinPath)
@@ -2501,4 +2501,19 @@ func sameSourceState(left, right *string) bool {
 		return left == nil && right == nil
 	}
 	return *left == *right
+}
+
+// readableRegularFile reports whether path is a regular file this process can
+// open for reading, so a pipe repair is only advertised when it can run.
+func readableRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	_ = file.Close()
+	return true
 }

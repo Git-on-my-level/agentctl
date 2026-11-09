@@ -478,3 +478,29 @@ func fanoutManifestRepair(problem *output.Error, code output.Code) bool {
 	}
 	return len(problem.NextActions) == 1 && reflect.DeepEqual(problem.NextActions[0].Argv, []string{"agentctl", "help", "fanout"}) && !problem.NextActions[0].Mutates
 }
+
+func TestReadableRegularFileRejectsUnreadableAndDirectories(t *testing.T) {
+	root := testutil.TempDir(t)
+	readable := filepath.Join(root, "ok.md")
+	if err := os.WriteFile(readable, []byte("task"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !readableRegularFile(readable) {
+		t.Fatal("readable file rejected")
+	}
+	if readableRegularFile(root) {
+		t.Fatal("directory accepted")
+	}
+	if readableRegularFile(filepath.Join(root, "missing.md")) {
+		t.Fatal("missing file accepted")
+	}
+	if os.Geteuid() != 0 {
+		locked := filepath.Join(root, "locked.md")
+		if err := os.WriteFile(locked, []byte("task"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		if readableRegularFile(locked) {
+			t.Fatal("unreadable file accepted")
+		}
+	}
+}
