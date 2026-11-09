@@ -195,8 +195,15 @@ Each commit rechecks the complete protection graph from paged metadata reads
 and verifies the bbolt generation before writing; concurrent reference changes
 fail closed. All lineage-linked records are conservatively retained, including
 fully terminal lineages. Final commits delete the execution, outcome, remaining
-events, indexes/dedupe records, terminal index, execution idempotency keys and
-result acknowledgement together. Every event batch is limited to 128 events
+events, indexes/dedupe records, terminal index, internal caller/delegation snapshots and result acknowledgements together.
+Request-key records become compact replay tombstones in the same commit, keeping
+only the key, input digest and original execution ID. Their original plans,
+caller/delegation metadata, and answers are not retained. `replay_tombstones`
+counts retained refusal records; `logical_bytes` subtracts their retained bytes.
+An identical key/digest returns non-retryable `conflict` (exit 8) with
+`diagnostic_code=execution_replay_expired`, refusing to relaunch. Changed inputs
+still conflict. The tombstone has no automatic expiry. Older binaries reject its
+unknown object type rather than launching new work. Every event batch is limited to 128 events
 and 256 KiB of event/dedupe values (one oversized event is permitted).
 Apply is not globally atomic: cancellation, busy journals or new protections
 can stop it after committed batches. Errors expose `cleanup_progress` with
@@ -251,13 +258,16 @@ receipt, or promotion records themselves. ANX registrations commit a monotonic
 protected after collection or spool expiry. Legacy pending, dead and delivered
 spool references also protect cleanup. Automatic retention exempts executions
 with idempotency/immutable bindings or source bindings, preserving native
-request-key replay and cached Multica identity. Manual cleanup is an explicit
-reviewed deletion boundary for request-key replay.
+request-key replay and cached Multica identity. Manual cleanup expires answer recovery while keeping a small durable refusal
+tombstone, so the key cannot silently launch duplicate work.
 
 CLI inventory and supervisor recovery close the journal between pages, including
 nested event-index inventory walks. Their aggregate listings are advisory across
 pages; they do not promise a single point-in-time snapshot. Recovery and label
-queries filter stored state/labels before hydrating immutable bindings. Pending
+queries filter stored state/labels before hydrating immutable bindings. Long-lived
+await-any label-prefix scans release the handle between pages and read only each
+page's acknowledgement records, preserving deterministic match ordering across
+an advisory paged scan. Pending
 supervisor outbox scans are read-only and can coexist with other readers.
 
 Generic extraction diagnostics are a separate cache: mode-0600 files named

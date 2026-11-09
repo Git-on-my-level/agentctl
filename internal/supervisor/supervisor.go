@@ -495,12 +495,20 @@ func (s *Supervisor) RunOnce(ctx context.Context) (report CycleReport, runErr er
 	if deps.Maintenance != nil && ctx.Err() == nil {
 		if err := deps.Maintenance(ctx); err != nil {
 			report.MaintenanceError = boundedError(err)
+			report.MaintenanceErrorAt = s.cfg.Clock.Now()
+			var timed interface{ MaintenanceErrorAt() time.Time }
+			if errors.As(err, &timed) && !timed.MaintenanceErrorAt().IsZero() {
+				report.MaintenanceErrorAt = timed.MaintenanceErrorAt()
+			}
 			s.recordError(err)
 		}
 	}
 	s.mu.Lock()
 	now := s.cfg.Clock.Now()
 	s.health.LastMaintenanceError = report.MaintenanceError
+	if !report.MaintenanceErrorAt.IsZero() {
+		s.health.LastMaintenanceErrorAt = report.MaintenanceErrorAt
+	}
 	s.health.LastCycleAt = now
 	s.health.LastRecoveryAt = now
 	s.health.LastOutboxAt = now

@@ -79,3 +79,19 @@ validate retention; those authorities remain unchanged.
   and environment switch. A seven-day rollout preview/report is deferred: it
   needs a durable upgrade epoch and report contract; paged manual plans provide
   the preview boundary without delaying the default-on fix.
+
+## Final review corrections
+
+Manual cleanup preserves compact durable request-key refusal tombstones while
+reclaiming plans, snapshots, events and answers. Same-key retries cannot launch
+new work; changed inputs still conflict. Await-any prefix scans and their
+acknowledgements are paged with writer-acquisition coverage. Cleanup plans check
+for a selectable tail before setting `has_more`; data opens keep their contention
+allowance while polling cancellation. Unchanged completed maintenance generations
+skip rescanning, with cutoff-ageing and external-protection invalidation tests.
+Health timestamps the actual failed maintenance pass rather than cadence ticks.
+
+Deferred: convergence under sustained writes, the diagnostic-file removal versus
+transaction-commit window, and repeated manual-apply protection scans. Older ANX
+binaries that do not stamp links cannot participate atomically in the new marker
+protocol; current registration paths stamp before spooling/sending.

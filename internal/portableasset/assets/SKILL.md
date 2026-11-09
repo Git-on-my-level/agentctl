@@ -672,7 +672,14 @@ Re-plan before retrying. Replayable artifact/acknowledgement events keep their
 dedupe records until the execution is removed; only terminal-rejected kinds are
 pruned in partial commits. `cleanup_final_batch_too_large` protects candidates
 whose metadata or replayable events exceed a final batch; later candidates can
-still progress. No physical compaction occurs.
+still progress. `has_more` probes for a selectable tail; an entirely deferred
+tail does not promise another batch. Manual cleanup leaves compact request-key
+refusal tombstones (`replay_tombstones`), retaining no plans or answers. Same-key
+retries fail with non-retryable `conflict` (exit 8), diagnostic
+`execution_replay_expired` and the original execution ID; changed inputs still
+conflict. Use a distinct key for deliberate new work. No physical compaction occurs.
+Data commands preserve their contention allowance, including busy budget zero,
+while checking cancellation between short lock polls.
 
 Only the running supervisor performs automatic retention: one small batch per
 five minutes, acknowledged terminal lineage-free records older than 14 days by
@@ -680,13 +687,17 @@ default. Set the host-local config `journal.retention.enabled=false` to disable
 it or `journal.retention.days` to change the cutoff (1–3650; zero means 14).
 Policy reloads each maintenance pass. Each pass has a 30-second deadline;
 completed scan pages resume after a timeout unless an intervening write invalidates
-the proof. Deferrals appear on stderr and in supervisor `last_maintenance_error`.
+the proof. Unchanged completed generations skip the scan, except when the
+cutoff ages in a terminal, a subscription expires, or external protections change. Deferrals appear on
+stderr and in supervisor `last_maintenance_error` with the failed pass timestamp
+`last_maintenance_error_at`; cadence skips do not refresh it.
 Request-key/immutable bindings, source-bound records (including Multica), ANX run
 links and unexpired paused subscriptions are protected. ANX stamps commit before
 spooling/sending links and protect manual cleanup too. Unacknowledged pre-tracking
 results are kept automatically; manual plans report `pre_tracking_unreconciled`.
 Inventory and supervisor recovery release the journal between pages; listings are
-advisory across pages. Pending-outbox scans are read-only. Native and Multica authorities are unchanged; no read-only CLI
+advisory across pages. Await-any prefix scans and acknowledgement reads are
+paged too. Pending-outbox scans are read-only. Native and Multica authorities are unchanged; no read-only CLI
 runs maintenance.
 
 ZCode's existing `--mode yolo` bypasses ordinary permission prompts but retains

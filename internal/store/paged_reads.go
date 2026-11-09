@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"go.etcd.io/bbolt"
@@ -16,60 +17,97 @@ import (
 type Reader = Cleanup
 
 func (c Cleanup) ListExecutions(ctx context.Context, active bool) ([]model.Execution, error) {
-	r := c.reader(ctx)
 	values := []model.Execution{}
-	var after []byte
-	for {
-		var last []byte
-		err := r.view(func(tx *bbolt.Tx) error {
-			cursor := tx.Bucket(bExecutions).Cursor()
-			key, raw := cursor.First()
-			if after != nil {
-				key, raw = cursor.Seek(after)
-				if bytes.Equal(key, after) {
-					key, raw = cursor.Next()
-				}
-			}
-			size, count := 0, 0
-			for ; key != nil && count < cleanupPageSize && size < cleanupPageBytes; key, raw = cursor.Next() {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				count++
-				size += len(key) + len(raw)
-				last = bytes.Clone(key)
-				if active {
-					var header struct {
-						State model.State `json:"state"`
-					}
-					if err := json.Unmarshal(raw, &header); err != nil {
-						return corrupt(err)
-					}
-					if header.State.Terminal() {
-						continue
-					}
-				}
-				var value model.Execution
-				if err := decodeExecution(tx, raw, &value); err != nil {
-					return corrupt(err)
-				}
-				if err := value.Validate(); err != nil {
-					return corrupt(err)
-				}
-				values = append(values, value)
-			}
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-		if last == nil {
-			break
-		}
-		after = last
+	err := c.walkExecutions(ctx, active, "", func(_ *Journal, page []model.Execution) error { values = append(values, page...); return nil })
+	if err != nil {
+		return nil, err
 	}
 	sortExecutions(values)
 	return values, nil
+}
+
+// WalkExecutionsByLabelPrefix visits a bounded page with a caller-borrowed read
+// handle for point lookups. It closes that handle before opening the next page.
+// The visitor must not retain the handle or open a second journal handle.
+func (c Cleanup) WalkExecutionsByLabelPrefix(ctx context.Context, prefix string, visit func(*Journal, []model.Execution) error) error {
+	return c.walkExecutions(ctx, false, prefix, visit)
+}
+
+func (c Cleanup) walkExecutions(ctx context.Context, active bool, prefix string, visit func(*Journal, []model.Execution) error) error {
+	r := c.reader(ctx)
+	var after []byte
+	for {
+		var last []byte
+		page := []model.Execution{}
+		err := r.with(true, func(j *Journal) error {
+			err := j.db.View(func(tx *bbolt.Tx) error {
+				cursor := tx.Bucket(bExecutions).Cursor()
+				key, raw := cursor.First()
+				if after != nil {
+					key, raw = cursor.Seek(after)
+					if bytes.Equal(key, after) {
+						key, raw = cursor.Next()
+					}
+				}
+				size, count := 0, 0
+				for ; key != nil && count < cleanupPageSize && size < cleanupPageBytes; key, raw = cursor.Next() {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
+					count++
+					size += len(key) + len(raw)
+					last = bytes.Clone(key)
+					if active || prefix != "" {
+						var header struct {
+							State  model.State `json:"state"`
+							Labels []string    `json:"labels"`
+						}
+						if err := json.Unmarshal(raw, &header); err != nil {
+							return corrupt(err)
+						}
+						if active && header.State.Terminal() {
+							continue
+						}
+						if prefix != "" {
+							matched := false
+							for _, label := range header.Labels {
+								if strings.HasPrefix(label, prefix) {
+									matched = true
+									break
+								}
+							}
+							if !matched {
+								continue
+							}
+						}
+					}
+					var value model.Execution
+					if err := decodeExecution(tx, raw, &value); err != nil {
+						return corrupt(err)
+					}
+					if err := value.Validate(); err != nil {
+						return corrupt(err)
+					}
+					page = append(page, value)
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+			if last == nil {
+				return nil
+			}
+			return visit(j, page)
+		})
+		if err != nil {
+			return err
+		}
+		if last == nil {
+			return nil
+		}
+		after = last
+	}
 }
 
 func sortExecutions(values []model.Execution) {

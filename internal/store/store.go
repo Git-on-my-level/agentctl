@@ -1021,6 +1021,9 @@ func lookupMutation(tx *bbolt.Tx, key contracts.MutationKey) (*mutationRecord, e
 	if record.InputDigest != key.InputDigest {
 		return nil, fmt.Errorf("%w: idempotency key reused with different input digest", ErrConflict)
 	}
+	if record.ObjectType == expiredExecutionObject {
+		return nil, &ReplayExpired{ExecutionID: record.ObjectID}
+	}
 	return &record, nil
 }
 

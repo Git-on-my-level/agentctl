@@ -257,3 +257,28 @@ func TestCleanupCommandKeepsLegacyOpenBudgetBetweenPages(t *testing.T) {
 		t.Fatalf("cleanup's paged reader used a short lock poll instead of its command budget: exit=%d %s %s", code, out.String(), stderr.String())
 	}
 }
+
+func TestCleanupZeroBudgetCancellationInterruptsHeldLock(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		t.Run(fmt.Sprint(explicit), func(t *testing.T) {
+			path, holder := holdJournal(t)
+			defer holder.Close()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			timer := time.AfterFunc(100*time.Millisecond, cancel)
+			defer timer.Stop()
+			var out, stderr bytes.Buffer
+			a := testApp(&out, &stderr)
+			args := []string{"--journal", path}
+			if explicit {
+				args = append(args, "--journal-busy-budget", "0")
+			}
+			args = append(args, "data", "cleanup", "--before", time.Now().UTC().Format(time.RFC3339), "--plan")
+			start := time.Now()
+			code := a.run(ctx, args)
+			if code == 0 || time.Since(start) > time.Second {
+				t.Fatalf("cancel stalled: exit=%d elapsed=%v %s", code, time.Since(start), stderr.String())
+			}
+		})
+	}
+}

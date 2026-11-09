@@ -56,6 +56,7 @@ type CleanupRecordCounts struct {
 	TerminalIndexes  int `json:"terminal_indexes"`
 	Outcomes         int `json:"outcomes"`
 	IdempotencyKeys  int `json:"idempotency_keys"`
+	ReplayTombstones int `json:"replay_tombstones,omitempty"`
 	Acknowledgements int `json:"acknowledgements,omitempty"`
 	StatusContacts   int `json:"status_contacts,omitempty"`
 }
@@ -232,6 +233,8 @@ func measureBucket(ctx context.Context, bucket *bbolt.Bucket, usage *BucketUsage
 
 func (snapshot *cleanupSnapshot) selectCleanup(before, now time.Time, options CleanupOptions) (CleanupPlan, []model.Execution, error) {
 	plan := CleanupPlan{SchemaVersion: RetentionSchemaVersion, Before: before, GeneratedAt: now, Eligible: []CleanupExecution{}, Protected: []ProtectedExecution{}, IncludeUnreconciled: options.IncludeUnreconciled}
+	snapshot.nextBefore = time.Time{}
+	snapshot.nextCheckAt = time.Time{}
 	executions := map[string]model.Execution{}
 	base := map[string]bool{}
 	if err := snapshot.forEach(bExecutions, func(key, raw []byte) error {
@@ -244,6 +247,9 @@ func (snapshot *cleanupSnapshot) selectCleanup(before, now time.Time, options Cl
 		}
 		if err := value.Validate(); err != nil {
 			return corrupt(err)
+		}
+		if value.State.Terminal() && value.TerminalAt != nil && !value.TerminalAt.Before(before) && (snapshot.nextBefore.IsZero() || value.TerminalAt.Before(snapshot.nextBefore)) {
+			snapshot.nextBefore = *value.TerminalAt
 		}
 		id := string(key)
 		executions[id] = value
@@ -385,6 +391,9 @@ func (snapshot *cleanupSnapshot) selectCleanup(before, now time.Time, options Cl
 			active := (value.State == subscription.StateActive || value.State == subscription.StatePaused) && (value.ExpiresAt.IsZero() || now.Before(value.ExpiresAt))
 			if !active {
 				return nil
+			}
+			if !value.ExpiresAt.IsZero() && (snapshot.nextCheckAt.IsZero() || value.ExpiresAt.Before(snapshot.nextCheckAt)) {
+				snapshot.nextCheckAt = value.ExpiresAt
 			}
 			for _, id := range value.Filter.ExecutionIDs {
 				protect(id, "active_subscription")
@@ -541,6 +550,7 @@ func addCleanupCounts(target *CleanupRecordCounts, value CleanupRecordCounts) {
 	target.TerminalIndexes += value.TerminalIndexes
 	target.Outcomes += value.Outcomes
 	target.IdempotencyKeys += value.IdempotencyKeys
+	target.ReplayTombstones += value.ReplayTombstones
 	target.Acknowledgements += value.Acknowledgements
 	target.StatusContacts += value.StatusContacts
 }

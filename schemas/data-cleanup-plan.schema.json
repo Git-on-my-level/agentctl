@@ -64,6 +64,7 @@
         "terminal_indexes": {"type": "integer", "minimum": 0},
         "outcomes": {"type": "integer", "minimum": 0},
         "idempotency_keys": {"type": "integer", "minimum": 0},
+        "replay_tombstones": {"type":"integer", "minimum":0, "description":"Compact request-key refusal records retained instead of deleting replay protection; logical_bytes is net of these records."},
         "acknowledgements": {"type": "integer", "minimum": 0},
         "status_contacts": {"type": "integer", "minimum": 0}
       }

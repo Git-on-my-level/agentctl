@@ -386,7 +386,11 @@ older than the cutoff qualify. Subscriptions, delivery references and other
 cleanup protections still apply. Request-key/immutable bindings, source-bound
 records (including Multica), and ANX run links are exempt from automatic retention
 so retries and external links keep their original target. ANX links also protect
-manual cleanup. Explicit manual cleanup can remove request-key bindings.
+manual cleanup. Manual cleanup replaces request-key bindings with compact durable refusal
+tombstones: the same key and digest return non-retryable `conflict` (exit 8),
+`diagnostic_code=execution_replay_expired`, and the original execution ID.
+Changed inputs still conflict. A distinct key is required for deliberate new
+work. Caller/delegation snapshots and outcomes are reclaimed.
 
 Maintenance runs at most once every five minutes, with a 30-second deadline and
 at most one batch of 128 events and one execution. Copied metadata pages and a
@@ -394,6 +398,11 @@ cursor survive a timeout in the running supervisor; no DB handle survives a page
 The same stable proof is reused for selection and commit, avoiding a second full
 scan. Intervening commits invalidate it safely, including writes by old binaries.
 Busy, conflict and timeout deferrals are logged to stderr and remain visible in
-supervisor health as `last_maintenance_error` until a later successful pass.
+supervisor health as `last_maintenance_error` with `last_maintenance_error_at`
+from the actual failed pass; cadence ticks do not refresh that timestamp. A
+completed, unchanged bbolt generation needs only one short read on the next
+pass. Subscription expiry, the next terminal ageing into the cutoff, or changed external link
+protections forces a rescan; a deletion also invalidates the fast path so a
+backlog continues draining.
 No CLI read runs retention. No separate retention environment switch is used.
 See [retention and cleanup](state-security-and-privacy.md#retention-and-cleanup).

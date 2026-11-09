@@ -9,6 +9,7 @@ import (
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/store"
+	"github.com/Git-on-my-level/agentctl/internal/supervisor"
 )
 
 // Policy reloads each maintenance pass; the kill switch needs no restart. No read-only command invokes this hook.
@@ -72,5 +73,8 @@ func (m *journalMaintenance) run(ctx context.Context, a *app, c common, path str
 	}
 	m.next = a.now().Add(5 * time.Minute)
 	m.lastError = a.maintainJournalCursor(ctx, c, path, &m.cursor)
+	if m.lastError != nil {
+		m.lastError = &supervisor.MaintenanceFailure{Err: m.lastError, OccurredAt: a.now().UTC()}
+	}
 	return m.lastError
 }

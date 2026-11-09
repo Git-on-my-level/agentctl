@@ -157,9 +157,11 @@ func (b cleanupBucket) ForEach(fn func([]byte, []byte) error) error {
 }
 
 type cleanupSnapshot struct {
-	ctx     context.Context
-	buckets map[string]cleanupBucket
-	version int
+	ctx         context.Context
+	buckets     map[string]cleanupBucket
+	version     int
+	nextBefore  time.Time
+	nextCheckAt time.Time
 }
 
 func (s *cleanupSnapshot) Bucket(name []byte) cleanupBucket { return s.buckets[string(name)] }

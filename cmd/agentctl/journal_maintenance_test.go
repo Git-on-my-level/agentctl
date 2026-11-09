@@ -154,3 +154,10 @@ func TestPendingOutboxScanUsesReadOnlyHandle(t *testing.T) {
 		t.Fatalf("pending read contended with reader: %v %v", items, err)
 	}
 }
+
+func TestReplayExpiredStructuredConflict(t *testing.T) {
+	problem := mapStoreError("recover delegated request", &store.ReplayExpired{ExecutionID: "original-execution"})
+	if string(problem.Code) != "conflict" || problem.Retryable || problem.ExitCode != 8 || problem.Details["diagnostic_code"] != "execution_replay_expired" || problem.Details["execution_id"] != "original-execution" {
+		t.Fatalf("expiry not structured: %+v", problem)
+	}
+}

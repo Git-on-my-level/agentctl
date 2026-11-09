@@ -231,10 +231,11 @@ type Health struct {
 	LastCycleRecoveryDeferred int `json:"last_cycle_recovery_deferred"`
 	// LastError names the execution or delivery it concerns. A fully clean
 	// cycle clears it; LastErrorAt keeps when the most recent error happened.
-	LastError            string    `json:"last_error,omitempty"`
-	LastErrorAt          time.Time `json:"last_error_at,omitempty"`
-	LastDeliveryError    string    `json:"last_delivery_error,omitempty"`
-	LastMaintenanceError string    `json:"last_maintenance_error,omitempty"`
+	LastError              string    `json:"last_error,omitempty"`
+	LastErrorAt            time.Time `json:"last_error_at,omitempty"`
+	LastDeliveryError      string    `json:"last_delivery_error,omitempty"`
+	LastMaintenanceError   string    `json:"last_maintenance_error,omitempty"`
+	LastMaintenanceErrorAt time.Time `json:"last_maintenance_error_at,omitempty"`
 }
 
 // Status is the complete bounded service projection returned by status RPC.
@@ -290,9 +291,10 @@ type DeliveryReport struct {
 
 // CycleReport combines recovery and delivery work from one supervisor tick.
 type CycleReport struct {
-	MaintenanceError string         `json:"maintenance_error,omitempty"`
-	Recovery         RecoveryReport `json:"recovery"`
-	Delivery         DeliveryReport `json:"delivery"`
+	MaintenanceError   string         `json:"maintenance_error,omitempty"`
+	MaintenanceErrorAt time.Time      `json:"maintenance_error_at,omitempty"`
+	Recovery           RecoveryReport `json:"recovery"`
+	Delivery           DeliveryReport `json:"delivery"`
 }
 
 // Authenticator authenticates a Tailnet HTTP request.  Tailnet reachability
@@ -386,3 +388,14 @@ func DefaultConfig() Config {
 
 // NewConfig is an alias kept for callers that prefer constructor naming.
 func NewConfig() Config { return DefaultConfig() }
+
+// MaintenanceFailure preserves the time of the actual failed pass across
+// cadence ticks that return its cached failure without running maintenance.
+type MaintenanceFailure struct {
+	Err        error
+	OccurredAt time.Time
+}
+
+func (e *MaintenanceFailure) Error() string                 { return e.Err.Error() }
+func (e *MaintenanceFailure) Unwrap() error                 { return e.Err }
+func (e *MaintenanceFailure) MaintenanceErrorAt() time.Time { return e.OccurredAt }

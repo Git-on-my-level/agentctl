@@ -18,7 +18,10 @@ import (
 
 var errCleanupDeferred = errors.New("cleanup target exceeds final commit budget")
 
-type cleanupRecord struct{ bucket, key, raw []byte }
+type cleanupRecord struct {
+	bucket, key, raw []byte
+	replacement      []byte
+}
 
 // PlanCleanup uses a caller-owned handle. CLI maintenance should use Cleanup
 // instead, which closes the file handle between pages as well as transactions.
@@ -62,7 +65,7 @@ func (r *cleanupReader) plan(before time.Time, options CleanupOptions, eventLimi
 			return corrupt(err)
 		}
 		if record.ObjectType == "execution" {
-			mutations[record.ObjectID] = append(mutations[record.ObjectID], cleanupRecord{bIdempotency, key, raw})
+			mutations[record.ObjectID] = append(mutations[record.ObjectID], cleanupRecord{bucket: bIdempotency, key: key, raw: raw})
 		}
 		return nil
 	}); err != nil {
@@ -70,10 +73,6 @@ func (r *cleanupReader) plan(before time.Time, options CleanupOptions, eventLimi
 	}
 	targets := make([]cleanupTarget, 0, len(executions))
 	for _, execution := range executions {
-		if len(targets) >= limit {
-			plan.HasMore = true
-			break
-		}
 		if err := r.ctx.Err(); err != nil {
 			return plan, nil, err
 		}
@@ -84,6 +83,12 @@ func (r *cleanupReader) plan(before time.Time, options CleanupOptions, eventLimi
 		}
 		if err != nil {
 			return plan, nil, err
+		}
+		// A deferred tail is not another selectable batch. Inspect candidates
+		// before announcing more work, without adding them to this deletion plan.
+		if len(targets) >= limit {
+			plan.HasMore = true
+			break
 		}
 		if !target.complete {
 			plan.HasMore = true
@@ -132,7 +137,7 @@ func (r *cleanupReader) target(execution model.Execution, executionRaw []byte, m
 	target := cleanupTarget{CleanupExecution: CleanupExecution{ExecutionID: string(id), TerminalAt: *execution.TerminalAt}, complete: true}
 	outputRef := ""
 	add := func(bucket, key, raw []byte) {
-		target.rawRecords = append(target.rawRecords, cleanupRecord{bucket, bytes.Clone(key), bytes.Clone(raw)})
+		target.rawRecords = append(target.rawRecords, cleanupRecord{bucket: bucket, key: bytes.Clone(key), raw: bytes.Clone(raw)})
 		if raw != nil {
 			target.LogicalBytes += int64(len(key) + len(raw))
 		}
@@ -193,7 +198,14 @@ func (r *cleanupReader) target(execution model.Execution, executionRaw []byte, m
 	for _, record := range mutations {
 		target.idempotencyKeys = append(target.idempotencyKeys, record.key)
 		add(record.bucket, record.key, record.raw)
-		target.Records.IdempotencyKeys++
+		replacement, err := replayTombstone(record.raw)
+		if err != nil {
+			return target, err
+		}
+		target.rawRecords[len(target.rawRecords)-1].replacement = replacement
+		if replacement == nil {
+			target.Records.IdempotencyKeys++
+		}
 	}
 	var after []byte
 	retained := []cleanupEvent{}
@@ -309,6 +321,14 @@ func (r *cleanupReader) target(execution model.Execution, executionRaw []byte, m
 		for _, record := range target.rawRecords {
 			if record.raw != nil {
 				target.LogicalBytes -= int64(len(record.key) + len(record.raw))
+			}
+		}
+	}
+	if target.complete {
+		for _, record := range target.rawRecords {
+			if record.replacement != nil {
+				target.Records.ReplayTombstones++
+				target.LogicalBytes -= int64(len(record.key) + len(record.replacement))
 			}
 		}
 	}

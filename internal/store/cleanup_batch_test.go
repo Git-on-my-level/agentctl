@@ -29,7 +29,7 @@ func addRetentionArtifacts(t *testing.T, j *Journal, e model.Execution, count in
 	// Historical artifact metadata is legal after a terminal and exercises the
 	// same event/dedupe/index deletion path as streamed progress.
 	for i := 0; i < count; i++ {
-		projection := map[string]any{"retention_progress": fmt.Sprint(i)}
+		projection := map[string]any{"retention_progress": fmt.Sprint(i), "execution_id": e.ID.String()}
 		key, canonical := semanticEvent(t, e.Adapter, projection)
 		event := model.Event{ExecutionID: e.ID, Authority: e.Authority, Adapter: e.Adapter, Ordering: model.OrderingObservation, Kind: model.EventArtifact, ObservedAt: *e.TerminalAt, DedupeKey: key, DedupeVersion: 1, Payload: projection}
 		if _, _, err := j.AppendEvent(context.Background(), event, canonical); err != nil {

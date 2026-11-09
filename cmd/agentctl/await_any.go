@@ -252,38 +252,69 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 	}
 }
 
-// awaitAnyScan reads one journal snapshot and returns matches ordered by
-// trigger time, then execution ID, so the choice is deterministic.
-//
-// The read-only handle holds bbolt's shared file lock until Close, and every
-// writer needs the exclusive lock, so the separate read transactions below
-// all observe the same committed journal state. ctx bounds the whole scan;
-// opened reports whether the journal open succeeded, so a caller can tell
-// journal contention from a deadline reached mid-scan.
+// awaitAnyScan returns matches ordered by trigger time, then execution ID.
+// Exact-ID reads share one handle; label queries use advisory pages with the
+// handle released between pages. ctx bounds the whole scan. opened distinguishes
+// journal contention from a deadline reached after a successful open.
 func (a *app) awaitAnyScan(ctx context.Context, c common, options awaitAnyOptions) (matches []awaitAnyMatch, watched int, opened bool, problem *output.Error) {
 	matches, watched, problem = a.awaitAnyScanJournal(ctx, c, options, &opened)
 	return matches, watched, opened, problem
 }
 
 func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAnyOptions, opened *bool) ([]awaitAnyMatch, int, *output.Error) {
-	journal, problem := a.openReadContext(ctx, c)
-	if problem != nil {
-		return nil, 0, problem
-	}
-	*opened = true
-	defer journal.Close()
-	var candidates []model.Execution
-	if options.labelPrefix != "" {
-		all, err := journal.ListExecutionsByLabelPrefix(ctx, options.labelPrefix)
-		if err != nil {
-			return nil, 0, mapStoreError("list awaited executions", err)
-		}
-		for _, execution := range all {
-			if hasLabelPrefix(execution.Labels, options.labelPrefix) {
-				candidates = append(candidates, execution)
+	matches := []awaitAnyMatch{}
+	watched := 0
+	skipReconciled := options.labelPrefix != "" && !options.includeAcknowledged
+	visit := func(journal *store.Journal, candidates []model.Execution) error {
+		watched += len(candidates)
+		var index store.AcknowledgementIndex
+		if skipReconciled && options.kinds[awaitAnyKindTerminal] {
+			var err error
+			index, err = journal.AcknowledgementIndexFor(ctx, candidates)
+			if err != nil {
+				return mapStoreError("read acknowledgements", err)
 			}
 		}
+		for _, execution := range candidates {
+			if err := ctx.Err(); err != nil {
+				return output.Wrap(output.CodeTimeout, "await-any scan interrupted", true, err)
+			}
+			match, ok, problem := awaitAnyClassify(ctx, journal, options, execution, skipReconciled, index)
+			if problem != nil {
+				return problem
+			}
+			if ok {
+				matches = append(matches, match)
+			}
+		}
+		return nil
+	}
+	if options.labelPrefix != "" {
+		path, err := a.journalPath(c)
+		if err != nil {
+			return nil, 0, output.Wrap(output.CodeInternal, "resolve journal path", false, err)
+		}
+		reader := store.Reader{Open: func(ctx context.Context, ro bool) (*store.Journal, error) {
+			j, err := openJournalWithBusyBudget(ctx, path, store.Options{ReadOnly: ro}, c.journalBusyBudget > 0, c.journalBusyBudget)
+			if err == nil {
+				*opened = true
+			}
+			return j, err
+		}}
+		if err := reader.WalkExecutionsByLabelPrefix(ctx, options.labelPrefix, visit); err != nil {
+			if problem, ok := err.(*output.Error); ok {
+				return nil, 0, problem
+			}
+			return nil, 0, mapStoreError("list awaited executions", err)
+		}
 	} else {
+		journal, problem := a.openReadContext(ctx, c)
+		if problem != nil {
+			return nil, 0, problem
+		}
+		*opened = true
+		defer journal.Close()
+		candidates := []model.Execution{}
 		for _, id := range options.executionIDs {
 			execution, err := journal.GetExecution(ctx, id)
 			if err != nil {
@@ -291,38 +322,18 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 			}
 			candidates = append(candidates, execution)
 		}
-	}
-	// Label scope means "new work under this prefix": terminals already
-	// collected (or predating acknowledgement tracking) are skipped. Exact IDs
-	// keep await's level-triggered semantics unless the caller opts out.
-	skipReconciled := options.labelPrefix != "" && !options.includeAcknowledged
-	var index store.AcknowledgementIndex
-	if skipReconciled && options.kinds[awaitAnyKindTerminal] {
-		var err error
-		if index, err = journal.AcknowledgementIndex(ctx); err != nil {
-			return nil, 0, mapStoreError("read acknowledgements", err)
+		if err := visit(journal, candidates); err != nil {
+			return nil, 0, err.(*output.Error)
 		}
 	}
-	matches := []awaitAnyMatch{}
-	for _, execution := range candidates {
-		if err := ctx.Err(); err != nil {
-			return nil, 0, output.Wrap(output.CodeTimeout, "await-any scan interrupted", true, err)
-		}
-		match, ok, problem := awaitAnyClassify(ctx, journal, options, execution, skipReconciled, index)
-		if problem != nil {
-			return nil, 0, problem
-		}
-		if ok {
-			matches = append(matches, match)
-		}
-	}
+
 	sort.SliceStable(matches, func(i, j int) bool {
 		if !matches[i].triggerAt.Equal(matches[j].triggerAt) {
 			return matches[i].triggerAt.Before(matches[j].triggerAt)
 		}
 		return matches[i].execution.ID.String() < matches[j].execution.ID.String()
 	})
-	return matches, len(candidates), nil
+	return matches, watched, nil
 }
 
 func awaitAnyClassify(ctx context.Context, journal *store.Journal, options awaitAnyOptions, execution model.Execution, skipReconciled bool, index store.AcknowledgementIndex) (awaitAnyMatch, bool, *output.Error) {

@@ -13,10 +13,11 @@ import (
 // Cancellation resumes at the last completed page. Any intervening journal
 // commit invalidates the proof, including writes by older binaries.
 type MaintenanceCursor struct {
-	snapshot *cleanupSnapshot
-	bucket   int
-	after    []byte
-	path     string
+	snapshot  *cleanupSnapshot
+	bucket    int
+	after     []byte
+	path      string
+	completed maintenanceCompletion
 }
 
 var cleanupProtectionBuckets = [][]byte{bMetadata, bExecutions, bSubscriptions, bOutbox, bOutboxDead, bOutboxReceipts, bAcknowledgements, bIdempotency, bANXRunLinks}
@@ -26,16 +27,36 @@ var cleanupProtectionBuckets = [][]byte{bMetadata, bExecutions, bSubscriptions, 
 // A continuously mutating journal can defer retention: fail closed and expose
 // that deferral to the operator rather than deleting from a torn graph.
 func (c Cleanup) MaintainNext(ctx context.Context, before time.Time, cursor *MaintenanceCursor, links ...ids.ExecutionID) (progress CleanupProgress, err error) {
+	if before.IsZero() {
+		return progress, errors.New("cleanup cutoff is required")
+	}
 	if cursor == nil {
 		cursor = &MaintenanceCursor{}
 	}
 	defer func() {
 		if err == nil || (!errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrBusy)) {
-			*cursor = MaintenanceCursor{}
+			completed := cursor.completed
+			if err == nil && cursor.snapshot != nil {
+				completed = maintenanceCompletion{version: cursor.snapshot.version, path: cursor.path, links: maintenanceLinksKey(links), nextBefore: cursor.snapshot.nextBefore, nextCheckAt: cursor.snapshot.nextCheckAt}
+			}
+			if errors.Is(err, ErrConflict) {
+				completed = maintenanceCompletion{}
+			}
+			*cursor = MaintenanceCursor{completed: completed}
 		}
 	}()
 	r := c.reader(ctx)
 	r.path = cursor.path
+	if cursor.snapshot == nil && cursor.completed.version != 0 {
+		r.path = cursor.completed.path
+		skip, checkErr := r.maintenanceUnchanged(cursor.completed, before, links)
+		if checkErr != nil {
+			return progress, checkErr
+		}
+		if skip {
+			return progress, nil
+		}
+	}
 	defer func() {
 		if cursor.snapshot != nil {
 			cursor.path = r.path

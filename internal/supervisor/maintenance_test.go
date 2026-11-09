@@ -38,3 +38,20 @@ func TestMaintenanceTimeoutRemainsVisibleInHealth(t *testing.T) {
 		}
 	}
 }
+
+func TestMaintenanceErrorTimestampDoesNotRefreshOnSkippedPass(t *testing.T) {
+	clock := &fakeClock{now: time.Now()}
+	at := clock.now
+	failure := &MaintenanceFailure{Err: context.DeadlineExceeded, OccurredAt: at}
+	s, err := New(testConfig(t, clock), Dependencies{Maintenance: func(context.Context) error { return failure }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		report, err := s.RunOnce(context.Background())
+		if err != nil || !report.MaintenanceErrorAt.Equal(at) || !s.Health().LastMaintenanceErrorAt.Equal(at) {
+			t.Fatalf("timestamp changed: report=%+v health=%+v %v", report, s.Health(), err)
+		}
+		clock.now = clock.now.Add(time.Minute)
+	}
+}

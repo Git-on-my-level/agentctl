@@ -35,7 +35,7 @@ func (a *app) dataInventory(ctx context.Context, renderer output.Renderer, c com
 		return output.Wrap(output.CodeInternal, "resolve journal path", false, pathErr)
 	}
 	reader := store.Reader{Open: func(ctx context.Context, readOnly bool) (*store.Journal, error) {
-		return openJournalWithBusyBudget(ctx, path, store.Options{ReadOnly: readOnly}, false, c.journalBusyBudget)
+		return openDataJournal(ctx, path, readOnly, c.journalBusyBudget)
 	}}
 	inventory, err := reader.Inventory(ctx)
 	if err != nil {
@@ -120,7 +120,7 @@ func (a *app) dataCleanup(ctx context.Context, renderer output.Renderer, c commo
 	// Keep the command's normal lock budget between pages; a short supervisor
 	// poll would make default-budget cleanup fail under transient writers.
 	cleanup := store.Cleanup{Open: func(ctx context.Context, readOnly bool) (*store.Journal, error) {
-		return openJournalWithBusyBudget(ctx, path, store.Options{ReadOnly: readOnly}, false, c.journalBusyBudget)
+		return openDataJournal(ctx, path, readOnly, c.journalBusyBudget)
 	}}
 	links, linkErr := a.anxRetentionLinks(c)
 	if linkErr != nil {

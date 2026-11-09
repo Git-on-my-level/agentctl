@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
+	"github.com/Git-on-my-level/agentctl/internal/model"
 	"go.etcd.io/bbolt"
 )
 
@@ -94,6 +95,10 @@ func TestExecutionFiltersPrecedeBindingHydration(t *testing.T) {
 	}
 	path := j.path
 	j.Close()
+	matched := 0
+	if err := cleanupForPath(path).WalkExecutionsByLabelPrefix(ctx, "watched.", func(_ *Journal, page []model.Execution) error { matched += len(page); return nil }); err != nil || matched != 1 {
+		t.Fatalf("paged label filtering hydrated excluded corruption: %d %v", matched, err)
+	}
 	active, err = cleanupForPath(path).ListExecutions(ctx, true)
 	if err != nil || len(active) != 1 || active[0].ID != running.ID {
 		t.Fatalf("paged active=%v %v", active, err)

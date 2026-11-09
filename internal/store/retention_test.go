@@ -124,7 +124,7 @@ func TestCleanupPlanApplyIsExactAtomicAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Eligible) != 1 || plan.Eligible[0].ExecutionID != old.ID.String() || plan.Records.Executions != 1 || plan.Records.Events != 1 || plan.Records.Outcomes != 1 || plan.Records.IdempotencyKeys != 1 || plan.LogicalBytes == 0 {
+	if len(plan.Eligible) != 1 || plan.Eligible[0].ExecutionID != old.ID.String() || plan.Records.Executions != 1 || plan.Records.Events != 1 || plan.Records.Outcomes != 1 || plan.Records.ReplayTombstones != 1 || plan.LogicalBytes == 0 {
 		t.Fatalf("unexpected plan: %#v", plan)
 	}
 	if _, err := journal.GetExecution(ctx, old.ID); err != nil {
@@ -157,11 +157,11 @@ func TestCleanupPlanApplyIsExactAtomicAndIdempotent(t *testing.T) {
 	if err != nil || !again.Applied || len(again.Eligible) != 0 || again.Records.Total() != 0 {
 		t.Fatalf("repeat apply is not an idempotent no-op: %#v err=%v", again, err)
 	}
-	// The stale idempotency record was removed with its execution graph.
-	created, reused, err := journal.CreateExecution(ctx, sampleExecution(now), mutation)
-	if err != nil || reused || created.ID == old.ID {
-		t.Fatalf("idempotency index was not cleaned: created=%#v reused=%v err=%v", created, reused, err)
+	// Cleanup keeps only a compact refusal record for the request key.
+	if _, _, err := journal.CreateExecution(ctx, sampleExecution(now), mutation); !errors.Is(err, ErrReplayExpired) {
+		t.Fatalf("cleaned request key relaunched work: %v", err)
 	}
+
 }
 
 func TestCleanupApplyRejectsStaleReviewedPlan(t *testing.T) {

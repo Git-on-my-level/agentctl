@@ -1731,6 +1731,13 @@ func outcomeError(code output.Code, message string, e model.Execution) *output.E
 }
 func mapStoreError(message string, err error) *output.Error {
 	switch {
+	case errors.Is(err, store.ErrReplayExpired):
+		problem := output.Wrap(output.CodeConflict, message, false, err).WithDetail("diagnostic_code", "execution_replay_expired").WithDetail("recovery", "original execution was cleaned; this request key cannot launch work again")
+		var expired *store.ReplayExpired
+		if errors.As(err, &expired) {
+			problem.WithDetail("execution_id", expired.ExecutionID)
+		}
+		return problem
 	case errors.Is(err, store.ErrNotFound):
 		return output.Wrap(output.CodeNotFound, message, false, err)
 	case errors.Is(err, store.ErrConflict), errors.Is(err, store.ErrTerminalConflict):

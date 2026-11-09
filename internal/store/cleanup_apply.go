@@ -231,7 +231,13 @@ func (r *cleanupReader) remove(before time.Time, options CleanupOptions, targets
 						}
 						for _, record := range target.rawRecords {
 							if bucket := tx.Bucket(record.bucket); bucket != nil {
-								if err := bucket.Delete(record.key); err != nil {
+								var err error
+								if record.replacement != nil {
+									err = bucket.Put(record.key, record.replacement)
+								} else {
+									err = bucket.Delete(record.key)
+								}
+								if err != nil {
 									return err
 								}
 							}

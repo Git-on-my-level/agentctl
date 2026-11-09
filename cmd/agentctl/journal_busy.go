@@ -176,3 +176,12 @@ func openJournalWithBusyBudget(ctx context.Context, path string, options store.O
 		}
 	}
 }
+
+// Paged data commands preserve the legacy roughly 30s contention allowance,
+// including explicit zero, while checking cancellation between short polls.
+func openDataJournal(ctx context.Context, path string, readOnly bool, budget time.Duration) (*store.Journal, error) {
+	if budget <= 0 {
+		budget = 30 * time.Second
+	}
+	return openJournalWithBusyBudget(ctx, path, store.Options{ReadOnly: readOnly}, true, budget)
+}
