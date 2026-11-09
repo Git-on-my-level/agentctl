@@ -12,7 +12,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -46,6 +45,7 @@ var (
 	bOutcomes          = []byte("outcomes")
 	bAcknowledgements  = []byte("execution_acknowledgements")
 	bStatusContacts    = []byte("status_contacts")
+	bANXRunLinks       = []byte("anx_run_links")
 	keySchema          = []byte("schema_version")
 	keyHost            = []byte("origin_host_id")
 	keyAckEpoch        = []byte("acknowledgement_epoch")
@@ -452,6 +452,16 @@ func (j *Journal) UpdateExecution(ctx context.Context, next model.Execution, exp
 }
 
 func (j *Journal) ListExecutions(ctx context.Context, nonTerminalOnly bool) ([]model.Execution, error) {
+	return j.listExecutions(ctx, nonTerminalOnly, "")
+}
+
+// ListExecutionsByLabelPrefix filters the lightweight stored projection before
+// loading immutable bindings. It is a cached read, including for Multica.
+func (j *Journal) ListExecutionsByLabelPrefix(ctx context.Context, prefix string) ([]model.Execution, error) {
+	return j.listExecutions(ctx, false, prefix)
+}
+
+func (j *Journal) listExecutions(ctx context.Context, nonTerminalOnly bool, prefix string) ([]model.Execution, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -462,6 +472,35 @@ func (j *Journal) ListExecutions(ctx context.Context, nonTerminalOnly bool) ([]m
 			// (and its shared lock) for the whole enumeration.
 			if err := ctx.Err(); err != nil {
 				return err
+			}
+			// Recovery only needs active envelopes. Decode the small state
+			// projection before hydrating/validating immutable delegation and
+			// caller bindings for thousands of retained terminal executions.
+			// A terminal event index alone is insufficient: legacy append-only
+			// events do not necessarily update the execution projection.
+			if nonTerminalOnly || prefix != "" {
+				var header struct {
+					State  model.State `json:"state"`
+					Labels []string    `json:"labels"`
+				}
+				if err := json.Unmarshal(raw, &header); err != nil {
+					return corrupt(err)
+				}
+				if nonTerminalOnly && header.State.Terminal() {
+					return nil
+				}
+				if prefix != "" {
+					matched := false
+					for _, label := range header.Labels {
+						if strings.HasPrefix(label, prefix) {
+							matched = true
+							break
+						}
+					}
+					if !matched {
+						return nil
+					}
+				}
 			}
 			var value model.Execution
 			if err := decodeExecution(tx, raw, &value); err != nil {
@@ -480,12 +519,7 @@ func (j *Journal) ListExecutions(ctx context.Context, nonTerminalOnly bool) ([]m
 		// Do not sort a partial (cancelled or corrupt) listing.
 		return nil, err
 	}
-	sort.Slice(values, func(a, b int) bool {
-		if values[a].CreatedAt.Equal(values[b].CreatedAt) {
-			return values[a].ID.String() < values[b].ID.String()
-		}
-		return values[a].CreatedAt.Before(values[b].CreatedAt)
-	})
+	sortExecutions(values)
 	return values, err
 }
 
@@ -564,11 +598,8 @@ func (j *Journal) appendEventTx(tx *bbolt.Tx, event model.Event, canonicalProjec
 	if err := decodeExecution(tx, execRaw, &execution); err != nil {
 		return model.Event{}, false, corrupt(err)
 	}
-	if execution.State.Terminal() {
-		switch event.Kind {
-		case model.EventStarted, model.EventProgress, model.EventAttention, model.EventHealth:
-			return model.Event{}, false, ErrTerminalConflict
-		}
+	if execution.State.Terminal() && terminalRejectsEvent(event.Kind) {
+		return model.Event{}, false, ErrTerminalConflict
 	}
 	if event.ID.IsZero() {
 		allocated, err := newUniqueEventID(tx, j.generator)
@@ -990,6 +1021,9 @@ func lookupMutation(tx *bbolt.Tx, key contracts.MutationKey) (*mutationRecord, e
 	if record.InputDigest != key.InputDigest {
 		return nil, fmt.Errorf("%w: idempotency key reused with different input digest", ErrConflict)
 	}
+	if record.ObjectType == expiredExecutionObject {
+		return nil, &ReplayExpired{ExecutionID: record.ObjectID}
+	}
 	return &record, nil
 }
 
@@ -1132,3 +1166,14 @@ func rejectSymlinks(path string) error {
 }
 
 var _ contracts.Journal = (*Journal)(nil)
+
+// terminalRejectsEvent is shared by ingestion and partial retention. Cleanup
+// can forget only events that a terminal execution cannot accept again.
+func terminalRejectsEvent(kind model.EventKind) bool {
+	switch kind {
+	case model.EventStarted, model.EventProgress, model.EventAttention, model.EventHealth:
+		return true
+	default:
+		return false
+	}
+}

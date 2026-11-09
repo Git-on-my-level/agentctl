@@ -20,7 +20,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
-func seedTerminalForRetention(t *testing.T, journal *Journal, createdAt time.Time, mutation contracts.MutationKey) model.Execution {
+func seedTerminalForRetention(t *testing.T, journal *Journal, createdAt time.Time, mutation contracts.MutationKey, progressCounts ...int) model.Execution {
 	t.Helper()
 	ctx := context.Background()
 	initial := sampleExecution(createdAt)
@@ -31,6 +31,18 @@ func seedTerminalForRetention(t *testing.T, journal *Journal, createdAt time.Tim
 	execution, _, err := journal.CreateExecution(ctx, initial, mutation)
 	if err != nil {
 		t.Fatal(err)
+	}
+	progressCount := 0
+	if len(progressCounts) > 0 {
+		progressCount = progressCounts[0]
+	}
+	for i := 0; i < progressCount; i++ {
+		projection := map[string]any{"retention_progress": i}
+		key, canonical := semanticEvent(t, execution.Adapter, projection)
+		event := model.Event{ExecutionID: execution.ID, Authority: execution.Authority, Adapter: execution.Adapter, Ordering: model.OrderingObservation, Kind: model.EventProgress, ObservedAt: createdAt, DedupeKey: key, DedupeVersion: 1, Payload: projection}
+		if _, _, err := journal.AppendEvent(ctx, event, canonical); err != nil {
+			t.Fatal(err)
+		}
 	}
 	terminalAt := createdAt.Add(time.Minute)
 	next := execution
@@ -112,7 +124,7 @@ func TestCleanupPlanApplyIsExactAtomicAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Eligible) != 1 || plan.Eligible[0].ExecutionID != old.ID.String() || plan.Records.Executions != 1 || plan.Records.Events != 1 || plan.Records.Outcomes != 1 || plan.Records.IdempotencyKeys != 1 || plan.LogicalBytes == 0 {
+	if len(plan.Eligible) != 1 || plan.Eligible[0].ExecutionID != old.ID.String() || plan.Records.Executions != 1 || plan.Records.Events != 1 || plan.Records.Outcomes != 1 || plan.Records.ReplayTombstones != 1 || plan.LogicalBytes == 0 {
 		t.Fatalf("unexpected plan: %#v", plan)
 	}
 	if _, err := journal.GetExecution(ctx, old.ID); err != nil {
@@ -145,11 +157,11 @@ func TestCleanupPlanApplyIsExactAtomicAndIdempotent(t *testing.T) {
 	if err != nil || !again.Applied || len(again.Eligible) != 0 || again.Records.Total() != 0 {
 		t.Fatalf("repeat apply is not an idempotent no-op: %#v err=%v", again, err)
 	}
-	// The stale idempotency record was removed with its execution graph.
-	created, reused, err := journal.CreateExecution(ctx, sampleExecution(now), mutation)
-	if err != nil || reused || created.ID == old.ID {
-		t.Fatalf("idempotency index was not cleaned: created=%#v reused=%v err=%v", created, reused, err)
+	// Cleanup keeps only a compact refusal record for the request key.
+	if _, _, err := journal.CreateExecution(ctx, sampleExecution(now), mutation); !errors.Is(err, ErrReplayExpired) {
+		t.Fatalf("cleaned request key relaunched work: %v", err)
 	}
+
 }
 
 func TestCleanupApplyRejectsStaleReviewedPlan(t *testing.T) {
@@ -390,6 +402,9 @@ func TestCleanupProtectsUnreconciledTerminalResults(t *testing.T) {
 	}
 	if reasons := planReasons(plan, uncollected.ID); len(reasons) != 1 || reasons[0] != "result_unreconciled" {
 		t.Fatalf("uncollected terminal is not protected as unreconciled: %#v", plan.Protected)
+	}
+	if plan.PreTrackingUnreconciled != 1 {
+		t.Fatalf("pre_tracking_unreconciled=%d", plan.PreTrackingUnreconciled)
 	}
 	if plan.ProtectedUnreconciled != 1 {
 		t.Fatalf("protected_unreconciled=%d want 1: %#v", plan.ProtectedUnreconciled, plan)

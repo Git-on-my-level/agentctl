@@ -1085,7 +1085,7 @@ func (a *app) acknowledgeExecutions(ctx context.Context, c common, executions []
 	if len(executions) == 0 {
 		return stamped, nil
 	}
-	journal, problem := a.openWrite(c)
+	journal, problem := a.openWriteContext(ctx, c)
 	if problem != nil {
 		return stamped, problem
 	}
@@ -1214,6 +1214,8 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 	}
 	deadline := time.Time{}
 	lastMulticaReprobe := time.Time{}
+	var poll time.Duration
+	var lastRevision uint64
 	consecutiveMulticaReprobeErrors := 0
 	if timeoutSet {
 		deadline = a.now().Add(timeout)
@@ -1242,6 +1244,8 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		if err != nil {
 			return a.fail(renderer, mapStoreError("read awaited execution", err))
 		}
+		poll = nextAwaitPoll(poll, execution.Revision != lastRevision)
+		lastRevision = execution.Revision
 		if throughExecutionDeadline && deadline.IsZero() {
 			if execution.DeadlineAt == nil {
 				return a.fail(renderer, output.NewError(output.CodeCapabilityUnavailable, "execution has no recorded deadline", false).WithDetail("execution_id", id.String()).WithDetail("diagnostic_code", "execution_deadline_unavailable"))
@@ -1327,7 +1331,7 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 			lastMulticaReprobe = a.now()
 			continue
 		}
-		timer := time.NewTimer(500 * time.Millisecond)
+		timer := time.NewTimer(awaitPollPause(poll, deadline.Sub(a.now()), !deadline.IsZero()))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -1727,6 +1731,13 @@ func outcomeError(code output.Code, message string, e model.Execution) *output.E
 }
 func mapStoreError(message string, err error) *output.Error {
 	switch {
+	case errors.Is(err, store.ErrReplayExpired):
+		problem := output.Wrap(output.CodeConflict, message, false, err).WithDetail("diagnostic_code", "execution_replay_expired").WithDetail("recovery", "original execution was cleaned; this request key cannot launch work again")
+		var expired *store.ReplayExpired
+		if errors.As(err, &expired) {
+			problem.WithDetail("execution_id", expired.ExecutionID)
+		}
+		return problem
 	case errors.Is(err, store.ErrNotFound):
 		return output.Wrap(output.CodeNotFound, message, false, err)
 	case errors.Is(err, store.ErrConflict), errors.Is(err, store.ErrTerminalConflict):

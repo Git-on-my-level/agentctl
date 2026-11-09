@@ -338,3 +338,45 @@ func openSpoolForTest(t *testing.T, journalPath string) *anxrun.Spool {
 	}
 	return spool
 }
+
+func TestANXUnlabeledRunProtectionSurvivesSpoolRemoval(t *testing.T) {
+	ctx := context.Background()
+	root := testutil.TempDir(t)
+	path := filepath.Join(root, "state", "journal.db")
+	configPath := filepath.Join(root, "config.json")
+	configJSON := `{"schema_version":1,"anx":{"run_links":{"default":"all"}}}`
+	if err := os.WriteFile(configPath, []byte(configJSON), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out, stderr bytes.Buffer
+	a := testApp(&out, &stderr)
+	a.startANXWorker = func(common, string) error { return nil }
+	id := mustParseExecID(t, seedTerminalLabeledExecution(t, a, path, nil))
+	c := common{journalPath: path, configPath: configPath}
+	a.anxRegisterTerminal(c, id)
+	j, err := store.Open(path, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	protected, err := j.ANXRunProtected(ctx, id)
+	if err != nil || !protected {
+		j.Close()
+		t.Fatalf("registration has no durable protection: %v %v stderr=%s", protected, err, stderr.String())
+	}
+	if _, _, err := j.AcknowledgeExecution(ctx, id, store.AcknowledgementResult); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+	if err := os.RemoveAll(filepath.Join(filepath.Dir(path), "anx-run-links")); err != nil {
+		t.Fatal(err)
+	}
+	j, err = store.Open(path, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	plan, err := j.PlanCleanup(ctx, time.Now().Add(90*24*time.Hour), store.CleanupOptions{IncludeUnreconciled: true})
+	if err != nil || len(plan.Eligible) != 0 || len(plan.Protected) != 1 || plan.Protected[0].Reasons[0] != "anx_run_link" {
+		t.Fatalf("link target eligible after spool removal: %+v %v", plan, err)
+	}
+}

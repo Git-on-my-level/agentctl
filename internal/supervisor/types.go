@@ -231,9 +231,11 @@ type Health struct {
 	LastCycleRecoveryDeferred int `json:"last_cycle_recovery_deferred"`
 	// LastError names the execution or delivery it concerns. A fully clean
 	// cycle clears it; LastErrorAt keeps when the most recent error happened.
-	LastError         string    `json:"last_error,omitempty"`
-	LastErrorAt       time.Time `json:"last_error_at,omitempty"`
-	LastDeliveryError string    `json:"last_delivery_error,omitempty"`
+	LastError              string    `json:"last_error,omitempty"`
+	LastErrorAt            time.Time `json:"last_error_at,omitempty"`
+	LastDeliveryError      string    `json:"last_delivery_error,omitempty"`
+	LastMaintenanceError   string    `json:"last_maintenance_error,omitempty"`
+	LastMaintenanceErrorAt time.Time `json:"last_maintenance_error_at,omitempty"`
 }
 
 // Status is the complete bounded service projection returned by status RPC.
@@ -289,8 +291,10 @@ type DeliveryReport struct {
 
 // CycleReport combines recovery and delivery work from one supervisor tick.
 type CycleReport struct {
-	Recovery RecoveryReport `json:"recovery"`
-	Delivery DeliveryReport `json:"delivery"`
+	MaintenanceError   string         `json:"maintenance_error,omitempty"`
+	MaintenanceErrorAt time.Time      `json:"maintenance_error_at,omitempty"`
+	Recovery           RecoveryReport `json:"recovery"`
+	Delivery           DeliveryReport `json:"delivery"`
 }
 
 // Authenticator authenticates a Tailnet HTTP request.  Tailnet reachability
@@ -308,10 +312,12 @@ type TailnetHookConfig struct {
 
 // Dependencies are the authority adapters injected into a Supervisor.
 type Dependencies struct {
-	Executions ExecutionRepository
-	Reprober   Reprober
-	Outbox     Outbox
-	Deliverer  Deliverer
+	// Maintenance runs after recovery and delivery; it must bound its own work.
+	Maintenance func(context.Context) error
+	Executions  ExecutionRepository
+	Reprober    Reprober
+	Outbox      Outbox
+	Deliverer   Deliverer
 	// Factory opens dependencies for one bounded cycle and must release any
 	// underlying resources in CycleDependencies.Close before returning. This
 	// is used by bbolt-backed hosts so a long-running supervisor never holds an
@@ -382,3 +388,14 @@ func DefaultConfig() Config {
 
 // NewConfig is an alias kept for callers that prefer constructor naming.
 func NewConfig() Config { return DefaultConfig() }
+
+// MaintenanceFailure preserves the time of the actual failed pass across
+// cadence ticks that return its cached failure without running maintenance.
+type MaintenanceFailure struct {
+	Err        error
+	OccurredAt time.Time
+}
+
+func (e *MaintenanceFailure) Error() string                 { return e.Err.Error() }
+func (e *MaintenanceFailure) Unwrap() error                 { return e.Err }
+func (e *MaintenanceFailure) MaintenanceErrorAt() time.Time { return e.OccurredAt }

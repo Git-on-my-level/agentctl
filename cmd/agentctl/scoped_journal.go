@@ -37,10 +37,13 @@ func (s scopedJournal) GetExecution(ctx context.Context, id ids.ExecutionID) (v 
 	err = s.with(ctx, true, func(j *store.Journal) error { v, err = j.GetExecution(ctx, id); return err })
 	return
 }
-func (s scopedJournal) ListExecutions(ctx context.Context, active bool) (v []model.Execution, err error) {
-	err = s.with(ctx, true, func(j *store.Journal) error { v, err = j.ListExecutions(ctx, active); return err })
-	return
+func (s scopedJournal) ListExecutions(ctx context.Context, active bool) ([]model.Execution, error) {
+	reader := store.Reader{Open: func(ctx context.Context, readOnly bool) (*store.Journal, error) {
+		return openJournalWithBusyBudget(ctx, s.path, store.Options{ReadOnly: readOnly}, true, s.busyBudget)
+	}}
+	return reader.ListExecutions(ctx, active)
 }
+
 func (s scopedJournal) ListEvents(ctx context.Context, id ids.ExecutionID, q contracts.EventQuery) (v []model.Event, err error) {
 	err = s.with(ctx, true, func(j *store.Journal) error { v, err = j.ListEvents(ctx, id, q); return err })
 	return
