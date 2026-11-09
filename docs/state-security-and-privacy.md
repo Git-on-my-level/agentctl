@@ -34,8 +34,8 @@
 - bounded daily release-check timestamps and public release metadata.
 
 This state is namespaced by stable host word ID and local store generation. It
-is not database-replicated between machines. Automatic journal retention is not
-implemented in the preview. Cross-host callbacks exchange bounded metadata
+is not database-replicated between machines. The running supervisor performs bounded, default-on
+[retention](configuration.md#journal-retention) of old acknowledged terminals. Cross-host callbacks exchange bounded metadata
 documents and converge on full semantic dedupe keys; portable URIs keep the
 origin host explicit.
 
@@ -159,25 +159,57 @@ retrieval reference without copying content.
 
 ### Retention and cleanup
 
-Automatic journal retention is not implemented in the preview. Operators must include
-the journal in their local data-handling and backup policy and should not run
-sensitive work unless this persistence is acceptable.
+The running supervisor defaults to retaining acknowledged, terminal, lineage-free
+records for 14 days. `journal.retention.enabled=false` is the host-local kill
+switch; `journal.retention.days` changes the cutoff. No automatic acknowledgement
+or physical compaction occurs. Unacknowledged records, including pre-tracking
+terminals, remain protected from automatic deletion. Source bindings and native
+or Multica authority are never changed by retention. Operators must still include
+the journal in their local data-handling and backup policy.
 
 `agentctl data inventory` is a read-only aggregate of the journal file,
 logical bucket bytes, record counts, terminal/nonterminal executions, outcomes,
 and stored result bytes. `agentctl data cleanup --before <RFC3339> --plan` is
-also read-only. It selects only complete terminal execution graphs strictly
-before the cutoff and reports every eligible execution, record category,
+also read-only. It selects terminal, lineage-free executions strictly
+before the cutoff and reports the selected execution, record category,
 logical byte count, protected execution and protection reason. Diagnostic
 siblings appear as `diagnostic_file` (name, bytes, SHA-256) per execution, with
 `diagnostic_files` and `diagnostic_bytes` totals. Those proofs participate in the
-plan digest. Planning creates no files, including cache locks.
+plan digest. Planning creates no files, including cache locks. Each plan selects
+at most eight executions, each with up to 128 events. `has_more` means another
+plan is needed after applying this batch. An eligible item's `partial=true`
+means only its selected event/index/dedupe triples are removed; the execution,
+outcome, terminal event, latest event, acknowledgement and mutation bindings remain until a
+later final batch. Events that a terminal execution can still ingest (such as
+artifacts) keep their original event and dedupe records until that final commit;
+only kinds already refused on terminals can be forgotten in partial batches.
+A candidate whose metadata or replayable events cannot fit one final batch is
+reported protected with `cleanup_final_batch_too_large`; planning continues to
+later candidates. Counts describe selected records, not the full history.
+Metadata and event scans use pages of at most 128 rows or 256 KiB (one oversized
+row is permitted). The journal handle closes between pages and commits.
 
 Deletion requires `--apply --plan-digest <sha256:...>`. Apply recomputes the
-plan in one journal write transaction and rejects it if the reviewed digest no
-longer matches. The mutation deletes the execution, outcome, events, event
-indexes/dedupe records, terminal index, execution idempotency keys, and any
-result-collection acknowledgement together. Before dropping records, apply
+bounded plan and rejects it before deleting anything if its digest changed.
+Each commit rechecks the complete protection graph from paged metadata reads
+and verifies the bbolt generation before writing; concurrent reference changes
+fail closed. All lineage-linked records are conservatively retained, including
+fully terminal lineages. Final commits delete the execution, outcome, remaining
+events, indexes/dedupe records, terminal index, internal caller/delegation snapshots and result acknowledgements together.
+Request-key records become compact replay tombstones in the same commit, keeping
+only the key, input digest and original execution ID. Their original plans,
+caller/delegation metadata, and answers are not retained. `replay_tombstones`
+counts retained refusal records; `logical_bytes` subtracts their retained bytes.
+An identical key/digest returns non-retryable `conflict` (exit 8) with
+`diagnostic_code=execution_replay_expired`, refusing to relaunch. Changed inputs
+still conflict. The tombstone has no automatic expiry. Older binaries reject its
+unknown object type rather than launching new work. Every event batch is limited to 128 events
+and 256 KiB of event/dedupe values (one oversized event is permitted).
+Apply is not globally atomic: cancellation, busy journals or new protections
+can stop it after committed batches. Errors expose `cleanup_progress` with
+committed batches, events and executions. Review a fresh plan before retrying;
+committed progress is never rolled back. Constant writes can defer the stable
+protection snapshot; retention does not weaken safety to make progress. Before dropping records, apply
 removes their private diagnostic siblings, including legacy random filenames
 explicitly referenced by an outcome. Arbitrary paths and symlinks fail closed.
 Capture, oldest-first eviction and cleanup apply share a nonblocking cache lock.
@@ -195,9 +227,11 @@ executions in the plan. `--include-unreconciled` is the explicit opt-out. It
 participates in the plan digest, so a digest reviewed under one policy can never
 authorize the other, and an applied opt-out plan warns that uncollected results
 were deleted. The protection is gated on the journal's acknowledgement epoch:
-terminals that predate acknowledgement tracking on that journal can never gain a
-stamp retroactively and stay eligible, so an old journal does not become
-permanently uncleanable. `agentctl result --unreconciled` collects the retained
+terminals that predate acknowledgement tracking can lack a stamp and stay
+manually eligible, so an old journal does not become permanently uncleanable.
+`pre_tracking_unreconciled` counts those old unacknowledged terminals even when
+`--include-unreconciled` is set; inspect that count before applying a manual plan.
+Automatic retention always requires an explicit acknowledgement. `agentctl result --unreconciled` collects the retained
 backlog, after which those executions become eligible normally.
 `agentctl reconcile --apply` can stamp that same collection boundary in bulk
 for completed and cancelled terminals older than `--collect-older-than`, with
@@ -213,13 +247,28 @@ lists `acknowledged`. Because cleanup treats any
 acknowledgement as collection, a `bulk_reconciled` stamp makes those results
 eligible for `data cleanup` deletion once they are older than the cutoff.
 
-Nonterminal graphs, partial parent/supersession graphs, active subscription
+Nonterminal graphs, partial parent/supersession graphs, unexpired active or paused subscription
 filters/cursors/coordinators, and every retained outbox delivery or receipt are
 protected. Promotion-linked executions are conservatively never eligible in
 this preview because those records can encode authority handoff and recovery
 state. Stopped subscriptions alone do not protect a graph, but their retained
 deliveries and receipts do. Cleanup never removes subscription, outbox,
-receipt, or promotion records themselves.
+receipt, or promotion records themselves. ANX registrations commit a monotonic
+`anx_run_links` stamp before spooling or sending a link; these targets remain
+protected after collection or spool expiry. Legacy pending, dead and delivered
+spool references also protect cleanup. Automatic retention exempts executions
+with idempotency/immutable bindings or source bindings, preserving native
+request-key replay and cached Multica identity. Manual cleanup expires answer recovery while keeping a small durable refusal
+tombstone, so the key cannot silently launch duplicate work.
+
+CLI inventory and supervisor recovery close the journal between pages, including
+nested event-index inventory walks. Their aggregate listings are advisory across
+pages; they do not promise a single point-in-time snapshot. Recovery and label
+queries filter stored state/labels before hydrating immutable bindings. Long-lived
+await-any label-prefix scans release the handle between pages and read only each
+page's acknowledgement records, preserving deterministic match ordering across
+an advisory paged scan. Pending
+supervisor outbox scans are read-only and can coexist with other readers.
 
 Generic extraction diagnostics are a separate cache: mode-0600 files named
 `failed-output-<execution-id>.txt`, each at most 64 KiB, at most 128 files

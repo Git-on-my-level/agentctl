@@ -201,3 +201,36 @@ func acknowledgementEpoch(tx *bbolt.Tx) (time.Time, error) {
 	}
 	return value.UTC(), nil
 }
+
+// AcknowledgementIndexFor reads only the selected page and the epoch. Unlike
+// the global index this does not walk retained acknowledgement history.
+func (j *Journal) AcknowledgementIndexFor(ctx context.Context, executions []model.Execution) (AcknowledgementIndex, error) {
+	index := AcknowledgementIndex{ByID: map[ids.ExecutionID]ExecutionAcknowledgement{}}
+	err := j.db.View(func(tx *bbolt.Tx) error {
+		var err error
+		index.Epoch, err = acknowledgementEpoch(tx)
+		if err != nil {
+			return err
+		}
+		b := tx.Bucket(bAcknowledgements)
+		if b == nil {
+			return ctx.Err()
+		}
+		for _, execution := range executions {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			raw := b.Get([]byte(execution.ID.String()))
+			if raw == nil {
+				continue
+			}
+			var ack ExecutionAcknowledgement
+			if err := json.Unmarshal(raw, &ack); err != nil {
+				return corrupt(err)
+			}
+			index.ByID[ack.ExecutionID] = ack
+		}
+		return nil
+	})
+	return index, err
+}

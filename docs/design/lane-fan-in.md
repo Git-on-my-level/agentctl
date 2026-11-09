@@ -62,14 +62,14 @@ share a prefix.
 
 ## Journal-busy retry
 
-Commands that create or wait for work absorb journal lock contention instead
+Commands that create, wait for, control or collect work absorb journal lock contention instead
 of returning `journal_busy` on the first conflict.
 
 | Item | Value |
 | --- | --- |
-| Commands with a default budget | `run`, `delegate` (including its detached worker), `dispatch`, `continue`, `await`, `await-any` |
+| Commands with a default budget | `run`, `delegate` (including its detached worker), `dispatch`, `continue`, `await`, `await-any`, `result`, `reconcile`, `steer` |
 | Default budget | `120s` |
-| Other commands | historical two short attempts (budget `0`) |
+| Other commands | historical two attempts (budget `0`) |
 | Override | global `--journal-busy-budget <duration>`, else `AGENTCTL_JOURNAL_BUSY_BUDGET`, else the command default |
 | Range | `0` (two attempts) to `30m`; anything else is a usage error, exit 2 |
 | Backoff | each attempt polls the lock for up to 2s (50ms inside context-bound engine calls), then sleeps a uniformly jittered delay in [d/2, d] starting at d = 100ms, doubling to a 5s cap |

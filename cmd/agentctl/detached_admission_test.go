@@ -16,7 +16,7 @@ import (
 )
 
 func TestDetachedAdmissionSurvivesWorkerAndReceiptFailures(t *testing.T) {
-	for _, scenario := range []string{"start_failure", "worker_failure", "receipt_eof", "receipt_wrong_id"} {
+	for _, scenario := range []string{"start_failure", "worker_failure", "worker_failure_busy", "receipt_eof", "receipt_wrong_id"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newDelegateFixture(t, delegateSuccessScript)
 			var out, stderr bytes.Buffer
@@ -39,7 +39,16 @@ func TestDetachedAdmissionSurvivesWorkerAndReceiptFailures(t *testing.T) {
 				}
 				cmd.Path = "/bin/sh"
 				cmd.Args = []string{"sh", "-c", "exit 0"}
-				if scenario == "worker_failure" {
+				if scenario == "worker_failure_busy" {
+					holder, err := store.Open(f.journal, store.Options{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					released := make(chan struct{})
+					go func() { defer close(released); time.Sleep(300 * time.Millisecond); holder.Close() }()
+					t.Cleanup(func() { <-released })
+				}
+				if scenario == "worker_failure" || scenario == "worker_failure_busy" {
 					cmd.Args = []string{"sh", "-c", `printf '%s' '{"ok":false,"error":{"code":"usage","message":"protocol refused","exit_code":2,"retryable":false,"details":{}}}'`}
 				}
 				if scenario == "receipt_wrong_id" {
@@ -51,7 +60,7 @@ func TestDetachedAdmissionSurvivesWorkerAndReceiptFailures(t *testing.T) {
 			}
 			args := []string{"--config", f.config, "--journal", f.journal, "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin", "--detach"}
 			code := a.run(context.Background(), args)
-			failure := scenario == "start_failure" || scenario == "worker_failure"
+			failure := scenario == "start_failure" || scenario == "worker_failure" || scenario == "worker_failure_busy"
 			if (failure && code == 0) || (!failure && code != 0) {
 				t.Fatalf("code=%d %s", code, out.String())
 			}
@@ -66,6 +75,9 @@ func TestDetachedAdmissionSurvivesWorkerAndReceiptFailures(t *testing.T) {
 			}
 			if !strings.Contains(out.String(), rows[0].ID.String()) || strings.Contains(out.String(), "detached_receipt_unknown") {
 				t.Fatal(out.String())
+			}
+			if failure && (strings.Contains(out.String(), `"launch_status":"launched"`) || strings.Contains(out.String(), `"ok":true`)) {
+				t.Fatalf("failed worker reported launch success: %s", out.String())
 			}
 			if failure && rows[0].State != model.StateFailed {
 				t.Fatalf("state=%s", rows[0].State)

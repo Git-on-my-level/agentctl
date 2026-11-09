@@ -24,6 +24,7 @@ var (
 )
 
 type Config struct {
+	Journal        *Journal           `json:"journal,omitempty"`
 	SchemaVersion  int                `json:"schema_version"`
 	DefaultProfile string             `json:"default_profile,omitempty"`
 	Profiles       map[string]Profile `json:"profiles,omitempty"`
@@ -199,6 +200,11 @@ func (c Config) Validate() error {
 	if c.Bootstrap != nil {
 		if err := c.Bootstrap.Validate(); err != nil {
 			return fmt.Errorf("bootstrap: %w", err)
+		}
+	}
+	if c.Journal != nil {
+		if err := c.Journal.Validate(); err != nil {
+			return fmt.Errorf("journal: %w", err)
 		}
 	}
 	if c.Anx != nil {

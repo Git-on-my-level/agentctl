@@ -1,23 +1,20 @@
 package store
 
-// Retention is deliberately an explicit maintenance operation. The journal
-// never deletes records on open or on a timer. Planning is read-only; applying
-// recomputes the same protected execution graph inside one write transaction.
+// Retention never runs on open. Explicit cleanup and supervisor maintenance
+// share protective selection and bounded transactions.
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
 
 	"go.etcd.io/bbolt"
 
 	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/subscription"
 )
@@ -59,6 +56,7 @@ type CleanupRecordCounts struct {
 	TerminalIndexes  int `json:"terminal_indexes"`
 	Outcomes         int `json:"outcomes"`
 	IdempotencyKeys  int `json:"idempotency_keys"`
+	ReplayTombstones int `json:"replay_tombstones,omitempty"`
 	Acknowledgements int `json:"acknowledgements,omitempty"`
 	StatusContacts   int `json:"status_contacts,omitempty"`
 }
@@ -68,6 +66,7 @@ func (c CleanupRecordCounts) Total() int {
 }
 
 type CleanupExecution struct {
+	Partial        bool                   `json:"partial,omitempty"`
 	DiagnosticFile *diagnostic.OutputFile `json:"diagnostic_file,omitempty"`
 	ExecutionID    string                 `json:"execution_id"`
 	TerminalAt     time.Time              `json:"terminal_at"`
@@ -82,6 +81,7 @@ type ProtectedExecution struct {
 }
 
 type CleanupPlan struct {
+	HasMore         bool                 `json:"has_more"`
 	DiagnosticFiles int                  `json:"diagnostic_files"`
 	DiagnosticBytes int64                `json:"diagnostic_bytes"`
 	SchemaVersion   int                  `json:"schema_version"`
@@ -96,8 +96,9 @@ type CleanupPlan struct {
 	// IncludeUnreconciled reports whether the caller explicitly opted out of
 	// uncollected-result protection. ProtectedUnreconciled counts the terminal
 	// executions retained solely because nobody has collected their result.
-	IncludeUnreconciled   bool `json:"include_unreconciled"`
-	ProtectedUnreconciled int  `json:"protected_unreconciled"`
+	IncludeUnreconciled     bool `json:"include_unreconciled"`
+	ProtectedUnreconciled   int  `json:"protected_unreconciled"`
+	PreTrackingUnreconciled int  `json:"pre_tracking_unreconciled"`
 }
 
 // CleanupOptions carries the explicit caller intent that widens deletion
@@ -107,15 +108,27 @@ type CleanupOptions struct {
 	// acknowledged by result or await. It is destructive of uncollected
 	// evidence and must come from an explicit caller flag.
 	IncludeUnreconciled bool
+	// ANXRunLinks is read-only legacy spool evidence for links predating stamps.
+	ANXRunLinks []ids.ExecutionID
+	automatic   bool
 }
 
 type cleanupEvent struct {
+	kind      model.EventKind
 	id        string
 	dedupeKey string
+	sequence  []byte
+	raw       []byte
+	dedupeRaw []byte
 }
 
 type cleanupTarget struct {
 	CleanupExecution
+	lastEventID     string
+	anchorCount     int
+	outputRef       string
+	rawRecords      []cleanupRecord
+	complete        bool
 	events          []cleanupEvent
 	idempotencyKeys [][]byte
 }
@@ -134,7 +147,9 @@ func (j *Journal) Inventory(ctx context.Context) (RetentionInventory, error) {
 	err := j.db.View(func(tx *bbolt.Tx) error {
 		if err := tx.ForEach(func(name []byte, bucket *bbolt.Bucket) error {
 			usage := BucketUsage{Name: string(name)}
-			measureBucket(bucket, &usage)
+			if err := measureBucket(ctx, bucket, &usage); err != nil {
+				return err
+			}
 			result.LogicalBytes += usage.KeyBytes + usage.ValueBytes
 			result.Buckets = append(result.Buckets, usage)
 			return nil
@@ -144,6 +159,9 @@ func (j *Journal) Inventory(ctx context.Context) (RetentionInventory, error) {
 		executions := tx.Bucket(bExecutions)
 		if executions != nil {
 			if err := executions.ForEach(func(_, raw []byte) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				var value model.Execution
 				if err := json.Unmarshal(raw, &value); err != nil {
 					return corrupt(err)
@@ -167,6 +185,9 @@ func (j *Journal) Inventory(ctx context.Context) (RetentionInventory, error) {
 		}
 		if outcomes := tx.Bucket(bOutcomes); outcomes != nil {
 			if err := outcomes.ForEach(func(_, raw []byte) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				var value model.Outcome
 				if err := json.Unmarshal(raw, &value); err != nil {
 					return corrupt(err)
@@ -189,13 +210,18 @@ func (j *Journal) Inventory(ctx context.Context) (RetentionInventory, error) {
 	return result, err
 }
 
-func measureBucket(bucket *bbolt.Bucket, usage *BucketUsage) {
-	_ = bucket.ForEach(func(key, value []byte) error {
+func measureBucket(ctx context.Context, bucket *bbolt.Bucket, usage *BucketUsage) error {
+	return bucket.ForEach(func(key, value []byte) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		usage.KeyBytes += int64(len(key))
 		if value == nil {
 			usage.NestedBuckets++
 			if child := bucket.Bucket(key); child != nil {
-				measureBucket(child, usage)
+				if err := measureBucket(ctx, child, usage); err != nil {
+					return err
+				}
 			}
 			return nil
 		}
@@ -205,119 +231,25 @@ func measureBucket(bucket *bbolt.Bucket, usage *BucketUsage) {
 	})
 }
 
-// PlanCleanup selects terminal execution graphs whose terminal timestamp is
-// strictly before the cutoff. It never writes, including when opened writable.
-func (j *Journal) PlanCleanup(ctx context.Context, before time.Time, options CleanupOptions) (CleanupPlan, error) {
-	if err := ctx.Err(); err != nil {
-		return CleanupPlan{}, err
-	}
-	if before.IsZero() {
-		return CleanupPlan{}, fmt.Errorf("cleanup cutoff is required")
-	}
-	var plan CleanupPlan
-	err := j.db.View(func(tx *bbolt.Tx) error {
-		var err error
-		plan, _, err = j.cleanupPlanTx(tx, before.UTC(), options)
-		return err
-	})
-	return plan, err
-}
-
-// ApplyCleanup recomputes the plan, removes its diagnostic cache siblings, then
-// atomically deletes the eligible journal graph. Repeating
-// it is safe: already-deleted records simply produce an empty applied plan.
-func (j *Journal) ApplyCleanup(ctx context.Context, before time.Time, expectedPlanDigest string, options CleanupOptions) (CleanupPlan, error) {
-	if j.readOnly {
-		return CleanupPlan{}, ErrReadOnly
-	}
-	if err := ctx.Err(); err != nil {
-		return CleanupPlan{}, err
-	}
-	if before.IsZero() {
-		return CleanupPlan{}, fmt.Errorf("cleanup cutoff is required")
-	}
-	if expectedPlanDigest == "" {
-		return CleanupPlan{}, fmt.Errorf("%w: cleanup plan digest is required", ErrConflict)
-	}
-	outputs, err := diagnostic.OpenOutputs(filepath.Dir(j.path), true)
-	if err != nil {
-		return CleanupPlan{}, err
-	}
-	defer outputs.Close()
-	var plan CleanupPlan
-	err = j.db.Update(func(tx *bbolt.Tx) error {
-		var targets []cleanupTarget
-		var err error
-		plan, targets, err = j.cleanupPlanTx(tx, before.UTC(), options)
-		if err != nil {
-			return err
-		}
-		if plan.PlanDigest != expectedPlanDigest {
-			return fmt.Errorf("%w: cleanup plan changed; reviewed %s, current %s", ErrConflict, expectedPlanDigest, plan.PlanDigest)
-		}
-		// Files are a diagnostic cache: remove them before dropping their owning
-		// records. A filesystem failure aborts the transaction; a later DB rollback
-		// can leave a missing cache file, never retained output without its record.
-		for _, target := range targets {
-			if target.DiagnosticFile != nil {
-				if err := outputs.Remove(*target.DiagnosticFile); err != nil {
-					return err
-				}
-			}
-		}
-		for _, target := range targets {
-			for _, event := range target.events {
-				if err := tx.Bucket(bEvents).Delete([]byte(event.id)); err != nil {
-					return err
-				}
-				if err := tx.Bucket(bDedupe).Delete([]byte(event.dedupeKey)); err != nil {
-					return err
-				}
-			}
-			if nested := tx.Bucket(bEventsByExecution).Bucket([]byte(target.ExecutionID)); nested != nil {
-				if err := tx.Bucket(bEventsByExecution).DeleteBucket([]byte(target.ExecutionID)); err != nil {
-					return err
-				}
-			}
-			for _, key := range target.idempotencyKeys {
-				if err := tx.Bucket(bIdempotency).Delete(key); err != nil {
-					return err
-				}
-			}
-			for _, bucket := range [][]byte{bTerminal, bOutcomes, bExecutions} {
-				if err := tx.Bucket(bucket).Delete([]byte(target.ExecutionID)); err != nil {
-					return err
-				}
-			}
-			if acks := tx.Bucket(bAcknowledgements); acks != nil {
-				if err := acks.Delete([]byte(target.ExecutionID)); err != nil {
-					return err
-				}
-			}
-			if contacts := tx.Bucket(bStatusContacts); contacts != nil {
-				if err := contacts.Delete([]byte(target.ExecutionID)); err != nil {
-					return err
-				}
-			}
-		}
-		plan.Applied = true
-		return nil
-	})
-	return plan, err
-}
-
-func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupOptions) (CleanupPlan, []cleanupTarget, error) {
-	now := j.clock().UTC()
+func (snapshot *cleanupSnapshot) selectCleanup(before, now time.Time, options CleanupOptions) (CleanupPlan, []model.Execution, error) {
 	plan := CleanupPlan{SchemaVersion: RetentionSchemaVersion, Before: before, GeneratedAt: now, Eligible: []CleanupExecution{}, Protected: []ProtectedExecution{}, IncludeUnreconciled: options.IncludeUnreconciled}
+	snapshot.nextBefore = time.Time{}
+	snapshot.nextCheckAt = time.Time{}
 	executions := map[string]model.Execution{}
 	base := map[string]bool{}
-	if err := tx.Bucket(bExecutions).ForEach(func(key, raw []byte) error {
+	if err := snapshot.forEach(bExecutions, func(key, raw []byte) error {
+		if err := snapshot.ctx.Err(); err != nil {
+			return err
+		}
 		var value model.Execution
 		if err := json.Unmarshal(raw, &value); err != nil {
 			return corrupt(err)
 		}
 		if err := value.Validate(); err != nil {
 			return corrupt(err)
+		}
+		if value.State.Terminal() && value.TerminalAt != nil && !value.TerminalAt.Before(before) && (snapshot.nextBefore.IsZero() || value.TerminalAt.Before(snapshot.nextBefore)) {
+			snapshot.nextBefore = *value.TerminalAt
 		}
 		id := string(key)
 		executions[id] = value
@@ -338,6 +270,35 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 		protected[id][reason] = true
 	}
 
+	// A run link is an external durable reference, independent of collection.
+	for _, id := range options.ANXRunLinks {
+		protect(id.String(), "anx_run_link")
+	}
+	for id := range snapshot.Bucket(bANXRunLinks) {
+		protect(id, "anx_run_link")
+	}
+	// Automatic retention cannot revoke durable request-key replay or cached
+	// authority bindings. Manual digest-reviewed cleanup remains explicit.
+	if options.automatic {
+		for id, value := range executions {
+			if len(value.SourceBindings) > 0 {
+				protect(id, "authority_binding")
+			}
+		}
+		if err := snapshot.forEach(bIdempotency, func(_, raw []byte) error {
+			var record mutationRecord
+			if err := json.Unmarshal(raw, &record); err != nil {
+				return corrupt(err)
+			}
+			if record.ObjectType == "execution" {
+				protect(record.ObjectID, "request_key_replay")
+			}
+			return nil
+		}); err != nil {
+			return CleanupPlan{}, nil, err
+		}
+	}
+
 	// Never partially remove an execution lineage. Promotion links are retained
 	// unconditionally because they represent an authority handoff/recovery log.
 	adjacency := map[string]map[string]bool{}
@@ -354,6 +315,9 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 		adjacency[a][b], adjacency[b][a] = true, true
 	}
 	for id, value := range executions {
+		if err := snapshot.ctx.Err(); err != nil {
+			return CleanupPlan{}, nil, err
+		}
 		if value.ParentExecutionID != nil {
 			link(id, value.ParentExecutionID.String())
 		}
@@ -369,8 +333,19 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 			protect(value.Promotion.CounterpartExecutionID.String(), "promotion_reference")
 		}
 	}
+	for id, value := range executions {
+		if err := snapshot.ctx.Err(); err != nil {
+			return CleanupPlan{}, nil, err
+		}
+		if len(adjacency[id]) > 0 || value.ParentExecutionID != nil || len(value.Supersedes) > 0 || value.SupersededBy != nil || value.Promotion != nil {
+			protect(id, "execution_graph_reference")
+		}
+	}
 	visited := map[string]bool{}
 	for id := range executions {
+		if err := snapshot.ctx.Err(); err != nil {
+			return CleanupPlan{}, nil, err
+		}
 		if visited[id] {
 			continue
 		}
@@ -378,6 +353,9 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 		component := []string{}
 		allEligible := true
 		for len(queue) > 0 {
+			if err := snapshot.ctx.Err(); err != nil {
+				return CleanupPlan{}, nil, err
+			}
 			current := queue[0]
 			queue = queue[1:]
 			if visited[current] {
@@ -403,23 +381,26 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 
 	// Active exact subscriptions, including their cursor/coordinator references,
 	// keep the complete execution history needed to interpret future delivery.
-	if bucket := tx.Bucket(bSubscriptions); bucket != nil {
-		if err := bucket.ForEach(func(_, raw []byte) error {
+	if bucket := snapshot.Bucket(bSubscriptions); bucket != nil {
+		if err := snapshot.forEach(bSubscriptions, func(_, raw []byte) error {
 			var record SubscriptionRecord
 			if err := json.Unmarshal(raw, &record); err != nil {
 				return corrupt(err)
 			}
 			value := record.Subscription
-			active := value.State == subscription.StateActive && (value.ExpiresAt.IsZero() || now.Before(value.ExpiresAt))
+			active := (value.State == subscription.StateActive || value.State == subscription.StatePaused) && (value.ExpiresAt.IsZero() || now.Before(value.ExpiresAt))
 			if !active {
 				return nil
+			}
+			if !value.ExpiresAt.IsZero() && (snapshot.nextCheckAt.IsZero() || value.ExpiresAt.Before(snapshot.nextCheckAt)) {
+				snapshot.nextCheckAt = value.ExpiresAt
 			}
 			for _, id := range value.Filter.ExecutionIDs {
 				protect(id, "active_subscription")
 			}
 			protect(value.CoordinatorExecutionID, "active_subscription")
 			if value.Cursor.EventID != "" {
-				if eventID := tx.Bucket(bEvents).Get([]byte(value.Cursor.EventID)); eventID != nil {
+				if eventID := snapshot.Bucket(bEvents).Get([]byte(value.Cursor.EventID)); eventID != nil {
 					var stored storedEvent
 					if err := json.Unmarshal(eventID, &stored); err != nil {
 						return corrupt(err)
@@ -438,18 +419,18 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 	// an orphan is corruption rather than permission to erase uncertain data.
 	deliveryExecutions := map[string]string{}
 	protectDeliveryBucket := func(bucketName []byte) error {
-		bucket := tx.Bucket(bucketName)
+		bucket := snapshot.Bucket(bucketName)
 		if bucket == nil {
 			return nil
 		}
-		return bucket.ForEach(func(key, raw []byte) error {
+		return snapshot.forEach(bucketName, func(key, raw []byte) error {
 			item, err := decodeDelivery(raw)
 			if err != nil {
 				return err
 			}
 			executionID := item.ExecutionID
 			if executionID == "" {
-				eventRaw := tx.Bucket(bEvents).Get([]byte(item.EventID))
+				eventRaw := snapshot.Bucket(bEvents).Get([]byte(item.EventID))
 				if eventRaw == nil {
 					return fmt.Errorf("%w: delivery event missing", ErrCorrupt)
 				}
@@ -470,8 +451,8 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 	if err := protectDeliveryBucket(bOutboxDead); err != nil {
 		return CleanupPlan{}, nil, err
 	}
-	if receipts := tx.Bucket(bOutboxReceipts); receipts != nil {
-		if err := receipts.ForEach(func(key, _ []byte) error {
+	if receipts := snapshot.Bucket(bOutboxReceipts); receipts != nil {
+		if err := snapshot.forEach(bOutboxReceipts, func(key, _ []byte) error {
 			executionID, ok := deliveryExecutions[string(key)]
 			if !ok {
 				return fmt.Errorf("%w: receipt delivery missing", ErrCorrupt)
@@ -487,31 +468,22 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 	// Cleanup reclaims space; it must not double as an acknowledgement that a
 	// human or agent already read the outcome. The epoch guard keeps this from
 	// freezing old journals: terminals that predate acknowledgement tracking on
-	// this journal can never gain a stamp retroactively, so they stay eligible.
-	if !options.IncludeUnreconciled {
-		epoch, err := acknowledgementEpoch(tx)
-		if err != nil {
+	// this journal may lack a stamp, so manual cleanup leaves them eligible.
+	epoch, err := snapshot.acknowledgementEpoch()
+	if err != nil {
+		return CleanupPlan{}, nil, err
+	}
+	for id, value := range executions {
+		if err := snapshot.ctx.Err(); err != nil {
 			return CleanupPlan{}, nil, err
 		}
-		if !epoch.IsZero() {
-			acknowledged := map[string]bool{}
-			if bucket := tx.Bucket(bAcknowledgements); bucket != nil {
-				if err := bucket.ForEach(func(key, _ []byte) error {
-					acknowledged[string(key)] = true
-					return nil
-				}); err != nil {
-					return CleanupPlan{}, nil, err
-				}
-			}
-			for id, value := range executions {
-				if !base[id] || acknowledged[id] {
-					continue
-				}
-				if value.TerminalAt == nil || value.TerminalAt.Before(epoch) {
-					continue
-				}
-				protect(id, "result_unreconciled")
-			}
+		if !base[id] || snapshot.Bucket(bAcknowledgements).Get([]byte(id)) != nil {
+			continue
+		}
+		if epoch.IsZero() || value.TerminalAt.Before(epoch) {
+			plan.PreTrackingUnreconciled++
+		} else if !options.IncludeUnreconciled {
+			protect(id, "result_unreconciled")
 		}
 	}
 
@@ -524,6 +496,9 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 	}
 	seenProtected := map[string]bool{}
 	for len(queue) > 0 {
+		if err := snapshot.ctx.Err(); err != nil {
+			return CleanupPlan{}, nil, err
+		}
 		current := queue[0]
 		queue = queue[1:]
 		if seenProtected[current] {
@@ -538,7 +513,7 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 		}
 	}
 
-	targets := []cleanupTarget{}
+	targets := []model.Execution{}
 	ids := make([]string, 0, len(base))
 	for id, eligible := range base {
 		if eligible {
@@ -560,132 +535,13 @@ func (j *Journal) cleanupPlanTx(tx *bbolt.Tx, before time.Time, options CleanupO
 			plan.Protected = append(plan.Protected, ProtectedExecution{ExecutionID: id, TerminalAt: *value.TerminalAt, Reasons: list})
 			continue
 		}
-		target, err := j.buildCleanupTarget(tx, value)
-		if err != nil {
-			return CleanupPlan{}, nil, err
+		if options.automatic && snapshot.Bucket(bAcknowledgements).Get([]byte(id)) == nil {
+			continue
 		}
-		targets = append(targets, target)
-		plan.Eligible = append(plan.Eligible, target.CleanupExecution)
-		addCleanupCounts(&plan.Records, target.Records)
-		plan.LogicalBytes += target.LogicalBytes
-		if target.DiagnosticFile != nil {
-			plan.DiagnosticFiles++
-			plan.DiagnosticBytes += target.DiagnosticFile.Bytes
-		}
+		targets = append(targets, value)
 	}
-	digestInput := struct {
-		SchemaVersion       int                `json:"schema_version"`
-		Before              time.Time          `json:"before"`
-		IncludeUnreconciled bool               `json:"include_unreconciled"`
-		Eligible            []CleanupExecution `json:"eligible"`
-	}{RetentionSchemaVersion, before, options.IncludeUnreconciled, plan.Eligible}
-	raw, err := json.Marshal(digestInput)
-	if err != nil {
-		return CleanupPlan{}, nil, err
-	}
-	sum := sha256.Sum256(raw)
-	plan.PlanDigest = "sha256:" + hex.EncodeToString(sum[:])
 	return plan, targets, nil
 }
-
-func (j *Journal) buildCleanupTarget(tx *bbolt.Tx, execution model.Execution) (cleanupTarget, error) {
-	id := execution.ID.String()
-	target := cleanupTarget{CleanupExecution: CleanupExecution{ExecutionID: id, TerminalAt: *execution.TerminalAt}, events: []cleanupEvent{}, idempotencyKeys: [][]byte{}}
-	add := func(key, value []byte) { target.LogicalBytes += int64(len(key) + len(value)) }
-	execRaw := tx.Bucket(bExecutions).Get([]byte(id))
-	target.Records.Executions = 1
-	add([]byte(id), execRaw)
-	outputRef := ""
-	if outcome := tx.Bucket(bOutcomes).Get([]byte(id)); outcome != nil {
-		var value model.Outcome
-		if err := json.Unmarshal(outcome, &value); err != nil {
-			return cleanupTarget{}, corrupt(err)
-		}
-		outputRef = value.OutputRef
-		target.Records.Outcomes++
-		add([]byte(id), outcome)
-	}
-	outputs, err := diagnostic.OpenOutputs(filepath.Dir(j.path), false)
-	if err != nil {
-		return cleanupTarget{}, err
-	}
-	target.DiagnosticFile, err = outputs.Inspect(id, outputRef)
-	outputs.Close()
-	if err != nil {
-		return cleanupTarget{}, err
-	}
-	if acks := tx.Bucket(bAcknowledgements); acks != nil {
-		if raw := acks.Get([]byte(id)); raw != nil {
-			target.Records.Acknowledgements++
-			add([]byte(id), raw)
-		}
-	}
-	if contacts := tx.Bucket(bStatusContacts); contacts != nil {
-		if raw := contacts.Get([]byte(id)); raw != nil {
-			target.Records.StatusContacts++
-			add([]byte(id), raw)
-		}
-	}
-	if terminal := tx.Bucket(bTerminal).Get([]byte(id)); terminal != nil {
-		target.Records.TerminalIndexes++
-		add([]byte(id), terminal)
-	}
-	if nested := tx.Bucket(bEventsByExecution).Bucket([]byte(id)); nested != nil {
-		target.LogicalBytes += int64(len(id))
-		if err := nested.ForEach(func(seq, eventID []byte) error {
-			raw := tx.Bucket(bEvents).Get(eventID)
-			if raw == nil {
-				return fmt.Errorf("%w: event index target missing", ErrCorrupt)
-			}
-			var stored storedEvent
-			if err := json.Unmarshal(raw, &stored); err != nil {
-				return corrupt(err)
-			}
-			if stored.Event.ExecutionID != execution.ID {
-				return fmt.Errorf("%w: event index execution mismatch", ErrCorrupt)
-			}
-			dedupeRaw := tx.Bucket(bDedupe).Get([]byte(stored.Event.DedupeKey))
-			if dedupeRaw == nil {
-				return fmt.Errorf("%w: event dedupe index missing", ErrCorrupt)
-			}
-			var dedupe dedupeRecord
-			if err := json.Unmarshal(dedupeRaw, &dedupe); err != nil {
-				return corrupt(err)
-			}
-			if dedupe.EventID != string(eventID) {
-				return fmt.Errorf("%w: event dedupe target mismatch", ErrCorrupt)
-			}
-			target.events = append(target.events, cleanupEvent{id: string(eventID), dedupeKey: stored.Event.DedupeKey})
-			target.Records.Events++
-			target.Records.EventIndexes++
-			target.Records.EventDedupe++
-			add(eventID, raw)
-			add(seq, eventID)
-			add([]byte(stored.Event.DedupeKey), dedupeRaw)
-			return nil
-		}); err != nil {
-			return cleanupTarget{}, err
-		}
-	}
-	if bucket := tx.Bucket(bIdempotency); bucket != nil {
-		if err := bucket.ForEach(func(key, raw []byte) error {
-			var record mutationRecord
-			if err := json.Unmarshal(raw, &record); err != nil {
-				return corrupt(err)
-			}
-			if record.ObjectType == "execution" && record.ObjectID == id {
-				target.idempotencyKeys = append(target.idempotencyKeys, append([]byte(nil), key...))
-				target.Records.IdempotencyKeys++
-				add(key, raw)
-			}
-			return nil
-		}); err != nil {
-			return cleanupTarget{}, err
-		}
-	}
-	return target, nil
-}
-
 func addCleanupCounts(target *CleanupRecordCounts, value CleanupRecordCounts) {
 	target.Executions += value.Executions
 	target.Events += value.Events
@@ -694,6 +550,7 @@ func addCleanupCounts(target *CleanupRecordCounts, value CleanupRecordCounts) {
 	target.TerminalIndexes += value.TerminalIndexes
 	target.Outcomes += value.Outcomes
 	target.IdempotencyKeys += value.IdempotencyKeys
+	target.ReplayTombstones += value.ReplayTombstones
 	target.Acknowledgements += value.Acknowledgements
 	target.StatusContacts += value.StatusContacts
 }

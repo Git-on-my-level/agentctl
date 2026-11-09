@@ -160,7 +160,7 @@ func (a *app) reconcile(ctx context.Context, renderer output.Renderer, c common,
 	if opts.plan {
 		journal, problem = a.openRead(c)
 	} else {
-		journal, problem = a.openWrite(c)
+		journal, problem = a.openWriteContext(ctx, c)
 	}
 	if problem != nil {
 		return problem

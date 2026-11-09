@@ -374,9 +374,12 @@ and independently observable.
 
 ## Retention
 
-Automatic retention is not implemented in the preview. Result bodies are
+The running supervisor performs bounded
+[retention](configuration.md#journal-retention) of old acknowledged, lineage-free
+terminals. Result bodies are
 stored by default up to 1 MiB per execution and remain in the owner-only local
-journal until an explicit digest-bound `agentctl data cleanup` operation.
+journal until bounded supervisor retention or a digest-bound
+`agentctl data cleanup` operation.
 Artifact content is not copied by default.
 
 Alias bindings, source fingerprints, promotion receipts, and supersession links
