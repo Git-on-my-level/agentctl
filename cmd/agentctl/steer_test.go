@@ -225,6 +225,12 @@ func TestSteerInterruptResumeRequiresExplicitPermission(t *testing.T) {
 	if code == 0 || !strings.Contains(refused, `"code":"capability_unavailable"`) || !strings.Contains(refused, "steer_interrupt_not_permitted") {
 		t.Fatalf("steer without permission exit=%d output=%s", code, refused)
 	}
+	if !strings.Contains(refused, `"interrupt_warning"`) || !strings.Contains(refused, "in-flight native turn is discarded") {
+		t.Fatalf("missing interrupt warning: %s", refused)
+	}
+	if !strings.Contains(refused, `"argv":["agentctl","steer","`+fixture.id+`","--prompt-stdin","--allow-interrupt"]`) || !strings.Contains(refused, `"mutates":true`) {
+		t.Fatalf("missing copy-pasteable interrupt repair: %s", refused)
+	}
 	if _, status := fixture.command("", "status", fixture.id); !strings.Contains(status, `"state":"running"`) {
 		t.Fatalf("a refused steer must not disturb the execution: %s", status)
 	}

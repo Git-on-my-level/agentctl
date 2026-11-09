@@ -423,9 +423,20 @@ func (a *app) steerCommand(ctx context.Context, renderer output.Renderer, c comm
 	delivery, _ := item.Constraints["delivery"].(string)
 	route := map[string]any{"delivery": delivery, "status": item.Status, "constraints": item.Constraints}
 	if delivery == string(adapter.SteerInterruptResume) && !opts.allowInterr && !opts.plan {
+		warning := "the in-flight native turn is discarded; restate anything the agent must keep in the message"
+		argv := []string{"agentctl", "steer", id.String()}
+		if opts.promptStdin {
+			argv = append(argv, "--prompt-stdin")
+		} else {
+			argv = append(argv, "--prompt-file", prompt.Path)
+		}
+		if opts.idempotencyKey != "" {
+			argv = append(argv, "--idempotency-key", opts.idempotencyKey)
+		}
+		argv = append(argv, "--allow-interrupt")
 		return withID(output.NewError(output.CodeCapabilityUnavailable, "this execution can only be steered by interrupting its native process and resuming the session, which discards the in-flight turn", false).
-			WithDetail("diagnostic_code", "steer_interrupt_not_permitted").WithDetail("route", route).
-			WithActions(output.NextAction{Label: "Permit interrupt-and-resume steering", Argv: []string{"agentctl", "steer", id.String(), "--allow-interrupt", "--prompt-file", "<path>"}, Mutates: true, SideEffectClass: output.ExternalSideEffect, Preconditions: []string{"accept that the in-flight native turn is discarded"}}))
+			WithDetail("diagnostic_code", "steer_interrupt_not_permitted").WithDetail("route", route).WithDetail("interrupt_warning", warning).
+			WithActions(output.NextAction{Label: "Permit interrupt-and-resume steering", Argv: argv, Mutates: true, SideEffectClass: output.ExternalSideEffect, Preconditions: []string{warning, "the same message is delivered after the native session resumes"}}))
 	}
 	if opts.plan {
 		result := map[string]any{"plan": true, "id": id, "adapter": execution.Adapter, "state": execution.State, "route": route,

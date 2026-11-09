@@ -148,7 +148,7 @@ func helpTopics() map[string]commandHelp {
 		"steer": {Name: "steer", Summary: "Send a new instruction to a running native execution through the agentctl process that owns it.", Usage: "agentctl steer <execution-id> (--prompt-file path|--prompt-stdin) [--allow-interrupt] [--idempotency-key key] [--timeout duration] [--plan]", SideEffectClass: output.ExternalSideEffect,
 			Defaults: []string{"the route is fixed when the execution launches and is reported by --plan and by status capabilities",
 				"live_input: the message is written to the native input stream and the agent takes it at its next turn boundary; the execution's final answer is the answer to the last message",
-				"interrupt_resume: the native process is stopped and the same native session is resumed with the message; the in-flight turn is discarded, so --allow-interrupt is required",
+				"interrupt_resume: the native process is stopped and the same native session is resumed with the message; the in-flight turn is discarded, so --allow-interrupt is required; the refusal carries the same argv plus --allow-interrupt and the discard warning",
 				"interrupt_resume waits for the native session id; a failed resume fails the execution",
 				"interrupt_resume can lose what the agent learned inside the interrupted turn (Codex keeps only the conversation up to the launch prompt); restate anything it must keep in the message",
 				"status delivered means the native session itself took the message: it acknowledged it (live_input) or was resumed with it (interrupt_resume); it is not proof the agent acted on it",
