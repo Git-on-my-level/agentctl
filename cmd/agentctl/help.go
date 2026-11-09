@@ -139,6 +139,7 @@ func helpTopics() map[string]commandHelp {
 				"one follow-up runs at a time per session; a concurrent attempt is refused without launching and does not use up its request key",
 				"result shape: schemas/continue-result.schema.json",
 				"--request-key makes a retry of the same prompt and mode recover the same turn instead of sending it twice; FAILED/CANCELLED replay reports replayed=true and a deliberate new-key retry action, including in --plan and --wait errors",
+				"a missing --request-key or prompt source is named in the error with an example key derived from the execution id; the example is not a default",
 				"labels default to the continued execution's labels",
 				"native mode refuses harnesses with no verified resume route or recorded session id; carry-forward requires an explicit mode choice and never silently replaces a failed native resume",
 				"use steer, not continue, to redirect an execution that is still running",

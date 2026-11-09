@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/output"
 )
 
 // continueAgent reports one native session id and says whether the invocation
@@ -304,5 +307,25 @@ func TestContinueFlagsFailClosed(t *testing.T) {
 		if _, _, _, problem := parseContinue(args); problem == nil {
 			t.Fatalf("args %v must be rejected", args)
 		}
+	}
+}
+
+func TestContinueMissingRequestKeyNamesTheFlagAndSuggestsAKey(t *testing.T) {
+	_, _, _, problem := parseContinue([]string{"exec-abc", "--prompt-stdin"})
+	if problem == nil || problem.Code != output.CodeUsage || problem.Details["diagnostic_code"] != "continue_input_required" {
+		t.Fatalf("problem=%#v", problem)
+	}
+	if !strings.Contains(problem.Message, "--request-key") {
+		t.Fatalf("message does not name the missing flag: %q", problem.Message)
+	}
+	missing, _ := problem.Details["missing"].([]string)
+	if len(missing) != 1 || missing[0] != "--request-key" {
+		t.Fatalf("missing=%#v", problem.Details["missing"])
+	}
+	if problem.Details["example_request_key"] != "exec-abc-turn-2" {
+		t.Fatalf("example=%#v", problem.Details["example_request_key"])
+	}
+	if len(problem.NextActions) != 1 || !reflect.DeepEqual(problem.NextActions[0].Argv, []string{"agentctl", "continue", "exec-abc", "--request-key", "exec-abc-turn-2", "--prompt-file", "<path>"}) {
+		t.Fatalf("actions=%#v", problem.NextActions)
 	}
 }

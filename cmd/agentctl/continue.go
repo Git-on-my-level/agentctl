@@ -102,7 +102,24 @@ func parseContinue(args []string) (string, string, delegateOptions, *output.Erro
 		}
 	}
 	if ref == "" || key == "" || boolCount(opts.promptFile != "", opts.promptStdin) != 1 {
-		return "", "", opts, output.NewError(output.CodeUsage, continueUsage, false)
+		var missing []string
+		if ref == "" {
+			missing = append(missing, "<execution-id>")
+		}
+		if key == "" {
+			missing = append(missing, "--request-key")
+		}
+		if boolCount(opts.promptFile != "", opts.promptStdin) != 1 {
+			missing = append(missing, "exactly one of --prompt-file or --prompt-stdin")
+		}
+		problem := delegateError(output.CodeUsage, "continue_input_required", "continue requires "+strings.Join(missing, ", ")).
+			WithDetail("missing", missing).WithDetail("usage", continueUsage)
+		if ref != "" {
+			example := ref + "-turn-2"
+			problem.WithDetail("example_request_key", example).
+				WithActions(output.NextAction{Label: "Retry with a request key for this turn", Argv: []string{"agentctl", "continue", ref, "--request-key", example, "--prompt-file", "<path>"}, Mutates: true, SideEffectClass: output.ExternalSideEffect, Preconditions: []string{"example only: choose a key that is unique to this turn"}})
+		}
+		return "", "", opts, problem
 	}
 	if (opts.contentOnly || opts.requireSource != "" || opts.minBytes > 0) && !opts.wait {
 		return "", "", opts, delegateError(output.CodeUsage, "continue_wait_required", "content and result assertions require --wait")
