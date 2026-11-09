@@ -567,7 +567,8 @@ attention. For a durable fan-in callback use
 `subscribe create --label-prefix <prefix>`; it covers executions launched later
 but does not backfill earlier events. Do not wrap `delegate` in a retry loop
 for `journal_busy`: launch and wait commands already retry for
-`--journal-busy-budget` (default 120s). A managed supervisor is required only for cross-restart
+`--journal-busy-budget` (default 120s for run, delegate, dispatch, continue,
+await, await-any, result, reconcile and steer). A managed supervisor is required only for cross-restart
 delivery and must not be silently installed as a new service.
 
 Permission-granting native flags remain explicit on expert `run` argv. `delegate`
@@ -659,6 +660,46 @@ first, including uncollected diagnostics. A pointer may therefore be missing.
 reviewed digest; apply removes those files before their records. Missing files
 need no removal. A cache lock serializes capture, eviction, and cleanup apply.
 `--no-store-result` disables capture. Existing records are not reconciled.
+
+Journal cleanup plans select at most eight executions and 128 events per
+execution, using short paged reads with the journal closed between pages.
+Review the digest, apply it, then review a fresh plan while `has_more=true`.
+An eligible `partial=true` removes only selected event triples; identity,
+outcome, terminal event and highest sequence remain collectable until a final batch. All
+lineage-linked executions and uncollected results remain protected. Apply
+rechecks protections per commit; a busy journal, cancellation or new reference
+can stop after committed progress, reported as `cleanup_progress` on the error.
+Re-plan before retrying. Replayable artifact/acknowledgement events keep their
+dedupe records until the execution is removed; only terminal-rejected kinds are
+pruned in partial commits. `cleanup_final_batch_too_large` protects candidates
+whose metadata or replayable events exceed a final batch; later candidates can
+still progress. `has_more` probes for a selectable tail; an entirely deferred
+tail does not promise another batch. Manual cleanup leaves compact request-key
+refusal tombstones (`replay_tombstones`), retaining no plans or answers. Same-key
+retries fail with non-retryable `conflict` (exit 8), diagnostic
+`execution_replay_expired` and the original execution ID; changed inputs still
+conflict. Use a distinct key for deliberate new work. No physical compaction occurs.
+Data commands preserve their contention allowance, including busy budget zero,
+while checking cancellation between short lock polls.
+
+Only the running supervisor performs automatic retention: one small batch per
+five minutes, acknowledged terminal lineage-free records older than 14 days by
+default. Set the host-local config `journal.retention.enabled=false` to disable
+it or `journal.retention.days` to change the cutoff (1–3650; zero means 14).
+Policy reloads each maintenance pass. Each pass has a 30-second deadline;
+completed scan pages resume after a timeout unless an intervening write invalidates
+the proof. Unchanged completed generations skip the scan, except when the
+cutoff ages in a terminal, a subscription expires, or external protections change. Deferrals appear on
+stderr and in supervisor `last_maintenance_error` with the failed pass timestamp
+`last_maintenance_error_at`; cadence skips do not refresh it.
+Request-key/immutable bindings, source-bound records (including Multica), ANX run
+links and unexpired paused subscriptions are protected. ANX stamps commit before
+spooling/sending links and protect manual cleanup too. Unacknowledged pre-tracking
+results are kept automatically; manual plans report `pre_tracking_unreconciled`.
+Inventory and supervisor recovery release the journal between pages; listings are
+advisory across pages. Await-any prefix scans and acknowledgement reads are
+paged too. Pending-outbox scans are read-only. Native and Multica authorities are unchanged; no read-only CLI
+runs maintenance.
 
 ZCode's existing `--mode yolo` bypasses ordinary permission prompts but retains
 native always-ask checks (verified in 0.16.9); it reports `permissions: constrained`

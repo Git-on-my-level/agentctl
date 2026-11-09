@@ -711,11 +711,14 @@ func MaterializeBundle(bundle Bundle) Config {
 }
 
 func applyHostLocalConfig(existing, materialized Config) Config {
-	if existing.Bootstrap == nil {
-		return materialized
+	if existing.Journal != nil {
+		copy := *existing.Journal
+		materialized.Journal = &copy
 	}
-	copy := *existing.Bootstrap
-	materialized.Bootstrap = &copy
+	if existing.Bootstrap != nil {
+		copy := *existing.Bootstrap
+		materialized.Bootstrap = &copy
+	}
 	return materialized
 }
 

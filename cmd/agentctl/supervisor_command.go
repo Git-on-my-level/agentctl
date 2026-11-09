@@ -92,13 +92,15 @@ func (a *app) supervisorRun(ctx context.Context, renderer output.Renderer, c com
 	// Every bridge opens the journal only around one state transition. Callback
 	// transport I/O and authority reprobes must not hold bbolt's process lock.
 	resolvedStateDir := cfg.StateDir
+	maintenance := &journalMaintenance{}
 	factory := supervisor.DependenciesFactoryFunc(func(cycleCtx context.Context) (supervisor.CycleDependencies, error) {
 		bridge := pathSupervisorExecutions{path: journalPath, probeTimeout: 10 * time.Second, app: a}
 		deps := supervisor.Dependencies{
-			Executions: bridge,
-			Reprober:   bridge,
-			Outbox:     agentruntime.OutboxBridge{Store: journalSupervisorOutbox{path: journalPath}},
-			Deliverer:  agentruntime.DelivererBridge{Transport: callbackTransport{journalPath: journalPath, stateDir: resolvedStateDir}},
+			Maintenance: func(ctx context.Context) error { return maintenance.run(ctx, a, c, journalPath) },
+			Executions:  bridge,
+			Reprober:    bridge,
+			Outbox:      agentruntime.OutboxBridge{Store: journalSupervisorOutbox{path: journalPath}},
+			Deliverer:   agentruntime.DelivererBridge{Transport: callbackTransport{journalPath: journalPath, stateDir: resolvedStateDir}},
 		}
 		return supervisor.CycleDependencies{Dependencies: deps}, nil
 	})
@@ -442,8 +444,8 @@ func (b pathSupervisorExecutions) ApplyProbe(ctx context.Context, id string, res
 
 type journalSupervisorOutbox struct{ path string }
 
-func (b journalSupervisorOutbox) withJournal(ctx context.Context, fn func(*store.Journal) error) error {
-	journal, err := openJournalWithBusyBudget(ctx, b.path, store.Options{}, true, supervisorJournalBusyBudget)
+func (b journalSupervisorOutbox) withJournal(ctx context.Context, readOnly bool, fn func(*store.Journal) error) error {
+	journal, err := openJournalWithBusyBudget(ctx, b.path, store.Options{ReadOnly: readOnly}, true, supervisorJournalBusyBudget)
 	if err != nil {
 		return err
 	}
@@ -453,7 +455,7 @@ func (b journalSupervisorOutbox) withJournal(ctx context.Context, fn func(*store
 
 func (b journalSupervisorOutbox) ListPending(ctx context.Context) ([]agentruntime.OutboxRecord, error) {
 	var items []store.DeliveryRecord
-	err := b.withJournal(ctx, func(journal *store.Journal) error {
+	err := b.withJournal(ctx, true, func(journal *store.Journal) error {
 		var err error
 		items, err = journal.ListPendingDeliveries(ctx)
 		return err
@@ -468,18 +470,18 @@ func (b journalSupervisorOutbox) ListPending(ctx context.Context) ([]agentruntim
 	return result, nil
 }
 func (b journalSupervisorOutbox) MarkAcknowledged(ctx context.Context, id string) error {
-	return b.withJournal(ctx, func(journal *store.Journal) error { return journal.Ack(ctx, id) })
+	return b.withJournal(ctx, false, func(journal *store.Journal) error { return journal.Ack(ctx, id) })
 }
 func (b journalSupervisorOutbox) ScheduleRetry(ctx context.Context, id string, next time.Time, reason string) error {
-	return b.withJournal(ctx, func(journal *store.Journal) error { return journal.Retry(ctx, id, next, reason) })
+	return b.withJournal(ctx, false, func(journal *store.Journal) error { return journal.Retry(ctx, id, next, reason) })
 }
 func (b journalSupervisorOutbox) MarkDeadLetter(ctx context.Context, id, reason string) error {
-	return b.withJournal(ctx, func(journal *store.Journal) error { return journal.DeadLetter(ctx, id, reason) })
+	return b.withJournal(ctx, false, func(journal *store.Journal) error { return journal.DeadLetter(ctx, id, reason) })
 }
 
 func (b journalSupervisorOutbox) BeginAttempt(ctx context.Context, id string) (agentruntime.OutboxRecord, error) {
 	var item store.DeliveryRecord
-	err := b.withJournal(ctx, func(journal *store.Journal) error {
+	err := b.withJournal(ctx, false, func(journal *store.Journal) error {
 		var err error
 		item, err = journal.BeginDeliveryAttempt(ctx, id)
 		return err

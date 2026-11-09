@@ -29,12 +29,15 @@ func (a *app) dataCommand(ctx context.Context, renderer output.Renderer, c commo
 }
 
 func (a *app) dataInventory(ctx context.Context, renderer output.Renderer, c common) *output.Error {
-	journal, problem := a.openRead(c)
-	if problem != nil {
-		return problem
+
+	path, pathErr := a.journalPath(c)
+	if pathErr != nil {
+		return output.Wrap(output.CodeInternal, "resolve journal path", false, pathErr)
 	}
-	defer journal.Close()
-	inventory, err := journal.Inventory(ctx)
+	reader := store.Reader{Open: func(ctx context.Context, readOnly bool) (*store.Journal, error) {
+		return openDataJournal(ctx, path, readOnly, c.journalBusyBudget)
+	}}
+	inventory, err := reader.Inventory(ctx)
 	if err != nil {
 		return mapStoreError("inventory journal data", err)
 	}
@@ -103,37 +106,43 @@ func (a *app) dataCleanup(ctx context.Context, renderer output.Renderer, c commo
 	}
 	before = before.UTC()
 	var plan store.CleanupPlan
-	if planOnly {
-		journal, problem := a.openRead(c)
-		if problem != nil {
-			return problem
-		}
-		defer journal.Close()
-		plan, err = journal.PlanCleanup(ctx, before, store.CleanupOptions{IncludeUnreconciled: includeUnreconciled})
-	} else {
-		path, pathErr := a.journalPath(c)
-		if pathErr != nil {
-			return output.Wrap(output.CodeInternal, "resolve journal path", false, pathErr)
-		}
-		// Cleanup must not create an empty journal as a side effect.
-		if _, statErr := os.Stat(path); statErr != nil {
-			if errors.Is(statErr, os.ErrNotExist) {
-				return output.Wrap(output.CodeNotFound, "open journal", false, store.ErrNotFound)
-			}
-			return output.Wrap(output.CodeInternal, "stat journal", false, statErr)
-		}
-		journal, openErr := store.Open(path, store.Options{})
-		if openErr != nil {
-			return mapStoreError("open journal", openErr)
-		}
-		defer journal.Close()
-		plan, err = journal.ApplyCleanup(ctx, before, planDigest, store.CleanupOptions{IncludeUnreconciled: includeUnreconciled})
+	path, pathErr := a.journalPath(c)
+	if pathErr != nil {
+		return output.Wrap(output.CodeInternal, "resolve journal path", false, pathErr)
 	}
+	// Maintenance never creates a missing journal, including on apply.
+	if _, statErr := os.Stat(path); statErr != nil {
+		if errors.Is(statErr, os.ErrNotExist) {
+			return output.Wrap(output.CodeNotFound, "open journal", false, store.ErrNotFound)
+		}
+		return output.Wrap(output.CodeInternal, "stat journal", false, statErr)
+	}
+	// Keep the command's normal lock budget between pages; a short supervisor
+	// poll would make default-budget cleanup fail under transient writers.
+	cleanup := store.Cleanup{Open: func(ctx context.Context, readOnly bool) (*store.Journal, error) {
+		return openDataJournal(ctx, path, readOnly, c.journalBusyBudget)
+	}}
+	links, linkErr := a.anxRetentionLinks(c)
+	if linkErr != nil {
+		return output.Wrap(output.CodeInternal, "read ANX retention references", false, linkErr)
+	}
+	options := store.CleanupOptions{IncludeUnreconciled: includeUnreconciled, ANXRunLinks: links}
+	if planOnly {
+		plan, err = cleanup.Plan(ctx, before, options)
+	} else {
+		plan, err = cleanup.Apply(ctx, before, planDigest, options)
+	}
+
 	if err != nil {
-		return mapStoreError("cleanup journal data", err)
+		problem := mapStoreError("cleanup journal data", err)
+		var interrupted *store.CleanupInterrupted
+		if errors.As(err, &interrupted) {
+			problem.WithDetail("cleanup_progress", interrupted.Progress).WithDetail("next_action", "re-plan before retrying; committed batches are not rolled back")
+		}
+		return problem
 	}
 	lines := []output.Line{
-		{Lead: "data.cleanup", Fields: []output.Field{{Name: "mode", Value: cleanupMode(planOnly)}, {Name: "before", Value: before}, {Name: "eligible_executions", Value: len(plan.Eligible)}, {Name: "protected_executions", Value: len(plan.Protected)}, {Name: "protected_unreconciled", Value: plan.ProtectedUnreconciled}, {Name: "include_unreconciled", Value: plan.IncludeUnreconciled}, {Name: "records", Value: plan.Records.Total()}, {Name: "logical_bytes", Value: plan.LogicalBytes}, {Name: "diagnostic_files", Value: plan.DiagnosticFiles}, {Name: "diagnostic_bytes", Value: plan.DiagnosticBytes}, {Name: "plan_digest", Value: plan.PlanDigest}}},
+		{Lead: "data.cleanup", Fields: []output.Field{{Name: "mode", Value: cleanupMode(planOnly)}, {Name: "before", Value: before}, {Name: "eligible_executions", Value: len(plan.Eligible)}, {Name: "protected_executions", Value: len(plan.Protected)}, {Name: "protected_unreconciled", Value: plan.ProtectedUnreconciled}, {Name: "pre_tracking_unreconciled", Value: plan.PreTrackingUnreconciled}, {Name: "include_unreconciled", Value: plan.IncludeUnreconciled}, {Name: "records", Value: plan.Records.Total()}, {Name: "logical_bytes", Value: plan.LogicalBytes}, {Name: "diagnostic_files", Value: plan.DiagnosticFiles}, {Name: "diagnostic_bytes", Value: plan.DiagnosticBytes}, {Name: "has_more", Value: plan.HasMore}, {Name: "plan_digest", Value: plan.PlanDigest}}},
 	}
 	warnings := []output.Warning{{Code: "journal_not_compacted", Message: "logical bytes describe selected records; the journal file is not compacted automatically"}}
 	if plan.IncludeUnreconciled {
@@ -148,7 +157,7 @@ func (a *app) dataCleanup(ctx context.Context, renderer output.Renderer, c commo
 		if includeUnreconciled {
 			applyArgv = append(applyArgv, "--include-unreconciled")
 		}
-		preconditions := []string{"review eligible execution IDs", "journal references may change before apply; apply recomputes atomically"}
+		preconditions := []string{"review eligible execution IDs", "journal references may change; apply revalidates each batch and may stop after committed progress"}
 		if includeUnreconciled {
 			preconditions = append(preconditions, "the reviewed digest is bound to --include-unreconciled; apply must repeat the flag")
 		}
@@ -158,6 +167,13 @@ func (a *app) dataCleanup(ctx context.Context, renderer output.Renderer, c commo
 			Mutates: true, SideEffectClass: output.LocalOperationalWrite,
 			Preconditions: preconditions,
 		})
+	}
+	if !planOnly && plan.HasMore {
+		argv := []string{"agentctl", "data", "cleanup", "--before", before.Format(time.RFC3339), "--plan"}
+		if includeUnreconciled {
+			argv = append(argv, "--include-unreconciled")
+		}
+		actions = append(actions, output.NextAction{Label: "Plan the next bounded cleanup batch", Argv: argv, Mutates: false, SideEffectClass: output.ReadOnly})
 	}
 	if planOnly && plan.ProtectedUnreconciled > 0 {
 		actions = append(actions, output.NextAction{

@@ -61,6 +61,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 		"capacity-facts":       "schemas/capacity-facts.schema.json",
 		"carry-forward-prompt": "schemas/carry-forward-prompt.schema.json",
 		"data-cleanup-plan":    "schemas/data-cleanup-plan.schema.json",
+		"journal-policy":       "schemas/journal-policy.schema.json",
 		"data-inventory":       "schemas/data-inventory.schema.json",
 		"delegate-request":     "schemas/delegate-request.schema.json",
 		"delegate-result":      "schemas/delegate-result.schema.json",

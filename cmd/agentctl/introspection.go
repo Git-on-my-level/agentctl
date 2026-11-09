@@ -165,6 +165,7 @@ func schemaCatalog() []map[string]any {
 		{"name": "carry-forward-prompt", "version": 1, "file": "schemas/carry-forward-prompt.schema.json"},
 		{"name": "continue-result", "version": 1, "file": "schemas/continue-result.schema.json"},
 		{"name": "data-cleanup-plan", "version": 1, "file": "schemas/data-cleanup-plan.schema.json"},
+		{"name": "journal-policy", "version": 1, "file": "schemas/journal-policy.schema.json"},
 		{"name": "data-inventory", "version": 1, "file": "schemas/data-inventory.schema.json"},
 		{"name": "delegate-request", "version": 1, "file": "schemas/delegate-request.schema.json"},
 		{"name": "delegate-result", "version": 1, "file": "schemas/delegate-result.schema.json"},

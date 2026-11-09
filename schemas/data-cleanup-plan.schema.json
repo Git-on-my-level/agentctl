@@ -11,12 +11,14 @@
     "before": {"type": "string", "format": "date-time"},
     "generated_at": {"type": "string", "format": "date-time"},
     "applied": {"type": "boolean"},
+    "has_more": {"type": "boolean", "description": "Review a fresh plan after applying this bounded batch."},
     "plan_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
     "logical_bytes": {"type": "integer", "minimum": 0},
     "diagnostic_files": {"type": "integer", "minimum": 0},
     "diagnostic_bytes": {"type": "integer", "minimum": 0},
     "include_unreconciled": {"type": "boolean"},
     "protected_unreconciled": {"type": "integer", "minimum": 0},
+    "pre_tracking_unreconciled": {"type":"integer", "minimum":0, "description":"Old terminal records without an acknowledgement that predate tracking; manual cleanup may delete these."},
     "eligible": {
       "type": "array",
       "items": {
@@ -24,6 +26,7 @@
         "additionalProperties": false,
         "required": ["execution_id", "terminal_at", "records", "logical_bytes"],
         "properties": {
+          "partial": {"type": "boolean", "description": "Only the selected event triples are removed; execution and outcome remain."},
           "execution_id": {"type": "string", "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"},
           "terminal_at": {"type": "string", "format": "date-time"},
           "logical_bytes": {"type": "integer", "minimum": 0},
@@ -61,7 +64,9 @@
         "terminal_indexes": {"type": "integer", "minimum": 0},
         "outcomes": {"type": "integer", "minimum": 0},
         "idempotency_keys": {"type": "integer", "minimum": 0},
-        "acknowledgements": {"type": "integer", "minimum": 0}
+        "replay_tombstones": {"type":"integer", "minimum":0, "description":"Compact request-key refusal records retained instead of deleting replay protection; logical_bytes is net of these records."},
+        "acknowledgements": {"type": "integer", "minimum": 0},
+        "status_contacts": {"type": "integer", "minimum": 0}
       }
     }
   }

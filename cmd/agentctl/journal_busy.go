@@ -12,7 +12,7 @@ import (
 )
 
 // Journal lock contention is agentctl's own resource, so commands that create
-// or wait for work absorb it instead of handing every caller a retry loop.
+// wait for, control or collect work absorb it instead of handing every caller a retry loop.
 // See docs/design/lane-fan-in.md.
 const (
 	defaultJournalBusyBudget = 120 * time.Second
@@ -30,7 +30,7 @@ const (
 // keep the historical two-attempt open unless the operator sets a budget.
 func journalBusyCommandDefault(command string) time.Duration {
 	switch command {
-	case "run", "delegate", "dispatch", "continue", "await", "await-any":
+	case "run", "delegate", "dispatch", "continue", "await", "await-any", "result", "reconcile", "steer":
 		return defaultJournalBusyBudget
 	default:
 		return 0
@@ -175,4 +175,13 @@ func openJournalWithBusyBudget(ctx context.Context, path string, options store.O
 			delay = journalBusyMaxDelay
 		}
 	}
+}
+
+// Paged data commands preserve the legacy roughly 30s contention allowance,
+// including explicit zero, while checking cancellation between short polls.
+func openDataJournal(ctx context.Context, path string, readOnly bool, budget time.Duration) (*store.Journal, error) {
+	if budget <= 0 {
+		budget = 30 * time.Second
+	}
+	return openJournalWithBusyBudget(ctx, path, store.Options{ReadOnly: readOnly}, true, budget)
 }

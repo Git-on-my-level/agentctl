@@ -774,3 +774,55 @@ func writeFileAtomic(path string, data []byte) error {
 	}
 	return os.Rename(name, path)
 }
+
+// LinkedExecutions reads durable registration evidence, including delivered
+// entries whose pending files are gone. It never creates files or takes a write
+// lock. New registrations protect the journal before touching this spool, so a
+// concurrent enqueue cannot slip past an automatic cleanup plan.
+func (s *Spool) LinkedExecutions() ([]ids.ExecutionID, error) {
+	index, err := s.index()
+	if err != nil {
+		return nil, err
+	}
+	seen := map[ids.ExecutionID]bool{}
+	for key := range index.Assigned {
+		parts := strings.Split(key, "/")
+		if len(parts) != 5 || parts[0] != "agentctl:" || parts[1] != "" {
+			return nil, fmt.Errorf("invalid run-link replay key")
+		}
+		if _, err := ids.ParseHostID(parts[2]); err != nil {
+			return nil, err
+		}
+		id, err := ids.ParseExecutionID(parts[3])
+		if err != nil {
+			return nil, err
+		}
+		seen[id] = true
+	}
+	for _, dir := range []string{"pending", "dead"} {
+		paths, err := filepath.Glob(filepath.Join(s.root, dir, "*.json"))
+		if err != nil {
+			return nil, err
+		}
+		for _, path := range paths {
+			entry, err := s.read(path)
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			id, err := ids.ParseExecutionID(entry.ExecutionID)
+			if err != nil {
+				return nil, err
+			}
+			seen[id] = true
+		}
+	}
+	result := make([]ids.ExecutionID, 0, len(seen))
+	for id := range seen {
+		result = append(result, id)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].String() < result[j].String() })
+	return result, nil
+}
