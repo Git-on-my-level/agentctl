@@ -76,7 +76,7 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 		return problem
 	}
 	prompt, problem := a.loadPromptForCommand("dispatch", runOptions{promptFile: opts.promptFile, promptStdin: opts.promptStdin, promptDelivery: "stdin",
-		promptRepairArgv: []string{"agentctl", "dispatch", "--route", opts.routeSelector, "--title", opts.title, "--idempotency-key", opts.idempotencyKey}})
+		promptRepairArgv: nonPromptCommandArgv("dispatch", args)})
 	if problem != nil {
 		return problem
 	}

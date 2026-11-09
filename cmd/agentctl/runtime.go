@@ -59,8 +59,9 @@ type runOptions struct {
 	timeout                                  time.Duration
 	timeoutSet, noTimeoutSet, promptStdin    bool
 	argv                                     []string
-	// promptRepairArgv is the command's non-prompt argv, used to emit a
-	// copy-pasteable --prompt-stdin repair without guessing flags.
+	// promptRepairArgv is the command's full non-prompt argv, used to emit a
+	// copy-pasteable --prompt-stdin repair without guessing flags. It keeps
+	// caller flags such as --plan, --wait, --authority, and labels.
 	promptRepairArgv []string
 }
 
@@ -889,18 +890,7 @@ func (a *app) loadPromptForCommand(command string, opts runOptions) (*promptPayl
 	var reader io.Reader
 	payload := &promptPayload{Delivery: opts.promptDelivery}
 	if len(opts.promptRepairArgv) == 0 && command == "run" {
-		argv := []string{"agentctl", "run"}
-		if opts.adapter != "" {
-			argv = append(argv, "--adapter", opts.adapter)
-		}
-		if opts.cwd != "" {
-			argv = append(argv, "--cwd", opts.cwd)
-		}
-		if opts.promptDelivery != "" {
-			argv = append(argv, "--prompt-delivery", opts.promptDelivery)
-		}
-		argv = append(argv, "--")
-		opts.promptRepairArgv = append(argv, opts.argv...)
+		opts.promptRepairArgv = runPromptRepairArgv(opts)
 	}
 	if opts.promptStdin {
 		if a.stdinIsTerminal != nil && a.stdinIsTerminal() {
@@ -1003,6 +993,9 @@ func promptNotFoundError(command string, opts runOptions, path, requested string
 	for key, value := range details {
 		problem.WithDetail(key, value)
 	}
+	if command == "fanout" {
+		return withFanoutPromptRepair(problem)
+	}
 	repair, action := promptStdinRepair(command, opts, stdinPath)
 	problem.WithDetail("recommended_prompt_source", "stdin").WithDetail("repair", repair)
 	return problem.WithActions(action, promptHelpAction(command))
@@ -1010,6 +1003,9 @@ func promptNotFoundError(command string, opts runOptions, path, requested string
 
 func promptResolveError(command string, opts runOptions, path string, cause error) *output.Error {
 	problem := output.Wrap(output.CodeAuthorizationDenied, "resolve prompt file", false, cause).WithDetail("path", path)
+	if command == "fanout" {
+		return withFanoutPromptRepair(problem)
+	}
 	repair, action := promptStdinRepair(command, opts, path)
 	return problem.WithDetail("recommended_prompt_source", "stdin").WithDetail("repair", repair).WithActions(action, promptHelpAction(command))
 }
@@ -1019,7 +1015,10 @@ func promptHelpAction(command string) output.NextAction {
 }
 
 // promptStdinRepair returns the documented repair object and a copy-pasteable
-// shell argv that pipes the same file through --prompt-stdin.
+// shell argv that pipes the same file through --prompt-stdin. The redirect is
+// inserted before a run "--" delimiter so it stays an agentctl flag. Mutation
+// follows the repaired command: --plan stays read-only, and any other repair
+// can launch work, so agents must not treat it as automatically runnable.
 func promptStdinRepair(command string, opts runOptions, path string) (map[string]any, output.NextAction) {
 	setFlags := map[string]string{"--prompt-stdin": ""}
 	explanation := "prompt source selects how agentctl reads bytes; this command resolves native prompt delivery"
@@ -1036,19 +1035,163 @@ func promptStdinRepair(command string, opts runOptions, path string) (map[string
 		"preserve_other_arguments": true,
 		"explanation":              explanation,
 	}
-	argv := append([]string{}, opts.promptRepairArgv...)
-	if len(argv) == 0 {
-		argv = []string{"agentctl", command}
-	}
-	argv = append(argv, "--prompt-stdin", "<", path)
+	argv := appendPromptStdinArgv(opts.promptRepairArgv, command, path)
+	mutates, class := promptRepairEffect(command, argv)
 	action := output.NextAction{
 		Label:           "Pipe the prompt from its current path",
 		Argv:            argv,
-		Mutates:         false,
-		SideEffectClass: output.ReadOnly,
+		Mutates:         mutates,
+		SideEffectClass: class,
 		Preconditions:   append(preconditions, "run this in a shell; < is a shell redirect"),
 	}
 	return repair, action
+}
+
+// runPromptRepairArgv rebuilds an expert run invocation from the parsed
+// options, excluding the prompt source. Caller flags stay in front of "--"
+// so a later stdin repair cannot fall into the native argv.
+func runPromptRepairArgv(opts runOptions) []string {
+	argv := []string{"agentctl", "run"}
+	if !opts.executionID.IsZero() {
+		argv = append(argv, "--execution-id", opts.executionID.String())
+	}
+	for _, label := range opts.labels {
+		argv = append(argv, "--label", label)
+	}
+	if opts.taskContractFile != "" {
+		argv = append(argv, "--task-contract", opts.taskContractFile)
+	}
+	if opts.adapter != "" {
+		argv = append(argv, "--adapter", opts.adapter)
+	}
+	if opts.timeoutSet {
+		argv = append(argv, "--timeout", opts.timeout.String())
+	}
+	if opts.noTimeoutSet {
+		argv = append(argv, "--no-timeout")
+	}
+	if opts.cwd != "" {
+		argv = append(argv, "--cwd", opts.cwd)
+	}
+	if opts.idempotencyKey != "" {
+		argv = append(argv, "--idempotency-key", opts.idempotencyKey)
+	}
+	if opts.issue != "" {
+		argv = append(argv, "--issue", opts.issue)
+	}
+	if opts.run != "" {
+		argv = append(argv, "--run", opts.run)
+	}
+	if opts.plan {
+		argv = append(argv, "--plan")
+	}
+	if opts.noStoreResult {
+		argv = append(argv, "--no-store-result")
+	}
+	if opts.allowMissingResult {
+		argv = append(argv, "--allow-missing-result")
+	}
+	if opts.allowUnreliableResult {
+		argv = append(argv, "--allow-unreliable-result")
+	}
+	if opts.promptDelivery != "" {
+		argv = append(argv, "--prompt-delivery", opts.promptDelivery)
+	}
+	argv = append(argv, "--")
+	return append(argv, opts.argv...)
+}
+
+// nonPromptCommandArgv copies a parsed command argv with the prompt source
+// removed. The caller's other flags stay in order.
+func nonPromptCommandArgv(command string, args []string) []string {
+	argv := []string{"agentctl", command}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--prompt-file":
+			if i+1 < len(args) {
+				i++
+			}
+		case "--prompt-stdin":
+			// Prompt source is replaced by the repair's own --prompt-stdin.
+		default:
+			argv = append(argv, args[i])
+		}
+	}
+	return argv
+}
+
+// withResolvedCWD records the cwd delegate already resolved. A relative flag
+// would otherwise depend on the shell that later runs the repair.
+func withResolvedCWD(argv []string, cwd string) []string {
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "--" {
+			break
+		}
+		if argv[i] == "--cwd" {
+			argv[i+1] = cwd
+			return argv
+		}
+	}
+	return append(argv, "--cwd", cwd)
+}
+
+// appendPromptStdinArgv inserts the shell redirect before a "--" delimiter.
+// Tokens after that delimiter are native argv, not agentctl flags.
+func appendPromptStdinArgv(argv []string, command, path string) []string {
+	if len(argv) == 0 {
+		argv = []string{"agentctl", command}
+	} else {
+		argv = append([]string{}, argv...)
+	}
+	stdin := []string{"--prompt-stdin", "<", path}
+	for i, arg := range argv {
+		if arg == "--" {
+			out := make([]string, 0, len(argv)+len(stdin))
+			out = append(out, argv[:i]...)
+			out = append(out, stdin...)
+			return append(out, argv[i:]...)
+		}
+	}
+	return append(argv, stdin...)
+}
+
+// promptRepairEffect classifies the repaired command itself. --plan before the
+// native delimiter is read-only; a --plan that belongs to the native argv is
+// not. Every other repair can launch or steer work.
+func promptRepairEffect(command string, argv []string) (bool, output.SideEffectClass) {
+	if commandPlans(argv) {
+		return false, output.ReadOnly
+	}
+	if command == "dispatch" {
+		return true, output.RemoteCoordinationWrite
+	}
+	return true, output.ExternalSideEffect
+}
+
+func commandPlans(argv []string) bool {
+	for _, arg := range argv {
+		if arg == "--" {
+			return false
+		}
+		if arg == "--plan" {
+			return true
+		}
+	}
+	return false
+}
+
+// withFanoutPromptRepair points a fanout prompt failure at the manifest.
+// Fanout has no --prompt-stdin flag; the path is a manifest field.
+func withFanoutPromptRepair(problem *output.Error) *output.Error {
+	problem.WithDetail("recommended_prompt_source", "file").WithDetail("repair", map[string]any{
+		"manual_action":            "place the prompt file within the manifest directory and update the manifest's shared or child prompt_file field to that path",
+		"preserve_other_arguments": true,
+		"explanation":              "fanout reads prompt files from its manifest and does not accept --prompt-stdin",
+	})
+	action := promptHelpAction("fanout")
+	action.Label = "Review fanout manifest prompt paths"
+	action.Preconditions = []string{"keep every shared and child prompt_file within the manifest directory"}
+	return problem.WithActions(action)
 }
 
 func promptOutsideRootError(command string, opts runOptions, path, root string) *output.Error {
@@ -1057,15 +1200,7 @@ func promptOutsideRootError(command string, opts runOptions, path, root string) 
 		WithDetail("root", root)
 	if command == "fanout" {
 		// Fanout's prompt paths are manifest fields, not command-line flags.
-		problem.WithDetail("recommended_prompt_source", "file").WithDetail("repair", map[string]any{
-			"manual_action":            "place the prompt file within the manifest directory and update the manifest's shared or child prompt_file field to that path",
-			"preserve_other_arguments": true,
-			"explanation":              "fanout reads prompt files from its manifest and does not accept --prompt-stdin",
-		})
-		action := promptHelpAction(command)
-		action.Label = "Review fanout manifest prompt paths"
-		action.Preconditions = []string{"keep every shared and child prompt_file within the manifest directory"}
-		return problem.WithActions(action)
+		return withFanoutPromptRepair(problem)
 	}
 	repair, action := promptStdinRepair(command, opts, path)
 	problem.WithDetail("recommended_prompt_source", "stdin").WithDetail("repair", repair)

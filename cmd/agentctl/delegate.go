@@ -295,7 +295,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	}
 	opts.cwd = cwd
 	prompt, problem := a.loadPromptForCommand("delegate", runOptions{cwd: cwd, promptFile: opts.promptFile, promptStdin: opts.promptStdin, promptDelivery: "argv",
-		promptRepairArgv: []string{"agentctl", "delegate", "--request-file", opts.requestFile, "--cwd", cwd}})
+		promptRepairArgv: withResolvedCWD(nonPromptCommandArgv("delegate", args), cwd)})
 	if problem != nil {
 		return problem
 	}
