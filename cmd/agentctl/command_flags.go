@@ -45,6 +45,9 @@ var commandValueFlags = map[string]map[string]bool{
 	"update":       flagSet("--output"),
 	"anx":          flagSet("--output"),
 	"help":         flagSet("--output"),
+	// context and knowledge share knowledgecmd's flag grammar (Go flag package).
+	"context":   flagSet("--bundle", "--checkout", "--destination", "--host", "--host-role", "--host-roles", "--issue", "--max", "--max-bytes", "--max-records", "--output", "--project", "--query", "--remote", "--remotes", "--render", "--render-max-bytes", "--render-path", "--repository", "--repository-root", "--resource", "--resources", "--run", "--side-effect", "--side-effect-boundary", "--source", "--task-kind"),
+	"knowledge": flagSet("--bundle", "--checkout", "--destination", "--host", "--host-role", "--host-roles", "--issue", "--max", "--max-bytes", "--max-records", "--output", "--project", "--query", "--remote", "--remotes", "--render", "--render-max-bytes", "--render-path", "--repository", "--repository-root", "--resource", "--resources", "--run", "--side-effect", "--side-effect-boundary", "--source", "--task-kind"),
 }
 
 func flagSet(flags ...string) map[string]bool {

@@ -364,13 +364,18 @@ func TestPromptFileLiteralTildeReportsUnexpandedShellPath(t *testing.T) {
 	if problem == nil || problem.Code != output.CodeNotFound {
 		t.Fatalf("problem=%#v", problem)
 	}
-	if problem.Details["tilde_unexpanded"] != true || problem.Details["suggested_path"] != "$HOME/workspace/omi/prompt-a.md" {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	concrete := filepath.Join(home, "workspace/omi/prompt-a.md")
+	if problem.Details["tilde_unexpanded"] != true || problem.Details["suggested_path"] != concrete {
 		t.Fatalf("details=%#v", problem.Details)
 	}
 	if !strings.Contains(problem.Message, "shell did not expand ~") {
 		t.Fatalf("message=%q", problem.Message)
 	}
-	if len(problem.NextActions) == 0 || problem.NextActions[0].StdinFrom != "$HOME/workspace/omi/prompt-a.md" {
+	if len(problem.NextActions) == 0 || problem.NextActions[0].StdinFrom != concrete || strings.Contains(problem.NextActions[0].StdinFrom, "$") {
 		t.Fatalf("actions=%#v", problem.NextActions)
 	}
 }

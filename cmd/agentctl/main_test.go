@@ -2633,6 +2633,14 @@ func TestInlineHelpIgnoresFlagValuesNamedHelp(t *testing.T) {
 	if topic, ok := inlineHelpTopic([]string{"delegate", "--request-file", "--help", "--prompt-file", "task.md"}); ok {
 		t.Fatalf("--help as a --request-file value was treated as help topic %q", topic)
 	}
+	for _, argv := range [][]string{
+		{"context", "--bundle", "bundle", "--query", "--help"},
+		{"knowledge", "compile", "--source", "--help"},
+	} {
+		if topic, ok := inlineHelpTopic(argv); ok {
+			t.Fatalf("--help as a flag value in %v was treated as help topic %q", argv, topic)
+		}
+	}
 	if topic, ok := inlineHelpTopic([]string{"continue", "exec-abc", "--request-key", "followup-1", "--help"}); !ok || !strings.HasPrefix(topic, "continue") {
 		t.Fatalf("real inline help topic=%q ok=%v", topic, ok)
 	}
