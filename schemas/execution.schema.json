@@ -437,7 +437,7 @@
         "attempt": {"type": "integer", "minimum": 1},
         "retry_after_ms": {"type": "integer", "minimum": 0},
         "next_retry_at": {"type": "string", "format": "date-time"},
-        "provider_error_type": {"type": "string", "maxLength": 128},
+        "provider_error_type": {"type": "string", "maxLength": 64, "pattern": "^(unclassified|provider\\.[a-z0-9][a-z0-9._-]{0,54})$"},
         "http_status": {"const": 429}
       }
     },

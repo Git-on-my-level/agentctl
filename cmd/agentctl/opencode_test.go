@@ -290,6 +290,37 @@ printf '%s\n' '{"type":"step_start","sessionID":"ses_retry","part":{"type":"step
 	}
 }
 
+func TestOpenCodeIncompleteRunAfterRetryKeepsLocalDiagnostic(t *testing.T) {
+	root := testutil.TempDir(t)
+	path := filepath.Join(root, "opencode")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ]; then echo 'opencode 2.2.6'; exit 0; fi
+printf '%s\n' '{"type":"retry","timestamp":1794251075486,"sessionID":"ses_incomplete","attempt":2,"nextRetryAt":1794251101486,"error":{"type":"sk-live-9f8e7d6c5b4a","message":"Rate limit exceeded; private-request-details","status":429,"retryAfterMs":26000}}'
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(root, "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--", path, "run", "--format", "json"}); code != 0 {
+		t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	id := executionIDFromOutput(t, stdout.String())
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "status", id}); code != 0 {
+		t.Fatalf("status exit=%d %s", code, stdout.String())
+	}
+	for _, want := range []string{`"rate_limit"`, `"attempt":2`, `"retry_after_ms":26000`, `"provider_error_type":"unclassified"`, `"code":"native_execution_failed"`, `"retryable":false`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("status missing %s: %s", want, stdout.String())
+		}
+	}
+	if strings.Contains(stdout.String(), "provider_capacity") || strings.Contains(stdout.String(), "sk-live-9f8e7d6c5b4a") || strings.Contains(stdout.String(), "private-request-details") {
+		t.Fatalf("incomplete run inherited capacity/secret evidence: %s", stdout.String())
+	}
+}
+
 func TestOpenCodeRateLimitSurfacesMetadataAndCapacity(t *testing.T) {
 	root := testutil.TempDir(t)
 	path := filepath.Join(root, "opencode")

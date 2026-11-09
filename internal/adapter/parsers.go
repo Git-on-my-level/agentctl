@@ -1006,13 +1006,31 @@ func opencodeProviderEventMetadata(value map[string]any, data map[string]any) {
 		data["retry_after_ms"] = retryAfter
 	}
 	if errorType := firstString(providerError, "type"); errorType != "" {
-		data["provider_error_type"] = boundedString(strings.ToLower(errorType), 128)
+		data["provider_error_type"] = opencodeSafeProviderErrorType(errorType)
 	}
 	// A native/provider code of 429 is not HTTP evidence. Only the explicit
 	// structured HTTP status field can prove retryable provider capacity.
 	if status, ok := opencodeNonnegativeInt(providerError["status"]); ok && status == 429 {
 		data["http_status"] = status
 	}
+}
+
+// opencodeProviderErrorTypePattern bounds a classifier name to short lowercase
+// identifier segments. Error types reach events and status, so arbitrary
+// provider text must not be persisted there.
+var opencodeProviderErrorTypePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+// opencodeSafeProviderErrorType keeps only short names from the known
+// "provider." classifier namespace. Free-form, oversized or credential-shaped
+// values are replaced by the shared content-free marker; the bounded shape alone
+// would still admit a bare token such as "sk-live-...".
+func opencodeSafeProviderErrorType(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	const namespace = "provider."
+	if !opencodeProviderErrorTypePattern.MatchString(value) || !strings.HasPrefix(value, namespace) || len(value) == len(namespace) {
+		return "unclassified"
+	}
+	return value
 }
 
 func opencodeTokenUsage(part map[string]any) *TokenUsage {

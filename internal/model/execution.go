@@ -382,11 +382,16 @@ func (r NativeRateLimit) Validate() error {
 	if r.NextRetryAt != nil && r.NextRetryAt.IsZero() {
 		return errors.New("next retry timestamp is zero")
 	}
-	if len(r.ProviderErrorType) > 128 || strings.ContainsAny(r.ProviderErrorType, "\x00\r\n") {
+	if r.ProviderErrorType != "" && !nativeRateLimitProviderErrorType.MatchString(r.ProviderErrorType) {
 		return errors.New("invalid provider error type")
 	}
 	return nil
 }
+
+// nativeRateLimitProviderErrorType is the bounded, content-free classifier shape
+// emitted by adapters. A bare token (for example a credential-shaped value) is
+// never valid; unknown provider namespaces become "unclassified" at the parser.
+var nativeRateLimitProviderErrorType = regexp.MustCompile(`^(?:unclassified|provider\.[a-z0-9][a-z0-9._-]{0,54})$`)
 
 type Execution struct {
 	Caller               *ExecutionCaller   `json:"caller,omitempty"`

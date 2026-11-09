@@ -55,6 +55,16 @@ func TestNativeUsageAndRateLimitAreNumericMetadata(t *testing.T) {
 	if err := value.Validate(); err == nil {
 		t.Fatal("zero retry attempt accepted")
 	}
+	for _, providerErrorType := range []string{"sk-live-51H8xQ2eZ9", "provider.", "provider.rate limit", "provider." + strings.Repeat("a", 60)} {
+		value.RateLimit = &NativeRateLimit{Attempt: 2, HTTPStatus: 429, ProviderErrorType: providerErrorType}
+		if err := value.Validate(); err == nil {
+			t.Fatalf("unsafe provider error type %q accepted", providerErrorType)
+		}
+	}
+	value.RateLimit = &NativeRateLimit{Attempt: 2, HTTPStatus: 429, ProviderErrorType: "unclassified"}
+	if err := value.Validate(); err != nil {
+		t.Fatalf("content-free marker rejected: %v", err)
+	}
 }
 
 func TestTokenUsageAggregationSaturatesWithoutSchemaOverflow(t *testing.T) {

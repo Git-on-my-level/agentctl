@@ -2057,6 +2057,18 @@ func withAllowlistedFailure(outcome model.Outcome) model.Outcome {
 
 func stringData(data map[string]any, key string) string { value, _ := data[key].(string); return value }
 
+// localCompletionDiagnostic reports failures assigned by the adapter's own
+// completion or extraction checks. They describe how the native result was
+// assembled, so retry metadata must not relabel them as provider capacity.
+func localCompletionDiagnostic(code string) bool {
+	switch code {
+	case "incomplete_terminal_result", "empty_terminal_result", "result_extraction_failed":
+		return true
+	default:
+		return false
+	}
+}
+
 func classifyOutcomeFailure(message, diagnosticCode, nativeCode, harness, providerCategory string) (string, string, string, bool) {
 	switch diagnosticCode {
 	case "native_event_write_failed", "native_owner_failed":
@@ -2074,7 +2086,7 @@ func classifyOutcomeFailure(message, diagnosticCode, nativeCode, harness, provid
 	switch {
 	case diagnostic.AuthenticationRequired(message):
 		return "authentication_required", "authentication", "", true
-	case harness == "codex" && (nativeCode == "server_overloaded" || diagnostic.IsCodexCapacity(message)) || harness == "zcode" && (nativeCode == "1308" || providerCategory == "capacity") || harness == "opencode" && providerCategory == "capacity":
+	case harness == "codex" && (nativeCode == "server_overloaded" || diagnostic.IsCodexCapacity(message)) || harness == "zcode" && (nativeCode == "1308" || providerCategory == "capacity") || harness == "opencode" && providerCategory == "capacity" && !localCompletionDiagnostic(diagnosticCode):
 		return "provider_capacity", "capacity", "capacity", true
 	case strings.Contains(lower, "workspace") && strings.Contains(lower, "trust"):
 		return "workspace_trust_required", "permission", "", true

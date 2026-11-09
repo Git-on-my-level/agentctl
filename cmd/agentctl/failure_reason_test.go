@@ -38,6 +38,10 @@ func TestClassifyCapacityIsRetryableAndGenericProviderIsNot(t *testing.T) {
 	if code != "provider_capacity" || kind != "capacity" || category != "capacity" || !retryable {
 		t.Fatalf("OpenCode structured HTTP 429=%s %s %s %v", code, kind, category, retryable)
 	}
+	code, _, category, retryable = classifyOutcomeFailure("opencode run exited without a final step_finish with reason stop", "incomplete_terminal_result", "", "opencode", "capacity")
+	if code != "native_execution_failed" || category != "" || retryable {
+		t.Fatalf("OpenCode local completion diagnostic relabelled=%s %s %v", code, category, retryable)
+	}
 	code, kind, category, retryable = classifyOutcomeFailure("provider request failed", "", "429", "opencode", "")
 	if code != "native_execution_failed" || category != "provider" || retryable {
 		t.Fatalf("OpenCode bare native 429=%s %s %v", code, category, retryable)
