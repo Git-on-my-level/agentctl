@@ -2,11 +2,13 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,7 +24,7 @@ func cleanupForPath(path string) Cleanup {
 	}}
 }
 
-func addRetentionEvents(t *testing.T, j *Journal, e model.Execution, count int) {
+func addRetentionArtifacts(t *testing.T, j *Journal, e model.Execution, count int) {
 	t.Helper()
 	// Historical artifact metadata is legal after a terminal and exercises the
 	// same event/dedupe/index deletion path as streamed progress.
@@ -86,8 +88,7 @@ func TestCleanupPagesReleaseFileLockAndBoundBothModes(t *testing.T) {
 func TestCleanupLargeExecutionDrainsInBoundedBatches(t *testing.T) {
 	ctx := context.Background()
 	j, _, now := openTestJournal(t)
-	old := seedTerminalForRetention(t, j, now.Add(-72*time.Hour), contracts.MutationKey{})
-	addRetentionEvents(t, j, old, cleanupEventBatch*2+1)
+	old := seedTerminalForRetention(t, j, now.Add(-72*time.Hour), contracts.MutationKey{}, cleanupEventBatch*2+1)
 	path := j.path
 	j.Close()
 	cleanup := cleanupForPath(path)
@@ -230,7 +231,7 @@ func TestAutomaticRetentionRequiresAcknowledgementAndPreservesLineage(t *testing
 	// automatically removable, for both native and Multica authority.
 	preEpoch := seedTerminalForRetention(t, j, epoch.Add(-48*time.Hour), contracts.MutationKey{})
 	unread := seedTerminalForRetention(t, j, epoch.Add(time.Hour), contracts.MutationKey{})
-	old := seedTerminalForRetention(t, j, epoch.Add(2*time.Hour), contracts.MutationKey{})
+	old := seedTerminalForRetention(t, j, epoch.Add(2*time.Hour), contracts.MutationKey{}, cleanupEventBatch+1)
 	linked := seedTerminalForRetention(t, j, epoch.Add(3*time.Hour), contracts.MutationKey{})
 	for _, e := range []model.Execution{old, linked} {
 		if _, _, err := j.AcknowledgeExecution(ctx, e.ID, AcknowledgementResult); err != nil {
@@ -242,7 +243,6 @@ func TestAutomaticRetentionRequiresAcknowledgementAndPreservesLineage(t *testing
 	if _, _, err := j.CreateExecution(ctx, child, contracts.MutationKey{}); err != nil {
 		t.Fatal(err)
 	}
-	addRetentionEvents(t, j, old, cleanupEventBatch+1)
 	path := j.path
 	j.Close()
 	cleanup := cleanupForPath(path)
@@ -291,7 +291,7 @@ func TestCleanupFinalCommitRejectsAnEventAddedAfterPlanning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	addRetentionEvents(t, j, old, 1)
+	addRetentionArtifacts(t, j, old, 1)
 	if _, err := reader.remove(now.Add(-24*time.Hour), CleanupOptions{}, targets, 0); !errors.Is(err, ErrConflict) {
 		t.Fatalf("late event silently orphaned: %v", err)
 	}
@@ -332,8 +332,7 @@ func TestCleanupFinalCommitRejectsNewDiagnosticCacheSibling(t *testing.T) {
 func TestCleanupPartialDigestCannotAuthorizeTheNextPrefix(t *testing.T) {
 	ctx := context.Background()
 	j, _, now := openTestJournal(t)
-	old := seedTerminalForRetention(t, j, now.Add(-72*time.Hour), contracts.MutationKey{})
-	addRetentionEvents(t, j, old, cleanupEventBatch*2+1)
+	seedTerminalForRetention(t, j, now.Add(-72*time.Hour), contracts.MutationKey{}, cleanupEventBatch*2+1)
 	cutoff := now.Add(-24 * time.Hour)
 	plan, err := j.PlanCleanup(ctx, cutoff, CleanupOptions{})
 	if err != nil {
@@ -357,8 +356,8 @@ func TestCleanupPartialDigestCannotAuthorizeTheNextPrefix(t *testing.T) {
 func TestCleanupPartialPreservesSequenceHighWatermark(t *testing.T) {
 	ctx := context.Background()
 	j, _, now := openTestJournal(t)
-	old := seedTerminalForRetention(t, j, now.Add(-72*time.Hour), contracts.MutationKey{})
-	addRetentionEvents(t, j, old, cleanupEventBatch)
+	old := seedTerminalForRetention(t, j, now.Add(-72*time.Hour), contracts.MutationKey{}, cleanupEventBatch-1)
+	addRetentionArtifacts(t, j, old, 1)
 	high, err := j.LastEventSequence(ctx, old.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -383,5 +382,173 @@ func TestCleanupPartialPreservesSequenceHighWatermark(t *testing.T) {
 	event, _, err := j.AppendEvent(ctx, model.Event{ExecutionID: old.ID, Authority: old.Authority, Adapter: old.Adapter, Ordering: model.OrderingObservation, Kind: model.EventArtifact, ObservedAt: *old.TerminalAt, DedupeKey: key, DedupeVersion: 1, Payload: projection}, canonical)
 	if err != nil || event.Sequence <= high {
 		t.Fatalf("append reused a deleted sequence: %d <= %d err=%v", event.Sequence, high, err)
+	}
+}
+
+func TestCleanupPartialKeepsReplayableEventsAndDedupe(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	old := seedTerminalForRetention(t, j, now.Add(-72*time.Hour), contracts.MutationKey{}, cleanupEventBatch+1)
+	projection := map[string]any{"retention_artifact": "stable replay"}
+	key, canonical := semanticEvent(t, old.Adapter, projection)
+	input := model.Event{ExecutionID: old.ID, Authority: old.Authority, Adapter: old.Adapter, Ordering: model.OrderingObservation, Kind: model.EventArtifact, ObservedAt: *old.TerminalAt, DedupeKey: key, DedupeVersion: 1, Payload: projection}
+	original, _, err := j.AppendEvent(ctx, input, canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cutoff := now.Add(-24 * time.Hour)
+	plan, err := j.PlanCleanup(ctx, cutoff, CleanupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.ApplyCleanup(ctx, cutoff, plan.PlanDigest, CleanupOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	sub := durableTestSubscription(durableTestID(ids.TypeSubscription, 120))
+	sub.Filter.ExecutionIDs = []string{old.ID.String()}
+	sub.Filter.Kinds = []string{string(model.EventArtifact)}
+	if _, _, err := j.PutSubscription(ctx, sub); err != nil {
+		t.Fatal(err)
+	}
+	replay, reused, err := j.AppendEvent(ctx, input, canonical)
+	if err != nil || !reused || replay.ID != original.ID || replay.Sequence != original.Sequence {
+		t.Fatalf("partial cleanup lost replay memory: original=%+v replay=%+v reused=%v err=%v", original, replay, reused, err)
+	}
+	deliveries, err := j.ListPendingDeliveries(ctx)
+	if err != nil || len(deliveries) != 0 {
+		t.Fatalf("replay fanned out another delivery: %+v %v", deliveries, err)
+	}
+}
+
+func TestCleanupDefersOversizedMetadataAndContinuesLaterCandidates(t *testing.T) {
+	ctx := context.Background()
+	epoch := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	j := openRetentionJournalWithEpoch(t, epoch)
+	one := seedTerminalForRetention(t, j, epoch.Add(time.Hour), contracts.MutationKey{})
+	two := seedTerminalForRetention(t, j, epoch.Add(2*time.Hour), contracts.MutationKey{})
+	oversized, ordinary := one, two
+	if oversized.ID.String() > ordinary.ID.String() {
+		oversized, ordinary = ordinary, oversized
+	}
+	for _, e := range []model.Execution{one, two} {
+		if _, _, err := j.AcknowledgeExecution(ctx, e.ID, AcknowledgementResult); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := j.db.Update(func(tx *bbolt.Tx) error {
+		for i := 0; i < cleanupPageSize; i++ {
+			key := fmt.Sprintf("imported-%d", i)
+			raw, err := json.Marshal(mutationRecord{Scope: "fixture", Key: key, InputDigest: hash('a'), ObjectType: "execution", ObjectID: oversized.ID.String()})
+			if err != nil {
+				return err
+			}
+			if err := tx.Bucket(bIdempotency).Put([]byte(key), raw); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cutoff := epoch.Add(48 * time.Hour)
+	plan, err := j.PlanCleanup(ctx, cutoff, CleanupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Eligible) != 1 || plan.Eligible[0].ExecutionID != ordinary.ID.String() || !containsReason(planReasons(plan, oversized.ID), "cleanup_final_batch_too_large") {
+		t.Fatalf("oversized candidate blocked later IDs: %+v", plan)
+	}
+	path := j.path
+	j.Close()
+	progress, err := cleanupForPath(path).Maintain(ctx, cutoff)
+	if err != nil || progress.Executions != 1 {
+		t.Fatalf("automatic retention starved: %+v err=%v", progress, err)
+	}
+	read, err := Open(path, Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer read.Close()
+	if _, err := read.GetExecution(ctx, oversized.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := read.GetExecution(ctx, ordinary.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatal("ordinary candidate remained", err)
+	}
+}
+
+func TestCleanupDefersReplayableHistoryBeyondOneFinalBatch(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	one := seedTerminalForRetention(t, j, now.Add(-72*time.Hour), contracts.MutationKey{})
+	two := seedTerminalForRetention(t, j, now.Add(-71*time.Hour), contracts.MutationKey{})
+	oversized, ordinary := one, two
+	if oversized.ID.String() > ordinary.ID.String() {
+		oversized, ordinary = ordinary, oversized
+	}
+	addRetentionArtifacts(t, j, oversized, cleanupEventBatch+1)
+	plan, err := j.PlanCleanup(ctx, now.Add(-24*time.Hour), CleanupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Eligible) != 1 || plan.Eligible[0].ExecutionID != ordinary.ID.String() || !containsReason(planReasons(plan, oversized.ID), "cleanup_final_batch_too_large") {
+		t.Fatalf("replayable history was unsafely selected or starved later IDs: %+v", plan)
+	}
+}
+
+func TestCleanupPreservesOriginalLegacyBytesForComparison(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	old := seedTerminalForRetention(t, j, now.Add(-72*time.Hour), contracts.MutationKey{})
+	if err := j.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket(bExecutions)
+		var document map[string]json.RawMessage
+		if err := json.Unmarshal(bucket.Get([]byte(old.ID.String())), &document); err != nil {
+			return err
+		}
+		document["legacy_extension"] = json.RawMessage(`{"unknown":true}`)
+		document["task_contract"] = json.RawMessage(`{"objective_summary":"legacy objective","side_effect_boundary":"human reviewed write boundary","expected_artifact_kinds":[],"future_extension":{"schema_version":2}}`)
+		document["labels"] = json.RawMessage(`[]`)
+		raw, err := json.MarshalIndent(document, "", "  ")
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte(old.ID.String()), raw)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cutoff := now.Add(-24 * time.Hour)
+	plan, err := j.PlanCleanup(ctx, cutoff, CleanupOptions{})
+	if err != nil {
+		t.Fatalf("unchanged legacy bytes conflicted: %v", err)
+	}
+	if len(plan.Eligible) != 1 {
+		t.Fatalf("legacy row was not selected: %+v", plan)
+	}
+	if _, err := j.ApplyCleanup(ctx, cutoff, plan.PlanDigest, CleanupOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.GetExecution(ctx, old.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+}
+
+func TestCleanupDefersReplayableHistoryBeyondFinalByteBudget(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	old := seedTerminalForRetention(t, j, now.Add(-72*time.Hour), contracts.MutationKey{})
+	for i := 0; i < 3; i++ {
+		projection := map[string]any{"artifact_ref": strings.Repeat("a", 50<<10), "index": i}
+		key, canonical := semanticEvent(t, old.Adapter, projection)
+		if _, _, err := j.AppendEvent(ctx, model.Event{ExecutionID: old.ID, Authority: old.Authority, Adapter: old.Adapter, Ordering: model.OrderingObservation, Kind: model.EventArtifact, ObservedAt: *old.TerminalAt, DedupeKey: key, DedupeVersion: 1, Payload: projection}, canonical); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan, err := j.PlanCleanup(ctx, now.Add(-24*time.Hour), CleanupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Eligible) != 0 || !containsReason(planReasons(plan, old.ID), "cleanup_final_batch_too_large") {
+		t.Fatalf("oversized final event values were selected: %+v", plan)
 	}
 }

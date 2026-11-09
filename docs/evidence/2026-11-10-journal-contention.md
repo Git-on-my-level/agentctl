@@ -19,10 +19,13 @@ was performed.
   Event-heavy executions drain through reviewed partial batches. Event IDs
   participate in the digest so equal-sized prefixes cannot reuse an old digest.
   The latest event stays until the final commit so older writers cannot reuse
-  a deleted sequence; this edge case was reproduced before the fix.
+  a deleted sequence; this edge case was reproduced before the fix. Replayable
+  event kinds retain their event/dedupe records until final removal; ingestion
+  and cleanup share the terminal rejection predicate.
 - Each deletion requires a consistent protection snapshot and an unchanged
   bbolt transaction generation. Late subscriptions, lineage links, events,
-  acknowledgements, outcomes and diagnostic files fail closed. This works with
+  acknowledgements, outcomes and diagnostic files fail closed. Legacy rows are
+  compared against their original stored bytes, including unknown extensions. This works with
   older writers without adding a journal schema or a second write authority.
 - All lineage-linked executions are retained conservatively, including fully
   terminal components. This is stricter than the previous manual policy and
@@ -56,8 +59,10 @@ validate retention; those authorities remain unchanged.
   defers contention rather than extending lock tenure or weakening protection.
   Dedicated protection indexes or a reviewed single-writer design would reduce
   the metadata scan and improve progress under constant writes.
-- An imported execution with over 128 associated metadata records is deferred
-  rather than using an unbounded final deletion transaction.
+- An execution whose metadata or replayable event set exceeds the final batch
+  is reported protected as `cleanup_final_batch_too_large`. Planning skips it
+  and continues to later eligible candidates. Supporting arbitrarily large
+  replayable sets needs a separately reviewed staged-GC/tombstone contract.
 - Freed bbolt pages are reusable; physical file size does not shrink.
 - Progress event sampling is left as a separate contract change; see the design
   in the PR body. Immutable events and subscription delivery are not rewritten.

@@ -668,7 +668,11 @@ outcome, terminal event and highest sequence remain collectable until a final ba
 lineage-linked executions and uncollected results remain protected. Apply
 rechecks protections per commit; a busy journal, cancellation or new reference
 can stop after committed progress, reported as `cleanup_progress` on the error.
-Re-plan before retrying. No physical compaction occurs.
+Re-plan before retrying. Replayable artifact/acknowledgement events keep their
+dedupe records until the execution is removed; only terminal-rejected kinds are
+pruned in partial commits. `cleanup_final_batch_too_large` protects candidates
+whose metadata or replayable events exceed a final batch; later candidates can
+still progress. No physical compaction occurs.
 
 Only the running supervisor performs automatic retention: one small batch per
 cycle, acknowledged terminal lineage-free records older than 14 days by

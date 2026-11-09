@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"go.etcd.io/bbolt"
 )
+
+var errCleanupDeferred = errors.New("cleanup target exceeds final commit budget")
 
 type cleanupRecord struct{ bucket, key, raw []byte }
 
@@ -50,10 +53,6 @@ func (r *cleanupReader) plan(before time.Time, options CleanupOptions, eventLimi
 	if options.automatic {
 		limit = 1
 	}
-	if len(executions) > limit {
-		plan.HasMore = true
-		executions = executions[:limit]
-	}
 	// Index mutation records once, rather than scanning the entire bucket for
 	// every eligible execution (quadratic on a journal with years of history).
 	mutations := map[string][]cleanupRecord{}
@@ -71,10 +70,18 @@ func (r *cleanupReader) plan(before time.Time, options CleanupOptions, eventLimi
 	}
 	targets := make([]cleanupTarget, 0, len(executions))
 	for _, execution := range executions {
+		if len(targets) >= limit {
+			plan.HasMore = true
+			break
+		}
 		if err := r.ctx.Err(); err != nil {
 			return plan, nil, err
 		}
-		target, err := r.target(execution, mutations[execution.ID.String()], eventLimit)
+		target, err := r.target(execution, snapshot.Bucket(bExecutions).Get([]byte(execution.ID.String())), mutations[execution.ID.String()], eventLimit)
+		if errors.Is(err, errCleanupDeferred) {
+			plan.Protected = append(plan.Protected, ProtectedExecution{ExecutionID: execution.ID.String(), TerminalAt: *execution.TerminalAt, Reasons: []string{"cleanup_final_batch_too_large"}})
+			continue
+		}
 		if err != nil {
 			return plan, nil, err
 		}
@@ -120,11 +127,10 @@ func (r *cleanupReader) plan(before time.Time, options CleanupOptions, eventLimi
 	return plan, targets, nil
 }
 
-func (r *cleanupReader) target(execution model.Execution, mutations []cleanupRecord, eventLimit int) (cleanupTarget, error) {
+func (r *cleanupReader) target(execution model.Execution, executionRaw []byte, mutations []cleanupRecord, eventLimit int) (cleanupTarget, error) {
 	id := []byte(execution.ID.String())
 	target := cleanupTarget{CleanupExecution: CleanupExecution{ExecutionID: string(id), TerminalAt: *execution.TerminalAt}, complete: true}
 	outputRef := ""
-	var terminalID []byte
 	add := func(bucket, key, raw []byte) {
 		target.rawRecords = append(target.rawRecords, cleanupRecord{bucket, bytes.Clone(key), bytes.Clone(raw)})
 		if raw != nil {
@@ -133,11 +139,7 @@ func (r *cleanupReader) target(execution model.Execution, mutations []cleanupRec
 	}
 	err := r.view(func(tx *bbolt.Tx) error {
 		raw := tx.Bucket(bExecutions).Get(id)
-		expected, err := json.Marshal(execution)
-		if err != nil {
-			return err
-		}
-		if !bytes.Equal(raw, expected) {
+		if !bytes.Equal(raw, executionRaw) {
 			return fmt.Errorf("%w: cleanup execution changed", ErrConflict)
 		}
 		add(bExecutions, id, raw)
@@ -163,9 +165,7 @@ func (r *cleanupReader) target(execution model.Execution, mutations []cleanupRec
 			add(entry.name, id, raw)
 			if raw != nil {
 				*entry.count++
-				if bytes.Equal(entry.name, bTerminal) {
-					terminalID = bytes.Clone(raw)
-				}
+
 			}
 		}
 		if nested := tx.Bucket(bEventsByExecution).Bucket(id); nested != nil {
@@ -187,13 +187,17 @@ func (r *cleanupReader) target(execution model.Execution, mutations []cleanupRec
 	if err != nil {
 		return target, err
 	}
+	if len(target.rawRecords)+len(mutations) > cleanupPageSize {
+		return target, errCleanupDeferred
+	}
 	for _, record := range mutations {
 		target.idempotencyKeys = append(target.idempotencyKeys, record.key)
 		add(record.bucket, record.key, record.raw)
 		target.Records.IdempotencyKeys++
 	}
 	var after []byte
-	var terminal, latest *cleanupEvent
+	retained := []cleanupEvent{}
+	retainedBytes := 0
 	for {
 		page := []cleanupEvent{}
 		var last []byte
@@ -239,7 +243,7 @@ func (r *cleanupReader) target(execution model.Execution, mutations []cleanupRec
 				if dedupe.EventID != string(eventID) {
 					return fmt.Errorf("%w: event dedupe target mismatch", ErrCorrupt)
 				}
-				page = append(page, cleanupEvent{string(eventID), stored.Event.DedupeKey, bytes.Clone(key), bytes.Clone(raw), bytes.Clone(dedupeRaw)})
+				page = append(page, cleanupEvent{id: string(eventID), dedupeKey: stored.Event.DedupeKey, sequence: bytes.Clone(key), raw: bytes.Clone(raw), dedupeRaw: bytes.Clone(dedupeRaw), kind: stored.Event.Kind})
 				last = bytes.Clone(key)
 				size += len(raw) + len(dedupeRaw)
 			}
@@ -250,18 +254,15 @@ func (r *cleanupReader) target(execution model.Execution, mutations []cleanupRec
 			return target, err
 		}
 		for _, event := range page {
-			anchor := false
-			if event.id == string(terminalID) {
-				copy := event
-				terminal = &copy
-				anchor = true
-			}
-			if event.id == target.lastEventID {
-				copy := event
-				latest = &copy
-				anchor = true
-			}
-			if anchor {
+			// appendEventTx already refuses these four kinds on a terminal.
+			// Every other kind can still be replayed, so its event and dedupe
+			// record must stay until the execution is removed atomically.
+			if event.id == target.lastEventID || !terminalRejectsEvent(event.kind) {
+				retained = append(retained, event)
+				retainedBytes += len(event.raw) + len(event.dedupeRaw)
+				if len(retained) > cleanupEventBatch || (len(retained) > 1 && retainedBytes > cleanupPageBytes) {
+					return target, errCleanupDeferred
+				}
 				continue
 			}
 			target.events = append(target.events, event)
@@ -275,22 +276,14 @@ func (r *cleanupReader) target(execution model.Execution, mutations []cleanupRec
 		}
 		after = last
 	}
-	// Retain both terminal evidence and the highest sequence until the final
-	// commit. Older writers derive their next sequence from the last index row,
-	// so a partial cleanup must never remove that high watermark.
-	anchors := []cleanupEvent{}
-	if terminal != nil {
-		anchors = append(anchors, *terminal)
-	}
-	if latest != nil && (terminal == nil || latest.id != terminal.id) {
-		anchors = append(anchors, *latest)
-	}
-	if target.complete && eventLimit > 0 && len(target.events)+len(anchors) > eventLimit {
+	// Retain replayable kinds plus the sequence high watermark. They commit
+	// with the identity, preserving dedupe for every event a terminal accepts.
+	if target.complete && eventLimit > 0 && len(target.events)+len(retained) > eventLimit {
 		target.complete = false
 	}
 	if target.complete {
-		target.anchorCount = len(anchors)
-		target.events = append(target.events, anchors...)
+		target.anchorCount = len(retained)
+		target.events = append(target.events, retained...)
 	}
 
 	for _, event := range target.events {

@@ -20,7 +20,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
 
-func seedTerminalForRetention(t *testing.T, journal *Journal, createdAt time.Time, mutation contracts.MutationKey) model.Execution {
+func seedTerminalForRetention(t *testing.T, journal *Journal, createdAt time.Time, mutation contracts.MutationKey, progressCounts ...int) model.Execution {
 	t.Helper()
 	ctx := context.Background()
 	initial := sampleExecution(createdAt)
@@ -31,6 +31,18 @@ func seedTerminalForRetention(t *testing.T, journal *Journal, createdAt time.Tim
 	execution, _, err := journal.CreateExecution(ctx, initial, mutation)
 	if err != nil {
 		t.Fatal(err)
+	}
+	progressCount := 0
+	if len(progressCounts) > 0 {
+		progressCount = progressCounts[0]
+	}
+	for i := 0; i < progressCount; i++ {
+		projection := map[string]any{"retention_progress": i}
+		key, canonical := semanticEvent(t, execution.Adapter, projection)
+		event := model.Event{ExecutionID: execution.ID, Authority: execution.Authority, Adapter: execution.Adapter, Ordering: model.OrderingObservation, Kind: model.EventProgress, ObservedAt: createdAt, DedupeKey: key, DedupeVersion: 1, Payload: projection}
+		if _, _, err := journal.AppendEvent(ctx, event, canonical); err != nil {
+			t.Fatal(err)
+		}
 	}
 	terminalAt := createdAt.Add(time.Minute)
 	next := execution

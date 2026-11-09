@@ -109,6 +109,7 @@ type CleanupOptions struct {
 }
 
 type cleanupEvent struct {
+	kind      model.EventKind
 	id        string
 	dedupeKey string
 	sequence  []byte

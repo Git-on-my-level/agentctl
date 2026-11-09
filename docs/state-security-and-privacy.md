@@ -180,7 +180,12 @@ at most eight executions, each with up to 128 events. `has_more` means another
 plan is needed after applying this batch. An eligible item's `partial=true`
 means only its selected event/index/dedupe triples are removed; the execution,
 outcome, terminal event, latest event, acknowledgement and mutation bindings remain until a
-later final batch. Counts describe the selected records, not the full history.
+later final batch. Events that a terminal execution can still ingest (such as
+artifacts) keep their original event and dedupe records until that final commit;
+only kinds already refused on terminals can be forgotten in partial batches.
+A candidate whose metadata or replayable events cannot fit one final batch is
+reported protected with `cleanup_final_batch_too_large`; planning continues to
+later candidates. Counts describe selected records, not the full history.
 Metadata and event scans use pages of at most 128 rows or 256 KiB (one oversized
 row is permitted). The journal handle closes between pages and commits.
 

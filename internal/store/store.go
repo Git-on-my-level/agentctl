@@ -564,11 +564,8 @@ func (j *Journal) appendEventTx(tx *bbolt.Tx, event model.Event, canonicalProjec
 	if err := decodeExecution(tx, execRaw, &execution); err != nil {
 		return model.Event{}, false, corrupt(err)
 	}
-	if execution.State.Terminal() {
-		switch event.Kind {
-		case model.EventStarted, model.EventProgress, model.EventAttention, model.EventHealth:
-			return model.Event{}, false, ErrTerminalConflict
-		}
+	if execution.State.Terminal() && terminalRejectsEvent(event.Kind) {
+		return model.Event{}, false, ErrTerminalConflict
 	}
 	if event.ID.IsZero() {
 		allocated, err := newUniqueEventID(tx, j.generator)
@@ -1132,3 +1129,14 @@ func rejectSymlinks(path string) error {
 }
 
 var _ contracts.Journal = (*Journal)(nil)
+
+// terminalRejectsEvent is shared by ingestion and partial retention. Cleanup
+// can forget only events that a terminal execution cannot accept again.
+func terminalRejectsEvent(kind model.EventKind) bool {
+	switch kind {
+	case model.EventStarted, model.EventProgress, model.EventAttention, model.EventHealth:
+		return true
+	default:
+		return false
+	}
+}
