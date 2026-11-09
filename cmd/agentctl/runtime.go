@@ -994,8 +994,10 @@ func promptNotFoundError(command string, opts runOptions, path, requested string
 	if tilde {
 		message = "prompt file not found: the shell did not expand ~ in the path; pass an absolute path or $HOME/..."
 		details["tilde_unexpanded"] = true
-		stdinPath = "$HOME" + strings.TrimPrefix(requested, "~")
-		details["suggested_path"] = stdinPath
+		if requested == "~" || strings.HasPrefix(requested, "~/") {
+			stdinPath = "$HOME" + strings.TrimPrefix(requested, "~")
+			details["suggested_path"] = stdinPath
+		}
 	}
 	problem := output.NewError(output.CodeNotFound, message, false)
 	for key, value := range details {
