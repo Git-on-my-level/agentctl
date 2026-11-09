@@ -288,15 +288,33 @@ func invocationAllowsAutomaticMaintenance(args []string) bool {
 }
 
 func inlineHelpTopic(args []string) (string, bool) {
-	if len(args) < 2 || args[len(args)-1] != "--help" && args[len(args)-1] != "-h" {
-		return "", false
-	}
-	for _, arg := range args {
+	helpAt := -1
+	for i, arg := range args {
 		if arg == "--" {
-			return "", false
+			break
+		}
+		if arg == "--help" || arg == "-h" {
+			helpAt = i
+			break
 		}
 	}
-	return strings.Join(args[:len(args)-1], " "), true
+	if helpAt < 0 {
+		return "", false
+	}
+	// Help is about the command word, not positional ids or flag values.
+	// Stop at the first flag so `delegate --request-file x --help` still
+	// resolves the delegate topic.
+	words := make([]string, 0, helpAt)
+	for _, arg := range args[:helpAt] {
+		if strings.HasPrefix(arg, "-") {
+			break
+		}
+		words = append(words, arg)
+	}
+	if len(words) != 0 && words[0] == "help" {
+		words = words[1:]
+	}
+	return strings.Join(words, " "), true
 }
 
 func (a *app) parseCommon(args []string) (common, []string, error) {

@@ -193,7 +193,9 @@ func (a *app) help(renderer output.Renderer, rawTopic string) int {
 	topics := helpTopics()
 	if topic != "" {
 		aliases := map[string]string{
-			"list":             "recent",
+			"list":    "recent",
+			"request": "delegate", "request file": "delegate", "request-file": "delegate", "delegate request": "delegate",
+			"selector": "delegate", "settings": "delegate",
 			"bootstrap status": "bootstrap", "route explain": "route",
 			"subscribe create": "subscribe", "subscribe list": "subscribe", "subscribe show": "subscribe", "subscribe cancel": "subscribe",
 			"supervisor run": "supervisor", "supervisor status": "supervisor", "supervisor plan": "supervisor",
@@ -202,13 +204,26 @@ func (a *app) help(renderer output.Renderer, rawTopic string) int {
 			"data inventory":     "data",
 			"knowledge validate": "knowledge", "knowledge sync": "knowledge", "knowledge compile": "knowledge", "knowledge verify": "knowledge",
 		}
-		if canonical, ok := aliases[topic]; ok {
-			topic = canonical
+		// A positional id or extra word after the command must not hide the
+		// command's help. Resolve the longest documented prefix instead.
+		words := strings.Fields(topic)
+		resolved := ""
+		for n := len(words); n >= 1; n-- {
+			candidate := strings.Join(words[:n], " ")
+			if canonical, ok := aliases[candidate]; ok {
+				candidate = canonical
+			}
+			if _, ok := topics[candidate]; ok {
+				resolved = candidate
+				break
+			}
 		}
-		item, ok := topics[topic]
+		item, ok := topics[resolved]
 		if !ok {
-			return a.fail(renderer, output.NewError(output.CodeNotFound, "help topic not found", false).WithDetail("topic", topic))
+			return a.fail(renderer, output.NewError(output.CodeNotFound, "help topic not found", false).WithDetail("topic", topic).
+				WithActions(output.NextAction{Label: "List help topics", Argv: []string{"agentctl", "help"}, Mutates: false, SideEffectClass: output.ReadOnly}))
 		}
+		topic = resolved
 		lines := []output.Line{{Lead: "help", Fields: []output.Field{{Name: "topic", Value: item.Name}, {Name: "summary", Value: item.Summary}}}, {Lead: "usage", Fields: []output.Field{{Name: "argv", Value: item.Usage}}}}
 		for _, value := range item.Defaults {
 			lines = append(lines, output.Line{Lead: "default", Fields: []output.Field{{Name: "behavior", Value: value}}})

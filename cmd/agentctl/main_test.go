@@ -2591,3 +2591,59 @@ func TestHelpANXStatesWorkspaceAliasGrammar(t *testing.T) {
 		t.Fatalf("anx help defaults=%q", doc.Result.Defaults)
 	}
 }
+
+func TestInlineHelpIgnoresPositionalIDsAndFlags(t *testing.T) {
+	cases := []struct {
+		args []string
+		name string
+	}{
+		{[]string{"steer", "exec-abc", "--help"}, "steer"},
+		{[]string{"steer", "exec-abc", "-h"}, "steer"},
+		{[]string{"steer", "--help"}, "steer"},
+		{[]string{"continue", "exec-abc", "--help"}, "continue"},
+		{[]string{"delegate", "--request-file", "request.json", "--help"}, "delegate"},
+		{[]string{"bootstrap", "update", "--help"}, "bootstrap update"},
+		{[]string{"help", "steer", "exec-abc"}, "steer"},
+	}
+	for _, tc := range cases {
+		t.Run(strings.Join(tc.args, "_"), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			if code := a.run(context.Background(), append([]string{"--output", "json"}, tc.args...)); code != 0 {
+				t.Fatalf("exit=%d output=%s", code, stdout.String())
+			}
+			var doc struct {
+				OK     bool        `json:"ok"`
+				Result commandHelp `json:"result"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+				t.Fatal(err)
+			}
+			if !doc.OK || doc.Result.Name != tc.name {
+				t.Fatalf("help=%#v", doc)
+			}
+		})
+	}
+}
+
+func TestHelpRequestAndSelectorMapToDelegate(t *testing.T) {
+	for _, topic := range []string{"request", "selector", "request file"} {
+		t.Run(topic, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			if code := a.run(context.Background(), []string{"--output", "json", "help", topic}); code != 0 {
+				t.Fatalf("exit=%d output=%s", code, stdout.String())
+			}
+			var doc struct {
+				OK     bool        `json:"ok"`
+				Result commandHelp `json:"result"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+				t.Fatal(err)
+			}
+			if !doc.OK || doc.Result.Name != "delegate" {
+				t.Fatalf("help=%#v", doc)
+			}
+		})
+	}
+}
