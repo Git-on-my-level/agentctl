@@ -114,8 +114,10 @@ func (a *app) dataCleanup(ctx context.Context, renderer output.Renderer, c commo
 		}
 		return output.Wrap(output.CodeInternal, "stat journal", false, statErr)
 	}
+	// Keep the command's normal lock budget between pages; a short supervisor
+	// poll would make default-budget cleanup fail under transient writers.
 	cleanup := store.Cleanup{Open: func(ctx context.Context, readOnly bool) (*store.Journal, error) {
-		return openJournalWithBusyBudget(ctx, path, store.Options{ReadOnly: readOnly}, true, c.journalBusyBudget)
+		return openJournalWithBusyBudget(ctx, path, store.Options{ReadOnly: readOnly}, false, c.journalBusyBudget)
 	}}
 	options := store.CleanupOptions{IncludeUnreconciled: includeUnreconciled}
 	if planOnly {

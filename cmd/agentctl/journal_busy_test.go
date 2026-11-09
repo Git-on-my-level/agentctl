@@ -242,3 +242,18 @@ func TestAcknowledgementsAbsorbContentionAndHonorCancellation(t *testing.T) {
 		})
 	}
 }
+
+func TestCleanupCommandKeepsLegacyOpenBudgetBetweenPages(t *testing.T) {
+	path, holder := holdJournal(t)
+	released := make(chan struct{})
+	go func() { defer close(released); time.Sleep(700 * time.Millisecond); holder.Close() }()
+	var out, stderr bytes.Buffer
+	a := testApp(&out, &stderr)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	code := a.run(ctx, []string{"--journal", path, "data", "cleanup", "--before", time.Now().UTC().Format(time.RFC3339), "--plan"})
+	<-released
+	if code != 0 {
+		t.Fatalf("cleanup's paged reader used a short lock poll instead of its command budget: exit=%d %s %s", code, out.String(), stderr.String())
+	}
+}

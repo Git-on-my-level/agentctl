@@ -15,7 +15,8 @@ was performed.
   journal. Apply did that work inside a write transaction.
 - Cleanup now copies metadata pages, computes protections outside transactions,
   and selects at most eight executions with 128 events each. The idempotency
-  bucket is indexed once per plan. CLI handles close after every page/commit.
+  bucket is indexed once per plan. CLI handles close after every page/commit and retain the normal command open
+  budget between pages, verified against a held writer lock.
   Event-heavy executions drain through reviewed partial batches. Event IDs
   participate in the digest so equal-sized prefixes cannot reuse an old digest.
   The latest event stays until the final commit so older writers cannot reuse

@@ -12,7 +12,7 @@ import (
 )
 
 // Journal lock contention is agentctl's own resource, so commands that create
-// or wait for work absorb it instead of handing every caller a retry loop.
+// wait for, control or collect work absorb it instead of handing every caller a retry loop.
 // See docs/design/lane-fan-in.md.
 const (
 	defaultJournalBusyBudget = 120 * time.Second
