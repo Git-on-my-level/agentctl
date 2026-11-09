@@ -2,6 +2,7 @@ package launchrecipe
 
 import (
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -634,15 +635,24 @@ func TestRejectMalformedModelParametersWithoutChangingIdentity(t *testing.T) {
 }
 
 func TestOpenCodeRecipePreservesPermissionBoundary(t *testing.T) {
-	if _, err := Build(Input{Harness: "opencode", Model: "provider/model", Access: AccessReadOnly}); err == nil {
-		t.Fatal("OpenCode recipe cannot guarantee read-only access")
+	for _, grant := range []bool{false, true} {
+		if _, err := Build(Input{Harness: "opencode", Model: "provider/model", Access: AccessReadOnly, UnattendedCodingPermissions: grant}); err == nil {
+			t.Fatal("OpenCode recipe cannot guarantee read-only access")
+		}
 	}
 	recipe, err := Build(Input{Harness: "opencode", Model: "provider/model", UnattendedCodingPermissions: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recipe.Permissions != PermissionsUnsupported || strings.Join(recipe.Argv, " ") != "opencode run --format json --model provider/model --" {
+	if recipe.Permissions != PermissionsConstrained || strings.Join(recipe.Argv, " ") != "opencode run --format json --model provider/model --auto --" {
 		t.Fatalf("unexpected permission grant: %#v", recipe)
+	}
+	withoutGrant, err := Build(Input{Harness: "opencode", Model: "provider/model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withoutGrant.Permissions != PermissionsConstrained || slices.Contains(withoutGrant.Argv, "--auto") {
+		t.Fatalf("implicit OpenCode grant: %#v", withoutGrant)
 	}
 }
 

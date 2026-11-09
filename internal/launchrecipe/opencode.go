@@ -2,7 +2,7 @@ package launchrecipe
 
 import "strings"
 
-func buildOpenCode(executable, model, speed, effort string) (Recipe, error) {
+func buildOpenCode(executable, model, speed, effort, access string, unattendedCodingPermissions bool) (Recipe, error) {
 	exe, err := resolveExecutable("opencode", executable)
 	if err != nil {
 		return Recipe{}, err
@@ -17,5 +17,10 @@ func buildOpenCode(executable, model, speed, effort string) (Recipe, error) {
 	if !ok || provider == "" || slug == "" || strings.ContainsAny(model, "[] \t\n") {
 		return Recipe{}, fail("model_unavailable", "opencode run requires an exact provider/model id")
 	}
-	return Recipe{Argv: []string{exe, "run", "--format", "json", "--model", model, "--"}, PromptDelivery: PromptDeliveryArgv}, nil
+	argv := []string{exe, "run", "--format", "json", "--model", model}
+	if applyCodingPermissions(access, unattendedCodingPermissions) {
+		argv = append(argv, "--auto")
+	}
+	argv = append(argv, "--")
+	return Recipe{Argv: argv, PromptDelivery: PromptDeliveryArgv}, nil
 }

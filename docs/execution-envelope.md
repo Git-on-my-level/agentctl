@@ -71,6 +71,16 @@ value. It is not a source-authority revision. Paths and opaque source IDs are
 operator-private and omitted or redacted in normal output. Alias IDs and source
 fingerprints follow [Identifiers](identifiers.md).
 
+Optional `token_usage` retains native numeric input, output, cache read/write and
+reasoning counters, never token or reasoning text. Aggregation is bounded by the
+exact-JSON-integer range; `saturated: true` explicitly marks an exceeded bound.
+Optional `rate_limit` retains
+the latest structured OpenCode 429 retry: attempt, `retry_after_ms`,
+`next_retry_at`, an allowlisted content-free provider error type and numeric
+`http_status`. Later progress clears stale retry metadata; terminal rate-limit
+failure retains it. A local completion/extraction diagnostic keeps its own
+failure code while the retry record stays separate metadata.
+
 `labels` are optional exact operator metadata used for host-local discovery.
 An execution accepts at most 16 unique lowercase tokens, each at most 128
 characters and matching `^[a-z][a-z0-9_.-]{0,127}$`. Labels are visible

@@ -131,9 +131,9 @@ is a separate boolean grant for Cursor workspace trust.
 `delegation.unattended_coding_permissions` is a separate boolean grant that
 lets `delegate` add Cursor `--force`, Codex
 `--dangerously-bypass-approvals-and-sandbox`, Claude Code
-`--permission-mode bypassPermissions`, and Devin ACP one-operation permission
-approvals on coding launches. Claude Code refuses `read_only` because edit and
-shell-write enforcement in `--print` is unverified. Neither grant
+`--permission-mode bypassPermissions`, OpenCode `--auto`, and Devin ACP
+one-operation permission approvals on coding launches. Claude Code and OpenCode
+refuse `read_only` because their edit enforcement is unverified. Neither grant
 is implied by a model alias, and neither rewrites expert `run` argv. See [structured delegation](structured-delegation.md)
 for the request schema, deterministic defaults, and replay contract. Upgrade the
 binary before applying config fields an older version does not recognize.

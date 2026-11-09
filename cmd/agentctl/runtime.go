@@ -2055,6 +2055,9 @@ func (a *app) finalizeResult(ctx context.Context, c common, journal *store.Journ
 		execution.SourceState = &sourceState
 	}
 	recordNativeSession(&execution, result.SessionRef)
+	if result.TokenUsage != nil {
+		execution.TokenUsage = &model.TokenUsage{Input: result.TokenUsage.Input, Output: result.TokenUsage.Output, CacheRead: result.TokenUsage.CacheRead, CacheWrite: result.TokenUsage.CacheWrite, Reasoning: result.TokenUsage.Reasoning, Saturated: result.TokenUsage.Saturated}
+	}
 	outcome := buildOutcome(execution, result, now, noStoreResult)
 	payload := map[string]any{"result_available": outcome.Availability == model.OutcomeStored, "outcome_execution_id": execution.ID.String(), "availability": outcome.Availability}
 	if outcome.Content != nil {
@@ -2279,6 +2282,18 @@ func withAllowlistedFailure(outcome model.Outcome) model.Outcome {
 
 func stringData(data map[string]any, key string) string { value, _ := data[key].(string); return value }
 
+// localCompletionDiagnostic reports failures assigned by the adapter's own
+// completion or extraction checks. They describe how the native result was
+// assembled, so retry metadata must not relabel them as provider capacity.
+func localCompletionDiagnostic(code string) bool {
+	switch code {
+	case "incomplete_terminal_result", "empty_terminal_result", "result_extraction_failed":
+		return true
+	default:
+		return false
+	}
+}
+
 func classifyOutcomeFailure(message, diagnosticCode, nativeCode, harness, providerCategory string) (string, string, string, bool) {
 	switch diagnosticCode {
 	case "native_event_write_failed", "native_owner_failed":
@@ -2296,7 +2311,7 @@ func classifyOutcomeFailure(message, diagnosticCode, nativeCode, harness, provid
 	switch {
 	case diagnostic.AuthenticationRequired(message):
 		return "authentication_required", "authentication", "", true
-	case harness == "codex" && (nativeCode == "server_overloaded" || diagnostic.IsCodexCapacity(message)) || harness == "zcode" && (nativeCode == "1308" || providerCategory == "capacity"):
+	case harness == "codex" && (nativeCode == "server_overloaded" || diagnostic.IsCodexCapacity(message)) || harness == "zcode" && (nativeCode == "1308" || providerCategory == "capacity") || harness == "opencode" && providerCategory == "capacity" && !localCompletionDiagnostic(diagnosticCode):
 		return "provider_capacity", "capacity", "capacity", true
 	case strings.Contains(lower, "workspace") && strings.Contains(lower, "trust"):
 		return "workspace_trust_required", "permission", "", true
@@ -2398,6 +2413,18 @@ func appendNativeEvent(ctx context.Context, journal *store.Journal, execution mo
 	if native.SourceState != "" {
 		next.SourceState = stringPointer(native.SourceState)
 	}
+	if execution.Adapter == "opencode" && strings.HasPrefix(native.SourceState, "opencode.") {
+		switch native.SourceState {
+		case "opencode.retry":
+			next.RateLimit = openCodeRateLimit(native.Payload)
+		case "opencode.error":
+			if status, ok := nativeMetadataInt(native.Payload["http_status"]); !ok || status != 429 {
+				next.RateLimit = nil
+			}
+		default:
+			next.RateLimit = nil
+		}
+	}
 	switch next.State {
 	case model.StateWaiting, model.StateAttention:
 		next.Liveness = model.LivenessBlocked
@@ -2421,9 +2448,46 @@ func appendNativeEvent(ctx context.Context, journal *store.Journal, execution mo
 	}
 	return stored, nil
 }
+func openCodeRateLimit(payload map[string]any) *model.NativeRateLimit {
+	status, ok := nativeMetadataInt(payload["http_status"])
+	if !ok || status != 429 {
+		return nil
+	}
+	attempt, ok := nativeMetadataInt(payload["attempt"])
+	if !ok || attempt < 1 {
+		return nil
+	}
+	retryAfter, _ := nativeMetadataInt(payload["retry_after_ms"])
+	rateLimit := &model.NativeRateLimit{Attempt: int(attempt), RetryAfterMS: retryAfter, HTTPStatus: int(status)}
+	if value, ok := payload["provider_error_type"].(string); ok && len(value) <= 128 && !strings.ContainsAny(value, "\x00\r\n") {
+		rateLimit.ProviderErrorType = value
+	}
+	if value, ok := payload["next_retry_at"].(string); ok {
+		if next, err := time.Parse(time.RFC3339Nano, value); err == nil && !next.IsZero() {
+			next = next.UTC()
+			rateLimit.NextRetryAt = &next
+		}
+	}
+	return rateLimit
+}
+
+func nativeMetadataInt(value any) (int64, bool) {
+	switch number := value.(type) {
+	case int:
+		return int64(number), number >= 0
+	case int64:
+		return number, number >= 0
+	case float64:
+		integer := int64(number)
+		return integer, number >= 0 && float64(integer) == number
+	default:
+		return 0, false
+	}
+}
+
 func safeNativePayload(input map[string]any) map[string]any {
 	output := map[string]any{}
-	for _, key := range []string{"family", "type", "is_error", "status", "state", "subtype", "usage", "artifact_ref", "attention_kind", "diagnostic_code", "repair_action", "progress_phase", "acp_config"} {
+	for _, key := range []string{"family", "type", "is_error", "status", "state", "subtype", "usage", "artifact_ref", "attention_kind", "diagnostic_code", "repair_action", "progress_phase", "acp_config", "attempt", "retry_after_ms", "next_retry_at", "provider_error_type", "http_status"} {
 		if value, ok := input[key]; ok {
 			output[key] = value
 		}

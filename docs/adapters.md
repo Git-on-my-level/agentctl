@@ -85,8 +85,9 @@ cached result. Critical dispatch and promotion require a fresh probe; ordinary
 status may show a stale snapshot explicitly.
 
 The manifest's version action declares its timeout. Version-probing adapters
-use five seconds by default; ZCode gets 30 seconds because its Electron CLI can
-be delayed by host load. A timeout reports the adapter, configured timeout,
+use five seconds by default; OpenCode gets 20 seconds because its v2 binary can
+start slowly under host load, and ZCode gets 30 seconds because its Electron CLI
+can be delayed by host load. A timeout reports the adapter, configured timeout,
 elapsed time, and that the host may be overloaded; it does not classify the
 executable as missing.
 
@@ -240,13 +241,35 @@ meaning.
 - Bound cumulative answer buffering to a 1 MiB UTF-8 prefix (including part
   separators) and mark truncated results. Discard excess text while retaining
   final step controls; observations retain metadata rather than another text copy.
+  Repeatable reasoning and tool-progress metadata coalesce to one event, and
+  only `retry`, `step_start`, and `step_finish` bypass the stdout budget.
 - Reset answer and completion evidence at each `step_start`; non-stop finishes
   discard earlier narration. Tool payloads and reasoning never enter results
   or metadata-only events.
+- Structured `retry` events emit metadata-only progress and update the latest
+  `rate_limit` record with attempt, retry delay/time, provider error type and
+  explicit numeric HTTP status. Provider messages never enter these events.
+  The error type is kept only from the short `provider.` classifier namespace
+  (`^[a-z0-9][a-z0-9._-]{0,63}$`); any other or credential-shaped value is
+  recorded as `unclassified` rather than persisted verbatim.
+  `status` and `await` outcome details expose the same numeric retry metadata.
+  A terminal failure is retryable `provider_capacity` only when the unresolved
+  cause is the structured provider error itself and an event supplies numeric
+  HTTP `status: 429`; a provider/native code `429`, a string status, or
+  rate-limit wording alone does not qualify. When the run ends with a local
+  completion/extraction diagnostic (for example `incomplete_terminal_result`
+  after a retry), that diagnostic is kept and the retry stays separate
+  `rate_limit` metadata.
+- Sum `step_finish.part.tokens` counters across the execution into numeric
+  `token_usage` metadata: input, output, cache read/write, and reasoning when
+  present. Cost, text, reasoning content, and raw token objects are not retained.
 - Cancellation and observation are limited to the owned local process. Resume
-  and live steering are unavailable. No permission auto-approval flag is added.
-  Multica retains its own issue/run and result authority; this native parser
-  does not establish Multica OpenCode runtime support.
+  and live steering are unavailable. Expert `run` adds no permission flag.
+  Granted coding delegation adds OpenCode v2 `--auto` and reports
+  `permissions: constrained` because explicitly denied permissions remain denied.
+  `read_only` delegation remains unavailable rather than inferring an enforcement
+  mode. Multica retains its own issue/run and result authority; this native
+  parser does not establish Multica OpenCode runtime support.
 
 ### ZCode
 

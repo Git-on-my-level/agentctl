@@ -669,8 +669,12 @@ RFC3339 timestamps, normalize to UTC, and reject an empty/reversed interval.
 adapter, authority, state, declared caller and resolved model (`by_model`;
 `unknown` when no resolved model is recorded), plus the unacknowledged-terminal
 count. `count` is zero, `total` is the aggregate population, and `has_more` is
-false. Summary and cursor cannot be combined. JSON is the machine interface;
-text includes the same summary counters.
+false. `token_usage_by_model` additionally sums input, output, cache read/write,
+and reasoning counters for executions that recorded numeric token usage; models
+without usage evidence are omitted. If an exact-total bound is exceeded, affected
+counters stop at the bound and `saturated: true` marks the values as incomplete.
+Summary and cursor cannot be combined. JSON
+is the machine interface; text includes the same summary counters.
 
 Record pages retain the 1–200 limit (default 20). Follow `next_cursor` while
 `has_more` is true, repeating the original filters. `total` counts the full

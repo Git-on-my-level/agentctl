@@ -189,6 +189,11 @@
             "type": "integer",
             "minimum": 0
           }
+        },
+        "token_usage_by_model": {
+          "type": "object",
+          "description": "Numeric token totals for executions that recorded usage, grouped like by_model. Models without usage evidence are omitted.",
+          "additionalProperties": {"$ref": "execution.schema.json#/$defs/token_usage"}
         }
       }
     }
