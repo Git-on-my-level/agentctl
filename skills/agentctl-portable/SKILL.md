@@ -39,8 +39,8 @@ agentctl delegate --request-file request.json --prompt-file task.md --wait
 Inspect `native.argv`, `native.env`, and `native.permissions` on the plan before launching.
 Coding is the default access. It adds Cursor `--force`, Codex
 `--dangerously-bypass-approvals-and-sandbox`, Claude Code
-`--permission-mode bypassPermissions`, and Devin ACP permission approval only when `delegation.unattended_coding_permissions` is true.
-`settings.access: "read_only"` never adds those flags; Claude Code and Devin refuse it. Expert `run` does not apply this grant.
+`--permission-mode bypassPermissions`, OpenCode `--auto`, and Devin ACP permission approval only when `delegation.unattended_coding_permissions` is true.
+`settings.access: "read_only"` never adds those flags; Claude Code, OpenCode, and Devin refuse it. Expert `run` does not apply this grant.
 Do not hand-write cursor or codex argv for a new agent, and do not edit a
 global CLI allowlist to widen permissions.
 
@@ -163,14 +163,14 @@ implied by a model preference. Unattended coding permissions are a separate
 `delegation.unattended_coding_permissions` grant. When it is true, coding
 launches (omitted `settings.access`, or `"coding"`) include Cursor `--force`,
 Codex `--dangerously-bypass-approvals-and-sandbox`, Claude Code
-`--permission-mode bypassPermissions`, and Devin ACP permission approval. Set `settings.access` to `read_only` for
+`--permission-mode bypassPermissions`, OpenCode `--auto`, and Devin ACP permission approval. Set `settings.access` to `read_only` for
 Cursor `--mode ask` and Codex `--sandbox read-only`; that access never
 receives the coding permission flags. ZCode `read_only` occupies the project
 config slot. `delegate --plan` returns `launch_constraints` from the same
 check that refuses the launch (`zcode_read_only_dotenv_present`,
 `zcode_read_only_project_config_present`, or `zcode_read_only_slot_held`;
 other preparation failures stay `zcode_read_only_unavailable`). Do not restate
-that check. `workspace owners` is not a lock. Claude Code refuses `read_only` because no reviewed
+that check. `workspace owners` is not a lock. Claude Code and OpenCode refuse `read_only`; Claude has no reviewed
 mode guarantees blocking edits and shell writes in `--print`. Without the coding
 grant Claude Code adds no permission flag and reports `permissions: constrained`;
 with the grant it reports `permissions: full` and passes `--permission-mode bypassPermissions`. Devin refuses `read_only`: ACP read-only enforcement is unverified.
@@ -313,7 +313,11 @@ form, completed final-step text, and a final `step_finish` with
 prefix; excess text is discarded and the result is marked truncated.
 Missing/non-stop finishes fail without
 returning partial text; other invocations are not result-capable. Cancellation goes through the
-live owner and resume is unavailable; no permission auto-approval flags are used.
+live owner and resume is unavailable; expert `run` adds no permission flag.
+Granted coding delegation adds OpenCode v2 `--auto`, reports constrained because
+explicit denials remain enforced, and refuses `read_only`. Structured 429 retry
+events retain attempt/delay/provider-type/status metadata without provider text;
+numeric step token counters accumulate into execution `token_usage`.
 
 Never infer prompt delivery from an adapter name. Use `argv` only for a native
 form that expects a positional prompt and `stdin` only for a verified
@@ -572,7 +576,7 @@ delivery and must not be silently installed as a new service.
 
 Permission-granting native flags remain explicit on expert `run` argv. `delegate`
 applies Cursor `--force`, the Codex bypass, Claude Code
-`--permission-mode bypassPermissions`, and Devin ACP permission approval only from
+`--permission-mode bypassPermissions`, OpenCode `--auto`, and Devin ACP permission approval only from
 `delegation.unattended_coding_permissions`, and never on read-only access.
 Consult `agentctl config doctor` for advisory operator preferences: pass Cursor
 `--trust` on expert `run` when that exact authorization is present, otherwise preserve the
@@ -627,7 +631,9 @@ A failed native turn adds a bounded failure reason (category, fixed message of
 at most 200 characters, native code) to status, result, and a failed
 `delegate --wait`. Only explicit per-harness signals prove retryable capacity.
 ZCode provider code `1308` and parsed HTTP `responseStatus: 429` qualify and may
-include the provider reset time. A bare native/provider code `429` is not HTTP
+include the provider reset time. OpenCode's structured numeric `error.status: 429`
+also qualifies and records attempt/delay/provider-type metadata on `rate_limit`
+in `status` and `await` outcome details. A bare native/provider code `429` is not HTTP
 evidence. Authentication is classified before capacity; generic usage-limit,
 quota and rate-limit wording is `quota_exceeded`. Raw stderr transcripts and
 request/trace identifiers are not stored. Explicit `result` is the supported
@@ -714,8 +720,8 @@ Older/expert trust failures report `codex_git_repo_check_required`.
 Native approval/permission attention carries a diagnostic and repair action:
 inspect attention evidence, cancel the parked run if appropriate, review native
 policy, and retry with a new request key. Waiting cannot approve a native prompt.
-Claude auto and ZCode yolo retain native checks; their complete headless approval
-behavior is unknown. Do not infer broader grants from their permission labels.
+OpenCode --auto and ZCode yolo retain native checks; their complete headless
+approval behavior is unknown. Do not infer broader grants from permission labels.
 
 Configured Hermes preferences support exact models (for example
 `{"harness":"hermes","model":"glm-5.3-flash"}`). The recipe uses
@@ -728,7 +734,9 @@ Continuation uses `--resume` without model, reasoning, yolo or other creation
 overrides. Provider-backed success and resume are not verified on the audit host;
 resume is degraded and interrupt steering unavailable. Do not add `--run-budget`
 from help alone: the installed gateway rejected it. `recent --summary` includes
-`by_model` from recorded resolved models, with `unknown` otherwise.
+`by_model` from recorded resolved models, with `unknown` otherwise, and
+`token_usage_by_model` for numeric usage actually recorded on executions;
+`saturated: true` marks a counter that exceeded the exact-total bound.
 
 ## ANX run links: label work to a card
 

@@ -500,6 +500,38 @@ type Event struct {
 	Payload        map[string]any `json:"payload,omitempty"`
 }
 
+// TokenUsage is numeric provider usage, separate from answer and event text.
+const maxTokenUsageCount = int64(1<<53 - 1)
+
+type TokenUsage struct {
+	Input      int64 `json:"input"`
+	Output     int64 `json:"output"`
+	CacheRead  int64 `json:"cache_read,omitempty"`
+	CacheWrite int64 `json:"cache_write,omitempty"`
+	Reasoning  int64 `json:"reasoning,omitempty"`
+	Saturated  bool  `json:"saturated,omitempty"`
+}
+
+func (u *TokenUsage) Add(next TokenUsage) {
+	if u == nil {
+		return
+	}
+	u.Input = addTokenCounts(u.Input, next.Input, &u.Saturated)
+	u.Output = addTokenCounts(u.Output, next.Output, &u.Saturated)
+	u.CacheRead = addTokenCounts(u.CacheRead, next.CacheRead, &u.Saturated)
+	u.CacheWrite = addTokenCounts(u.CacheWrite, next.CacheWrite, &u.Saturated)
+	u.Reasoning = addTokenCounts(u.Reasoning, next.Reasoning, &u.Saturated)
+	u.Saturated = u.Saturated || next.Saturated
+}
+
+func addTokenCounts(current, next int64, saturated *bool) int64 {
+	if next < 0 || current > maxTokenUsageCount-next {
+		*saturated = true
+		return maxTokenUsageCount
+	}
+	return current + next
+}
+
 type Result struct {
 	Success          bool           `json:"success"`
 	State            State          `json:"state"`
@@ -510,6 +542,7 @@ type Result struct {
 	Error            string         `json:"error,omitempty"`
 	ExitCode         *int           `json:"exit_code,omitempty"`
 	SessionRef       SourceRef      `json:"session_ref"`
+	TokenUsage       *TokenUsage    `json:"token_usage,omitempty"`
 	Data             map[string]any `json:"data,omitempty"`
 }
 

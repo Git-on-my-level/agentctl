@@ -62,6 +62,7 @@ type parsedObservation struct {
 	ContentSource    string
 	ContentTruncated bool
 	Error            string
+	TokenUsage       *TokenUsage
 	OccurredAt       *time.Time
 	Data             map[string]any
 	Page             *parsedPage
@@ -125,10 +126,14 @@ type processRecord struct {
 	page             *parsedPage
 	wholeStdout      bool
 
-	sawOpenCode          bool
-	opencodeText         strings.Builder
-	opencodeTruncated    bool
-	opencodeFinishReason string
+	sawOpenCode               bool
+	opencodeText              strings.Builder
+	opencodeTruncated         bool
+	opencodeFinishReason      string
+	opencodeTokenUsage        *TokenUsage
+	opencodeHTTPStatus        int64
+	opencodeProviderErrorType string
+	opencodeProviderError     bool
 
 	// launch is retained without prompt bytes to rebuild a resume invocation.
 	launch LaunchRequest
@@ -173,6 +178,7 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 	if overLimit {
 		p.addParseWarningLocked(diagnosticStreamLimitExceeded)
 	}
+	openCodeRetryPending := p.opencodeHTTPStatus == 429
 	live := p.live
 	p.mu.Unlock()
 	var obs parsedObservation
@@ -228,7 +234,7 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 		}
 		return
 	}
-	if overLimit && !retainObservationAfterLimit(obs) {
+	if overLimit && !retainObservationAfterLimit(obs, openCodeRetryPending) {
 		return
 	}
 	p.ingestObservation(obs)
@@ -272,8 +278,34 @@ func (p *processRecord) nextAcknowledgement() int {
 	return p.inputAcks
 }
 
-func retainObservationAfterLimit(obs parsedObservation) bool {
-	return obs.Terminal || obs.Content != "" || obs.Error != "" || obs.State == StateAttention || obs.State == StateWaiting || obs.Kind == "attention" || obs.SourceState == "input_acknowledged" || strings.HasPrefix(obs.SourceState, "opencode.")
+// openCodeStatefulControl reports OpenCode controls whose position in the
+// stream is itself evidence: a retry starts a provider wait, step_start resets
+// the answer and completion state, and step_finish carries the terminal reason
+// and token totals. They are low-frequency, so they must neither be coalesced
+// as repeatable metadata nor dropped once the stdout budget is exhausted.
+// Repeatable reasoning and tool-progress metadata keep both bounds.
+func openCodeStatefulControl(sourceState string) bool {
+	switch sourceState {
+	case "opencode.retry", "opencode.step_start", "opencode.step_finish":
+		return true
+	default:
+		return false
+	}
+}
+
+// retainObservationAfterLimit keeps only evidence that the bounded stream
+// budget cannot reconstruct. Content, errors, attention, terminal results and
+// OpenCode step controls survive; ordinary metadata and OpenCode reasoning or
+// tool-progress frames do not. A text frame after a structured 429 is retained
+// so the projection can clear stale retry evidence.
+func retainObservationAfterLimit(obs parsedObservation, openCodeRetryPending bool) bool {
+	if obs.Terminal || obs.Content != "" || obs.Error != "" || obs.State == StateAttention || obs.State == StateWaiting || obs.Kind == "attention" || obs.SourceState == "input_acknowledged" {
+		return true
+	}
+	if openCodeStatefulControl(obs.SourceState) {
+		return true
+	}
+	return obs.SourceState == "opencode.text" && openCodeRetryPending
 }
 
 func (p *processRecord) addParseWarningLocked(code string) {
@@ -346,8 +378,19 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 	if obs.BackendVersion != "" {
 		p.ref.Endpoint = obs.BackendVersion
 	}
+	openCodeRetryAdvanced := obs.SourceState == "opencode.text" && p.opencodeHTTPStatus == 429
 	if strings.HasPrefix(obs.SourceState, "opencode.") {
 		p.sawOpenCode = true
+		switch obs.SourceState {
+		case "opencode.retry", "opencode.error":
+			p.opencodeHTTPStatus, _ = obs.Data["http_status"].(int64)
+			p.opencodeProviderErrorType, _ = obs.Data["provider_error_type"].(string)
+			p.opencodeProviderError = obs.SourceState == "opencode.error"
+		default:
+			p.opencodeHTTPStatus = 0
+			p.opencodeProviderErrorType = ""
+			p.opencodeProviderError = false
+		}
 		switch obs.SourceState {
 		case "opencode.step_start":
 			p.opencodeText.Reset()
@@ -371,6 +414,14 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 			obs.Content = ""
 		case "opencode.step_finish":
 			p.opencodeFinishReason, _ = obs.Data["reason"].(string)
+			if obs.TokenUsage != nil {
+				if p.opencodeTokenUsage == nil {
+					usage := *obs.TokenUsage
+					p.opencodeTokenUsage = &usage
+				} else {
+					p.opencodeTokenUsage.Add(*obs.TokenUsage)
+				}
+			}
 			if p.opencodeFinishReason != "stop" {
 				p.opencodeText.Reset()
 				p.opencodeTruncated = false
@@ -411,7 +462,7 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 	if obs.State != "" {
 		p.metadataState = obs.State
 	}
-	if key, eligible := metadataObservationKey(obs); eligible {
+	if key, eligible := metadataObservationKey(obs); eligible && !openCodeRetryAdvanced {
 		if p.metadataSeen == nil {
 			p.metadataSeen = map[string]bool{}
 		}
@@ -500,6 +551,15 @@ func (p *processRecord) resultFromObservation(obs parsedObservation) *Result {
 }
 
 func metadataObservationKey(obs parsedObservation) (string, bool) {
+	// OpenCode step controls are low-frequency state transitions. They must
+	// reach the execution projection so a later step clears stale retry usage;
+	// repeated step_start events are distinct evidence, not heartbeats.
+	// Repeatable reasoning and tool-progress metadata still coalesces; a text
+	// observation immediately after a 429 is retained by ingestObservationLocked
+	// so the retry can be cleared.
+	if openCodeStatefulControl(obs.SourceState) {
+		return "", false
+	}
 	if (obs.Kind != "health" && obs.Kind != "progress") || obs.Terminal || obs.Content != "" || obs.Error != "" || obs.CursorAuthority || obs.SourcePosition != "" {
 		return "", false
 	}
@@ -609,6 +669,28 @@ func (p *processRecord) finish(err error) {
 			p.result = &Result{Success: false, State: state, Error: "native process exited cleanly without an explicit structured terminal result", ExitCode: p.exitCode, SessionRef: p.ref, Data: map[string]any{"diagnostic_code": "result_extraction_failed"}}
 			if state == StateFailed {
 				p.captureFailedOutputLocked()
+			}
+		}
+	}
+	if p.parser != nil && p.parser.Name() == "opencode-json" && p.result != nil {
+		if p.opencodeTokenUsage != nil {
+			usage := *p.opencodeTokenUsage
+			p.result.TokenUsage = &usage
+		}
+		if p.result.State == StateFailed && p.opencodeHTTPStatus == 429 && p.opencodeProviderError {
+			// A 429 is capacity evidence only while the unresolved terminal
+			// cause is the provider error itself. When finish chose a local
+			// completion/extraction diagnostic (for example
+			// incomplete_terminal_result after a retry), keep that diagnostic;
+			// the retry stays available as rate_limit metadata and events.
+			if p.result.Data == nil {
+				p.result.Data = map[string]any{}
+			}
+			p.result.Data["failure_structured"] = true
+			p.result.Data["failure_category"] = "capacity"
+			p.result.Data["http_status"] = p.opencodeHTTPStatus
+			if p.opencodeProviderErrorType != "" {
+				p.result.Data["provider_error_type"] = p.opencodeProviderErrorType
 			}
 		}
 	}

@@ -119,7 +119,7 @@ func Build(in Input) (Recipe, error) {
 	case "hermes":
 		recipe, err = buildHermes(in.Executable, model, speed, effort, access, in.UnattendedCodingPermissions)
 	case "opencode":
-		recipe, err = buildOpenCode(in.Executable, model, speed, effort)
+		recipe, err = buildOpenCode(in.Executable, model, speed, effort, access, in.UnattendedCodingPermissions)
 	case "zcode":
 		recipe, err = buildZCode(in.Executable, model, speed, effort, access)
 	case "devin":
@@ -183,9 +183,10 @@ func permissionLabel(harness, access string, grant bool) string {
 		return PermissionsReadOnly
 	}
 	// ZCode always requests yolo, which bypasses ordinary permission prompts
-	// but retains always-ask checks in the native evaluator (0.16.9).
-	// Hermes yolo bypasses dangerous-command prompts, not all session policy.
-	if harness == "zcode" || harness == "hermes" {
+	// but retains always-ask checks in the native evaluator (0.16.9). Hermes
+	// yolo bypasses dangerous-command prompts, not all session policy. OpenCode
+	// --auto does not approve permissions that are explicitly denied.
+	if harness == "zcode" || harness == "hermes" || harness == "opencode" {
 		return PermissionsConstrained
 	}
 	if !grant {

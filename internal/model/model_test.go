@@ -34,6 +34,54 @@ func TestExecutionSchemaInvariants(t *testing.T) {
 	}
 }
 
+func TestNativeUsageAndRateLimitAreNumericMetadata(t *testing.T) {
+	value := fixtureExecution(t)
+	next := value.UpdatedAt.Add(time.Minute)
+	value.TokenUsage = &TokenUsage{Input: 3, Output: 2, CacheRead: 1, CacheWrite: 1}
+	value.RateLimit = &NativeRateLimit{Attempt: 2, RetryAfterMS: 26000, NextRetryAt: &next, ProviderErrorType: "provider.rate-limit", HTTPStatus: 429}
+	if err := value.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	value.TokenUsage.Input = -1
+	if err := value.Validate(); err == nil {
+		t.Fatal("negative usage accepted")
+	}
+	value = fixtureExecution(t)
+	value.RateLimit = &NativeRateLimit{Attempt: 1, HTTPStatus: 500}
+	if err := value.Validate(); err == nil {
+		t.Fatal("non-429 rate-limit metadata accepted")
+	}
+	value.RateLimit = &NativeRateLimit{Attempt: 0, HTTPStatus: 429}
+	if err := value.Validate(); err == nil {
+		t.Fatal("zero retry attempt accepted")
+	}
+	for _, providerErrorType := range []string{"sk-live-51H8xQ2eZ9", "provider.", "provider.rate limit", "provider." + strings.Repeat("a", 60)} {
+		value.RateLimit = &NativeRateLimit{Attempt: 2, HTTPStatus: 429, ProviderErrorType: providerErrorType}
+		if err := value.Validate(); err == nil {
+			t.Fatalf("unsafe provider error type %q accepted", providerErrorType)
+		}
+	}
+	value.RateLimit = &NativeRateLimit{Attempt: 2, HTTPStatus: 429, ProviderErrorType: "unclassified"}
+	if err := value.Validate(); err != nil {
+		t.Fatalf("content-free marker rejected: %v", err)
+	}
+}
+
+func TestTokenUsageAggregationSaturatesWithoutSchemaOverflow(t *testing.T) {
+	usage := TokenUsage{Input: maxTokenUsageCount}
+	usage.Add(TokenUsage{Input: 1, Output: maxTokenUsageCount})
+	if usage.Input != maxTokenUsageCount || usage.Output != maxTokenUsageCount || !usage.Saturated {
+		t.Fatalf("saturated usage = %#v", usage)
+	}
+	if err := usage.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	usage.Input++
+	if err := usage.Validate(); err == nil {
+		t.Fatal("out-of-range aggregate accepted")
+	}
+}
+
 func TestExecutionLabelsAreBoundedUniqueMetadata(t *testing.T) {
 	value := fixtureExecution(t)
 	value.Labels = []string{"review", "model.grok"}

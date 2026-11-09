@@ -364,6 +364,8 @@
         }
       }
     },
+    "token_usage": {"$ref": "#/$defs/token_usage"},
+    "rate_limit": {"$ref": "#/$defs/native_rate_limit"},
     "created_at": {"type": "string", "format": "date-time"},
     "started_at": {"type": ["string", "null"], "format": "date-time"},
     "launch": {
@@ -414,6 +416,31 @@
     }
   ],
   "$defs": {
+    "token_usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "output"],
+      "properties": {
+        "input": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "output": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "cache_read": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "cache_write": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "reasoning": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "saturated": {"type": "boolean", "description": "One or more counters reached the exact-integer aggregation bound; exact totals are unavailable."}
+      }
+    },
+    "native_rate_limit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt", "http_status"],
+      "properties": {
+        "attempt": {"type": "integer", "minimum": 1},
+        "retry_after_ms": {"type": "integer", "minimum": 0},
+        "next_retry_at": {"type": "string", "format": "date-time"},
+        "provider_error_type": {"type": "string", "maxLength": 64, "pattern": "^(unclassified|provider\\.[a-z0-9][a-z0-9._-]{0,54})$"},
+        "http_status": {"const": 429}
+      }
+    },
     "execution_id": {
       "type": "string",
       "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"

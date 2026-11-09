@@ -14,12 +14,12 @@ to the turn rather than awaiting an operator.
 | Codex coding, no grant | unknown | Inherits native policy; no approval bypass is inferred. Native approval events require intervention. |
 | Cursor coding, trust and coding grants | fails-in-turn | Reviewed `--trust --force` recipe bypasses workspace/tool approval; live denial behavior not verified in this audit. Without the grants, unknown. |
 | Cursor read_only | unknown | `--trust --mode ask` requires a separate trust grant; tool approval behavior on a real turn not verified. |
-| Claude Code auto mode | unknown | Auto mode keeps classifier checks and may deny tool calls. A denied call alone does not prove whether every native fallback fails headless or parks. No broader bypass is added. Real approval fallback not verified. |
+| Claude Code coding, coding grant | unknown | `--permission-mode bypassPermissions` skips permission prompts. Real unattended provider behavior is not verified in this audit. |
 | ZCode yolo | unknown | The existing reviewed native evaluator retains always-ask checks. Whether every such check denies headless or parks is not verified; `constrained` remains the honest permission label. |
 | ZCode read_only | fails-in-turn | Existing version-pinned 0.17.0 isolated plan profile denies execution/writes; AskUserQuestion/ExitPlanMode fail headless per the prior profile review. This audit does not reverify that real-host behavior. |
 | Devin ACP, with or without coding grant | fails-in-turn | Adapter answers every request immediately: allowed `allow_once` only with the frozen grant, otherwise `reject_once` or cancelled. Denials emit attention and prevent successful completion; no unanswered approval RPC. Existing ACP transport fixtures cover both paths; provider execution not verified in this audit. |
 | OMP | unknown | No reviewed approval-bypass flag is added. Native approval behavior not verified in this audit. |
-| OpenCode | unknown | Structured output is reviewed, but no unattended permission-bypass recipe is inferred. Native approval behavior not verified in this audit. |
+| OpenCode coding, coding grant | unknown | OpenCode v2 `--auto` auto-approves permissions that are not explicitly denied; explicit denials remain in force and permissions report constrained. `read_only` is unavailable. Real approval behavior not verified in this audit. |
 | OpenClaw local | unknown | Embedded-local structured output does not establish tool approval behavior. No approval flag is inferred; real approvals not verified. |
 | Hermes coding | unknown | `--yolo` is added only with the coding grant. It bypasses dangerous-command prompts, not proven isolation or all gateway/session-policy checks; permissions remain constrained. Real approvals not verified. |
 

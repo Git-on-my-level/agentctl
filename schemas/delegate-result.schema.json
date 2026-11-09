@@ -289,7 +289,7 @@
           "description": "Devin ACP requires a nonempty valid UTF-8 prompt through managed stdin, validated before probing, admission, or launch. Plans reject missing prompt evidence or argv/stream delivery. The adapter encodes the unchanged text in session/prompt."
         },
         "permissions": {
-          "description": "Reviewed permission recipe, not provider attestation. Claude Code coding is constrained: the unattended coding grant adds --permission-mode auto, which retains classifier checks and can deny tool calls; without the grant no permission flag is added. Claude Code read_only is refused.",
+          "description": "Reviewed permission recipe, not provider attestation. With the unattended coding grant, Claude Code uses --permission-mode bypassPermissions and reports full; OpenCode uses --auto and reports constrained because explicit denials remain enforced. Their read_only access is refused.",
           "enum": [
             "full",
             "constrained",

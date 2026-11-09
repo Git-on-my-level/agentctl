@@ -33,6 +33,7 @@ func TestLaunchVersionProbeUsesManifestTimeout(t *testing.T) {
 		{name: "cursor", runtime: adapter.NewCursor(), want: 5 * time.Second},
 		{name: "claude-code", runtime: adapter.NewClaudeCode(), want: 5 * time.Second},
 		{name: "omp", runtime: adapter.NewOMP(), want: 5 * time.Second},
+		{name: "opencode", runtime: adapter.NewOpenCode(), want: 20 * time.Second},
 		{name: "zcode", runtime: adapter.NewZCode(), want: 30 * time.Second},
 		{name: "devin", runtime: adapter.NewDevin(), want: 5 * time.Second},
 		{name: "multica", runtime: adapter.NewMultica(adapter.MulticaConfig{Profile: "profile", Workspace: "workspace", Issue: "issue", Run: "run"}), want: 5 * time.Second},

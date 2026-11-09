@@ -94,7 +94,8 @@ without this grant, even if the directory was previously trusted. A model alias 
 allowlist entry never grants it. Unattended coding permissions are a second
 grant: `delegation.unattended_coding_permissions: true` adds Cursor `--force`,
 Codex `--dangerously-bypass-approvals-and-sandbox`, Claude Code
-`--permission-mode bypassPermissions`, and grants Devin ACP one-operation permission approvals on coding launches (the default
+`--permission-mode bypassPermissions`, OpenCode `--auto`, and grants Devin ACP
+one-operation permission approvals on coding launches (the default
 `settings.access`). `settings.access: "read_only"` uses Cursor `--mode ask`
 and Codex `--sandbox read-only -c approval_policy="never"` and never adds those coding permission flags.
 ZCode read-only (reviewed for ZCode CLI 0.17.0 only; any other version
@@ -146,8 +147,11 @@ refuses `read_only` with `access_unavailable`: ACP read-only enforcement is
 unverified. Devin uses `devin acp --model <configured-model>` with stdin prompt
 delivery. ACP rejects invalid UTF-8 before admission; it never substitutes JSON replacement characters for task bytes. Its plan records `AGENTCTL_DEVIN_ACP_APPROVE=1` with the grant and `0`
 without it. Permission denials emit attention and prevent successful completion.
-Harnesses without a reviewed unattended permission recipe are labeled
-`permissions: unsupported` and are not given an inferred flag. Expert `run`
+OpenCode `--auto` reports `permissions: constrained` because permissions that are
+explicitly denied remain denied. OpenCode `read_only` is unavailable rather than
+asserting an unverified enforcement mode. Harnesses without a reviewed unattended
+permission recipe are labeled `permissions: unsupported` and are not given an
+inferred flag. Expert `run`
 never reads either grant. Without an explicit `--adapter`, expert `run` and
 fanout infer native adapters, including `generic` / `generic-process`, from
 configured executables in the selected profile. If no implicit profile resolves,
