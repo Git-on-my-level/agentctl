@@ -51,6 +51,7 @@ var (
 	keyAckEpoch           = []byte("acknowledgement_epoch")
 	keyRetentionEnforceAt = []byte("retention_enforce_at")
 	bANXRunLinks          = []byte("anx_run_links")
+	bRetentionTracking    = []byte("retention_tracking")
 )
 
 type Options struct {
@@ -349,6 +350,17 @@ func (j *Journal) CreateExecution(ctx context.Context, execution model.Execution
 		if err := tx.Bucket(bExecutions).Put(key, encoded); err != nil {
 			return err
 		}
+		// Only a genuinely new admission attests that all supported ANX egress
+		// paths stamp protection first. Never backfill this on reuse, update or
+		// collection: historical custom spool roots may no longer be known.
+		tracking, err := tx.CreateBucketIfNotExists(bRetentionTracking)
+		if err != nil {
+			return err
+		}
+		if err := tracking.Put(key, []byte{1}); err != nil {
+			return err
+		}
+
 		if err := putDelegationBinding(tx, execution); err != nil {
 			return err
 		}

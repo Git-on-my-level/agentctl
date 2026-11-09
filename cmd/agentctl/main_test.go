@@ -2164,7 +2164,9 @@ func TestNativeRunRenewsLeaseWhileReapingAfterEarlyResult(t *testing.T) {
 	journalPath := filepath.Join(root, "state", "journal.db")
 	release := filepath.Join(root, "release")
 	script := filepath.Join(root, "slow-exit-agent")
-	contents := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"result\",\"status\":\"completed\",\"result\":\"done\"}'\nwhile [ ! -f '" + release + "' ]; do sleep 0.05; done\n"
+	// The fixture also self-terminates if a package-level timeout prevents
+	// Go test cleanup from running.
+	contents := fmt.Sprintf("#!/usr/bin/env python3\nimport pathlib,time\nprint(%q,flush=True)\nrelease=pathlib.Path(%q)\ndeadline=time.monotonic()+45\nwhile not release.exists() and time.monotonic()<deadline: time.sleep(.05)\n", `{"type":"result","status":"completed","result":"done"}`, release)
 	if err := os.WriteFile(script, []byte(contents), 0o700); err != nil {
 		t.Fatal(err)
 	}

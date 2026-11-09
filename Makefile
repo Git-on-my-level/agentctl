@@ -3,6 +3,8 @@ SHELL := /bin/sh
 GO ?= go
 PYTHON ?= python3
 GOVULNCHECK ?= govulncheck
+# Keep CI defaults unchanged; loaded hosts can opt into a longer bounded run.
+TEST_TIMEOUT ?= 10m
 BINARY_NAME ?= agentctl
 MAIN_PKG ?= ./cmd/agentctl
 BUILD_DIR ?= build
@@ -63,13 +65,13 @@ vet:
 # from a fresh runner.
 test:
 	@test -f go.mod || { echo 'go.mod is required for tests' >&2; exit 1; }
-	GOFLAGS='$(GOFLAGS)' GO='$(GO)' $(SCRIPTS_DIR)/go-hermetic.sh $(GO) test ./...
+	GOFLAGS='$(GOFLAGS)' GO='$(GO)' $(SCRIPTS_DIR)/go-hermetic.sh $(GO) test -timeout '$(TEST_TIMEOUT)' ./...
 
 # Exercise the stateful and process-lifecycle packages under the race detector
 # without imposing the cost on every local `make ci` invocation.
 test-race:
 	@test -f go.mod || { echo 'go.mod is required for race tests' >&2; exit 1; }
-	GOFLAGS='$(GOFLAGS)' GO='$(GO)' $(SCRIPTS_DIR)/go-hermetic.sh $(GO) test -race ./cmd/agentctl ./internal/anxrun ./internal/fanout ./internal/store ./internal/adapter ./internal/diagnostic ./internal/supervisor ./internal/portableasset ./internal/updatecheck
+	GOFLAGS='$(GOFLAGS)' GO='$(GO)' $(SCRIPTS_DIR)/go-hermetic.sh $(GO) test -race -timeout '$(TEST_TIMEOUT)' ./cmd/agentctl ./internal/anxrun ./internal/fanout ./internal/store ./internal/adapter ./internal/diagnostic ./internal/supervisor ./internal/portableasset ./internal/updatecheck
 
 check-ids:
 	$(PYTHON) $(SCRIPTS_DIR)/id-reference.py

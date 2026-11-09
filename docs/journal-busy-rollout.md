@@ -89,6 +89,10 @@ Retention is **on by default**, with these first-install rules:
   4096 events per batch, every five minutes. Unacknowledged results are protected
   even when they predate acknowledgement tracking. `anx.card.*` labels and ANX
   run links protect executions, outcomes and events after collection as well.
+  Legacy admissions without creation-time tracking provenance stay protected as
+  `legacy_anx_history_unknown`: former custom ANX spool roots cannot safely be
+  inferred from current configuration. Collection or idempotent reuse does not
+  remove that protection. New tracked history remains eligible normally.
 - To deliberately bypass only the upgrade preview, use
   `supervisor run --journal-retention-immediate` or the inherited service
   environment `AGENTCTL_JOURNAL_RETENTION=immediate`. This does not bypass unread,

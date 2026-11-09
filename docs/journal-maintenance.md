@@ -46,7 +46,15 @@ links protect execution/outcome/event history even after collection, including
 with explicit `--include-unreconciled` cleanup. Run-link registration stamps this
 protection before spooling or delivery; legacy pending/dead/delivered spool
 references are read locally during cleanup, including when registration is off.
-Spool read failures defer cleanup. Automatic maintenance never acknowledges
+Spool read failures defer cleanup. A legacy execution without a creation-time
+tracking stamp is additionally protected as `legacy_anx_history_unknown`, even
+if it was collected and the current spool has no matching link. A previous
+custom spool root may no longer be configured, so its absence from today's
+configuration proves nothing. New admissions atomically record tracking
+provenance; reusing, updating or collecting a legacy execution never backfills
+that stamp. Unknown legacy history remains protected after the seven-day window
+and with immediate enforcement or explicit unread-result overrides. Retention
+still expires eligible collected, unlinked history created under this protocol. Automatic maintenance never acknowledges
 unread results to make them eligible. Native and Multica histories use the same
 protection graph; retention
 never changes the Multica issue/run or the native CLI's conversation store.

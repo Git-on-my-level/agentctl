@@ -800,7 +800,12 @@ journal/binary backup before installation. `--journal-retention-immediate` or
 `AGENTCTL_JOURNAL_RETENTION=immediate` bypasses only the preview window.
 Each batch preserves whole execution lineages, uncollected results (including
 before the acknowledgement epoch), ANX-labeled/linked executions and outcomes,
-active exact subscriptions and retained outbox/receipt references, and is capped at 32 executions / 4096 events. Planning uses a read-only handle; the
+active exact subscriptions and retained outbox/receipt references. Legacy
+admissions without creation-time ANX tracking provenance remain protected as
+`legacy_anx_history_unknown`, since current configuration cannot establish the
+absence of links in former custom spools. Collection/reuse never backfills that
+stamp; immediate mode and unread-result overrides do not bypass it. New tracked
+history still expires normally. Each batch is capped at 32 executions / 4096 events. Planning uses a read-only handle; the
 exclusive transaction applies only if the database generation is unchanged.
 Contention or concurrent writes defer the batch. Large components require
 explicit digest-bound `data cleanup`. Deletion frees reusable pages, including

@@ -97,6 +97,11 @@ make ci
 go build -o build/agentctl ./cmd/agentctl
 ```
 
+Full Go package tests default to a ten-minute timeout. On a loaded host, use a
+bounded override such as `TEST_TIMEOUT=20m make ci` or inherit it into a normal
+`git push`. The full pre-push hook still runs; the override changes only the
+package deadline and leaves individual test assertions and CI defaults intact.
+
 ## Configure your agents
 
 List the agents and models you want to delegate to in

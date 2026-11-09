@@ -61,7 +61,9 @@
         "terminal_indexes": {"type": "integer", "minimum": 0},
         "outcomes": {"type": "integer", "minimum": 0},
         "idempotency_keys": {"type": "integer", "minimum": 0},
-        "acknowledgements": {"type": "integer", "minimum": 0}
+        "acknowledgements": {"type": "integer", "minimum": 0},
+        "status_contacts": {"type": "integer", "minimum": 0},
+        "retention_tracking": {"type": "integer", "minimum": 0}
       }
     }
   }

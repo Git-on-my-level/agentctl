@@ -57,7 +57,9 @@ else:
 	ctx, cancel := context.WithCancel(context.Background())
 	if timeout {
 		cancel()
-		ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+		// Allow interpreter startup separately from the cancellation/pipe
+		// cleanup assertion below. The fixture remains alive for 15 seconds.
+		ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
 	}
 	defer cancel()
 	first := make(chan error, 1)
@@ -77,6 +79,10 @@ else:
 			t.Fatal("anx fixture not ready")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if timeout {
+		// Measure cleanup from actual deadline expiry, not fixture startup.
+		<-ctx.Done()
 	}
 	started := time.Now()
 	if !timeout {

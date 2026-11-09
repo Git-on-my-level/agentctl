@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Git-on-my-level/agentctl/internal/anxrun"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/store"
 	"github.com/Git-on-my-level/agentctl/internal/testutil"
 	"go.etcd.io/bbolt"
@@ -161,5 +163,92 @@ func TestLegacyRetentionPreviewThenAutomaticEnforcement(t *testing.T) {
 				t.Fatalf("automatic enforcement=%d %v", count, err)
 			}
 		})
+	}
+}
+
+func TestLegacyANXSpoolRootChangeRetainsCollectedUnlabeledHistory(t *testing.T) {
+	ctx := context.Background()
+	root := testutil.TempDir(t)
+	path := filepath.Join(root, "state", "journal.db")
+	var out, stderr bytes.Buffer
+	a := testApp(&out, &stderr)
+	legacyID := mustParseExecID(t, seedTerminalLabeledExecution(t, a, path, nil))
+	controlID := mustParseExecID(t, seedTerminalLabeledExecution(t, a, path, nil))
+	j, err := store.Open(path, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := j.GetExecution(ctx, legacyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []ids.ExecutionID{legacyID, controlID} {
+		if _, _, err := j.AcknowledgeExecution(ctx, id, store.AcknowledgementResult); err != nil {
+			t.Fatal(err)
+		}
+	}
+	j.Close()
+	db, err := bbolt.Open(path, 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = db.Update(func(tx *bbolt.Tx) error {
+		return tx.Bucket([]byte("retention_tracking")).Delete([]byte(legacyID.String()))
+	})
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRoot := filepath.Join(root, "old-custom-links")
+	oldSpool, err := anxrun.OpenSpool(oldRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a legacy delivered link whose original custom root is no longer
+	// in configuration. A durable replay index survives pending-file deletion.
+	key := "agentctl://" + legacy.OriginHostID.String() + "/" + legacyID.String() + "/terminal"
+	index, err := json.Marshal(map[string]any{"counters": map[string]int{}, "assigned": map[string]int{key: 1}, "delivered": map[string]int{key: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldRoot, "sequence-index.json"), index, 0600); err != nil {
+		t.Fatal(err)
+	}
+	prior, err := oldSpool.LinkedExecutions()
+	if err != nil || len(prior) != 1 || prior[0] != legacyID {
+		t.Fatalf("prior links=%v %v", prior, err)
+	}
+	configPath := filepath.Join(root, "config.json")
+	config, err := json.Marshal(map[string]any{"schema_version": 1, "anx": map[string]any{"run_links": map[string]any{"default": "all", "spool_dir": filepath.Join(root, "new-custom-links")}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, config, 0600); err != nil {
+		t.Fatal(err)
+	}
+	links, err := a.anxRetentionLinks(common{journalPath: path, configPath: configPath})
+	if err != nil || len(links) != 0 {
+		t.Fatalf("current roots unexpectedly establish legacy absence: %v %v", links, err)
+	}
+	now := legacy.TerminalAt.Add(60 * 24 * time.Hour)
+	removed, err := maintainJournal(ctx, path, now, true, links, &stderr)
+	if err != nil || removed != 1 {
+		t.Fatalf("removed=%d want tracked control only; err=%v", removed, err)
+	}
+	j, err = store.Open(path, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	if _, err := j.GetOutcome(ctx, legacyID); err != nil {
+		t.Fatal("legacy link lost its outcome", err)
+	}
+	events, err := j.ListEvents(ctx, legacyID, contracts.EventQuery{})
+	if err != nil || len(events) == 0 {
+		t.Fatalf("legacy events=%d %v", len(events), err)
+	}
+	plan, err := j.PlanCleanup(ctx, now, store.CleanupOptions{IncludeUnreconciled: true})
+	if err != nil || len(plan.Eligible) != 0 || len(plan.Protected) != 1 || plan.Protected[0].Reasons[0] != "legacy_anx_history_unknown" {
+		t.Fatalf("unknown legacy history not protected: %+v %v", plan, err)
 	}
 }

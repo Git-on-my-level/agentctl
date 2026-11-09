@@ -85,3 +85,30 @@ skill-hash reference. Both bundle copies and their manifest entries were
 regenerated. The embedded-distribution unit contract now checks the bundle's
 skill hash and revision as well as byte equality, so the ordinary pre-push gate
 catches this cross-asset mismatch before publication.
+
+Devin subsequently identified a legacy custom-spool migration gap: after a root
+change, current configuration cannot discover all historical unlabeled links.
+Retention now protects admissions without a valid creation-time tracking receipt
+as `legacy_anx_history_unknown`. Only genuinely new executions get that receipt,
+atomically with admission; collection, updates and idempotent reuse never grant
+it retroactively. This preserves unknown legacy history regardless of current
+spool roots, collection, preview expiry or unread-result overrides. Retention
+remains enabled for eligible tracked history. Regression tests cover the moved
+custom spool, retained outcomes/events, a collected tracked control that expires,
+and collection/reuse that cannot reclassify unknown legacy history. Tracking
+records are counted and removed with eligible execution graphs.
+
+A later final-head hook attempt exhausted Go's aggregate ten-minute package
+budget under host load while another test was running, without an assertion
+failure. `TEST_TIMEOUT` now exposes the same ten-minute default for full tests
+and races; a bounded `20m` override is used only by the loaded-host publication
+command. The unchanged pre-push hook still runs every check, and hosted CI keeps
+its ten-minute default. The early-result release fixture also has its own
+independent deadline so an aborted Go test process cannot leave it running.
+
+The parallel final push run exposed another existing fixture race: its two-second
+context deadline could expire before Python reported readiness. The full local
+`make ci` unit suite passed that same package. The timeout fixture now allows
+startup separately and measures the unchanged pipe/lock cleanup budget from
+actual deadline expiry, still requiring `context.DeadlineExceeded`. Cancellation
+and timeout paths both retain their cleanup and descendant assertions.

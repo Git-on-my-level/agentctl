@@ -675,3 +675,72 @@ func TestCleanupProtectsUnreadWithoutAcknowledgementEpoch(t *testing.T) {
 		t.Fatalf("plan=%+v err=%v", plan, err)
 	}
 }
+
+func TestCleanupProtectsLegacyANXUncertaintyWithoutReclassifyingOnReuse(t *testing.T) {
+	for _, authority := range []model.Authority{model.AuthorityNative, model.AuthorityMultica} {
+		t.Run(string(authority), func(t *testing.T) {
+
+			ctx := context.Background()
+			j, _, now := openTestJournal(t)
+			mutation := contracts.MutationKey{Scope: "execution:run", Key: "legacy-root", InputDigest: hash('a')}
+			configure := func(value *model.Execution) {
+				value.Authority = authority
+				if authority == model.AuthorityMultica {
+					value.Mode = model.ModeMultica
+				}
+			}
+			legacy := seedTerminalForRetention(t, j, now.Add(-60*24*time.Hour), mutation, configure)
+			control := seedCollectedForRetention(t, j, now.Add(-60*24*time.Hour), contracts.MutationKey{}, configure)
+			// Model a pre-feature admission whose former custom spool is not discoverable
+			// from today's config. Positive collection evidence is already present.
+			if err := j.db.Update(func(tx *bbolt.Tx) error { return tx.Bucket(bRetentionTracking).Delete([]byte(legacy.ID.String())) }); err != nil {
+				t.Fatal(err)
+			}
+			if _, reused, err := j.CreateExecution(ctx, sampleExecution(now), mutation); err != nil || !reused {
+				t.Fatalf("reuse=%v err=%v", reused, err)
+			}
+			if _, _, err := j.AcknowledgeExecution(ctx, legacy.ID, AcknowledgementAwait); err != nil {
+				t.Fatal(err)
+			}
+			cutoff := now.Add(-30 * 24 * time.Hour)
+			for _, override := range []bool{false, true} {
+				options := CleanupOptions{IncludeUnreconciled: override}
+				plan, err := j.PlanCleanup(ctx, cutoff, options)
+				if err != nil {
+					t.Fatal(err)
+				}
+				reasons := planReasons(plan, legacy.ID)
+				if len(reasons) != 1 || reasons[0] != "legacy_anx_history_unknown" || !planIsEligible(plan, control.ID) || planIsEligible(plan, legacy.ID) {
+					t.Fatalf("unsafe legacy plan: %+v", plan)
+				}
+			}
+			batch, err := j.PlanCleanupBatch(ctx, cutoff)
+			if err != nil || batch.Executions() != 1 {
+				t.Fatalf("batch=%d %v", batch.Executions(), err)
+			}
+			plan, err := j.PlanCleanup(ctx, cutoff, CleanupOptions{})
+			if err != nil || plan.Records.RetentionTracking != 1 {
+				t.Fatalf("tracking count=%+v %v", plan, err)
+			}
+			if _, err := j.ApplyCleanup(ctx, cutoff, plan.PlanDigest, CleanupOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := j.GetOutcome(ctx, legacy.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := j.db.View(func(tx *bbolt.Tx) error {
+				if tx.Bucket(bRetentionTracking).Get([]byte(control.ID.String())) != nil {
+					t.Error("deleted execution left tracking record")
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			events, err := j.ListEvents(ctx, legacy.ID, contracts.EventQuery{})
+			if err != nil || len(events) == 0 {
+				t.Fatalf("events=%d %v", len(events), err)
+			}
+
+		})
+	}
+}

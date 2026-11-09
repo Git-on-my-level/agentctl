@@ -54,19 +54,20 @@ type RetentionInventory struct {
 }
 
 type CleanupRecordCounts struct {
-	Executions       int `json:"executions"`
-	Events           int `json:"events"`
-	EventIndexes     int `json:"event_indexes"`
-	EventDedupe      int `json:"event_dedupe"`
-	TerminalIndexes  int `json:"terminal_indexes"`
-	Outcomes         int `json:"outcomes"`
-	IdempotencyKeys  int `json:"idempotency_keys"`
-	Acknowledgements int `json:"acknowledgements,omitempty"`
-	StatusContacts   int `json:"status_contacts,omitempty"`
+	Executions        int `json:"executions"`
+	Events            int `json:"events"`
+	EventIndexes      int `json:"event_indexes"`
+	EventDedupe       int `json:"event_dedupe"`
+	TerminalIndexes   int `json:"terminal_indexes"`
+	Outcomes          int `json:"outcomes"`
+	IdempotencyKeys   int `json:"idempotency_keys"`
+	Acknowledgements  int `json:"acknowledgements,omitempty"`
+	StatusContacts    int `json:"status_contacts,omitempty"`
+	RetentionTracking int `json:"retention_tracking,omitempty"`
 }
 
 func (c CleanupRecordCounts) Total() int {
-	return c.Executions + c.Events + c.EventIndexes + c.EventDedupe + c.TerminalIndexes + c.Outcomes + c.IdempotencyKeys + c.Acknowledgements + c.StatusContacts
+	return c.Executions + c.Events + c.EventIndexes + c.EventDedupe + c.TerminalIndexes + c.Outcomes + c.IdempotencyKeys + c.Acknowledgements + c.StatusContacts + c.RetentionTracking
 }
 
 type CleanupExecution struct {
@@ -488,7 +489,18 @@ func (j *Journal) cleanupPlanTx(ctx context.Context, tx *bbolt.Tx, before time.T
 	for _, id := range options.ANXRunLinks {
 		protect(id.String(), "anx_run_link")
 	}
+	tracking := tx.Bucket(bRetentionTracking)
 	for id, value := range executions {
+		// A previous version could have registered an unlabeled link in a
+		// former custom spool. Current configuration cannot prove its absence.
+		// Keep those histories even after collection and the preview window.
+		var stamp []byte
+		if tracking != nil {
+			stamp = tracking.Get([]byte(id))
+		}
+		if len(stamp) != 1 || stamp[0] != 1 {
+			protect(id, "legacy_anx_history_unknown")
+		}
 		for _, label := range value.Labels {
 			if strings.HasPrefix(label, "anx.card.") {
 				protect(id, "anx_run_link")
@@ -680,6 +692,12 @@ func (j *Journal) buildCleanupTarget(ctx context.Context, tx *bbolt.Tx, executio
 			add([]byte(id), raw)
 		}
 	}
+	if tracking := tx.Bucket(bRetentionTracking); tracking != nil {
+		if raw := tracking.Get([]byte(id)); raw != nil {
+			target.Records.RetentionTracking++
+			add([]byte(id), raw)
+		}
+	}
 	if contacts := tx.Bucket(bStatusContacts); contacts != nil {
 		if raw := contacts.Get([]byte(id)); raw != nil {
 			target.Records.StatusContacts++
@@ -741,6 +759,7 @@ func addCleanupCounts(target *CleanupRecordCounts, value CleanupRecordCounts) {
 	target.IdempotencyKeys += value.IdempotencyKeys
 	target.Acknowledgements += value.Acknowledgements
 	target.StatusContacts += value.StatusContacts
+	target.RetentionTracking += value.RetentionTracking
 }
 
 func deleteCleanupTargets(ctx context.Context, tx *bbolt.Tx, targets []cleanupTarget) error {
@@ -776,6 +795,11 @@ func deleteCleanupTargets(ctx context.Context, tx *bbolt.Tx, targets []cleanupTa
 		}
 		if acks := tx.Bucket(bAcknowledgements); acks != nil {
 			if err := acks.Delete([]byte(target.ExecutionID)); err != nil {
+				return err
+			}
+		}
+		if tracking := tx.Bucket(bRetentionTracking); tracking != nil {
+			if err := tracking.Delete([]byte(target.ExecutionID)); err != nil {
 				return err
 			}
 		}
