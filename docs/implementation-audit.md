@@ -101,9 +101,10 @@ These are explicit limits, not silently degraded promises:
   already-managed supervisor but does not create one by detection alone.
 - Bundle compilation/install is local. Publishing it into an operator's network
   or fleet bootstrap is a separate reviewed deployment step.
-- Journal retention is not automatic in the preview. `data inventory` and digest-bound
+- The supervisor provides bounded default-on retention of old acknowledged,
+  lineage-free terminals. `data inventory` and digest-bound
   `data cleanup --plan|--apply` expose an explicit terminal-graph lifecycle. No
-  nonterminal, active-subscription, delivery/receipt, partial-lineage, or
+  nonterminal, active-subscription, delivery/receipt, lineage-linked, or
   promotion-linked execution is silently deleted.
 - The frozen BIP-39 word list is not optimized for speech confusion or cultural
   screening. The type checksum catches most transcription mistakes; a future
@@ -137,8 +138,8 @@ Before tagging a public preview:
    without changing unmanaged files;
 5. scan the complete Git history and release archives for credentials and
    machine-specific data; and
-6. preserve the prominent 1 MiB result-storage and absent-automatic-retention
-   disclosures while cleanup remains an explicit operator-reviewed lifecycle.
+6. preserve the prominent 1 MiB result-storage and bounded automatic-retention
+   disclosures alongside the host-local retention kill switch.
 
 Optional Multica, network, and fleet integrations have their own compatibility
 canaries. Failure of an optional integration does not redefine standalone
@@ -150,7 +151,7 @@ support, but its capability must be reported accurately.
    URI attach contract.
 2. Add a reviewed publisher interface for operator deployment/checksum chains
    without making any network index an agent control plane.
-3. Evaluate an automatic retention policy and physical journal compaction only
+3. Evaluate physical journal compaction only
    after the explicit inventory and digest-bound cleanup workflow has
    operational evidence.
 4. Expand golden schemas for subscriptions, deliveries, context results, and

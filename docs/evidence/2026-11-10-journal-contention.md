@@ -1,0 +1,64 @@
+# Journal contention implementation evidence (2026-11-10)
+
+This change was developed and tested with disposable journals. No production
+journal cleanup, compaction, binary installation, service restart, or release
+was performed.
+
+## Verified mechanisms
+
+- `journal_busy.go` previously gave only run/delegate/dispatch/continue/await/
+  await-any a default retry budget. Result collection, reconciliation and
+  steering now receive that same bounded 120-second budget. Bulk collection and
+  reconciliation write opens also respect the caller's cancellation context.
+- Previous cleanup decoded the entire idempotency bucket once per eligible
+  execution and inspected all selected event histories under a single open
+  journal. Apply did that work inside a write transaction.
+- Cleanup now copies metadata pages, computes protections outside transactions,
+  and selects at most eight executions with 128 events each. The idempotency
+  bucket is indexed once per plan. CLI handles close after every page/commit.
+  Event-heavy executions drain through reviewed partial batches. Event IDs
+  participate in the digest so equal-sized prefixes cannot reuse an old digest.
+- Each deletion requires a consistent protection snapshot and an unchanged
+  bbolt transaction generation. Late subscriptions, lineage links, events,
+  acknowledgements, outcomes and diagnostic files fail closed. This works with
+  older writers without adding a journal schema or a second write authority.
+- All lineage-linked executions are retained conservatively, including fully
+  terminal components. This is stricter than the previous manual policy and
+  prevents intermediate dangling references across bounded commits.
+- Default-on supervisor retention uses the same protections, additionally
+  requires an explicit acknowledgement for pre-tracking records, and processes
+  at most one event batch/execution each cycle. The default cutoff is 14 days.
+  `journal.retention.enabled=false` disables it; policy reloads each cycle.
+- Current main already classified a missing detached worker receipt as
+  `admitted`, not `launched`. Added coverage verifies worker startup failures
+  return errors, including under journal contention, and a lost receipt remains
+  an admission requiring status/await evidence.
+
+## Validation
+
+Tests cover page-level file-lock release, read-only plans, bounded selection,
+large-history partial draining with bbolt integrity checks, committed-prefix
+receipts on cancellation, stale digest rejection, late reference/event/cache
+changes, automatic acknowledgement and lineage protection, default/cutoff/kill
+switch policy, native and Multica local retention, acknowledgement contention
+and cancellation, and detached failure receipts.
+
+The PR records terminal outcomes for full `make ci`, focused race tests, and
+hosted checks. No provider-backed native or Multica operation was invoked to
+validate retention; those authorities remain unchanged.
+
+## Limits and follow-ups
+
+- Concurrent commits can defer a stable protection snapshot, especially on a
+  continuously busy journal. Maintenance has a two-second cycle deadline and
+  defers contention rather than extending lock tenure or weakening protection.
+  Dedicated protection indexes or a reviewed single-writer design would reduce
+  the metadata scan and improve progress under constant writes.
+- An imported execution with over 128 associated metadata records is deferred
+  rather than using an unbounded final deletion transaction.
+- Freed bbolt pages are reusable; physical file size does not shrink.
+- Progress event sampling is left as a separate contract change; see the design
+  in the PR body. Immutable events and subscription delivery are not rewritten.
+- Open PR [#137](https://github.com/Git-on-my-level/agentctl/pull/137) overlaps
+  this area. These changes are independently based on main; the lead should
+  reconcile the two implementations before merging either together.

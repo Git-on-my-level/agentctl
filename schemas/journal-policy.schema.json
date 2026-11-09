@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentctl:schema:journal-policy:v1",
+  "x-agentctl-docs": "../docs/configuration.md#journal-retention",
+  "title": "Host-local journal policy (the journal config key)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean", "default": true},
+        "days": {"type": "integer", "minimum": 0, "maximum": 3650, "default": 14, "description": "Exact 24-hour days; omitted or zero uses 14."}
+      }
+    }
+  }
+}

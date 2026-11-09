@@ -566,7 +566,8 @@ attention. For a durable fan-in callback use
 `subscribe create --label-prefix <prefix>`; it covers executions launched later
 but does not backfill earlier events. Do not wrap `delegate` in a retry loop
 for `journal_busy`: launch and wait commands already retry for
-`--journal-busy-budget` (default 120s). A managed supervisor is required only for cross-restart
+`--journal-busy-budget` (default 120s for run, delegate, dispatch, continue,
+await, await-any, result, reconcile and steer). A managed supervisor is required only for cross-restart
 delivery and must not be silently installed as a new service.
 
 Permission-granting native flags remain explicit on expert `run` argv. `delegate`
@@ -658,6 +659,24 @@ first, including uncollected diagnostics. A pointer may therefore be missing.
 reviewed digest; apply removes those files before their records. Missing files
 need no removal. A cache lock serializes capture, eviction, and cleanup apply.
 `--no-store-result` disables capture. Existing records are not reconciled.
+
+Journal cleanup plans select at most eight executions and 128 events per
+execution, using short paged reads with the journal closed between pages.
+Review the digest, apply it, then review a fresh plan while `has_more=true`.
+An eligible `partial=true` removes only selected event triples; identity,
+outcome and the terminal event remain collectable until a final batch. All
+lineage-linked executions and uncollected results remain protected. Apply
+rechecks protections per commit; a busy journal, cancellation or new reference
+can stop after committed progress, reported as `cleanup_progress` on the error.
+Re-plan before retrying. No physical compaction occurs.
+
+Only the running supervisor performs automatic retention: one small batch per
+cycle, acknowledged terminal lineage-free records older than 14 days by
+default. Set the host-local config `journal.retention.enabled=false` to disable
+it or `journal.retention.days` to change the cutoff (1–3650; zero means 14).
+Policy reloads each cycle. Unacknowledged pre-tracking results are also kept
+automatically. Native and Multica authorities are unchanged; no read-only CLI
+runs maintenance.
 
 ZCode's existing `--mode yolo` bypasses ordinary permission prompts but retains
 native always-ask checks (verified in 0.16.9); it reports `permissions: constrained`

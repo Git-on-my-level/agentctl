@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
+	"github.com/Git-on-my-level/agentctl/internal/model"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -125,6 +128,9 @@ func TestResolveJournalBusyBudget(t *testing.T) {
 		{command: "continue", want: defaultJournalBusyBudget},
 		{command: "await", want: defaultJournalBusyBudget},
 		{command: "await-any", want: defaultJournalBusyBudget},
+		{command: "result", want: defaultJournalBusyBudget},
+		{command: "reconcile", want: defaultJournalBusyBudget},
+		{command: "steer", want: defaultJournalBusyBudget},
 		{command: "status", want: 0},
 		{command: "status", env: "45s", want: 45 * time.Second},
 		{command: "delegate", env: "0", want: 0},
@@ -192,5 +198,47 @@ func TestJournalBusyBudgetDoesNotOpenAfterBudget(t *testing.T) {
 	}
 	if !errors.Is(err, store.ErrBusy) {
 		t.Fatalf("error=%v want ErrBusy", err)
+	}
+}
+
+func TestAcknowledgementsAbsorbContentionAndHonorCancellation(t *testing.T) {
+	for _, bulk := range []bool{false, true} {
+		t.Run(fmt.Sprint("bulk=", bulk), func(t *testing.T) {
+			path, holder := holdJournal(t)
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			execution := mustCreateTerminal(t, holder, "codex", model.StateCompleted, a.now().Add(-time.Hour))
+			released := make(chan struct{})
+			go func() { time.Sleep(250 * time.Millisecond); holder.Close(); close(released) }()
+			c := common{journalPath: path, journalBusyBudget: journalBusyCommandDefault("result")}
+			var problem *output.Error
+			if bulk {
+				_, problem = a.acknowledgeExecutions(context.Background(), c, []ids.ExecutionID{execution.ID}, store.AcknowledgementResult)
+			} else {
+				problem = a.acknowledgeExecution(context.Background(), c, execution.ID, store.AcknowledgementResult)
+			}
+			<-released
+			if problem != nil {
+				t.Fatal(problem)
+			}
+			j, err := store.Open(path, store.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer j.Close()
+			if _, err := j.GetAcknowledgement(context.Background(), execution.ID); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if bulk {
+				_, problem = a.acknowledgeExecutions(ctx, c, []ids.ExecutionID{execution.ID}, store.AcknowledgementResult)
+			} else {
+				problem = a.acknowledgeExecution(ctx, c, execution.ID, store.AcknowledgementResult)
+			}
+			if problem == nil {
+				t.Fatal("ack ignored cancelled collection context")
+			}
+		})
 	}
 }

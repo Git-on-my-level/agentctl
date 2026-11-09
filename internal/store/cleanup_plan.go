@@ -1,0 +1,297 @@
+package store
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
+	"github.com/Git-on-my-level/agentctl/internal/model"
+	"go.etcd.io/bbolt"
+)
+
+type cleanupRecord struct{ bucket, key, raw []byte }
+
+// PlanCleanup uses a caller-owned handle. CLI maintenance should use Cleanup
+// instead, which closes the file handle between pages as well as transactions.
+func (j *Journal) PlanCleanup(ctx context.Context, before time.Time, options CleanupOptions) (CleanupPlan, error) {
+	plan, _, err := j.cleanupReader(ctx).plan(before, options, cleanupEventBatch)
+	return plan, err
+}
+
+// Plan returns one read-only, digest-bound batch, with HasMore for subsequent
+// plans. No journal or diagnostic cache is created as part of planning.
+func (c Cleanup) Plan(ctx context.Context, before time.Time, options CleanupOptions) (CleanupPlan, error) {
+	plan, _, err := c.reader(ctx).plan(before, options, cleanupEventBatch)
+	return plan, err
+}
+
+func (r *cleanupReader) plan(before time.Time, options CleanupOptions, eventLimit int) (CleanupPlan, []cleanupTarget, error) {
+	if err := r.ctx.Err(); err != nil {
+		return CleanupPlan{}, nil, err
+	}
+	if before.IsZero() {
+		return CleanupPlan{}, nil, fmt.Errorf("cleanup cutoff is required")
+	}
+	snapshot, err := r.snapshot(false)
+	if err != nil {
+		return CleanupPlan{}, nil, err
+	}
+	plan, executions, err := snapshot.selectCleanup(before.UTC(), r.now, options)
+	if err != nil {
+		return plan, nil, err
+	}
+	limit := 8
+	if options.automatic {
+		limit = 1
+	}
+	if len(executions) > limit {
+		plan.HasMore = true
+		executions = executions[:limit]
+	}
+	// Index mutation records once, rather than scanning the entire bucket for
+	// every eligible execution (quadratic on a journal with years of history).
+	mutations := map[string][]cleanupRecord{}
+	if err := snapshot.Bucket(bIdempotency).ForEach(func(key, raw []byte) error {
+		var record mutationRecord
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return corrupt(err)
+		}
+		if record.ObjectType == "execution" {
+			mutations[record.ObjectID] = append(mutations[record.ObjectID], cleanupRecord{bIdempotency, key, raw})
+		}
+		return nil
+	}); err != nil {
+		return plan, nil, err
+	}
+	targets := make([]cleanupTarget, 0, len(executions))
+	for _, execution := range executions {
+		if err := r.ctx.Err(); err != nil {
+			return plan, nil, err
+		}
+		target, err := r.target(execution, mutations[execution.ID.String()], eventLimit)
+		if err != nil {
+			return plan, nil, err
+		}
+		if !target.complete {
+			plan.HasMore = true
+		}
+		targets = append(targets, target)
+		plan.Eligible = append(plan.Eligible, target.CleanupExecution)
+		addCleanupCounts(&plan.Records, target.Records)
+		plan.LogicalBytes += target.LogicalBytes
+		if target.DiagnosticFile != nil {
+			plan.DiagnosticFiles++
+			plan.DiagnosticBytes += target.DiagnosticFile.Bytes
+		}
+	}
+	// Bind the actual event prefix as well as aggregate counts. Two partial
+	// batches can have identical sizes; a stale digest must not authorize the
+	// next prefix just because the execution and counts are unchanged.
+	type eventSelection struct {
+		ExecutionID string   `json:"execution_id"`
+		EventIDs    []string `json:"event_ids"`
+	}
+	selections := make([]eventSelection, 0, len(targets))
+	for _, target := range targets {
+		selection := eventSelection{ExecutionID: target.ExecutionID, EventIDs: []string{}}
+		for _, event := range target.events {
+			selection.EventIDs = append(selection.EventIDs, event.id)
+		}
+		selections = append(selections, selection)
+	}
+	raw, err := json.Marshal(struct {
+		SchemaVersion       int                `json:"schema_version"`
+		Before              time.Time          `json:"before"`
+		IncludeUnreconciled bool               `json:"include_unreconciled"`
+		Eligible            []CleanupExecution `json:"eligible"`
+		Selections          []eventSelection   `json:"selections"`
+	}{RetentionSchemaVersion, before.UTC(), options.IncludeUnreconciled, plan.Eligible, selections})
+	if err != nil {
+		return plan, nil, err
+	}
+	sum := sha256.Sum256(raw)
+	plan.PlanDigest = "sha256:" + hex.EncodeToString(sum[:])
+	return plan, targets, nil
+}
+
+func (r *cleanupReader) target(execution model.Execution, mutations []cleanupRecord, eventLimit int) (cleanupTarget, error) {
+	id := []byte(execution.ID.String())
+	target := cleanupTarget{CleanupExecution: CleanupExecution{ExecutionID: string(id), TerminalAt: *execution.TerminalAt}, complete: true}
+	outputRef := ""
+	var terminalID []byte
+	add := func(bucket, key, raw []byte) {
+		target.rawRecords = append(target.rawRecords, cleanupRecord{bucket, bytes.Clone(key), bytes.Clone(raw)})
+		if raw != nil {
+			target.LogicalBytes += int64(len(key) + len(raw))
+		}
+	}
+	err := r.view(func(tx *bbolt.Tx) error {
+		raw := tx.Bucket(bExecutions).Get(id)
+		expected, err := json.Marshal(execution)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(raw, expected) {
+			return fmt.Errorf("%w: cleanup execution changed", ErrConflict)
+		}
+		add(bExecutions, id, raw)
+		target.Records.Executions = 1
+		outcomeRaw := tx.Bucket(bOutcomes).Get(id)
+		add(bOutcomes, id, outcomeRaw)
+		if raw := outcomeRaw; raw != nil {
+			var outcome model.Outcome
+			if err := json.Unmarshal(raw, &outcome); err != nil {
+				return corrupt(err)
+			}
+			outputRef = outcome.OutputRef
+			target.Records.Outcomes++
+		}
+		for _, entry := range []struct {
+			name  []byte
+			count *int
+		}{{bAcknowledgements, &target.Records.Acknowledgements}, {bStatusContacts, &target.Records.StatusContacts}, {bTerminal, &target.Records.TerminalIndexes}} {
+			var raw []byte
+			if bucket := tx.Bucket(entry.name); bucket != nil {
+				raw = bucket.Get(id)
+			}
+			add(entry.name, id, raw)
+			if raw != nil {
+				*entry.count++
+				if bytes.Equal(entry.name, bTerminal) {
+					terminalID = bytes.Clone(raw)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return target, err
+	}
+	target.outputRef = outputRef
+	outputs, err := diagnostic.OpenOutputs(filepath.Dir(r.path), false)
+	if err != nil {
+		return target, err
+	}
+	target.DiagnosticFile, err = outputs.Inspect(string(id), outputRef)
+	outputs.Close()
+	if err != nil {
+		return target, err
+	}
+	for _, record := range mutations {
+		target.idempotencyKeys = append(target.idempotencyKeys, record.key)
+		add(record.bucket, record.key, record.raw)
+		target.Records.IdempotencyKeys++
+	}
+	var after []byte
+	var terminal *cleanupEvent
+	for {
+		page := []cleanupEvent{}
+		var last []byte
+		done := false
+		err := r.view(func(tx *bbolt.Tx) error {
+			bucket := tx.Bucket(bEventsByExecution).Bucket(id)
+			if bucket == nil {
+				done = true
+				return nil
+			}
+			c := bucket.Cursor()
+			key, eventID := c.First()
+			if after != nil {
+				key, eventID = c.Seek(after)
+				if bytes.Equal(key, after) {
+					key, eventID = c.Next()
+				}
+			}
+			size := 0
+			for ; key != nil && len(page) < cleanupPageSize && size < cleanupPageBytes; key, eventID = c.Next() {
+				if err := r.ctx.Err(); err != nil {
+					return err
+				}
+				raw := tx.Bucket(bEvents).Get(eventID)
+				if raw == nil {
+					return fmt.Errorf("%w: event index target missing", ErrCorrupt)
+				}
+				var stored storedEvent
+				if err := json.Unmarshal(raw, &stored); err != nil {
+					return corrupt(err)
+				}
+				if stored.Event.ExecutionID != execution.ID {
+					return fmt.Errorf("%w: event index execution mismatch", ErrCorrupt)
+				}
+				dedupeRaw := tx.Bucket(bDedupe).Get([]byte(stored.Event.DedupeKey))
+				if dedupeRaw == nil {
+					return fmt.Errorf("%w: event dedupe index missing", ErrCorrupt)
+				}
+				var dedupe dedupeRecord
+				if err := json.Unmarshal(dedupeRaw, &dedupe); err != nil {
+					return corrupt(err)
+				}
+				if dedupe.EventID != string(eventID) {
+					return fmt.Errorf("%w: event dedupe target mismatch", ErrCorrupt)
+				}
+				page = append(page, cleanupEvent{string(eventID), stored.Event.DedupeKey, bytes.Clone(key), bytes.Clone(raw), bytes.Clone(dedupeRaw)})
+				last = bytes.Clone(key)
+				size += len(raw) + len(dedupeRaw)
+			}
+			done = key == nil
+			return nil
+		})
+		if err != nil {
+			return target, err
+		}
+		for _, event := range page {
+			if event.id == string(terminalID) {
+				copy := event
+				terminal = &copy
+				continue
+			}
+			target.events = append(target.events, event)
+			if eventLimit > 0 && len(target.events) >= eventLimit {
+				target.complete = false
+				break
+			}
+		}
+		if !target.complete || done {
+			break
+		}
+		after = last
+	}
+	// Keep the terminal event/index and outcome until the final commit, so a
+	// cancelled or deferred cleanup still has a valid, collectable execution.
+	if target.complete && terminal != nil {
+		target.events = append(target.events, *terminal)
+	}
+	for _, event := range target.events {
+		target.Records.Events++
+		target.Records.EventIndexes++
+		target.Records.EventDedupe++
+		target.LogicalBytes += int64(len(event.id) + len(event.raw) + len(event.sequence) + len(event.id) + len(event.dedupeKey) + len(event.dedupeRaw))
+	}
+	if target.complete && len(target.events) > 0 {
+		target.LogicalBytes += int64(len(id))
+	}
+	if !target.complete {
+		target.Partial = true
+		target.DiagnosticFile = nil
+		// Only event triples are removed by a partial batch. Identity,
+		// outcome, terminal index, acknowledgement and mutation keys remain.
+		target.Records.Executions = 0
+		target.Records.Outcomes = 0
+		target.Records.TerminalIndexes = 0
+		target.Records.IdempotencyKeys = 0
+		target.Records.Acknowledgements = 0
+		target.Records.StatusContacts = 0
+		for _, record := range target.rawRecords {
+			if record.raw != nil {
+				target.LogicalBytes -= int64(len(record.key) + len(record.raw))
+			}
+		}
+	}
+	return target, nil
+}

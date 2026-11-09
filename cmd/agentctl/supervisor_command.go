@@ -95,10 +95,11 @@ func (a *app) supervisorRun(ctx context.Context, renderer output.Renderer, c com
 	factory := supervisor.DependenciesFactoryFunc(func(cycleCtx context.Context) (supervisor.CycleDependencies, error) {
 		bridge := pathSupervisorExecutions{path: journalPath, probeTimeout: 10 * time.Second, app: a}
 		deps := supervisor.Dependencies{
-			Executions: bridge,
-			Reprober:   bridge,
-			Outbox:     agentruntime.OutboxBridge{Store: journalSupervisorOutbox{path: journalPath}},
-			Deliverer:  agentruntime.DelivererBridge{Transport: callbackTransport{journalPath: journalPath, stateDir: resolvedStateDir}},
+			Maintenance: func(ctx context.Context) error { return a.maintainJournal(ctx, c, journalPath) },
+			Executions:  bridge,
+			Reprober:    bridge,
+			Outbox:      agentruntime.OutboxBridge{Store: journalSupervisorOutbox{path: journalPath}},
+			Deliverer:   agentruntime.DelivererBridge{Transport: callbackTransport{journalPath: journalPath, stateDir: resolvedStateDir}},
 		}
 		return supervisor.CycleDependencies{Dependencies: deps}, nil
 	})

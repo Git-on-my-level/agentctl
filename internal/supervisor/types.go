@@ -289,8 +289,9 @@ type DeliveryReport struct {
 
 // CycleReport combines recovery and delivery work from one supervisor tick.
 type CycleReport struct {
-	Recovery RecoveryReport `json:"recovery"`
-	Delivery DeliveryReport `json:"delivery"`
+	MaintenanceError string         `json:"maintenance_error,omitempty"`
+	Recovery         RecoveryReport `json:"recovery"`
+	Delivery         DeliveryReport `json:"delivery"`
 }
 
 // Authenticator authenticates a Tailnet HTTP request.  Tailnet reachability
@@ -308,10 +309,12 @@ type TailnetHookConfig struct {
 
 // Dependencies are the authority adapters injected into a Supervisor.
 type Dependencies struct {
-	Executions ExecutionRepository
-	Reprober   Reprober
-	Outbox     Outbox
-	Deliverer  Deliverer
+	// Maintenance runs after recovery and delivery; it must bound its own work.
+	Maintenance func(context.Context) error
+	Executions  ExecutionRepository
+	Reprober    Reprober
+	Outbox      Outbox
+	Deliverer   Deliverer
 	// Factory opens dependencies for one bounded cycle and must release any
 	// underlying resources in CycleDependencies.Close before returning. This
 	// is used by bbolt-backed hosts so a long-running supervisor never holds an

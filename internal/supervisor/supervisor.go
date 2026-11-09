@@ -492,6 +492,12 @@ func (s *Supervisor) RunOnce(ctx context.Context) (report CycleReport, runErr er
 	recovery := s.recoverWith(ctx, deps)
 	delivery := s.drainOutboxWith(ctx, deps)
 	report.Recovery, report.Delivery = recovery, delivery
+	if deps.Maintenance != nil && ctx.Err() == nil {
+		if err := deps.Maintenance(ctx); err != nil {
+			report.MaintenanceError = err.Error()
+			s.recordError(err)
+		}
+	}
 	s.mu.Lock()
 	now := s.cfg.Clock.Now()
 	s.health.LastCycleAt = now
@@ -504,7 +510,7 @@ func (s *Supervisor) RunOnce(ctx context.Context) (report CycleReport, runErr er
 	// A dead letter is a delivery lost to its receiver: degraded for the cycle.
 	// An execution whose last reprobe failed stays unresolved (probeRetries)
 	// until a probe succeeds, even when a budget-limited pass did not reach it.
-	if len(recovery.Failures) > 0 || len(delivery.Failures) > 0 || delivery.Retrying > 0 || delivery.DeadLettered > 0 || len(s.probeRetries) > 0 {
+	if report.MaintenanceError != "" || len(recovery.Failures) > 0 || len(delivery.Failures) > 0 || delivery.Retrying > 0 || delivery.DeadLettered > 0 || len(s.probeRetries) > 0 {
 		s.health.State = HealthDegraded
 	} else {
 		// A fully clean cycle is recovery: a stale error must not keep

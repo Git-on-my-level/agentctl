@@ -30,7 +30,7 @@ const (
 // keep the historical two-attempt open unless the operator sets a budget.
 func journalBusyCommandDefault(command string) time.Duration {
 	switch command {
-	case "run", "delegate", "dispatch", "continue", "await", "await-any":
+	case "run", "delegate", "dispatch", "continue", "await", "await-any", "result", "reconcile", "steer":
 		return defaultJournalBusyBudget
 	default:
 		return 0

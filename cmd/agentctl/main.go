@@ -1085,7 +1085,7 @@ func (a *app) acknowledgeExecutions(ctx context.Context, c common, executions []
 	if len(executions) == 0 {
 		return stamped, nil
 	}
-	journal, problem := a.openWrite(c)
+	journal, problem := a.openWriteContext(ctx, c)
 	if problem != nil {
 		return stamped, problem
 	}

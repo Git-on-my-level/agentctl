@@ -34,8 +34,8 @@
 - bounded daily release-check timestamps and public release metadata.
 
 This state is namespaced by stable host word ID and local store generation. It
-is not database-replicated between machines. Automatic journal retention is not
-implemented in the preview. Cross-host callbacks exchange bounded metadata
+is not database-replicated between machines. The running supervisor performs bounded, default-on
+[retention](configuration.md#journal-retention) of old acknowledged terminals. Cross-host callbacks exchange bounded metadata
 documents and converge on full semantic dedupe keys; portable URIs keep the
 origin host explicit.
 
@@ -159,25 +159,45 @@ retrieval reference without copying content.
 
 ### Retention and cleanup
 
-Automatic journal retention is not implemented in the preview. Operators must include
-the journal in their local data-handling and backup policy and should not run
-sensitive work unless this persistence is acceptable.
+The running supervisor defaults to retaining acknowledged, terminal, lineage-free
+records for 14 days. `journal.retention.enabled=false` is the host-local kill
+switch; `journal.retention.days` changes the cutoff. No automatic acknowledgement
+or physical compaction occurs. Unacknowledged records, including pre-tracking
+terminals, remain protected from automatic deletion. Source bindings and native
+or Multica authority are never changed by retention. Operators must still include
+the journal in their local data-handling and backup policy.
 
 `agentctl data inventory` is a read-only aggregate of the journal file,
 logical bucket bytes, record counts, terminal/nonterminal executions, outcomes,
 and stored result bytes. `agentctl data cleanup --before <RFC3339> --plan` is
-also read-only. It selects only complete terminal execution graphs strictly
-before the cutoff and reports every eligible execution, record category,
+also read-only. It selects terminal, lineage-free executions strictly
+before the cutoff and reports the selected execution, record category,
 logical byte count, protected execution and protection reason. Diagnostic
 siblings appear as `diagnostic_file` (name, bytes, SHA-256) per execution, with
 `diagnostic_files` and `diagnostic_bytes` totals. Those proofs participate in the
-plan digest. Planning creates no files, including cache locks.
+plan digest. Planning creates no files, including cache locks. Each plan selects
+at most eight executions, each with up to 128 events. `has_more` means another
+plan is needed after applying this batch. An eligible item's `partial=true`
+means only its selected event/index/dedupe triples are removed; the execution,
+outcome, terminal event, acknowledgement and mutation bindings remain until a
+later final batch. Counts describe the selected records, not the full history.
+Metadata and event scans use pages of at most 128 rows or 256 KiB (one oversized
+row is permitted). The journal handle closes between pages and commits.
 
 Deletion requires `--apply --plan-digest <sha256:...>`. Apply recomputes the
-plan in one journal write transaction and rejects it if the reviewed digest no
-longer matches. The mutation deletes the execution, outcome, events, event
-indexes/dedupe records, terminal index, execution idempotency keys, and any
-result-collection acknowledgement together. Before dropping records, apply
+bounded plan and rejects it before deleting anything if its digest changed.
+Each commit rechecks the complete protection graph from paged metadata reads
+and verifies the bbolt generation before writing; concurrent reference changes
+fail closed. All lineage-linked records are conservatively retained, including
+fully terminal lineages. Final commits delete the execution, outcome, remaining
+events, indexes/dedupe records, terminal index, execution idempotency keys and
+result acknowledgement together. Every event batch is limited to 128 events
+and 256 KiB of event/dedupe values (one oversized event is permitted).
+Apply is not globally atomic: cancellation, busy journals or new protections
+can stop it after committed batches. Errors expose `cleanup_progress` with
+committed batches, events and executions. Review a fresh plan before retrying;
+committed progress is never rolled back. Constant writes can defer the stable
+protection snapshot; retention does not weaken safety to make progress. Before dropping records, apply
 removes their private diagnostic siblings, including legacy random filenames
 explicitly referenced by an outcome. Arbitrary paths and symlinks fail closed.
 Capture, oldest-first eviction and cleanup apply share a nonblocking cache lock.

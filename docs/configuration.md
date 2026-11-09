@@ -364,3 +364,26 @@ produce drift and must be reconciled in the source repository.
 
 Environment variables select documented paths or context handles; they are not
 a general policy scripting layer. Configuration is data, not executable code.
+
+## Journal retention
+
+The host-local `journal` key controls maintenance by an explicitly running
+supervisor. It defaults to on with an age cutoff of 14 exact 24-hour days:
+
+```json
+{"journal":{"retention":{"enabled":true,"days":14}}}
+```
+
+Set `journal.retention.enabled` to `false` to disable automatic deletion.
+Omitted or zero `days` means 14; the supported range is 1–3650. The supervisor
+reloads this key each cycle; a policy edit does not require a restart. Invalid
+config defers retention and surfaces a maintenance error. Source sync preserves
+this host-local policy; additive config bundles cannot set it.
+
+The [policy schema](../schemas/journal-policy.schema.json) describes the value
+under `journal`. Only acknowledged, terminal, lineage-free records strictly
+older than the cutoff qualify. Subscriptions, delivery references and other
+cleanup protections still apply. Each cycle performs at most one batch of
+128 events and one execution, with a two-second maintenance deadline; contention
+or a changing protection snapshot defers the batch. No CLI read runs retention.
+See [retention and cleanup](state-security-and-privacy.md#retention-and-cleanup).
