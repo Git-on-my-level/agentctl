@@ -900,9 +900,11 @@ func opencodeManifest() Manifest {
 	resultContent.Constraints["required_finish_reason"] = "stop"
 	events := sameProcessDecl(CapabilityEvents, CapabilityDegraded)
 	events.Constraints["content"] = "metadata_only"
-	return baseManifest("opencode", "0.1.0", "opencode_session", "opencode-json", []CapabilityDeclaration{
+	m := baseManifest("opencode", "0.1.0", "opencode_session", "opencode-json", []CapabilityDeclaration{
 		capDecl(CapabilityLaunch, CapabilitySupported), sameProcessDecl(CapabilityAttach, CapabilityDegraded), sameProcessDecl(CapabilitySnapshot, CapabilityDegraded), events, sameProcessDecl(CapabilityResult, CapabilitySupported), resultContent, liveOwnerDecl(CapabilityCancel, CapabilitySupported), capDecl(CapabilityContextInjection, CapabilityDegraded),
 	})
+	m.KnownFailures = []KnownFailure{{Classifier: "structured_http_status_429", ErrorCode: "provider_capacity"}}
+	return m
 }
 
 func multicaManifest() Manifest {
@@ -955,12 +957,17 @@ func baseManifest(name, version, kind, format string, capabilities []CapabilityD
 }
 
 // VersionProbeTimeout is the per-adapter default placed in version probe
-// actions. ZCode's Electron CLI can be delayed substantially by host load.
+// actions. OpenCode v2 has a large, slow-starting binary; ZCode's Electron CLI
+// can also be delayed substantially by host load.
 func VersionProbeTimeout(adapterName string) time.Duration {
-	if adapterName == "zcode" {
+	switch adapterName {
+	case "opencode":
+		return 20 * time.Second
+	case "zcode":
 		return 30 * time.Second
+	default:
+		return defaultVersionProbeTimeout
 	}
-	return defaultVersionProbeTimeout
 }
 
 func capDecl(name CapabilityName, status CapabilityStatus) CapabilityDeclaration {

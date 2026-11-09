@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -295,6 +296,100 @@ func TestOpenCodeResultContentRequiresExactRunInvocation(t *testing.T) {
 	}
 }
 
+func TestOpenCodeParserRecordsStructuredRetryWithoutMessage(t *testing.T) {
+	line := `{"type":"retry","timestamp":1794251075486,"sessionID":"ses_retry","attempt":2,"nextRetryAt":1794251101486,"error":{"type":"provider.rate-limit","message":"Rate limit exceeded; secret details","status":429,"retryAfterMs":26000}}`
+	obs := (opencodeJSONParser{}).Parse([]byte(line), false)
+	if obs.SourceState != "opencode.retry" || obs.State != StateRunning || obs.Error != "" {
+		t.Fatalf("retry observation = %#v", obs)
+	}
+	for key, want := range map[string]any{"attempt": int64(2), "retry_after_ms": int64(26000), "provider_error_type": "provider.rate-limit", "http_status": int64(429), "next_retry_at": "2026-11-09T19:05:01.486Z"} {
+		if got := obs.Data[key]; got != want {
+			t.Fatalf("retry %s = %#v, want %#v (all=%#v)", key, got, want, obs.Data)
+		}
+	}
+	encoded, err := json.Marshal(obs.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "Rate limit exceeded") || strings.Contains(string(encoded), "secret details") {
+		t.Fatalf("provider message leaked into retry metadata: %s", encoded)
+	}
+	noHTTPProof := (opencodeJSONParser{}).Parse([]byte(`{"type":"retry","attempt":1,"error":{"type":"provider.rate-limit","code":429}}`), false)
+	if _, exists := noHTTPProof.Data["http_status"]; exists {
+		t.Fatalf("bare provider code counted as HTTP status: %#v", noHTTPProof.Data)
+	}
+	stringStatus := (opencodeJSONParser{}).Parse([]byte(`{"type":"retry","attempt":1,"error":{"status":"429"}}`), false)
+	if _, exists := stringStatus.Data["http_status"]; exists {
+		t.Fatalf("string status counted as explicit numeric HTTP status: %#v", stringStatus.Data)
+	}
+}
+
+func TestOpenCodeAggregatesTokenUsageAcrossSteps(t *testing.T) {
+	record := &processRecord{parser: opencodeJSONParser{}, done: make(chan struct{})}
+	for _, line := range []string{
+		`{"type":"step_start","part":{"type":"step-start"}}`,
+		`{"type":"text","part":{"type":"text","text":"first","time":{"end":1}}}`,
+		`{"type":"step_finish","part":{"type":"step-finish","reason":"tool-calls","tokens":{"input":10,"output":2,"reasoning":1,"cache":{"read":7,"write":3}}}}`,
+		`{"type":"step_start","part":{"type":"step-start"}}`,
+		`{"type":"text","part":{"type":"text","text":"final","time":{"end":2}}}`,
+		`{"type":"step_finish","part":{"type":"step-finish","reason":"stop","tokens":{"input":5,"output":4,"reasoning":0,"cache":{"read":6,"write":1}}}}`,
+	} {
+		record.ingest([]byte(line), false)
+	}
+	record.finish(nil)
+	if !record.result.Success || record.result.TokenUsage == nil {
+		t.Fatalf("result usage = %#v", record.result)
+	}
+	want := (TokenUsage{Input: 15, Output: 6, CacheRead: 13, CacheWrite: 4, Reasoning: 1})
+	if *record.result.TokenUsage != want {
+		t.Fatalf("usage = %#v, want %#v", *record.result.TokenUsage, want)
+	}
+}
+
+func TestOpenCodeTokenUsageSaturationIsExplicit(t *testing.T) {
+	usage := TokenUsage{Input: maxTokenUsageCount, Output: maxTokenUsageCount}
+	usage.Add(TokenUsage{Input: 1})
+	usage.Add(TokenUsage{Output: 1, Saturated: true})
+	if usage.Input != maxTokenUsageCount || usage.Output != maxTokenUsageCount || !usage.Saturated {
+		t.Fatalf("saturated usage = %#v", usage)
+	}
+}
+
+func TestOpenCodeProgressAfterRetryClearsCapacityEvidence(t *testing.T) {
+	record := &processRecord{parser: opencodeJSONParser{}, done: make(chan struct{}), ref: SourceRef{Adapter: "opencode"}}
+	for _, line := range []string{
+		`{"type":"step_start","part":{"type":"step-start"}}`,
+		`{"type":"retry","attempt":1,"error":{"type":"provider.rate-limit","status":429}}`,
+		`{"type":"step_start","part":{"type":"step-start"}}`,
+		`{"type":"text","part":{"type":"text","text":"partial","time":{"end":1}}}`,
+	} {
+		record.ingest([]byte(line), false)
+	}
+	if len(record.events) != 4 || record.events[2].SourceState != "opencode.step_start" {
+		t.Fatalf("duplicate OpenCode steps coalesced, events=%#v", record.events)
+	}
+	record.finish(errors.New("exit status 1"))
+	if record.result.Data["failure_category"] == "capacity" || record.result.Data["http_status"] == int64(429) {
+		t.Fatalf("later unrelated failure inherited retry evidence: %#v", record.result)
+	}
+}
+
+func TestOpenCodeTerminalRateLimitFailureHasExplicitCapacityEvidence(t *testing.T) {
+	record := &processRecord{parser: opencodeJSONParser{}, done: make(chan struct{}), ref: SourceRef{Adapter: "opencode"}}
+	record.ingest([]byte(`{"type":"retry","attempt":2,"error":{"type":"provider.rate-limit","status":429,"retryAfterMs":26000}}`), false)
+	record.ingest([]byte(`{"type":"error","error":{"type":"provider.rate-limit","message":"Rate limit exceeded","status":429}}`), false)
+	record.finish(nil)
+	if record.result == nil || record.result.State != StateFailed || record.result.Data["failure_category"] != "capacity" || record.result.Data["http_status"] != int64(429) {
+		t.Fatalf("rate-limit result = %#v", record.result)
+	}
+	bareCode := &processRecord{parser: opencodeJSONParser{}, done: make(chan struct{}), ref: SourceRef{Adapter: "opencode"}}
+	bareCode.ingest([]byte(`{"type":"error","error":{"type":"provider.rate-limit","message":"Rate limit exceeded","code":429}}`), false)
+	bareCode.finish(nil)
+	if _, exists := bareCode.result.Data["failure_category"]; exists {
+		t.Fatalf("bare provider code became capacity proof: %#v", bareCode.result)
+	}
+}
+
 func TestOpenCodeManifestDeclaresBoundedSameProcessContract(t *testing.T) {
 	m := NewOpenCode().Manifest()
 	if m.Adapter != "opencode" || m.AdapterVersion != "0.1.0" {
@@ -303,8 +398,11 @@ func TestOpenCodeManifestDeclaresBoundedSameProcessContract(t *testing.T) {
 	if len(m.ExecutableDiscovery) != 1 || m.ExecutableDiscovery[0].Value != "opencode" || m.ExecutableDiscovery[0].Kind != "path_lookup" {
 		t.Fatalf("discovery = %#v", m.ExecutableDiscovery)
 	}
-	if len(m.ProbeActions) != 1 || m.ProbeActions[0].Argv[1] != "--version" || m.ProbeActions[0].SideEffectClass != "read_only" {
+	if len(m.ProbeActions) != 1 || m.ProbeActions[0].Argv[1] != "--version" || m.ProbeActions[0].SideEffectClass != "read_only" || m.ProbeActions[0].TimeoutSeconds != 20 || m.VersionProbeTimeout() != 20*time.Second {
 		t.Fatalf("probe actions = %#v", m.ProbeActions)
+	}
+	if len(m.KnownFailures) != 1 || m.KnownFailures[0].ErrorCode != "provider_capacity" {
+		t.Fatalf("known failures = %#v", m.KnownFailures)
 	}
 	status := map[CapabilityName]CapabilityDeclaration{}
 	for _, decl := range m.Capabilities {

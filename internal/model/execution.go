@@ -323,6 +323,71 @@ func (c ExecutionCaller) Validate() error {
 	return nil
 }
 
+// TokenUsage contains only numeric native token counters for one execution.
+// CacheRead and CacheWrite are separate from Input, matching the native event.
+const maxTokenUsageCount = int64(1<<53 - 1)
+
+type TokenUsage struct {
+	Input      int64 `json:"input"`
+	Output     int64 `json:"output"`
+	CacheRead  int64 `json:"cache_read,omitempty"`
+	CacheWrite int64 `json:"cache_write,omitempty"`
+	Reasoning  int64 `json:"reasoning,omitempty"`
+	// Saturated reports that exact totals exceeded the JSON-safe integer bound.
+	Saturated bool `json:"saturated,omitempty"`
+}
+
+func (u TokenUsage) Validate() error {
+	if u.Input < 0 || u.Output < 0 || u.CacheRead < 0 || u.CacheWrite < 0 || u.Reasoning < 0 || u.Input > maxTokenUsageCount || u.Output > maxTokenUsageCount || u.CacheRead > maxTokenUsageCount || u.CacheWrite > maxTokenUsageCount || u.Reasoning > maxTokenUsageCount {
+		return errors.New("token usage counters must be within the JSON-safe non-negative integer range")
+	}
+	return nil
+}
+
+func (u *TokenUsage) Add(next TokenUsage) {
+	if u == nil {
+		return
+	}
+	u.Input = addTokenUsageCounts(u.Input, next.Input, &u.Saturated)
+	u.Output = addTokenUsageCounts(u.Output, next.Output, &u.Saturated)
+	u.CacheRead = addTokenUsageCounts(u.CacheRead, next.CacheRead, &u.Saturated)
+	u.CacheWrite = addTokenUsageCounts(u.CacheWrite, next.CacheWrite, &u.Saturated)
+	u.Reasoning = addTokenUsageCounts(u.Reasoning, next.Reasoning, &u.Saturated)
+	u.Saturated = u.Saturated || next.Saturated
+}
+
+func addTokenUsageCounts(current, next int64, saturated *bool) int64 {
+	if next < 0 || current > maxTokenUsageCount-next {
+		*saturated = true
+		return maxTokenUsageCount
+	}
+	return current + next
+}
+
+// NativeRateLimit is the latest explicit structured provider retry observed for
+// an execution. It is replaced by later retry evidence and cleared when an
+// OpenCode execution advances beyond its retry phase.
+type NativeRateLimit struct {
+	Attempt           int        `json:"attempt"`
+	RetryAfterMS      int64      `json:"retry_after_ms,omitempty"`
+	NextRetryAt       *time.Time `json:"next_retry_at,omitempty"`
+	ProviderErrorType string     `json:"provider_error_type,omitempty"`
+	HTTPStatus        int        `json:"http_status"`
+}
+
+func (r NativeRateLimit) Validate() error {
+	if r.Attempt < 1 || r.RetryAfterMS < 0 || r.HTTPStatus != 429 {
+		return errors.New("invalid native rate-limit metadata")
+	}
+	if r.NextRetryAt != nil && r.NextRetryAt.IsZero() {
+		return errors.New("next retry timestamp is zero")
+	}
+	if len(r.ProviderErrorType) > 128 || strings.ContainsAny(r.ProviderErrorType, "\x00\r\n") {
+		return errors.New("invalid provider error type")
+	}
+	return nil
+}
+
 type Execution struct {
 	Caller               *ExecutionCaller   `json:"caller,omitempty"`
 	LastOperationFailure *OperationFailure  `json:"last_operation_failure,omitempty"`
@@ -349,6 +414,8 @@ type Execution struct {
 	Promotion            *PromotionLink     `json:"promotion"`
 	TaskContract         *TaskContract      `json:"task_contract,omitempty"`
 	Delegation           *DelegationBinding `json:"delegation,omitempty"`
+	TokenUsage           *TokenUsage        `json:"token_usage,omitempty"`
+	RateLimit            *NativeRateLimit   `json:"rate_limit,omitempty"`
 	CreatedAt            time.Time          `json:"created_at"`
 	StartedAt            *time.Time         `json:"started_at,omitempty"`
 	// Launch is the process the launcher recorded at start. Session discovery
@@ -503,6 +570,16 @@ func (e Execution) Validate() error {
 	if e.Workspace != nil {
 		if err := validateWorkspace(*e.Workspace); err != nil {
 			return fmt.Errorf("workspace: %w", err)
+		}
+	}
+	if e.TokenUsage != nil {
+		if err := e.TokenUsage.Validate(); err != nil {
+			return fmt.Errorf("token_usage: %w", err)
+		}
+	}
+	if e.RateLimit != nil {
+		if err := e.RateLimit.Validate(); err != nil {
+			return fmt.Errorf("rate_limit: %w", err)
 		}
 	}
 	return nil

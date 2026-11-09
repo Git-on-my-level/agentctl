@@ -16,11 +16,14 @@ func TestUnattendedRecipes(t *testing.T) {
 		{"zcode", "read_only", "plan", PermissionsReadOnly},
 		{"devin", "coding", "acp", PermissionsFull},
 		{"hermes", "coding", "--yolo", PermissionsConstrained},
+		{"opencode", "coding", "--auto", PermissionsConstrained},
 	} {
 		t.Run(tc.harness+"/"+tc.access, func(t *testing.T) {
 			model := "test-model"
 			if tc.harness == "zcode" {
 				model = "glm-5.3"
+			} else if tc.harness == "opencode" {
+				model = "provider/test-model"
 			}
 			r, err := Build(Input{Harness: tc.harness, Model: model, Access: tc.access, UnattendedCodingPermissions: true, CursorWorkspaceTrust: true})
 			if err != nil {

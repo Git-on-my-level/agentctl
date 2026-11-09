@@ -34,6 +34,14 @@ func TestClassifyCapacityIsRetryableAndGenericProviderIsNot(t *testing.T) {
 	if code != "native_execution_failed" || category != "" || retryable {
 		t.Fatalf("unstructured=%s %s %v", code, category, retryable)
 	}
+	code, kind, category, retryable = classifyOutcomeFailure("provider request failed", "", "", "opencode", "capacity")
+	if code != "provider_capacity" || kind != "capacity" || category != "capacity" || !retryable {
+		t.Fatalf("OpenCode structured HTTP 429=%s %s %s %v", code, kind, category, retryable)
+	}
+	code, kind, category, retryable = classifyOutcomeFailure("provider request failed", "", "429", "opencode", "")
+	if code != "native_execution_failed" || category != "provider" || retryable {
+		t.Fatalf("OpenCode bare native 429=%s %s %v", code, category, retryable)
+	}
 	code, kind, category, retryable = classifyOutcomeFailure("ZCode provider usage limit reached", "", "1308", "zcode", "")
 	if code != "provider_capacity" || kind != "capacity" || category != "capacity" || !retryable || !model.ValidNativeFailureCode("1308") {
 		t.Fatalf("ZCode usage limit=%s %s %s %v", code, kind, category, retryable)

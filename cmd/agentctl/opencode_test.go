@@ -154,7 +154,7 @@ func newOpenCodeDelegateFixture(t *testing.T) openCodeDelegateFixture {
 	t.Helper()
 	root := testutil.TempDir(t)
 	f := openCodeDelegateFixture{root: root, config: filepath.Join(root, "config.json"), journal: filepath.Join(root, "state", "journal.db"), request: filepath.Join(root, "request.json"), count: filepath.Join(root, "launches"), probe: filepath.Join(root, "probes")}
-	script := "#!/bin/sh\nif [ \"$1\" = '--version' ]; then\n echo probe >> '" + f.probe + "'\n echo 'opencode 1.17.13'\n exit 0\nfi\necho launch >> '" + f.count + "'\nprintf '%s\\n' '{\"type\":\"text\",\"sessionID\":\"ses_delegate\",\"part\":{\"type\":\"text\",\"text\":\"delegate answer\",\"time\":{\"end\":2}}}' '{\"type\":\"step_finish\",\"sessionID\":\"ses_delegate\",\"part\":{\"type\":\"step-finish\",\"reason\":\"stop\"}}'\n"
+	script := "#!/bin/sh\nif [ \"$1\" = '--version' ]; then\n echo probe >> '" + f.probe + "'\n echo 'opencode 1.17.13'\n exit 0\nfi\necho launch >> '" + f.count + "'\nprintf '%s\\n' '{\"type\":\"text\",\"sessionID\":\"ses_delegate\",\"part\":{\"type\":\"text\",\"text\":\"delegate answer\",\"time\":{\"end\":2}}}' '{\"type\":\"step_finish\",\"sessionID\":\"ses_delegate\",\"part\":{\"type\":\"step-finish\",\"reason\":\"stop\",\"tokens\":{\"input\":3685,\"output\":3,\"reasoning\":0,\"cache\":{\"read\":7168,\"write\":0}}}}'\n"
 	if err := os.WriteFile(filepath.Join(root, "opencode"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func (f openCodeDelegateFixture) invoke(prompt string, extra ...string) (int, st
 	a.stdin = strings.NewReader(prompt)
 	args := []string{"--config", f.config, "--journal", f.journal, "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin"}
 	args = append(args, extra...)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	code := a.run(ctx, args)
 	return code, stdout.String()
@@ -212,5 +212,143 @@ func TestDelegateOpenCodePlanAndCollect(t *testing.T) {
 	raw, _ := os.ReadFile(f.journal)
 	if bytes.Contains(raw, []byte("private-task-token")) {
 		t.Fatal("prompt in journal")
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", f.journal, "recent", "--summary"}); code != 0 {
+		t.Fatalf("summary exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var summary recentExportDocument
+	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil {
+		t.Fatal(err)
+	}
+	usage := summary.Result.Summary.TokenUsageByModel["zai/glm-5.3"]
+	if usage.Input != 3685 || usage.Output != 3 || usage.CacheRead != 7168 || usage.CacheWrite != 0 || usage.Reasoning != 0 {
+		t.Fatalf("model token usage = %#v; summary=%s", usage, stdout.String())
+	}
+	assertResultMatchesSchemaShape(t, stdout.String(), "recent-result.schema.json", "summary")
+}
+
+func TestDelegateOpenCodeUnattendedCodingAddsAuto(t *testing.T) {
+	f := newOpenCodeDelegateFixture(t)
+	var config map[string]any
+	data, err := os.ReadFile(f.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	profile := config["profiles"].(map[string]any)["test"].(map[string]any)
+	profile["delegation"] = map[string]any{"unattended_coding_permissions": true}
+	data, err = json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.config, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out := f.invoke("private-task-token", "--plan")
+	if code != 0 {
+		t.Fatalf("plan exit=%d %s", code, out)
+	}
+	if !strings.Contains(out, `"--auto"`) || !strings.Contains(out, `"permissions":"constrained"`) {
+		t.Fatalf("OpenCode unattended plan = %s", out)
+	}
+	if err := os.WriteFile(f.request, []byte(`{"schema_version":1,"request_key":"test-opencode-read-only","selector":{"family":"oc","settings":{"access":"read_only"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out = f.invoke("private-task-token", "--plan")
+	if code == 0 || !strings.Contains(out, "access_unavailable") || strings.Contains(out, `"--auto"`) {
+		t.Fatalf("OpenCode read_only plan exit=%d output=%s", code, out)
+	}
+}
+
+func TestOpenCodeRepeatedStepClearsRetryProjection(t *testing.T) {
+	root := testutil.TempDir(t)
+	path := filepath.Join(root, "opencode")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ]; then echo 'opencode 2.2.6'; exit 0; fi
+printf '%s\n' '{"type":"step_start","sessionID":"ses_retry","part":{"type":"step-start"}}' '{"type":"retry","sessionID":"ses_retry","attempt":1,"error":{"type":"provider.rate-limit","status":429}}' '{"type":"step_start","sessionID":"ses_retry","part":{"type":"step-start"}}' 'not-json'
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(root, "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--", path, "run", "--format", "json"}); code != 0 {
+		t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	id := executionIDFromOutput(t, stdout.String())
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "result", id}); code != 0 {
+		t.Fatalf("result exit=%d %s", code, stdout.String())
+	}
+	if strings.Contains(stdout.String(), `"rate_limit"`) || strings.Contains(stdout.String(), `"code":"provider_capacity"`) {
+		t.Fatalf("repeated step left stale capacity/retry metadata: %s", stdout.String())
+	}
+}
+
+func TestOpenCodeRateLimitSurfacesMetadataAndCapacity(t *testing.T) {
+	root := testutil.TempDir(t)
+	path := filepath.Join(root, "opencode")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ]; then echo 'opencode 2.2.6'; exit 0; fi
+printf '%s\n' '{"type":"retry","timestamp":1794251075486,"sessionID":"ses_rate_limit","attempt":2,"nextRetryAt":1794251101486,"error":{"type":"provider.rate-limit","message":"Rate limit exceeded; private-request-details","status":429,"retryAfterMs":26000}}' '{"type":"error","sessionID":"ses_rate_limit","error":{"type":"provider.rate-limit","message":"Rate limit exceeded; private-request-details","status":429}}'
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(root, "state", "journal.db")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--", path, "run", "--format", "json"}); code != 0 {
+		t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var document struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	execution := document.Result
+	if execution.State != model.StateFailed || execution.RateLimit == nil {
+		t.Fatalf("terminal execution = %#v", execution)
+	}
+	rateLimit := execution.RateLimit
+	if rateLimit.Attempt != 2 || rateLimit.RetryAfterMS != 26000 || rateLimit.ProviderErrorType != "provider.rate-limit" || rateLimit.HTTPStatus != 429 || rateLimit.NextRetryAt == nil {
+		t.Fatalf("rate limit = %#v", rateLimit)
+	}
+	if strings.Contains(stdout.String(), "private-request-details") {
+		t.Fatalf("provider message leaked into run: %s", stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "status", execution.ID.String()}); code != 0 {
+		t.Fatalf("status exit=%d %s", code, stdout.String())
+	}
+	for _, want := range []string{`"rate_limit"`, `"attempt":2`, `"retry_after_ms":26000`, `"http_status":429`, `"provider_error_type":"provider.rate-limit"`, `"code":"provider_capacity"`, `"category":"capacity"`, `"retryable":true`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("status missing %s: %s", want, stdout.String())
+		}
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "events", execution.ID.String()}); code != 0 {
+		t.Fatalf("events exit=%d %s", code, stdout.String())
+	}
+	for _, want := range []string{`"source_state":"opencode.retry"`, `"attempt":2`, `"retry_after_ms":26000`, `"http_status":429`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("events missing %s: %s", want, stdout.String())
+		}
+	}
+	if strings.Contains(stdout.String(), "private-request-details") || strings.Contains(stdout.String(), "Rate limit exceeded") {
+		t.Fatalf("provider message leaked into events: %s", stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "await", execution.ID.String()}); code != 11 {
+		t.Fatalf("await exit=%d output=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"rate_limit"`) || !strings.Contains(stdout.String(), `"retry_after_ms":26000`) || strings.Contains(stdout.String(), "private-request-details") {
+		t.Fatalf("await rate-limit metadata/privacy = %s", stdout.String())
 	}
 }

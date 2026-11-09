@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -946,7 +947,14 @@ func (opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 		if reason := firstString(part, "reason"); reason != "" {
 			obs.Data["reason"] = boundedString(strings.ToLower(reason), 64)
 		}
+		obs.TokenUsage = opencodeTokenUsage(part)
+	case "retry":
+		opencodeProviderEventMetadata(value, obs.Data)
+		if next, ok := opencodeNonnegativeInt(value["nextRetryAt"]); ok && next > 0 {
+			obs.Data["next_retry_at"] = time.UnixMilli(next).UTC().Format(time.RFC3339Nano)
+		}
 	case "error":
+		opencodeProviderEventMetadata(value, obs.Data)
 		obs.Error = safeFailureDiagnostic(opencodeErrorMessage(value))
 		if obs.Error == "" {
 			obs.Error = "opencode reported an error"
@@ -954,6 +962,83 @@ func (opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 		obs.State = StateFailed
 	}
 	return obs
+}
+
+// opencodeNonnegativeInt accepts exact, non-negative JSON integer counters. The
+// 53-bit bound avoids silently rounding native JSON numbers through float64.
+func opencodeNonnegativeInt(value any) (int64, bool) {
+	const maxExactJSONInteger = int64(1<<53 - 1)
+	var number int64
+	switch v := value.(type) {
+	case float64:
+		if v < 0 || v > float64(maxExactJSONInteger) || math.Trunc(v) != v {
+			return 0, false
+		}
+		number = int64(v)
+	case json.Number:
+		parsed, err := v.Int64()
+		if err != nil {
+			return 0, false
+		}
+		number = parsed
+	case int:
+		if v < 0 {
+			return 0, false
+		}
+		number = int64(v)
+	case int64:
+		number = v
+	default:
+		return 0, false
+	}
+	if number < 0 || number > maxExactJSONInteger {
+		return 0, false
+	}
+	return number, true
+}
+
+func opencodeProviderEventMetadata(value map[string]any, data map[string]any) {
+	providerError, _ := value["error"].(map[string]any)
+	if attempt, ok := opencodeNonnegativeInt(value["attempt"]); ok && attempt > 0 {
+		data["attempt"] = attempt
+	}
+	if retryAfter, ok := opencodeNonnegativeInt(providerError["retryAfterMs"]); ok {
+		data["retry_after_ms"] = retryAfter
+	}
+	if errorType := firstString(providerError, "type"); errorType != "" {
+		data["provider_error_type"] = boundedString(strings.ToLower(errorType), 128)
+	}
+	// A native/provider code of 429 is not HTTP evidence. Only the explicit
+	// structured HTTP status field can prove retryable provider capacity.
+	if status, ok := opencodeNonnegativeInt(providerError["status"]); ok && status == 429 {
+		data["http_status"] = status
+	}
+}
+
+func opencodeTokenUsage(part map[string]any) *TokenUsage {
+	tokens, ok := part["tokens"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	usage := &TokenUsage{}
+	valid := false
+	for destination, source := range map[string]*int64{"input": &usage.Input, "output": &usage.Output, "reasoning": &usage.Reasoning} {
+		if value, ok := opencodeNonnegativeInt(tokens[destination]); ok {
+			*source = value
+			valid = true
+		}
+	}
+	cache, _ := tokens["cache"].(map[string]any)
+	for destination, source := range map[string]*int64{"read": &usage.CacheRead, "write": &usage.CacheWrite} {
+		if value, ok := opencodeNonnegativeInt(cache[destination]); ok {
+			*source = value
+			valid = true
+		}
+	}
+	if !valid {
+		return nil
+	}
+	return usage
 }
 
 func opencodeTextPartComplete(part map[string]any) bool {
