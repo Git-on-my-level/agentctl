@@ -196,7 +196,7 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 	if problem != nil {
 		return problem
 	}
-	prompt, problem := a.loadPromptForCommand("continue", runOptions{promptFile: opts.promptFile, promptStdin: opts.promptStdin, promptDelivery: "argv",
+	prompt, problem := a.loadPromptForCommand("continue", runOptions{promptFile: opts.promptFile, promptStdin: opts.promptStdin, promptDelivery: "argv", plan: opts.plan,
 		promptRepairArgv: nonPromptCommandArgv("continue", args)})
 	if problem != nil {
 		return problem

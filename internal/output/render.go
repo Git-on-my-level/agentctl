@@ -39,8 +39,11 @@ const (
 )
 
 type NextAction struct {
-	Label           string          `json:"label"`
-	Argv            []string        `json:"argv"`
+	Label string   `json:"label"`
+	Argv  []string `json:"argv"`
+	// StdinFrom names a file whose bytes the caller must pipe into argv's
+	// stdin. It keeps Argv executable without embedding shell redirection.
+	StdinFrom       string          `json:"stdin_from,omitempty"`
 	Mutates         bool            `json:"mutates"`
 	SideEffectClass SideEffectClass `json:"side_effect_class"`
 	Preconditions   []string        `json:"preconditions"`
@@ -99,7 +102,7 @@ func (r Renderer) Success(value Success) error {
 		}
 	}
 	for _, action := range value.NextActions {
-		if _, err := fmt.Fprintln(r.Writer, "next "+renderArgv(action.Argv)); err != nil {
+		if _, err := fmt.Fprintln(r.Writer, renderNextAction(action)); err != nil {
 			return err
 		}
 	}
@@ -133,7 +136,7 @@ func (r Renderer) Failure(err *Error) error {
 		return writeErr
 	}
 	for _, action := range err.NextActions {
-		if _, writeErr := fmt.Fprintln(r.Writer, "next "+renderArgv(action.Argv)); writeErr != nil {
+		if _, writeErr := fmt.Fprintln(r.Writer, renderNextAction(action)); writeErr != nil {
 			return writeErr
 		}
 	}
@@ -225,6 +228,14 @@ func renderArgv(argv []string) string {
 		parts[i] = renderValue(arg)
 	}
 	return strings.Join(parts, " ")
+}
+
+func renderNextAction(action NextAction) string {
+	line := "next " + renderArgv(action.Argv)
+	if action.StdinFrom != "" {
+		line += " stdin_from=" + renderValue(action.StdinFrom)
+	}
+	return line
 }
 func writeJSON(w io.Writer, value any) error {
 	enc := json.NewEncoder(w)

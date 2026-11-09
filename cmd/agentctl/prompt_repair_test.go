@@ -102,7 +102,10 @@ func TestPromptOutsideRootRepairsMatchCommandParsers(t *testing.T) {
 				t.Fatalf("next_actions=%#v", problem.NextActions)
 			}
 			stdinAction := problem.NextActions[0]
-			if !stdinRepairPrecedesDelimiter(stdinAction.Argv, path) {
+			if stdinAction.StdinFrom != path {
+				t.Fatalf("stdin repair stdin_from=%q, want %q", stdinAction.StdinFrom, path)
+			}
+			if !stdinRepairHasPromptSource(stdinAction.Argv, tt.command) {
 				t.Fatalf("stdin repair argv=%#v", stdinAction.Argv)
 			}
 			if problem := preservedRepairArgs(tt.args, stdinAction.Argv); problem != "" {
@@ -112,7 +115,7 @@ func TestPromptOutsideRootRepairsMatchCommandParsers(t *testing.T) {
 				t.Fatalf("help action=%#v", problem.NextActions[1])
 			}
 			repaired := applyPromptRepairFlags(t, tt.args, repair)
-			actionArgs := shellCommandArgs(stdinAction.Argv, path)
+			actionArgs := append([]string{}, stdinAction.Argv[2:]...)
 			var parseProblem *output.Error
 			switch tt.command {
 			case "run":
@@ -215,17 +218,30 @@ func argsPlan(args []string) bool {
 	return false
 }
 
-// stdinRepairPrecedesDelimiter requires the shell redirect to be an agentctl
-// flag. A "--" earlier in the argv would hand it to the native command.
-func stdinRepairPrecedesDelimiter(argv []string, path string) bool {
+// stdinRepairHasPromptSource requires --prompt-stdin to remain an agentctl
+// flag. Only run reserves a native "--" delimiter; the file itself is carried
+// separately as stdin_from, never as a shell redirection token.
+func stdinRepairHasPromptSource(argv []string, command string) bool {
 	limit := len(argv)
-	for i, arg := range argv {
-		if arg == "--" {
-			limit = i
-			break
+	if command == "run" {
+		for i, arg := range argv {
+			if arg == "--" {
+				limit = i
+				break
+			}
 		}
 	}
-	return limit >= 3 && argv[limit-3] == "--prompt-stdin" && argv[limit-2] == "<" && argv[limit-1] == path
+	for _, arg := range argv[:limit] {
+		if arg == "<" {
+			return false
+		}
+	}
+	for i := 0; i < limit; i++ {
+		if argv[i] == "--prompt-stdin" {
+			return true
+		}
+	}
+	return false
 }
 
 func preservedRepairArgs(args, action []string) string {
@@ -249,21 +265,6 @@ func preservedRepairArgs(args, action []string) string {
 		}
 	}
 	return ""
-}
-
-func shellCommandArgs(argv []string, path string) []string {
-	if len(argv) >= 2 && argv[0] == "agentctl" {
-		argv = argv[2:]
-	}
-	out := make([]string, 0, len(argv))
-	for i := 0; i < len(argv); i++ {
-		if argv[i] == "<" && i+1 < len(argv) && argv[i+1] == path {
-			i++
-			continue
-		}
-		out = append(out, argv[i])
-	}
-	return out
 }
 
 func TestFanoutOutsideRootRepairUsesManifestGuidance(t *testing.T) {
@@ -346,9 +347,9 @@ func TestPromptFileNotFoundIsPreciseAndRepairable(t *testing.T) {
 	if len(problem.NextActions) == 0 {
 		t.Fatal("missing repair action")
 	}
-	want := []string{"agentctl", "delegate", "--request-file", "request.json", "--prompt-stdin", "<", missing}
-	if !reflect.DeepEqual(problem.NextActions[0].Argv, want) {
-		t.Fatalf("argv=%#v", problem.NextActions[0].Argv)
+	want := []string{"agentctl", "delegate", "--request-file", "request.json", "--prompt-stdin"}
+	if !reflect.DeepEqual(problem.NextActions[0].Argv, want) || problem.NextActions[0].StdinFrom != missing {
+		t.Fatalf("action=%#v", problem.NextActions[0])
 	}
 	if !problem.NextActions[0].Mutates || problem.NextActions[0].SideEffectClass != output.ExternalSideEffect {
 		t.Fatalf("missing-file repair was marked read-only: %#v", problem.NextActions[0])
@@ -369,22 +370,61 @@ func TestPromptFileLiteralTildeReportsUnexpandedShellPath(t *testing.T) {
 	if !strings.Contains(problem.Message, "shell did not expand ~") {
 		t.Fatalf("message=%q", problem.Message)
 	}
-	if len(problem.NextActions) == 0 || problem.NextActions[0].Argv[len(problem.NextActions[0].Argv)-1] != "$HOME/workspace/omi/prompt-a.md" {
+	if len(problem.NextActions) == 0 || problem.NextActions[0].StdinFrom != "$HOME/workspace/omi/prompt-a.md" {
 		t.Fatalf("actions=%#v", problem.NextActions)
 	}
 }
 
 func TestRunPromptStdinRepairStaysAheadOfTheDelimiter(t *testing.T) {
 	path := "/tmp/task.md"
-	_, planned := promptStdinRepair("run", runOptions{promptRepairArgv: []string{"agentctl", "run", "--plan", "--label", "review", "--", "cursor-agent", "--plan"}}, path)
-	wantPlan := []string{"agentctl", "run", "--plan", "--label", "review", "--prompt-stdin", "<", path, "--", "cursor-agent", "--plan"}
-	if !reflect.DeepEqual(planned.Argv, wantPlan) || planned.Mutates || planned.SideEffectClass != output.ReadOnly {
+	_, planned := promptStdinRepair("run", runOptions{plan: true, promptRepairArgv: []string{"agentctl", "run", "--plan", "--label", "review", "--", "cursor-agent", "--plan"}}, path)
+	wantPlan := []string{"agentctl", "run", "--plan", "--label", "review", "--prompt-stdin", "--", "cursor-agent", "--plan"}
+	if !reflect.DeepEqual(planned.Argv, wantPlan) || planned.StdinFrom != path || planned.Mutates || planned.SideEffectClass != output.ReadOnly {
 		t.Fatalf("planned repair=%#v", planned)
 	}
 	_, live := promptStdinRepair("run", runOptions{promptRepairArgv: []string{"agentctl", "run", "--label", "review", "--", "cursor-agent", "--plan"}}, path)
-	wantLive := []string{"agentctl", "run", "--label", "review", "--prompt-stdin", "<", path, "--", "cursor-agent", "--plan"}
-	if !reflect.DeepEqual(live.Argv, wantLive) || !live.Mutates || live.SideEffectClass != output.ExternalSideEffect {
+	wantLive := []string{"agentctl", "run", "--label", "review", "--prompt-stdin", "--", "cursor-agent", "--plan"}
+	if !reflect.DeepEqual(live.Argv, wantLive) || live.StdinFrom != path || !live.Mutates || live.SideEffectClass != output.ExternalSideEffect {
 		t.Fatalf("live repair=%#v", live)
+	}
+}
+
+func TestPromptRepairPreservesFlagShapedValuesAndPlan(t *testing.T) {
+	path := "/outside/task.md"
+	cases := []struct {
+		name      string
+		args      []string
+		plan      bool
+		wantTitle string
+		wantKey   string
+	}{
+		{name: "plan_as_title", args: []string{"--route", "example", "--title", "--plan", "--idempotency-key", "key-1", "--prompt-file", path}, wantTitle: "--plan", wantKey: "key-1"},
+		{name: "prompt_file_as_title", args: []string{"--route", "example", "--title", "--prompt-file", "--idempotency-key", "key-2", "--prompt-file", path}, wantTitle: "--prompt-file", wantKey: "key-2"},
+		{name: "delimiter_as_title", args: []string{"--route", "example", "--title", "--", "--idempotency-key", "key-3", "--prompt-file", path}, wantTitle: "--", wantKey: "key-3"},
+		{name: "planned_with_flag_title", args: []string{"--route", "example", "--title", "--plan", "--idempotency-key", "key-4", "--prompt-file", path, "--plan"}, plan: true, wantTitle: "--plan", wantKey: "key-4"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repairArgv := nonPromptCommandArgv("dispatch", tc.args)
+			_, action := promptStdinRepair("dispatch", runOptions{plan: tc.plan, promptRepairArgv: repairArgv}, path)
+			if action.StdinFrom != path {
+				t.Fatalf("action=%#v", action)
+			}
+			if tc.plan {
+				if action.Mutates || action.SideEffectClass != output.ReadOnly {
+					t.Fatalf("planned action=%#v", action)
+				}
+			} else if !action.Mutates || action.SideEffectClass != output.RemoteCoordinationWrite {
+				t.Fatalf("live action=%#v", action)
+			}
+			opts, problem := parseDispatch(action.Argv[2:])
+			if problem != nil {
+				t.Fatalf("emitted action does not parse: %v; argv=%q", problem, action.Argv)
+			}
+			if opts.title != tc.wantTitle || opts.idempotencyKey != tc.wantKey || opts.plan != tc.plan || !opts.promptStdin {
+				t.Fatalf("opts=%#v action=%#v", opts, action)
+			}
+		})
 	}
 }
 

@@ -204,6 +204,7 @@
       "properties": {
         "label": {"type": "string"},
         "argv": {"type": "array", "items": {"type": "string"}},
+        "stdin_from": {"type": "string", "minLength": 1},
         "mutates": {"type": "boolean"},
         "side_effect_class": {"type": "string"},
         "preconditions": {"type": "array", "items": {"type": "string"}}

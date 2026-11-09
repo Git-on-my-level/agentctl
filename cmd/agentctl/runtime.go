@@ -1015,14 +1015,15 @@ func promptHelpAction(command string) output.NextAction {
 }
 
 // promptStdinRepair returns the documented repair object and a copy-pasteable
-// shell argv that pipes the same file through --prompt-stdin. The redirect is
-// inserted before a run "--" delimiter so it stays an agentctl flag. Mutation
-// follows the repaired command: --plan stays read-only, and any other repair
-// can launch work, so agents must not treat it as automatically runnable.
+// argv that reads the same file through --prompt-stdin. Argv stays a pure argv:
+// the file to pipe in is a separate stdin_from field, never a shell redirect.
+// For run, --prompt-stdin is inserted before the native "--" delimiter so it
+// remains an agentctl flag. Mutation follows the parsed plan flag: an explicit
+// plan stays read-only, and any other repair can launch work.
 func promptStdinRepair(command string, opts runOptions, path string) (map[string]any, output.NextAction) {
 	setFlags := map[string]string{"--prompt-stdin": ""}
 	explanation := "prompt source selects how agentctl reads bytes; this command resolves native prompt delivery"
-	preconditions := []string{"replace --prompt-file with --prompt-stdin and pipe the file into agentctl"}
+	preconditions := []string{"replace --prompt-file with --prompt-stdin and pipe the file into agentctl stdin"}
 	if command == "run" {
 		setFlags["--prompt-delivery"] = firstNonEmptyString(opts.promptDelivery, "argv")
 		explanation = "prompt source selects how agentctl reads bytes; delivery selects how the native CLI receives them"
@@ -1035,14 +1036,15 @@ func promptStdinRepair(command string, opts runOptions, path string) (map[string
 		"preserve_other_arguments": true,
 		"explanation":              explanation,
 	}
-	argv := appendPromptStdinArgv(opts.promptRepairArgv, command, path)
-	mutates, class := promptRepairEffect(command, argv)
+	argv := appendPromptStdinArgv(opts.promptRepairArgv, command)
+	mutates, class := promptRepairEffect(command, opts.plan)
 	action := output.NextAction{
 		Label:           "Pipe the prompt from its current path",
 		Argv:            argv,
+		StdinFrom:       path,
 		Mutates:         mutates,
 		SideEffectClass: class,
-		Preconditions:   append(preconditions, "run this in a shell; < is a shell redirect"),
+		Preconditions:   append(preconditions, "stdin_from is not part of argv; pipe that file into the action's stdin"),
 	}
 	return repair, action
 }
@@ -1102,18 +1104,28 @@ func runPromptRepairArgv(opts runOptions) []string {
 }
 
 // nonPromptCommandArgv copies a parsed command argv with the prompt source
-// removed. The caller's other flags stay in order.
+// removed. The caller's other flags stay in order. Values of value-taking
+// flags are copied verbatim even when they look like prompt flags or "--".
 func nonPromptCommandArgv(command string, args []string) []string {
 	argv := []string{"agentctl", command}
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
+		arg := args[i]
+		// Prompt-source flags are removed before value-flag handling so the
+		// real prompt source is dropped while an identically named flag value
+		// was already consumed by the previous iteration.
+		switch arg {
 		case "--prompt-file":
 			if i+1 < len(args) {
 				i++
 			}
+			continue
 		case "--prompt-stdin":
 			// Prompt source is replaced by the repair's own --prompt-stdin.
-		default:
+			continue
+		}
+		argv = append(argv, arg)
+		if commandFlagTakesValue(command, arg) && i+1 < len(args) {
+			i++
 			argv = append(argv, args[i])
 		}
 	}
@@ -1135,15 +1147,19 @@ func withResolvedCWD(argv []string, cwd string) []string {
 	return append(argv, "--cwd", cwd)
 }
 
-// appendPromptStdinArgv inserts the shell redirect before a "--" delimiter.
-// Tokens after that delimiter are native argv, not agentctl flags.
-func appendPromptStdinArgv(argv []string, command, path string) []string {
+// appendPromptStdinArgv adds --prompt-stdin as an agentctl flag. Only run has
+// a native "--" delimiter, so only run inserts before it; other commands append
+// after their parsed flags so a flag-shaped value such as "--" stays a value.
+func appendPromptStdinArgv(argv []string, command string) []string {
 	if len(argv) == 0 {
 		argv = []string{"agentctl", command}
 	} else {
 		argv = append([]string{}, argv...)
 	}
-	stdin := []string{"--prompt-stdin", "<", path}
+	stdin := []string{"--prompt-stdin"}
+	if command != "run" {
+		return append(argv, stdin...)
+	}
 	for i, arg := range argv {
 		if arg == "--" {
 			out := make([]string, 0, len(argv)+len(stdin))
@@ -1155,29 +1171,18 @@ func appendPromptStdinArgv(argv []string, command, path string) []string {
 	return append(argv, stdin...)
 }
 
-// promptRepairEffect classifies the repaired command itself. --plan before the
-// native delimiter is read-only; a --plan that belongs to the native argv is
-// not. Every other repair can launch or steer work.
-func promptRepairEffect(command string, argv []string) (bool, output.SideEffectClass) {
-	if commandPlans(argv) {
+// promptRepairEffect classifies the repaired command itself from the parsed
+// plan flag, not from token shapes: a title or request key may literally be
+// "--plan". Dispatch creates remote coordination work; other live repairs
+// launch or steer native work.
+func promptRepairEffect(command string, plan bool) (bool, output.SideEffectClass) {
+	if plan {
 		return false, output.ReadOnly
 	}
 	if command == "dispatch" {
 		return true, output.RemoteCoordinationWrite
 	}
 	return true, output.ExternalSideEffect
-}
-
-func commandPlans(argv []string) bool {
-	for _, arg := range argv {
-		if arg == "--" {
-			return false
-		}
-		if arg == "--plan" {
-			return true
-		}
-	}
-	return false
 }
 
 // withFanoutPromptRepair points a fanout prompt failure at the manifest.

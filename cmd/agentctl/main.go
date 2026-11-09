@@ -289,9 +289,23 @@ func invocationAllowsAutomaticMaintenance(args []string) bool {
 
 func inlineHelpTopic(args []string) (string, bool) {
 	helpAt := -1
-	for i, arg := range args {
+	command := ""
+	if len(args) != 0 {
+		command = args[0]
+	}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		if arg == "--" {
 			break
+		}
+		// A token consumed as a flag value is not a help request, even when
+		// its text is --help. `continue exec --request-key --help` names a
+		// request key, not the continue topic.
+		if strings.HasPrefix(arg, "-") && commandFlagTakesValue(command, arg) {
+			if i+1 < len(args) {
+				i++
+			}
+			continue
 		}
 		if arg == "--help" || arg == "-h" {
 			helpAt = i

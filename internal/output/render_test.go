@@ -97,3 +97,31 @@ func TestTextRendersWarningsAfterPrimaryOutput(t *testing.T) {
 		t.Fatalf("output=%q want=%q", buffer.String(), want)
 	}
 }
+
+func TestNextActionStdinFromStaysOutOfArgv(t *testing.T) {
+	action := NextAction{Label: "Pipe prompt", Argv: []string{"agentctl", "run", "--prompt-stdin", "--", "agent"}, StdinFrom: "/tmp/task.md", SideEffectClass: ReadOnly, Preconditions: []string{}}
+	var buffer bytes.Buffer
+	if err := (Renderer{Mode: JSON, Writer: &buffer}).Failure(NewError(CodeNotFound, "missing", false).WithActions(action)); err != nil {
+		t.Fatal(err)
+	}
+	var document ErrorDocument
+	if err := json.Unmarshal(buffer.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	got := document.Error.NextActions[0]
+	if got.StdinFrom != "/tmp/task.md" {
+		t.Fatalf("stdin_from=%q", got.StdinFrom)
+	}
+	for _, arg := range got.Argv {
+		if arg == "<" || arg == "/tmp/task.md" {
+			t.Fatalf("stdin source leaked into argv: %#v", got.Argv)
+		}
+	}
+	buffer.Reset()
+	if err := (Renderer{Mode: Text, Writer: &buffer}).Failure(NewError(CodeNotFound, "missing", false).WithActions(action)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buffer.String(), "stdin_from=/tmp/task.md") {
+		t.Fatalf("text action lost stdin_from: %q", buffer.String())
+	}
+}

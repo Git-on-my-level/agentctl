@@ -2626,6 +2626,18 @@ func TestInlineHelpIgnoresPositionalIDsAndFlags(t *testing.T) {
 	}
 }
 
+func TestInlineHelpIgnoresFlagValuesNamedHelp(t *testing.T) {
+	if topic, ok := inlineHelpTopic([]string{"continue", "exec-abc", "--request-key", "--help", "--prompt-file", "followup.md"}); ok {
+		t.Fatalf("--help as a --request-key value was treated as help topic %q", topic)
+	}
+	if topic, ok := inlineHelpTopic([]string{"delegate", "--request-file", "--help", "--prompt-file", "task.md"}); ok {
+		t.Fatalf("--help as a --request-file value was treated as help topic %q", topic)
+	}
+	if topic, ok := inlineHelpTopic([]string{"continue", "exec-abc", "--request-key", "followup-1", "--help"}); !ok || !strings.HasPrefix(topic, "continue") {
+		t.Fatalf("real inline help topic=%q ok=%v", topic, ok)
+	}
+}
+
 func TestHelpRequestAndSelectorMapToDelegate(t *testing.T) {
 	for _, topic := range []string{"request", "selector", "request file"} {
 		t.Run(topic, func(t *testing.T) {

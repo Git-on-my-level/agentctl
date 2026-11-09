@@ -247,6 +247,11 @@
             "type": "string"
           }
         },
+        "stdin_from": {
+          "type": "string",
+          "minLength": 1,
+          "description": "File whose bytes the caller pipes into argv's stdin. Keeps argv a pure argv without shell redirection tokens."
+        },
         "mutates": {
           "type": "boolean"
         },
