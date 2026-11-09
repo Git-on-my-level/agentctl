@@ -133,8 +133,9 @@ request; leave everything else absent. The selector must include at least
 `delegate_invalid_request`, before resolution or launch. “grok” means `{"family":"grok"}`;
 “cursor grok 4.6” means `{"harness":"cursor","family":"grok","version":"4.6"}`.
 Other word orders produce the same constraints. Never guess a version or native
-slug from memory. Add explicit speed/effort under `settings` when requested.
-`settings.auto_compact_window` (for example `"300k"`) sets a Claude Code lane's
+slug from memory. Add explicit speed/effort inside the selector, under
+`selector.settings`, when requested. `selector.settings.auto_compact_window`
+(for example `"300k"`) sets a Claude Code lane's
 compaction window for that launch; other harnesses refuse it.
 When a profile configures capacity pools and the user named no model, request
 `{"pool":"<name>"}` instead of a family or model. agentctl picks an account from

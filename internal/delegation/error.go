@@ -17,7 +17,12 @@ type Error struct {
 	Violation        string
 	FieldPath        string
 	AllowedKeys      []string
-	ExampleRequest   *Request
+	// Suggestion names the documented location for a field that was supplied
+	// at a plausible but wrong path. It is static text, never request content.
+	Suggestion string
+	// SuggestedPath is the documented JSON path for that field.
+	SuggestedPath  string
+	ExampleRequest *Request
 }
 
 func (e *Error) Error() string {

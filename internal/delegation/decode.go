@@ -122,6 +122,9 @@ func checkObject(d *json.Decoder, depth int, path string) error {
 			return requestError("key_spelling", "delegation request keys must use their exact documented spelling", fieldPath, path)
 		}
 		if _, ok := allowedKeys[path][name]; !ok {
+			if suggestion, target := misplacedFieldSuggestion(path, name); suggestion != "" {
+				return requestErrorWithSuggestion("unknown_field", "delegation request contains an unknown field", fieldPath, path, suggestion, target)
+			}
 			return requestError("unknown_field", "delegation request contains an unknown field", fieldPath, path)
 		}
 		if _, dup := seen[name]; dup {
@@ -163,6 +166,34 @@ func requestError(violation, diagnostic, path, scope string) *Error {
 		Violation: violation, FieldPath: path, AllowedKeys: keys, ExampleRequest: &Request{
 			SchemaVersion: 1, RequestKey: "<unique-request-key>", Selector: Selector{Model: "<configured-model>"},
 		}}
+}
+
+// misplacedFieldSuggestion recognizes the documented settings fields supplied
+// one level too high. The parser stays strict; the error carries the exact
+// documented location and a corrected example instead of only "unknown field".
+func misplacedFieldSuggestion(path, name string) (suggestion, target string) {
+	settingsFields := map[string]bool{"speed": true, "effort": true, "access": true, "auto_compact_window": true}
+	switch {
+	case path == "$" && name == "settings":
+		return "settings belongs under selector: move it to $.selector.settings", "$.selector.settings"
+	case path == "$" && settingsFields[name]:
+		return name + " belongs under selector.settings: move it to $.selector.settings." + name, "$.selector.settings." + name
+	case path == "$.selector" && settingsFields[name]:
+		return name + " belongs under selector.settings: move it to $.selector.settings." + name, "$.selector.settings." + name
+	}
+	return "", ""
+}
+
+func requestErrorWithSuggestion(violation, diagnostic, path, scope, suggestion, target string) *Error {
+	issue := requestError(violation, diagnostic, path, scope)
+	issue.Suggestion = suggestion
+	issue.SuggestedPath = target
+	issue.Diagnostic = diagnostic + " at " + path + "; " + suggestion
+	issue.ExampleRequest = &Request{
+		SchemaVersion: 1, RequestKey: "<unique-request-key>",
+		Selector: Selector{Model: "<configured-model>", Settings: &Settings{Access: "coding"}},
+	}
+	return issue
 }
 
 func validateRequest(req Request) error {

@@ -193,3 +193,37 @@ func TestDecodeRequestRejectsWrongSchemaVersionTypes(t *testing.T) {
 		}
 	}
 }
+
+// Agents repeatedly put the documented settings object at the request top
+// level. The parser stays strict, but the error must name the documented path
+// and carry a corrected example instead of only "unknown field".
+func TestDecodeRequestTopLevelSettingsNamesSelectorLocation(t *testing.T) {
+	body := []byte(`{"schema_version":1,"request_key":"k","selector":{"model":"gpt-6.1-sol"},"settings":{"access":"read_only"}}`)
+	_, err := DecodeRequest(body)
+	var issue *Error
+	if !errors.As(err, &issue) {
+		t.Fatalf("error=%v", err)
+	}
+	if issue.FieldPath != "$.settings" || issue.Violation != "unknown_field" {
+		t.Fatalf("issue=%#v", issue)
+	}
+	if issue.SuggestedPath != "$.selector.settings" || !strings.Contains(issue.Error(), "move it to $.selector.settings") {
+		t.Fatalf("missing exact repair: %#v", issue)
+	}
+	if issue.ExampleRequest == nil || issue.ExampleRequest.Selector.Settings == nil || issue.ExampleRequest.Selector.Settings.Access != "coding" {
+		t.Fatalf("example does not show selector.settings: %#v", issue.ExampleRequest)
+	}
+	example, _ := json.Marshal(issue.ExampleRequest)
+	if _, err := DecodeRequest(example); err != nil {
+		t.Fatalf("example violates schema: %s: %v", example, err)
+	}
+}
+
+func TestDecodeRequestSelectorLevelSettingsFieldNamesSettingsObject(t *testing.T) {
+	body := []byte(`{"schema_version":1,"request_key":"k","selector":{"model":"gpt-6.1-sol","access":"read_only"}}`)
+	_, err := DecodeRequest(body)
+	var issue *Error
+	if !errors.As(err, &issue) || issue.FieldPath != "$.selector.access" || issue.SuggestedPath != "$.selector.settings.access" {
+		t.Fatalf("issue=%#v err=%v", issue, err)
+	}
+}

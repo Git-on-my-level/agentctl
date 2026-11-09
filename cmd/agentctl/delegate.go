@@ -174,6 +174,9 @@ func mapDelegationError(err error) *output.Error {
 				WithDetail("allowed_keys", issue.AllowedKeys).
 				WithDetail("example_request", issue.ExampleRequest).
 				WithDetail("example_guidance", "replace placeholders with a new request key and an exact model from the reviewed configured catalog")
+			if issue.Suggestion != "" {
+				problem.WithDetail("suggestion", issue.Suggestion).WithDetail("suggested_field_path", issue.SuggestedPath)
+			}
 		}
 		if issue.Code == "delegate_no_matching_tuple" || issue.Code == "delegate_ambiguous_selector" {
 			selectors := make([]delegation.Selector, 0, len(issue.Candidates))
