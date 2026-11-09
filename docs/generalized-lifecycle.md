@@ -88,7 +88,11 @@ before there is a durable lookup ID. Replay the same key and inputs, never a
 fresh key to recover a lost response. A lost response does not cancel the
 owner; a broken receipt pipe does not terminate it. The worker runs no automatic
 update/bootstrap maintenance. Journal contention keeps its existing bounded
-retry and `journal_busy` contract.
+retry and `journal_busy` contract. Pre-launch settlement retains the bounded
+`native_version_probe_failed`, `native_version_probe_timeout`,
+`macos_login_keychain_locked`, or `journal_busy` diagnostic and a version-probe
+exit code when available; otherwise it uses `detached_worker_start_failed`
+instead of a provider-shaped `native_execution_failed`.
 
 After five minutes without a runner lease or observation, the supervisor may
 mark a native execution `orphaned/owner_lost` only when the kernel proves its

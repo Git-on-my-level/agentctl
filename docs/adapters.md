@@ -237,7 +237,10 @@ meaning.
   `step_finish` event (`part.type: "step-finish"`, `part.reason: "stop"`).
   Missing or non-stop finishes fail with `incomplete_terminal_result`; a
   stopped step without text fails with `empty_terminal_result`. Neither stores
-  partial answer content. Error events and nonzero exits remain failures.
+  partial answer content. Error events and nonzero exits remain failures. An
+  exit before any OpenCode event, including a zero exit, fails with
+  `opencode_exited_before_any_event`; the outcome retains the native exit code
+  and any content-free stderr fingerprint.
 - Bound cumulative answer buffering to a 1 MiB UTF-8 prefix (including part
   separators) and mark truncated results. Discard excess text while retaining
   final step controls; observations retain metadata rather than another text copy.

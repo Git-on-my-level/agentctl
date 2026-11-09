@@ -649,6 +649,9 @@ func (p *processRecord) finish(err error) {
 			p.result = p.zcodeFailureResultLocked()
 		}
 	}
+	if p.result == nil && p.parser != nil && p.parser.Name() == "opencode-json" && !p.sawOpenCode && !p.cancelled {
+		p.result = &Result{Success: false, State: StateFailed, Error: "opencode exited before emitting any event", ExitCode: p.exitCode, SessionRef: p.ref, Data: map[string]any{"diagnostic_code": "opencode_exited_before_any_event", "terminal_source_state": "opencode.run"}}
+	}
 	if p.result == nil {
 		if p.cancelled {
 			p.result = &Result{Success: false, State: StateCancelled, Error: "native process cancelled", ExitCode: p.exitCode, SessionRef: p.ref}

@@ -2182,6 +2182,12 @@ const (
 	failureMessageApproval    = "approval required"
 	failureMessageQuota       = "quota or rate limit exceeded"
 	failureMessageUnextracted = "native process exited cleanly without an explicit structured terminal result"
+	failureMessageOpenCode    = "opencode exited before emitting any event"
+	failureMessageDetached    = "detached worker failed before native process start"
+	failureMessageProbe       = "native version probe failed"
+	failureMessageProbeTime   = "native version probe timed out; the host may be overloaded"
+	failureMessageProbeKeys   = "native version probe requires an unlocked macOS login keychain"
+	failureMessageJournalBusy = "journal remained busy before native process start"
 	failureMessageGeneric     = "native execution failed"
 )
 
@@ -2218,6 +2224,18 @@ func allowlistedFailureMessage(failure model.OutcomeFailure) string {
 		return (&diagnostic.Stderr{Code: failure.Code}).Message()
 	case "result_extraction_failed":
 		return failureMessageUnextracted
+	case "opencode_exited_before_any_event":
+		return failureMessageOpenCode
+	case "detached_worker_start_failed":
+		return failureMessageDetached
+	case "native_version_probe_failed":
+		return failureMessageProbe
+	case "native_version_probe_timeout":
+		return failureMessageProbeTime
+	case "macos_login_keychain_locked":
+		return failureMessageProbeKeys
+	case "journal_busy":
+		return failureMessageJournalBusy
 	}
 	nativeCode := failure.NativeCode
 	if !model.ValidNativeFailureCode(nativeCode) {
@@ -2296,8 +2314,14 @@ func localCompletionDiagnostic(code string) bool {
 
 func classifyOutcomeFailure(message, diagnosticCode, nativeCode, harness, providerCategory string) (string, string, string, bool) {
 	switch diagnosticCode {
-	case "native_event_write_failed", "native_owner_failed":
+	case "native_event_write_failed", "native_owner_failed", "detached_worker_start_failed":
 		return diagnosticCode, "observation", "", false
+	case "native_version_probe_failed", "journal_busy":
+		return diagnosticCode, "observation", "", true
+	case "native_version_probe_timeout":
+		return diagnosticCode, "timeout", "", true
+	case "macos_login_keychain_locked":
+		return diagnosticCode, "authentication", "", true
 	case "zcode_read_only_unavailable", "zcode_read_only_project_config_present", "zcode_read_only_dotenv_present", "zcode_read_only_slot_held":
 		return diagnosticCode, "configuration", "", false
 	}
@@ -2306,6 +2330,9 @@ func classifyOutcomeFailure(message, diagnosticCode, nativeCode, harness, provid
 	}
 	if diagnosticCode == "result_extraction_failed" {
 		return "result_extraction_failed", "observation", "", false
+	}
+	if diagnosticCode == "opencode_exited_before_any_event" {
+		return diagnosticCode, "observation", "", false
 	}
 	lower := strings.ToLower(message)
 	switch {

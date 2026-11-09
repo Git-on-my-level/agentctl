@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Git-on-my-level/agentctl/internal/adapter"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/store"
@@ -99,6 +100,68 @@ func TestDetachedAdmissionSurvivesWorkerAndReceiptFailures(t *testing.T) {
 			}
 			if starts != 1 || !strings.Contains(out.String(), rows[0].ID.String()) {
 				t.Fatalf("starts=%d %s", starts, out.String())
+			}
+		})
+	}
+}
+
+func TestSettleDetachedAdmissionPreservesVersionProbeFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		err          error
+		wantCode     string
+		wantExitCode *int
+	}{
+		{
+			name:     "probe_exit",
+			err:      &adapter.AdapterError{Code: adapter.ErrDependencyUnavailable, Message: "native version probe failed", Retryable: true, Details: map[string]any{"diagnostic_code": "native_version_probe_failed", "native_exit_code": 23}},
+			wantCode: "native_version_probe_failed", wantExitCode: func() *int { code := 23; return &code }(),
+		},
+		{
+			name:     "probe_timeout",
+			err:      &adapter.AdapterError{Code: adapter.ErrTimeout, Message: "opencode version probe timed out (timeout 5s, elapsed 5s); the host may be overloaded", Retryable: true, Details: map[string]any{"diagnostic_code": "native_version_probe_timeout", "adapter": "opencode", "timeout": "5s", "elapsed": "5s", "host_may_be_overloaded": true}},
+			wantCode: "native_version_probe_timeout",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDelegateFixture(t, delegateSuccessScript)
+			journal, err := store.Open(f.journal, store.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			execution, _, err := journal.CreateExecution(context.Background(), model.Execution{
+				Authority: model.AuthorityNative, Adapter: "opencode", Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched,
+				State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{},
+				Capabilities: model.CapabilitySnapshot{NegotiatedAt: now, AdapterVersion: "test", Items: []model.CapabilityItem{}},
+				Observation:  model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now},
+			}, contracts.MutationKey{})
+			journal.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			a.settleDetachedAdmission(common{journalPath: f.journal}, execution.ID, mapAdapterError("adapter probe failed", tc.err))
+
+			journal, err = store.Open(f.journal, store.Options{ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			outcome, err := journal.GetOutcome(context.Background(), execution.ID)
+			journal.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome.Failure == nil || outcome.Failure.Code != tc.wantCode || !outcome.Failure.Retryable {
+				t.Fatalf("failure=%#v", outcome.Failure)
+			}
+			if tc.wantExitCode == nil {
+				if outcome.NativeExitCode != nil {
+					t.Fatalf("exit code=%v", *outcome.NativeExitCode)
+				}
+			} else if outcome.NativeExitCode == nil || *outcome.NativeExitCode != *tc.wantExitCode {
+				t.Fatalf("exit code=%v want %d", outcome.NativeExitCode, *tc.wantExitCode)
 			}
 		})
 	}
