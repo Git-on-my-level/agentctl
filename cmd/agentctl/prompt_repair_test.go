@@ -344,20 +344,28 @@ func TestPromptFileNotFoundIsPreciseAndRepairable(t *testing.T) {
 	if problem.Details["path"] != missing || problem.Details["requested_path"] != "missing.md" {
 		t.Fatalf("details=%#v", problem.Details)
 	}
-	if len(problem.NextActions) == 0 {
-		t.Fatal("missing repair action")
+	// A missing file has no executable pipe repair: its source cannot be opened.
+	for _, action := range problem.NextActions {
+		if action.StdinFrom != "" {
+			t.Fatalf("missing file advertised an unrunnable stdin repair: %#v", action)
+		}
 	}
-	want := []string{"agentctl", "delegate", "--request-file", "request.json", "--prompt-stdin"}
-	if !reflect.DeepEqual(problem.NextActions[0].Argv, want) || problem.NextActions[0].StdinFrom != missing {
-		t.Fatalf("action=%#v", problem.NextActions[0])
-	}
-	if !problem.NextActions[0].Mutates || problem.NextActions[0].SideEffectClass != output.ExternalSideEffect {
-		t.Fatalf("missing-file repair was marked read-only: %#v", problem.NextActions[0])
+	if _, ok := problem.Details["repair"]; ok {
+		t.Fatalf("missing file carries a repair object: %#v", problem.Details)
 	}
 }
 
 func TestPromptFileLiteralTildeReportsUnexpandedShellPath(t *testing.T) {
 	root := testutil.TempDir(t)
+	// The resolved home path exists, so the concrete pipe repair is runnable.
+	fakeHome := testutil.TempDir(t)
+	t.Setenv("HOME", fakeHome)
+	if err := os.MkdirAll(filepath.Join(fakeHome, "workspace/omi"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fakeHome, "workspace/omi/prompt-a.md"), []byte("task"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
 	_, problem := a.loadPromptForCommand("delegate", runOptions{cwd: root, promptFile: "~/workspace/omi/prompt-a.md", promptDelivery: "argv",
 		promptRepairArgv: []string{"agentctl", "delegate", "--request-file", "request.json"}})

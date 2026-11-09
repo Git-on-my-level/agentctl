@@ -1,5 +1,7 @@
 package main
 
+import "strings"
+
 // commandValueFlags lists the flags whose next token is a value rather than a
 // command token. Parsers consume those values verbatim, so a value such as
 // "--help" or "--plan" is not itself a flag. Inline help and prompt repairs use
@@ -58,6 +60,12 @@ func flagSet(flags ...string) map[string]bool {
 	return set
 }
 
+// goFlagCommands parse with Go's flag package, which accepts -name as well as --name.
+var goFlagCommands = map[string]bool{"context": true, "knowledge": true}
+
 func commandFlagTakesValue(command, flag string) bool {
+	if goFlagCommands[command] && strings.HasPrefix(flag, "-") && !strings.HasPrefix(flag, "--") {
+		flag = "-" + flag
+	}
 	return commandValueFlags[command][flag]
 }

@@ -2636,6 +2636,8 @@ func TestInlineHelpIgnoresFlagValuesNamedHelp(t *testing.T) {
 	for _, argv := range [][]string{
 		{"context", "--bundle", "bundle", "--query", "--help"},
 		{"knowledge", "compile", "--source", "--help"},
+		{"context", "-query", "--help"},
+		{"context", "-bundle", "b", "-query", "-h"},
 	} {
 		if topic, ok := inlineHelpTopic(argv); ok {
 			t.Fatalf("--help as a flag value in %v was treated as help topic %q", argv, topic)

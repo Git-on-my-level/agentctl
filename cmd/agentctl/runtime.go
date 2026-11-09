@@ -1000,8 +1000,15 @@ func promptNotFoundError(command string, opts runOptions, path, requested string
 	if command == "fanout" {
 		return withFanoutPromptRepair(problem)
 	}
+	problem.WithDetail("recommended_prompt_source", "stdin")
+	// Only advertise a pipe-from-file repair whose source can actually be
+	// opened (for example the resolved home path of a literal ~/ prompt). A
+	// missing file has no executable repair; the caller must supply the prompt.
+	if info, err := os.Stat(stdinPath); err != nil || !info.Mode().IsRegular() {
+		return problem.WithActions(promptHelpAction(command))
+	}
 	repair, action := promptStdinRepair(command, opts, stdinPath)
-	problem.WithDetail("recommended_prompt_source", "stdin").WithDetail("repair", repair)
+	problem.WithDetail("repair", repair)
 	return problem.WithActions(action, promptHelpAction(command))
 }
 
