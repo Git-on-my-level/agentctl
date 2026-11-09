@@ -185,7 +185,7 @@ func helpTopics() map[string]commandHelp {
 			Defaults: []string{"--dry-run reads without files, locks, subprocesses or ANX calls", "apply preserves registration, sequence and request-key hash; resets attempts and backoff", "fills free pending capacity without evictions; pending and acknowledged phases are skipped", "repeat after an explicit anx flush if deferred_capacity is nonzero", "local errors exit 70; invalid arguments exit 2; repeating after partial progress is safe"},
 			Examples: [][]string{{"agentctl", "anx", "requeue-dead", "--dry-run"}, {"agentctl", "anx", "requeue-dead"}}, Related: []string{"anx"},
 		},
-		"schema": {Name: "schema", Summary: "List normative JSON schema files.", Usage: "agentctl schema list", SideEffectClass: output.ReadOnly, Defaults: []string{}, Examples: [][]string{{"agentctl", "schema", "list"}}},
+		"schema": {Name: "schema", Summary: "List normative JSON schema files or show one by name.", Usage: "agentctl schema list | agentctl schema <name>", SideEffectClass: output.ReadOnly, Defaults: []string{"an unknown name returns not_found with the available names and a list action", "delegate-request also points to agentctl help delegate"}, Examples: [][]string{{"agentctl", "schema", "list"}, {"agentctl", "schema", "delegate-request"}}},
 	}
 }
 

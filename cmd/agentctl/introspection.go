@@ -152,11 +152,8 @@ func (a *app) adapterForIntrospection(name string, c common) (adapter.Adapter, *
 	}
 }
 
-func (a *app) schemaCommand(renderer output.Renderer, args []string) *output.Error {
-	if len(args) != 1 || args[0] != "list" {
-		return output.NewError(output.CodeUsage, "usage: agentctl schema list", false)
-	}
-	schemas := []map[string]any{
+func schemaCatalog() []map[string]any {
+	return []map[string]any{
 		{"name": "anx-registration", "version": 5, "file": "schemas/anx-registration.schema.json"},
 		{"name": "anx-requeue-result", "version": 1, "file": "schemas/anx-requeue-result.schema.json"},
 		{"name": "adapter-manifest", "version": 1, "file": "schemas/adapter-manifest.schema.json"},
@@ -190,6 +187,37 @@ func (a *app) schemaCommand(renderer output.Renderer, args []string) *output.Err
 		{"name": "subscription", "version": 1, "file": "schemas/subscription.schema.json"},
 		{"name": "workspace-owners", "version": 1, "file": "schemas/workspace-owners.schema.json"},
 		{"name": "task-contract-input", "version": 1, "file": "schemas/task-contract-input.schema.json"},
+	}
+}
+
+func (a *app) schemaCommand(renderer output.Renderer, args []string) *output.Error {
+	schemas := schemaCatalog()
+	if len(args) == 1 && args[0] != "list" {
+		name := strings.ToLower(strings.TrimSpace(args[0]))
+		for _, item := range schemas {
+			if item["name"] != name {
+				continue
+			}
+			actions := []output.NextAction{{Label: "List every schema", Argv: []string{"agentctl", "schema", "list"}, Mutates: false, SideEffectClass: output.ReadOnly}}
+			if name == "delegate-request" {
+				actions = append(actions, output.NextAction{Label: "Read the delegate request contract", Argv: []string{"agentctl", "help", "delegate"}, Mutates: false, SideEffectClass: output.ReadOnly})
+			}
+			lines := []output.Line{{Lead: "schema", Fields: []output.Field{{Name: "name", Value: item["name"]}, {Name: "version", Value: item["version"]}, {Name: "file", Value: item["file"]}}}}
+			if err := renderer.Success(output.Success{Result: map[string]any{"schema": item}, Lines: lines, NextActions: actions}); err != nil {
+				return output.Wrap(output.CodeInternal, "write output", false, err)
+			}
+			return nil
+		}
+		names := make([]string, 0, len(schemas))
+		for _, item := range schemas {
+			names = append(names, item["name"].(string))
+		}
+		return output.NewError(output.CodeNotFound, "schema not found", false).WithDetail("name", name).WithDetail("available", names).
+			WithActions(output.NextAction{Label: "List every schema", Argv: []string{"agentctl", "schema", "list"}, Mutates: false, SideEffectClass: output.ReadOnly})
+	}
+	if len(args) != 1 || args[0] != "list" {
+		return output.NewError(output.CodeUsage, "usage: agentctl schema list | agentctl schema <name>", false).
+			WithActions(output.NextAction{Label: "List every schema", Argv: []string{"agentctl", "schema", "list"}, Mutates: false, SideEffectClass: output.ReadOnly})
 	}
 	lines := make([]output.Line, 0, len(schemas))
 	for _, item := range schemas {

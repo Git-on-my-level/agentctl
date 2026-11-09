@@ -263,3 +263,47 @@ func assertResultMatchesSchemaShape(t *testing.T, out, filename string, nested .
 		check(name, child, value)
 	}
 }
+
+func TestSchemaNameShowsThatSchemaAndPointsToDelegateHelp(t *testing.T) {
+	var stdout bytes.Buffer
+	renderer := output.Renderer{Mode: output.JSON, Writer: &stdout}
+	if problem := (&app{}).schemaCommand(renderer, []string{"delegate-request"}); problem != nil {
+		t.Fatal(problem)
+	}
+	var document struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Schema struct {
+				Name string `json:"name"`
+				File string `json:"file"`
+			} `json:"schema"`
+		} `json:"result"`
+		NextActions []struct {
+			Argv []string `json:"argv"`
+		} `json:"next_actions"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	if !document.OK || document.Result.Schema.Name != "delegate-request" || document.Result.Schema.File != "schemas/delegate-request.schema.json" {
+		t.Fatalf("schema=%#v", document)
+	}
+	found := false
+	for _, action := range document.NextActions {
+		if len(action.Argv) == 3 && action.Argv[1] == "help" && action.Argv[2] == "delegate" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing delegate help action: %#v", document.NextActions)
+	}
+}
+
+func TestSchemaUnknownNameIsNotFoundWithListAction(t *testing.T) {
+	var stdout bytes.Buffer
+	renderer := output.Renderer{Mode: output.JSON, Writer: &stdout}
+	problem := (&app{}).schemaCommand(renderer, []string{"missing-schema"})
+	if problem == nil || problem.Code != output.CodeNotFound || len(problem.NextActions) != 1 || problem.NextActions[0].Argv[1] != "schema" {
+		t.Fatalf("problem=%#v", problem)
+	}
+}
