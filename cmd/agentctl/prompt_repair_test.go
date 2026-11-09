@@ -85,8 +85,15 @@ func TestPromptOutsideRootRepairsMatchCommandParsers(t *testing.T) {
 			} else if len(flags) != 1 {
 				t.Fatalf("repair added unsupported command flags: %#v", flags)
 			}
-			if len(problem.NextActions) != 1 || !reflect.DeepEqual(problem.NextActions[0].Argv, []string{"agentctl", "help", tt.command}) || problem.NextActions[0].Mutates || problem.NextActions[0].SideEffectClass != output.ReadOnly {
+			if len(problem.NextActions) != 2 || problem.NextActions[0].Mutates || problem.NextActions[0].SideEffectClass != output.ReadOnly {
 				t.Fatalf("next_actions=%#v", problem.NextActions)
+			}
+			stdinAction := problem.NextActions[0]
+			if len(stdinAction.Argv) < 4 || stdinAction.Argv[len(stdinAction.Argv)-3] != "--prompt-stdin" || stdinAction.Argv[len(stdinAction.Argv)-2] != "<" || stdinAction.Argv[len(stdinAction.Argv)-1] != path {
+				t.Fatalf("stdin repair argv=%#v", stdinAction.Argv)
+			}
+			if !reflect.DeepEqual(problem.NextActions[1].Argv, []string{"agentctl", "help", tt.command}) {
+				t.Fatalf("help action=%#v", problem.NextActions[1])
 			}
 			repaired := applyPromptRepairFlags(t, tt.args, repair)
 			var parseProblem *output.Error
@@ -217,5 +224,45 @@ func TestFanoutOutsideRootRepairUsesManifestGuidance(t *testing.T) {
 				t.Fatalf("manual manifest repair failed: %v", problem)
 			}
 		})
+	}
+}
+
+func TestPromptFileNotFoundIsPreciseAndRepairable(t *testing.T) {
+	root := testutil.TempDir(t)
+	missing := filepath.Join(root, "missing.md")
+	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
+	_, problem := a.loadPromptForCommand("delegate", runOptions{cwd: root, promptFile: "missing.md", promptDelivery: "argv",
+		promptRepairArgv: []string{"agentctl", "delegate", "--request-file", "request.json"}})
+	if problem == nil || problem.Code != output.CodeNotFound {
+		t.Fatalf("problem=%#v", problem)
+	}
+	if problem.Details["path"] != missing || problem.Details["requested_path"] != "missing.md" {
+		t.Fatalf("details=%#v", problem.Details)
+	}
+	if len(problem.NextActions) == 0 {
+		t.Fatal("missing repair action")
+	}
+	want := []string{"agentctl", "delegate", "--request-file", "request.json", "--prompt-stdin", "<", missing}
+	if !reflect.DeepEqual(problem.NextActions[0].Argv, want) {
+		t.Fatalf("argv=%#v", problem.NextActions[0].Argv)
+	}
+}
+
+func TestPromptFileLiteralTildeReportsUnexpandedShellPath(t *testing.T) {
+	root := testutil.TempDir(t)
+	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
+	_, problem := a.loadPromptForCommand("delegate", runOptions{cwd: root, promptFile: "~/workspace/omi/prompt-a.md", promptDelivery: "argv",
+		promptRepairArgv: []string{"agentctl", "delegate", "--request-file", "request.json"}})
+	if problem == nil || problem.Code != output.CodeNotFound {
+		t.Fatalf("problem=%#v", problem)
+	}
+	if problem.Details["tilde_unexpanded"] != true || problem.Details["suggested_path"] != "$HOME/workspace/omi/prompt-a.md" {
+		t.Fatalf("details=%#v", problem.Details)
+	}
+	if !strings.Contains(problem.Message, "shell did not expand ~") {
+		t.Fatalf("message=%q", problem.Message)
+	}
+	if len(problem.NextActions) == 0 || problem.NextActions[0].Argv[len(problem.NextActions[0].Argv)-1] != "$HOME/workspace/omi/prompt-a.md" {
+		t.Fatalf("actions=%#v", problem.NextActions)
 	}
 }

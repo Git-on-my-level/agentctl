@@ -356,7 +356,8 @@ func (a *app) steerCommand(ctx context.Context, renderer output.Renderer, c comm
 	if problem != nil {
 		return problem
 	}
-	prompt, problem := a.loadPromptForCommand("steer", runOptions{promptFile: opts.promptFile, promptStdin: opts.promptStdin, promptDelivery: "argv"})
+	prompt, problem := a.loadPromptForCommand("steer", runOptions{promptFile: opts.promptFile, promptStdin: opts.promptStdin, promptDelivery: "argv",
+		promptRepairArgv: []string{"agentctl", "steer", id.String()}})
 	if problem != nil {
 		return problem
 	}
