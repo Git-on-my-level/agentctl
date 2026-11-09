@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,12 +69,16 @@ func TestJournalMaintenanceDefaultCutoffKillSwitchAndBothAuthorities(t *testing.
 		t.Fatal(err)
 	}
 	defer read.Close()
-	for _, e := range []model.Execution{native, remote} {
+	for _, e := range []model.Execution{native} {
 		if _, err := read.GetExecution(context.Background(), e.ID); err != store.ErrNotFound {
 			t.Fatalf("old acknowledged %s retained: %v", e.Authority, err)
 		}
 	}
-	for _, e := range []model.Execution{recent, unread} {
+	gotRemote, err := read.GetExecution(context.Background(), remote.ID)
+	if err != nil || len(gotRemote.SourceBindings) != len(remote.SourceBindings) || gotRemote.SourceBindings[0].Fingerprint != remote.SourceBindings[0].Fingerprint {
+		t.Fatalf("Multica replay binding lost: %+v %v", gotRemote, err)
+	}
+	for _, e := range []model.Execution{remote, recent, unread} {
 		if _, err := read.GetExecution(context.Background(), e.ID); err != nil {
 			t.Fatalf("protected %s removed: %v", e.ID, err)
 		}
@@ -89,5 +95,62 @@ func TestJournalMaintenanceMissingJournalDoesNotCreate(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
 		t.Fatal("maintenance created state", err)
+	}
+}
+
+func TestJournalMaintenanceTimeoutIsLoggedAndRateLimited(t *testing.T) {
+	root := testutil.TempDir(t)
+	path := filepath.Join(root, "state", "journal.db")
+	j, err := store.Open(path, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+	var out, stderr bytes.Buffer
+	a := testApp(&out, &stderr)
+	now := a.now()
+	a.now = func() time.Time { return now }
+	c := common{configPath: filepath.Join(root, "missing.json"), journalPath: path}
+	m := &journalMaintenance{}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if err := m.run(ctx, a, c, path); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timeout swallowed: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "retention deferred:") || !strings.Contains(stderr.String(), "deadline exceeded") {
+		t.Fatal(stderr.String())
+	}
+	size := stderr.Len()
+	// A skipped cadence tick preserves the failure in health but does no scan.
+	if err := m.run(context.Background(), a, c, path); !errors.Is(err, context.DeadlineExceeded) || stderr.Len() != size {
+		t.Fatalf("cadence cleared failure or re-ran: %v %s", err, stderr.String())
+	}
+	now = now.Add(5 * time.Minute)
+	if err := m.run(context.Background(), a, c, path); err != nil {
+		t.Fatal(err)
+	}
+	if m.lastError != nil {
+		t.Fatal("successful pass did not clear failure")
+	}
+}
+
+func TestPendingOutboxScanUsesReadOnlyHandle(t *testing.T) {
+	root := testutil.TempDir(t)
+	path := filepath.Join(root, "state", "journal.db")
+	j, err := store.Open(path, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+	reader, err := store.Open(path, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	items, err := (journalSupervisorOutbox{path: path}).ListPending(ctx)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("pending read contended with reader: %v %v", items, err)
 	}
 }

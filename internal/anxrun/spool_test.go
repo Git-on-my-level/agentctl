@@ -271,3 +271,26 @@ func TestSendErrorClassification(t *testing.T) {
 		t.Fatal("unclassified errors must retry")
 	}
 }
+
+func TestLinkedExecutionsPreservesDeliveredRunEvidence(t *testing.T) {
+	spool := testSpool(t)
+	registration := testRegistration("retained-link", PhaseStart, 1)
+	if _, err := spool.Enqueue(registration); err != nil {
+		t.Fatal(err)
+	}
+	links, err := spool.LinkedExecutions()
+	if err != nil || len(links) != 1 || links[0].String() != registration.ExternalID {
+		t.Fatalf("pending links=%v err=%v", links, err)
+	}
+	if result, err := spool.Flush(context.Background(), &recordingSender{}, 0); err != nil || result.Delivered != 1 {
+		t.Fatalf("flush=%+v %v", result, err)
+	}
+	pending, err := spool.ListPending()
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("pending=%v err=%v", pending, err)
+	}
+	links, err = spool.LinkedExecutions()
+	if err != nil || len(links) != 1 || links[0].String() != registration.ExternalID {
+		t.Fatalf("delivered link lost=%v err=%v", links, err)
+	}
+}

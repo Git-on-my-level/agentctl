@@ -18,6 +18,7 @@
     "diagnostic_bytes": {"type": "integer", "minimum": 0},
     "include_unreconciled": {"type": "boolean"},
     "protected_unreconciled": {"type": "integer", "minimum": 0},
+    "pre_tracking_unreconciled": {"type":"integer", "minimum":0, "description":"Old terminal records without an acknowledgement that predate tracking; manual cleanup may delete these."},
     "eligible": {
       "type": "array",
       "items": {

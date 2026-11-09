@@ -675,11 +675,18 @@ whose metadata or replayable events exceed a final batch; later candidates can
 still progress. No physical compaction occurs.
 
 Only the running supervisor performs automatic retention: one small batch per
-cycle, acknowledged terminal lineage-free records older than 14 days by
+five minutes, acknowledged terminal lineage-free records older than 14 days by
 default. Set the host-local config `journal.retention.enabled=false` to disable
 it or `journal.retention.days` to change the cutoff (1–3650; zero means 14).
-Policy reloads each cycle. Unacknowledged pre-tracking results are also kept
-automatically. Native and Multica authorities are unchanged; no read-only CLI
+Policy reloads each maintenance pass. Each pass has a 30-second deadline;
+completed scan pages resume after a timeout unless an intervening write invalidates
+the proof. Deferrals appear on stderr and in supervisor `last_maintenance_error`.
+Request-key/immutable bindings, source-bound records (including Multica), ANX run
+links and unexpired paused subscriptions are protected. ANX stamps commit before
+spooling/sending links and protect manual cleanup too. Unacknowledged pre-tracking
+results are kept automatically; manual plans report `pre_tracking_unreconciled`.
+Inventory and supervisor recovery release the journal between pages; listings are
+advisory across pages. Pending-outbox scans are read-only. Native and Multica authorities are unchanged; no read-only CLI
 runs maintenance.
 
 ZCode's existing `--mode yolo` bypasses ordinary permission prompts but retains

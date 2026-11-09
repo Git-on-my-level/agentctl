@@ -220,9 +220,11 @@ executions in the plan. `--include-unreconciled` is the explicit opt-out. It
 participates in the plan digest, so a digest reviewed under one policy can never
 authorize the other, and an applied opt-out plan warns that uncollected results
 were deleted. The protection is gated on the journal's acknowledgement epoch:
-terminals that predate acknowledgement tracking on that journal can never gain a
-stamp retroactively and stay eligible, so an old journal does not become
-permanently uncleanable. `agentctl result --unreconciled` collects the retained
+terminals that predate acknowledgement tracking can lack a stamp and stay
+manually eligible, so an old journal does not become permanently uncleanable.
+`pre_tracking_unreconciled` counts those old unacknowledged terminals even when
+`--include-unreconciled` is set; inspect that count before applying a manual plan.
+Automatic retention always requires an explicit acknowledgement. `agentctl result --unreconciled` collects the retained
 backlog, after which those executions become eligible normally.
 `agentctl reconcile --apply` can stamp that same collection boundary in bulk
 for completed and cancelled terminals older than `--collect-older-than`, with
@@ -238,13 +240,25 @@ lists `acknowledged`. Because cleanup treats any
 acknowledgement as collection, a `bulk_reconciled` stamp makes those results
 eligible for `data cleanup` deletion once they are older than the cutoff.
 
-Nonterminal graphs, partial parent/supersession graphs, active subscription
+Nonterminal graphs, partial parent/supersession graphs, unexpired active or paused subscription
 filters/cursors/coordinators, and every retained outbox delivery or receipt are
 protected. Promotion-linked executions are conservatively never eligible in
 this preview because those records can encode authority handoff and recovery
 state. Stopped subscriptions alone do not protect a graph, but their retained
 deliveries and receipts do. Cleanup never removes subscription, outbox,
-receipt, or promotion records themselves.
+receipt, or promotion records themselves. ANX registrations commit a monotonic
+`anx_run_links` stamp before spooling or sending a link; these targets remain
+protected after collection or spool expiry. Legacy pending, dead and delivered
+spool references also protect cleanup. Automatic retention exempts executions
+with idempotency/immutable bindings or source bindings, preserving native
+request-key replay and cached Multica identity. Manual cleanup is an explicit
+reviewed deletion boundary for request-key replay.
+
+CLI inventory and supervisor recovery close the journal between pages, including
+nested event-index inventory walks. Their aggregate listings are advisory across
+pages; they do not promise a single point-in-time snapshot. Recovery and label
+queries filter stored state/labels before hydrating immutable bindings. Pending
+supervisor outbox scans are read-only and can coexist with other readers.
 
 Generic extraction diagnostics are a separate cache: mode-0600 files named
 `failed-output-<execution-id>.txt`, each at most 64 KiB, at most 128 files

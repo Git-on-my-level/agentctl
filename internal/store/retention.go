@@ -14,6 +14,7 @@ import (
 	"go.etcd.io/bbolt"
 
 	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/subscription"
 )
@@ -94,8 +95,9 @@ type CleanupPlan struct {
 	// IncludeUnreconciled reports whether the caller explicitly opted out of
 	// uncollected-result protection. ProtectedUnreconciled counts the terminal
 	// executions retained solely because nobody has collected their result.
-	IncludeUnreconciled   bool `json:"include_unreconciled"`
-	ProtectedUnreconciled int  `json:"protected_unreconciled"`
+	IncludeUnreconciled     bool `json:"include_unreconciled"`
+	ProtectedUnreconciled   int  `json:"protected_unreconciled"`
+	PreTrackingUnreconciled int  `json:"pre_tracking_unreconciled"`
 }
 
 // CleanupOptions carries the explicit caller intent that widens deletion
@@ -105,7 +107,9 @@ type CleanupOptions struct {
 	// acknowledged by result or await. It is destructive of uncollected
 	// evidence and must come from an explicit caller flag.
 	IncludeUnreconciled bool
-	automatic           bool
+	// ANXRunLinks is read-only legacy spool evidence for links predating stamps.
+	ANXRunLinks []ids.ExecutionID
+	automatic   bool
 }
 
 type cleanupEvent struct {
@@ -142,7 +146,9 @@ func (j *Journal) Inventory(ctx context.Context) (RetentionInventory, error) {
 	err := j.db.View(func(tx *bbolt.Tx) error {
 		if err := tx.ForEach(func(name []byte, bucket *bbolt.Bucket) error {
 			usage := BucketUsage{Name: string(name)}
-			measureBucket(bucket, &usage)
+			if err := measureBucket(ctx, bucket, &usage); err != nil {
+				return err
+			}
 			result.LogicalBytes += usage.KeyBytes + usage.ValueBytes
 			result.Buckets = append(result.Buckets, usage)
 			return nil
@@ -152,6 +158,9 @@ func (j *Journal) Inventory(ctx context.Context) (RetentionInventory, error) {
 		executions := tx.Bucket(bExecutions)
 		if executions != nil {
 			if err := executions.ForEach(func(_, raw []byte) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				var value model.Execution
 				if err := json.Unmarshal(raw, &value); err != nil {
 					return corrupt(err)
@@ -175,6 +184,9 @@ func (j *Journal) Inventory(ctx context.Context) (RetentionInventory, error) {
 		}
 		if outcomes := tx.Bucket(bOutcomes); outcomes != nil {
 			if err := outcomes.ForEach(func(_, raw []byte) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				var value model.Outcome
 				if err := json.Unmarshal(raw, &value); err != nil {
 					return corrupt(err)
@@ -197,13 +209,18 @@ func (j *Journal) Inventory(ctx context.Context) (RetentionInventory, error) {
 	return result, err
 }
 
-func measureBucket(bucket *bbolt.Bucket, usage *BucketUsage) {
-	_ = bucket.ForEach(func(key, value []byte) error {
+func measureBucket(ctx context.Context, bucket *bbolt.Bucket, usage *BucketUsage) error {
+	return bucket.ForEach(func(key, value []byte) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		usage.KeyBytes += int64(len(key))
 		if value == nil {
 			usage.NestedBuckets++
 			if child := bucket.Bucket(key); child != nil {
-				measureBucket(child, usage)
+				if err := measureBucket(ctx, child, usage); err != nil {
+					return err
+				}
 			}
 			return nil
 		}
@@ -217,7 +234,7 @@ func (snapshot *cleanupSnapshot) selectCleanup(before, now time.Time, options Cl
 	plan := CleanupPlan{SchemaVersion: RetentionSchemaVersion, Before: before, GeneratedAt: now, Eligible: []CleanupExecution{}, Protected: []ProtectedExecution{}, IncludeUnreconciled: options.IncludeUnreconciled}
 	executions := map[string]model.Execution{}
 	base := map[string]bool{}
-	if err := snapshot.Bucket(bExecutions).ForEach(func(key, raw []byte) error {
+	if err := snapshot.forEach(bExecutions, func(key, raw []byte) error {
 		if err := snapshot.ctx.Err(); err != nil {
 			return err
 		}
@@ -245,6 +262,35 @@ func (snapshot *cleanupSnapshot) selectCleanup(before, now time.Time, options Cl
 			protected[id] = map[string]bool{}
 		}
 		protected[id][reason] = true
+	}
+
+	// A run link is an external durable reference, independent of collection.
+	for _, id := range options.ANXRunLinks {
+		protect(id.String(), "anx_run_link")
+	}
+	for id := range snapshot.Bucket(bANXRunLinks) {
+		protect(id, "anx_run_link")
+	}
+	// Automatic retention cannot revoke durable request-key replay or cached
+	// authority bindings. Manual digest-reviewed cleanup remains explicit.
+	if options.automatic {
+		for id, value := range executions {
+			if len(value.SourceBindings) > 0 {
+				protect(id, "authority_binding")
+			}
+		}
+		if err := snapshot.forEach(bIdempotency, func(_, raw []byte) error {
+			var record mutationRecord
+			if err := json.Unmarshal(raw, &record); err != nil {
+				return corrupt(err)
+			}
+			if record.ObjectType == "execution" {
+				protect(record.ObjectID, "request_key_replay")
+			}
+			return nil
+		}); err != nil {
+			return CleanupPlan{}, nil, err
+		}
 	}
 
 	// Never partially remove an execution lineage. Promotion links are retained
@@ -330,13 +376,13 @@ func (snapshot *cleanupSnapshot) selectCleanup(before, now time.Time, options Cl
 	// Active exact subscriptions, including their cursor/coordinator references,
 	// keep the complete execution history needed to interpret future delivery.
 	if bucket := snapshot.Bucket(bSubscriptions); bucket != nil {
-		if err := bucket.ForEach(func(_, raw []byte) error {
+		if err := snapshot.forEach(bSubscriptions, func(_, raw []byte) error {
 			var record SubscriptionRecord
 			if err := json.Unmarshal(raw, &record); err != nil {
 				return corrupt(err)
 			}
 			value := record.Subscription
-			active := value.State == subscription.StateActive && (value.ExpiresAt.IsZero() || now.Before(value.ExpiresAt))
+			active := (value.State == subscription.StateActive || value.State == subscription.StatePaused) && (value.ExpiresAt.IsZero() || now.Before(value.ExpiresAt))
 			if !active {
 				return nil
 			}
@@ -368,7 +414,7 @@ func (snapshot *cleanupSnapshot) selectCleanup(before, now time.Time, options Cl
 		if bucket == nil {
 			return nil
 		}
-		return bucket.ForEach(func(key, raw []byte) error {
+		return snapshot.forEach(bucketName, func(key, raw []byte) error {
 			item, err := decodeDelivery(raw)
 			if err != nil {
 				return err
@@ -397,7 +443,7 @@ func (snapshot *cleanupSnapshot) selectCleanup(before, now time.Time, options Cl
 		return CleanupPlan{}, nil, err
 	}
 	if receipts := snapshot.Bucket(bOutboxReceipts); receipts != nil {
-		if err := receipts.ForEach(func(key, _ []byte) error {
+		if err := snapshot.forEach(bOutboxReceipts, func(key, _ []byte) error {
 			executionID, ok := deliveryExecutions[string(key)]
 			if !ok {
 				return fmt.Errorf("%w: receipt delivery missing", ErrCorrupt)
@@ -413,34 +459,22 @@ func (snapshot *cleanupSnapshot) selectCleanup(before, now time.Time, options Cl
 	// Cleanup reclaims space; it must not double as an acknowledgement that a
 	// human or agent already read the outcome. The epoch guard keeps this from
 	// freezing old journals: terminals that predate acknowledgement tracking on
-	// this journal can never gain a stamp retroactively, so they stay eligible.
-	if !options.IncludeUnreconciled {
-		epoch, err := snapshot.acknowledgementEpoch()
-		if err != nil {
+	// this journal may lack a stamp, so manual cleanup leaves them eligible.
+	epoch, err := snapshot.acknowledgementEpoch()
+	if err != nil {
+		return CleanupPlan{}, nil, err
+	}
+	for id, value := range executions {
+		if err := snapshot.ctx.Err(); err != nil {
 			return CleanupPlan{}, nil, err
 		}
-		if !epoch.IsZero() {
-			acknowledged := map[string]bool{}
-			if bucket := snapshot.Bucket(bAcknowledgements); bucket != nil {
-				if err := bucket.ForEach(func(key, _ []byte) error {
-					acknowledged[string(key)] = true
-					return nil
-				}); err != nil {
-					return CleanupPlan{}, nil, err
-				}
-			}
-			for id, value := range executions {
-				if err := snapshot.ctx.Err(); err != nil {
-					return CleanupPlan{}, nil, err
-				}
-				if !base[id] || acknowledged[id] {
-					continue
-				}
-				if value.TerminalAt == nil || value.TerminalAt.Before(epoch) {
-					continue
-				}
-				protect(id, "result_unreconciled")
-			}
+		if !base[id] || snapshot.Bucket(bAcknowledgements).Get([]byte(id)) != nil {
+			continue
+		}
+		if epoch.IsZero() || value.TerminalAt.Before(epoch) {
+			plan.PreTrackingUnreconciled++
+		} else if !options.IncludeUnreconciled {
+			protect(id, "result_unreconciled")
 		}
 	}
 

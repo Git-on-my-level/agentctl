@@ -403,6 +403,9 @@ func TestCleanupProtectsUnreconciledTerminalResults(t *testing.T) {
 	if reasons := planReasons(plan, uncollected.ID); len(reasons) != 1 || reasons[0] != "result_unreconciled" {
 		t.Fatalf("uncollected terminal is not protected as unreconciled: %#v", plan.Protected)
 	}
+	if plan.PreTrackingUnreconciled != 1 {
+		t.Fatalf("pre_tracking_unreconciled=%d", plan.PreTrackingUnreconciled)
+	}
 	if plan.ProtectedUnreconciled != 1 {
 		t.Fatalf("protected_unreconciled=%d want 1: %#v", plan.ProtectedUnreconciled, plan)
 	}

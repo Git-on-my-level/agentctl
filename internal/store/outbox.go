@@ -312,6 +312,9 @@ func (j *Journal) listDeliveries(ctx context.Context, include func(DeliveryRecor
 			return nil
 		}
 		return bucket.ForEach(func(_, raw []byte) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			item, err := decodeDelivery(raw)
 			if err != nil {
 				return err

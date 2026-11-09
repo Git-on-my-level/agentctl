@@ -29,12 +29,15 @@ func (a *app) dataCommand(ctx context.Context, renderer output.Renderer, c commo
 }
 
 func (a *app) dataInventory(ctx context.Context, renderer output.Renderer, c common) *output.Error {
-	journal, problem := a.openRead(c)
-	if problem != nil {
-		return problem
+
+	path, pathErr := a.journalPath(c)
+	if pathErr != nil {
+		return output.Wrap(output.CodeInternal, "resolve journal path", false, pathErr)
 	}
-	defer journal.Close()
-	inventory, err := journal.Inventory(ctx)
+	reader := store.Reader{Open: func(ctx context.Context, readOnly bool) (*store.Journal, error) {
+		return openJournalWithBusyBudget(ctx, path, store.Options{ReadOnly: readOnly}, false, c.journalBusyBudget)
+	}}
+	inventory, err := reader.Inventory(ctx)
 	if err != nil {
 		return mapStoreError("inventory journal data", err)
 	}
@@ -119,7 +122,11 @@ func (a *app) dataCleanup(ctx context.Context, renderer output.Renderer, c commo
 	cleanup := store.Cleanup{Open: func(ctx context.Context, readOnly bool) (*store.Journal, error) {
 		return openJournalWithBusyBudget(ctx, path, store.Options{ReadOnly: readOnly}, false, c.journalBusyBudget)
 	}}
-	options := store.CleanupOptions{IncludeUnreconciled: includeUnreconciled}
+	links, linkErr := a.anxRetentionLinks(c)
+	if linkErr != nil {
+		return output.Wrap(output.CodeInternal, "read ANX retention references", false, linkErr)
+	}
+	options := store.CleanupOptions{IncludeUnreconciled: includeUnreconciled, ANXRunLinks: links}
 	if planOnly {
 		plan, err = cleanup.Plan(ctx, before, options)
 	} else {
@@ -135,7 +142,7 @@ func (a *app) dataCleanup(ctx context.Context, renderer output.Renderer, c commo
 		return problem
 	}
 	lines := []output.Line{
-		{Lead: "data.cleanup", Fields: []output.Field{{Name: "mode", Value: cleanupMode(planOnly)}, {Name: "before", Value: before}, {Name: "eligible_executions", Value: len(plan.Eligible)}, {Name: "protected_executions", Value: len(plan.Protected)}, {Name: "protected_unreconciled", Value: plan.ProtectedUnreconciled}, {Name: "include_unreconciled", Value: plan.IncludeUnreconciled}, {Name: "records", Value: plan.Records.Total()}, {Name: "logical_bytes", Value: plan.LogicalBytes}, {Name: "diagnostic_files", Value: plan.DiagnosticFiles}, {Name: "diagnostic_bytes", Value: plan.DiagnosticBytes}, {Name: "has_more", Value: plan.HasMore}, {Name: "plan_digest", Value: plan.PlanDigest}}},
+		{Lead: "data.cleanup", Fields: []output.Field{{Name: "mode", Value: cleanupMode(planOnly)}, {Name: "before", Value: before}, {Name: "eligible_executions", Value: len(plan.Eligible)}, {Name: "protected_executions", Value: len(plan.Protected)}, {Name: "protected_unreconciled", Value: plan.ProtectedUnreconciled}, {Name: "pre_tracking_unreconciled", Value: plan.PreTrackingUnreconciled}, {Name: "include_unreconciled", Value: plan.IncludeUnreconciled}, {Name: "records", Value: plan.Records.Total()}, {Name: "logical_bytes", Value: plan.LogicalBytes}, {Name: "diagnostic_files", Value: plan.DiagnosticFiles}, {Name: "diagnostic_bytes", Value: plan.DiagnosticBytes}, {Name: "has_more", Value: plan.HasMore}, {Name: "plan_digest", Value: plan.PlanDigest}}},
 	}
 	warnings := []output.Warning{{Code: "journal_not_compacted", Message: "logical bytes describe selected records; the journal file is not compacted automatically"}}
 	if plan.IncludeUnreconciled {

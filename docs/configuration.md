@@ -376,14 +376,24 @@ supervisor. It defaults to on with an age cutoff of 14 exact 24-hour days:
 
 Set `journal.retention.enabled` to `false` to disable automatic deletion.
 Omitted or zero `days` means 14; the supported range is 1–3650. The supervisor
-reloads this key each cycle; a policy edit does not require a restart. Invalid
+reloads this key each maintenance pass (at most every five minutes); a policy edit does not require a restart. Invalid
 config defers retention and surfaces a maintenance error. Source sync preserves
 this host-local policy; additive config bundles cannot set it.
 
 The [policy schema](../schemas/journal-policy.schema.json) describes the value
 under `journal`. Only acknowledged, terminal, lineage-free records strictly
 older than the cutoff qualify. Subscriptions, delivery references and other
-cleanup protections still apply. Each cycle performs at most one batch of
-128 events and one execution, with a two-second maintenance deadline; contention
-or a changing protection snapshot defers the batch. No CLI read runs retention.
+cleanup protections still apply. Request-key/immutable bindings, source-bound
+records (including Multica), and ANX run links are exempt from automatic retention
+so retries and external links keep their original target. ANX links also protect
+manual cleanup. Explicit manual cleanup can remove request-key bindings.
+
+Maintenance runs at most once every five minutes, with a 30-second deadline and
+at most one batch of 128 events and one execution. Copied metadata pages and a
+cursor survive a timeout in the running supervisor; no DB handle survives a page.
+The same stable proof is reused for selection and commit, avoiding a second full
+scan. Intervening commits invalidate it safely, including writes by old binaries.
+Busy, conflict and timeout deferrals are logged to stderr and remain visible in
+supervisor health as `last_maintenance_error` until a later successful pass.
+No CLI read runs retention. No separate retention environment switch is used.
 See [retention and cleanup](state-security-and-privacy.md#retention-and-cleanup).

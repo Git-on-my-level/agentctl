@@ -24,10 +24,11 @@ const cleanupPageBytes = 256 << 10
 const cleanupEventBatch = 128
 
 type cleanupReader struct {
-	ctx  context.Context
-	with func(bool, func(*Journal) error) error
-	path string
-	now  time.Time
+	ctx            context.Context
+	with           func(bool, func(*Journal) error) error
+	path           string
+	now            time.Time
+	cachedSnapshot *cleanupSnapshot
 }
 
 func (c Cleanup) reader(ctx context.Context) *cleanupReader {
@@ -73,50 +74,56 @@ func (r *cleanupReader) view(fn func(*bbolt.Tx) error) error {
 
 // scan copies a bounded page out of the transaction before invoking consumers.
 // No mmap-backed byte slices escape, and consumers never nest transactions.
-func (r *cleanupReader) scan(name, nested []byte, version *int, fn func([]byte, []byte) error) error {
-	var after []byte
-	for {
-		type row struct{ key, value []byte }
-		page := []row{}
-		err := r.view(func(tx *bbolt.Tx) error {
-			if version != nil {
-				if *version == 0 {
-					*version = tx.ID()
-				} else if *version != tx.ID() {
-					return ErrConflict
-				}
+type cleanupRow struct{ key, value []byte }
+
+func (r *cleanupReader) page(name, nested, after []byte, version *int) ([]cleanupRow, error) {
+	page := []cleanupRow{}
+	err := r.view(func(tx *bbolt.Tx) error {
+		if version != nil {
+			if *version == 0 {
+				*version = tx.ID()
+			} else if *version != tx.ID() {
+				return ErrConflict
 			}
-			bucket := tx.Bucket(name)
+		}
+		bucket := tx.Bucket(name)
+		if bucket == nil {
+			return nil
+		}
+		if nested != nil {
+			bucket = bucket.Bucket(nested)
 			if bucket == nil {
 				return nil
 			}
-			if nested != nil {
-				bucket = bucket.Bucket(nested)
-				if bucket == nil {
-					return nil
-				}
+		}
+		cursor := bucket.Cursor()
+		key, value := cursor.First()
+		if after != nil {
+			key, value = cursor.Seek(after)
+			if bytes.Equal(key, after) {
+				key, value = cursor.Next()
 			}
-			cursor := bucket.Cursor()
-			key, value := cursor.First()
-			if after != nil {
-				key, value = cursor.Seek(after)
-				if bytes.Equal(key, after) {
-					key, value = cursor.Next()
-				}
+		}
+		size := 0
+		for ; key != nil && len(page) < cleanupPageSize && size < cleanupPageBytes; key, value = cursor.Next() {
+			if err := r.ctx.Err(); err != nil {
+				return err
 			}
-			size := 0
-			for ; key != nil && len(page) < cleanupPageSize && size < cleanupPageBytes; key, value = cursor.Next() {
-				if err := r.ctx.Err(); err != nil {
-					return err
-				}
-				if value == nil {
-					return fmt.Errorf("%w: unexpected cleanup bucket", ErrCorrupt)
-				}
-				page = append(page, row{bytes.Clone(key), bytes.Clone(value)})
-				size += len(key) + len(value)
+			if value == nil {
+				return fmt.Errorf("%w: unexpected cleanup bucket", ErrCorrupt)
 			}
-			return nil
-		})
+			page = append(page, cleanupRow{bytes.Clone(key), bytes.Clone(value)})
+			size += len(key) + len(value)
+		}
+		return nil
+	})
+	return page, err
+}
+
+func (r *cleanupReader) scan(name, nested []byte, version *int, fn func([]byte, []byte) error) error {
+	var after []byte
+	for {
+		page, err := r.page(name, nested, after, version)
 		if err != nil {
 			return err
 		}
@@ -156,6 +163,15 @@ type cleanupSnapshot struct {
 }
 
 func (s *cleanupSnapshot) Bucket(name []byte) cleanupBucket { return s.buckets[string(name)] }
+func (s *cleanupSnapshot) forEach(name []byte, fn func([]byte, []byte) error) error {
+	return s.Bucket(name).ForEach(func(key, raw []byte) error {
+		if err := s.ctx.Err(); err != nil {
+			return err
+		}
+		return fn(key, raw)
+	})
+}
+
 func (s *cleanupSnapshot) acknowledgementEpoch() (time.Time, error) {
 	raw := s.Bucket(bMetadata).Get(keyAckEpoch)
 	if len(raw) == 0 {
@@ -172,6 +188,9 @@ func (s *cleanupSnapshot) acknowledgementEpoch() (time.Time, error) {
 // If writers interleave, defer instead of deleting from a torn reference graph.
 // Old binaries participate automatically because this uses bbolt's tx ID.
 func (r *cleanupReader) snapshot(stable bool) (*cleanupSnapshot, error) {
+	if r.cachedSnapshot != nil {
+		return r.cachedSnapshot, nil
+	}
 	if !stable {
 		return r.snapshotOnce(false)
 	}
@@ -186,7 +205,7 @@ func (r *cleanupReader) snapshot(stable bool) (*cleanupSnapshot, error) {
 
 func (r *cleanupReader) snapshotOnce(stable bool) (*cleanupSnapshot, error) {
 	s := &cleanupSnapshot{ctx: r.ctx, buckets: map[string]cleanupBucket{}}
-	for _, name := range [][]byte{bMetadata, bExecutions, bSubscriptions, bOutbox, bOutboxDead, bOutboxReceipts, bAcknowledgements, bIdempotency} {
+	for _, name := range cleanupProtectionBuckets {
 		bucket := cleanupBucket{}
 		s.buckets[string(name)] = bucket
 		var version *int
@@ -197,10 +216,17 @@ func (r *cleanupReader) snapshotOnce(stable bool) (*cleanupSnapshot, error) {
 			return nil, err
 		}
 	}
+	if err := r.snapshotEvents(s, stable); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (r *cleanupReader) snapshotEvents(s *cleanupSnapshot, stable bool) error {
 	// Only subscription cursors and deliveries lacking execution IDs need event
 	// payloads for protection. Never load the full events bucket into memory.
 	eventIDs := map[string]bool{}
-	if err := s.Bucket(bSubscriptions).ForEach(func(_, raw []byte) error {
+	if err := s.forEach(bSubscriptions, func(_, raw []byte) error {
 		var record SubscriptionRecord
 		if err := json.Unmarshal(raw, &record); err != nil {
 			return corrupt(err)
@@ -210,10 +236,10 @@ func (r *cleanupReader) snapshotOnce(stable bool) (*cleanupSnapshot, error) {
 		}
 		return nil
 	}); err != nil {
-		return nil, err
+		return err
 	}
 	for _, name := range [][]byte{bOutbox, bOutboxDead} {
-		if err := s.Bucket(name).ForEach(func(_, raw []byte) error {
+		if err := s.forEach(name, func(_, raw []byte) error {
 			item, err := decodeDelivery(raw)
 			if err != nil {
 				return err
@@ -223,13 +249,17 @@ func (r *cleanupReader) snapshotOnce(stable bool) (*cleanupSnapshot, error) {
 			}
 			return nil
 		}); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	s.buckets[string(bEvents)] = cleanupBucket{}
+	if s.Bucket(bEvents) == nil {
+		s.buckets[string(bEvents)] = cleanupBucket{}
+	}
 	ids := make([]string, 0, len(eventIDs))
 	for id := range eventIDs {
-		ids = append(ids, id)
+		if _, loaded := s.Bucket(bEvents)[id]; !loaded {
+			ids = append(ids, id)
+		}
 	}
 	sort.Strings(ids)
 	for len(ids) > 0 {
@@ -239,15 +269,19 @@ func (r *cleanupReader) snapshotOnce(stable bool) (*cleanupSnapshot, error) {
 				return ErrConflict
 			}
 			for _, id := range ids[:n] {
+				if err := r.ctx.Err(); err != nil {
+					return err
+				}
+				s.Bucket(bEvents)[id] = nil
 				if raw := tx.Bucket(bEvents).Get([]byte(id)); raw != nil {
 					s.Bucket(bEvents)[id] = bytes.Clone(raw)
 				}
 			}
 			return nil
 		}); err != nil {
-			return nil, err
+			return err
 		}
 		ids = ids[n:]
 	}
-	return s, nil
+	return nil
 }

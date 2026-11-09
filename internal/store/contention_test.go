@@ -221,3 +221,28 @@ func BenchmarkWritableReopen(b *testing.B) {
 		})
 	}
 }
+
+func TestFilteredExecutionsPreserveUnappliedTerminalEvents(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	e := sampleExecution(now)
+	e.Labels = []string{"live.lane"}
+	e, _, err := j.CreateExecution(ctx, e, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, projection := semanticEvent(t, e.Adapter, map[string]any{"unapplied_terminal": true})
+	state := model.StateCompleted
+	if _, _, err = j.AppendEvent(ctx, model.Event{ExecutionID: e.ID, Authority: e.Authority, Adapter: e.Adapter, Kind: model.EventTerminal, State: &state, Ordering: model.OrderingObservation, DedupeKey: key, DedupeVersion: 1, Payload: map[string]any{}}, projection); err != nil {
+		t.Fatal(err)
+	}
+	seedTerminalForRetention(t, j, now.Add(-48*time.Hour), contracts.MutationKey{})
+	active, err := j.ListExecutions(ctx, true)
+	if err != nil || len(active) != 1 || active[0].ID != e.ID {
+		t.Fatalf("unapplied terminal hidden: %v %v", active, err)
+	}
+	labeled, err := j.ListExecutionsByLabelPrefix(ctx, "live.")
+	if err != nil || len(labeled) != 1 || labeled[0].ID != e.ID {
+		t.Fatalf("label selection: %v %v", labeled, err)
+	}
+}

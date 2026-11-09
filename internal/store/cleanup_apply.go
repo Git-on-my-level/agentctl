@@ -128,7 +128,7 @@ func (r *cleanupReader) remove(before time.Time, options CleanupOptions, targets
 			}
 			if final {
 				mutations := 0
-				if err := snapshot.Bucket(bIdempotency).ForEach(func(_, raw []byte) error {
+				if err := snapshot.forEach(bIdempotency, func(_, raw []byte) error {
 					var record mutationRecord
 					if err := json.Unmarshal(raw, &record); err != nil {
 						return corrupt(err)

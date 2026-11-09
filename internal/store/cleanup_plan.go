@@ -56,7 +56,7 @@ func (r *cleanupReader) plan(before time.Time, options CleanupOptions, eventLimi
 	// Index mutation records once, rather than scanning the entire bucket for
 	// every eligible execution (quadratic on a journal with years of history).
 	mutations := map[string][]cleanupRecord{}
-	if err := snapshot.Bucket(bIdempotency).ForEach(func(key, raw []byte) error {
+	if err := snapshot.forEach(bIdempotency, func(key, raw []byte) error {
 		var record mutationRecord
 		if err := json.Unmarshal(raw, &record); err != nil {
 			return corrupt(err)

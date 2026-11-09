@@ -231,9 +231,10 @@ type Health struct {
 	LastCycleRecoveryDeferred int `json:"last_cycle_recovery_deferred"`
 	// LastError names the execution or delivery it concerns. A fully clean
 	// cycle clears it; LastErrorAt keeps when the most recent error happened.
-	LastError         string    `json:"last_error,omitempty"`
-	LastErrorAt       time.Time `json:"last_error_at,omitempty"`
-	LastDeliveryError string    `json:"last_delivery_error,omitempty"`
+	LastError            string    `json:"last_error,omitempty"`
+	LastErrorAt          time.Time `json:"last_error_at,omitempty"`
+	LastDeliveryError    string    `json:"last_delivery_error,omitempty"`
+	LastMaintenanceError string    `json:"last_maintenance_error,omitempty"`
 }
 
 // Status is the complete bounded service projection returned by status RPC.

@@ -33,8 +33,11 @@ was performed.
   prevents intermediate dangling references across bounded commits.
 - Default-on supervisor retention uses the same protections, additionally
   requires an explicit acknowledgement for pre-tracking records, and processes
-  at most one event batch/execution each cycle. The default cutoff is 14 days.
-  `journal.retention.enabled=false` disables it; policy reloads each cycle.
+  at most one event batch/execution every five minutes. The default cutoff is 14 days.
+  `journal.retention.enabled=false` disables it; policy reloads each maintenance pass.
+  Native request-key/immutable bindings, source bindings and ANX links are exempt.
+  Paused subscription cursors remain protected. Manual plans disclose
+  `pre_tracking_unreconciled` and inventory/recovery use paged, cancellable reads.
 - Current main already classified a missing detached worker receipt as
   `admitted`, not `launched`. Added coverage verifies worker startup failures
   return errors, including under journal contention, and a lost receipt remains
@@ -56,8 +59,10 @@ validate retention; those authorities remain unchanged.
 ## Limits and follow-ups
 
 - Concurrent commits can defer a stable protection snapshot, especially on a
-  continuously busy journal. Maintenance has a two-second cycle deadline and
-  defers contention rather than extending lock tenure or weakening protection.
+  continuously busy journal. Maintenance has a 30-second pass deadline and
+  preserves completed scan pages on timeout. Intervening writes invalidate the
+  proof; deferrals are logged and remain visible in supervisor health. The
+  stable proof is reused for selection and the commit, avoiding duplicate scans.
   Dedicated protection indexes or a reviewed single-writer design would reduce
   the metadata scan and improve progress under constant writes.
 - An execution whose metadata or replayable event set exceeds the final batch
@@ -68,5 +73,9 @@ validate retention; those authorities remain unchanged.
 - Progress event sampling is left as a separate contract change; see the design
   in the PR body. Immutable events and subscription delivery are not rewritten.
 - Open PR [#137](https://github.com/Git-on-my-level/agentctl/pull/137) overlaps
-  this area. These changes are independently based on main; the lead should
-  reconcile the two implementations before merging either together.
+  this area. Its ANX stamp/legacy spool protection, await jitter/backoff,
+  filter-before-hydrate queries and read-only outbox scans are ported here.
+  This paged engine and host-local config policy supersede its duplicate engine
+  and environment switch. A seven-day rollout preview/report is deferred: it
+  needs a durable upgrade epoch and report contract; paged manual plans provide
+  the preview boundary without delaying the default-on fix.

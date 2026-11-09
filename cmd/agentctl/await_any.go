@@ -18,7 +18,6 @@ import (
 // returns the first one that needs the caller. See docs/design/lane-fan-in.md.
 
 const (
-	awaitAnyPollInterval  = time.Second
 	awaitAnyMaxExecutions = 256
 	awaitAnyKindTerminal  = "terminal"
 	awaitAnyKindAttention = "attention"
@@ -196,6 +195,7 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 		return a.fail(renderer, output.Wrap(output.CodeExecutionCancelled, "await-any cancelled", false, ctx.Err()).WithDetail("selector", options.selector()))
 	}
 	lastWatched := 0
+	var poll time.Duration
 	for {
 		if ctx.Err() != nil {
 			return cancelled()
@@ -227,6 +227,7 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 			}
 			return a.fail(renderer, problem)
 		}
+		poll = nextAwaitPoll(poll, watched != lastWatched)
 		lastWatched = watched
 		if len(matches) > 0 {
 			return a.deliverAwaitAny(ctx, renderer, c, options, matches[0], len(matches)-1, watched)
@@ -235,7 +236,7 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 			return a.fail(renderer, output.NewError(output.CodeTimeout, "await-any deadline elapsed", true).
 				WithDetail("selector", options.selector()).WithDetail("kinds", options.kindList()).WithDetail("watched", watched))
 		}
-		pause := awaitAnyPollInterval
+		pause := awaitPollPause(poll, 0, false)
 		if !deadline.IsZero() {
 			if remaining := deadline.Sub(a.now()); remaining < pause {
 				pause = remaining
@@ -273,7 +274,7 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 	defer journal.Close()
 	var candidates []model.Execution
 	if options.labelPrefix != "" {
-		all, err := journal.ListExecutions(ctx, false)
+		all, err := journal.ListExecutionsByLabelPrefix(ctx, options.labelPrefix)
 		if err != nil {
 			return nil, 0, mapStoreError("list awaited executions", err)
 		}
