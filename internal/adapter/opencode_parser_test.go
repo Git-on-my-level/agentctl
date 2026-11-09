@@ -449,6 +449,8 @@ func TestOpenCodeProviderErrorTypeIsAllowlisted(t *testing.T) {
 		"provider.",
 		"ProviderRateLimit",
 		"provider.rate\nlimit",
+		"provider.sk-live-51h8xq2ez9abcdef",
+		"provider.ghp-0123456789abcdef0123",
 	} {
 		line, err := json.Marshal(map[string]any{"type": "retry", "attempt": 1, "error": map[string]any{"type": raw, "status": 429}})
 		if err != nil {

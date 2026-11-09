@@ -1024,10 +1024,21 @@ var opencodeProviderErrorTypePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{
 // "provider." classifier namespace. Free-form, oversized or credential-shaped
 // values are replaced by the shared content-free marker; the bounded shape alone
 // would still admit a bare token such as "sk-live-...".
+// opencodeProviderErrorTypes is the closed set of provider error classifiers
+// OpenCode v2 emits (read from the 2.2.x binary). Only these are persisted: a
+// shape check alone would let a credential hide behind the "provider." prefix.
+var opencodeProviderErrorTypes = map[string]bool{
+	"provider.auth": true, "provider.budget-limit": true, "provider.chatgpt-limit": true,
+	"provider.content-filter": true, "provider.error": true, "provider.free-limit": true,
+	"provider.go-limit": true, "provider.internal": true, "provider.invalid-output": true,
+	"provider.invalid-request": true, "provider.model-budget-limit": true, "provider.no-route": true,
+	"provider.quota": true, "provider.rate-limit": true, "provider.timeout": true,
+	"provider.transport": true, "provider.unknown": true, "provider.unsupported-operation": true,
+}
+
 func opencodeSafeProviderErrorType(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
-	const namespace = "provider."
-	if !opencodeProviderErrorTypePattern.MatchString(value) || !strings.HasPrefix(value, namespace) || len(value) == len(namespace) {
+	if !opencodeProviderErrorTypePattern.MatchString(value) || !opencodeProviderErrorTypes[value] {
 		return "unclassified"
 	}
 	return value
