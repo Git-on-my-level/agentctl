@@ -583,6 +583,12 @@ Per-host probe failures become warnings naming the local row, remote identity
 and per-id `await` argv, and never hide an observed winner. Probes keep retrying;
 only when no winner exists at the wait deadline do remaining probe failures
 return an error. `--no-timeout` keeps retrying until a winner or cancellation.
+Once a terminal is observed, its collection uses the journal-busy budget
+independently of the state-wait `--timeout`; parent cancellation still applies.
+Integrity conflicts use the remote/local `observation.observed_at` as
+`trigger_at`, falling back to `updated_at` for older evidence, so `--since`
+can resume after new conflicts without losing them behind an older state time.
+A current journal-scan failure takes precedence over retained probe errors.
 Only the winning terminal is collected through remote await/result; this acknowledges
 its remote result even with `--no-acknowledge`, which suppresses the local
 stamp. Other remote matches remain uncollected. The supervisor skips remote

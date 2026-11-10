@@ -86,6 +86,29 @@ type awaitAnyDocument struct {
 	} `json:"error"`
 }
 
+func TestAwaitAnyConflictTriggerTimestamps(t *testing.T) {
+	updated := time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC)
+	observed := updated.Add(time.Hour)
+	for _, item := range []struct {
+		name      string
+		at, since time.Time
+		match     bool
+		trigger   time.Time
+	}{
+		{"new observation", observed, updated.Add(30 * time.Minute), true, observed},
+		{"resumed observation", observed, observed, false, time.Time{}},
+		{"legacy fallback", time.Time{}, updated.Add(-time.Second), true, updated},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			e := model.Execution{State: model.StateCompleted, UpdatedAt: updated, Observation: model.Observation{Integrity: model.IntegrityConflicted, ObservedAt: item.at}}
+			match, ok, problem := awaitAnyClassify(context.Background(), nil, awaitAnyOptions{kinds: map[string]bool{awaitAnyKindAttention: true}, since: item.since}, e, false, store.AcknowledgementIndex{})
+			if problem != nil || ok != item.match || ok && !match.triggerAt.Equal(item.trigger) {
+				t.Fatalf("trigger=%s ok=%v error=%v", match.triggerAt, ok, problem)
+			}
+		})
+	}
+}
+
 func runLabeled(t *testing.T, journalPath, label string, argv ...string) string {
 	t.Helper()
 	var stdout, stderr bytes.Buffer

@@ -317,9 +317,6 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 				return cancelled()
 			}
 			if !deadline.IsZero() && scanExpired {
-				if probeProblem := remoteScan.deadlineError(); probeProblem != nil {
-					return a.fail(renderer.WithWarnings(remoteScan.warnings()...), probeProblem)
-				}
 				// Neither a busy journal nor a long scan may hold the wait past
 				// --timeout.
 				message := "await-any deadline elapsed during the scan"
@@ -337,14 +334,10 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 			renderer = renderer.WithWarnings(remoteScan.warnings()...)
 			match := matches[0]
 			if match.execution.RemoteForwarded() && match.kind == awaitAnyKindTerminal {
-				// Status already proved terminal. Let collection use the
-				// configured busy budget; only the caller's deadline limits it.
-				collectCtx, cancel := ctx, context.CancelFunc(func() {})
-				if !deadline.IsZero() {
-					collectCtx, cancel = context.WithDeadline(ctx, deadline.Add(remoteAwaitReportGrace))
-				}
-				collected, problem := a.waitRemoteTerminal(collectCtx, c, match.execution, []string{"--no-timeout"}, deadline)
-				cancel()
+				// Status already proved terminal: the state wait is over.
+				// Collection gets its journal-busy budget independently of
+				// --timeout, while parent-context cancellation still applies.
+				collected, problem := a.waitRemoteTerminal(ctx, c, match.execution, []string{"--no-timeout"}, time.Time{})
 				if problem != nil && problem.Details["remote_terminal_collected"] != true {
 					return a.fail(renderer, problem)
 				}
@@ -507,6 +500,7 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 		execution.State = receipt.State
 		if receipt.Observation != nil {
 			execution.Observation.Integrity = receipt.Observation.Integrity
+			execution.Observation.ObservedAt = receipt.Observation.ObservedAt
 		}
 		if receipt.Liveness != "" {
 			execution.Liveness = receipt.Liveness
@@ -545,8 +539,12 @@ func awaitAnyClassify(ctx context.Context, journal *store.Journal, options await
 	}
 	if execution.Observation.Integrity == model.IntegrityConflicted {
 		// Conflicted evidence is always actionable; report it under either kind.
-		if after(execution.UpdatedAt) {
-			return awaitAnyMatch{execution: execution, kind: awaitAnyKindIntegrity, triggerAt: execution.UpdatedAt}, true, nil
+		at := execution.Observation.ObservedAt
+		if at.IsZero() {
+			at = execution.UpdatedAt
+		}
+		if after(at) {
+			return awaitAnyMatch{execution: execution, kind: awaitAnyKindIntegrity, triggerAt: at}, true, nil
 		}
 		return awaitAnyMatch{}, false, nil
 	}

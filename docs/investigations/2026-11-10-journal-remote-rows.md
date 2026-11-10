@@ -111,7 +111,8 @@ kind filters, skewed terminal clocks remain visible without acknowledgement,
 and collection keeps its journal busy budget. The real binary test blocks the
 scratch remote journal for 700ms after status and for 11s under `--no-timeout`;
 both complete successfully. Collection adds no internal wall-clock deadline and
-uses the caller's deadline/context plus the configured contention allowance.
+uses the parent context plus the configured contention allowance. Once a
+terminal is observed, its state-wait timeout no longer limits collection.
 Multica remains a cached local mirror, refreshed by its supervisor/per-id await.
 
 ### Review regressions: mixed failures and scan bounds
@@ -129,6 +130,28 @@ interrupted by the scan budget so each row eventually gets a full probe window.
 budget and continued coverage. Prefixes over 256 matching rows fail explicitly
 before SSH (including acknowledged rows); ordering and pending counts describe
 only observed matches. Help and the portable skill document these limits.
+
+### Conversation-resolution regressions (2026-11-11)
+
+All five review threads were checked against `32bd589`. Receipt integrity
+propagation and local admission-clock acknowledgement tracking were already
+fixed, covered by `TestAwaitAnyRemoteIntegrityIsActionableForEitherKind`,
+`TestAwaitAnyRemoteClockSkewRemainsUnreconciled`, and
+`TestRemoteAcknowledgementTrackingUsesLocalAdmissionClock`.
+
+Three remaining gaps reproduced before changes: the built-binary test returned
+exit 9 when a known terminal's collection held a scratch remote journal for
+1.5s after a 100ms state-wait deadline, despite a 3s busy budget; a conflict
+observed at 11:00 was hidden behind `--since 10:30` because its state timestamp
+remained 10:00; and an earlier SSH failure replaced a later local-journal timeout.
+Collection now uses its full contention allowance independently of the completed
+state wait, while respecting parent-context cancellation. Integrity matching
+uses the authoritative observation timestamp with a legacy state-time fallback.
+Current journal-scan failures take precedence over retained remote errors.
+Regression coverage: `TestRemoteThroughBuiltBinary` (expired-wait case),
+`TestAwaitAnyConflictTriggerTimestamps`, `TestAwaitAnyRemoteConflictAfterSince`,
+and `TestAwaitAnyJournalTimeoutOverridesOldProbeError`. The existing successful
+probe recovery test verifies that an observed recovery clears its old warning.
 
 ## 4. Supervisor degradation: remote-row bug; m5 load symptom unproven
 

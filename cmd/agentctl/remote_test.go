@@ -1274,3 +1274,112 @@ func TestAwaitAnyRemoteClockSkewRemainsUnreconciled(t *testing.T) {
 		t.Fatalf("uncollected result hidden: %d %s", code, out)
 	}
 }
+
+func TestAwaitAnyRemoteConflictAfterSince(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	id := remoteLocalID(t, out)
+	f.writeJSON(t, "terminal", map[string]any{"id": remoteTestID, "origin_host_id": remoteTestHost, "state": "completed", "updated_at": "2026-11-08T10:00:00Z", "terminal_at": "2026-11-08T10:00:00Z", "observation": map[string]any{"source": "status_api", "integrity": "conflicted", "observed_at": "2026-11-08T11:00:00Z"}})
+	for _, kind := range []string{"terminal", "attention"} {
+		code, out = f.command("", "await-any", "--execution", id, "--kinds", kind, "--since", "2026-11-08T10:30:00Z", "--timeout", "100ms")
+		if code != 13 || !strings.Contains(out, `"trigger_at":"2026-11-08T11:00:00Z"`) || !strings.Contains(out, `"matched_kind":"integrity"`) {
+			t.Fatalf("new remote conflict hidden by since (%s): %d %s", kind, code, out)
+		}
+	}
+	code, out = f.command("", "await-any", "--execution", id, "--since", "2026-11-08T11:00:00Z", "--timeout", "100ms")
+	if code != 9 {
+		t.Fatalf("conflict repeated after resume: %d %s", code, out)
+	}
+}
+
+func TestAwaitAnyRemoteCollectionHonorsCancellation(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	id := remoteLocalID(t, out)
+	script := string(mustRead(t, filepath.Join(f.root, "fake-ssh")))
+	script = strings.Replace(script, `*"'await'"*) cat terminal`, `*"'await'"*) touch collecting; exec sleep 10`, 1)
+	if err := os.WriteFile(filepath.Join(f.root, "fake-ssh"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	done := make(chan int, 1)
+	go func() {
+		done <- a.run(ctx, []string{"--config", f.config, "--journal", f.journal, "await-any", "--execution", id, "--timeout", "100ms"})
+	}()
+	for {
+		if _, err := os.Stat(filepath.Join(f.root, "collecting")); err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			<-done
+			t.Fatal("remote collection did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case code := <-done:
+		if code != 12 {
+			t.Fatalf("cancellation: %d %s", code, stdout.String())
+		}
+	case <-time.After(2 * time.Second):
+		<-done
+		t.Fatal("collection ignored parent cancellation")
+	}
+}
+
+func TestAwaitAnyJournalTimeoutOverridesOldProbeError(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	script := string(mustRead(t, filepath.Join(f.root, "fake-ssh")))
+	script = strings.Replace(script, `*"'status'"*) cat terminal`, `*"'status'"*) touch probed; exit 255`, 1)
+	if err := os.WriteFile(filepath.Join(f.root, "fake-ssh"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var waitCode int
+	var waitOut string
+	go func() {
+		defer close(done)
+		waitCode, waitOut = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "800ms", "--journal-busy-budget", "2s")
+	}()
+	until := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(f.root, "probed")); err == nil {
+			break
+		}
+		if time.Now().After(until) {
+			<-done
+			t.Fatal("remote probe did not run")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	holder, err := store.Open(f.journal, store.Options{LockTimeout: time.Second})
+	if err != nil {
+		<-done
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		holder.Close()
+		<-done
+		t.Fatal("journal contention exceeded wait deadline")
+	}
+	if waitCode != 9 || !strings.Contains(waitOut, "while the journal was busy") || strings.Contains(waitOut, "await_any_remote_probe_failed") {
+		t.Fatalf("old probe error masked current journal timeout: %d %s", waitCode, waitOut)
+	}
+}

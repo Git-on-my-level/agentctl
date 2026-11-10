@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
+	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
@@ -114,6 +115,7 @@ func TestRemoteThroughBuiltBinary(t *testing.T) {
 		flags []string
 	}{
 		{"bounded", 700 * time.Millisecond, []string{"--timeout", "3s"}},
+		{"expired-wait", 1500 * time.Millisecond, []string{"--timeout", "100ms", "--journal-busy-budget", "3s"}},
 		{"unbounded", 11 * time.Second, []string{"--no-timeout"}},
 	} {
 		request := `{"schema_version":1,"request_key":"` + item.key + `","selector":{"family":"grok","host":"remote"}}`
@@ -125,6 +127,27 @@ func TestRemoteThroughBuiltBinary(t *testing.T) {
 			t.Fatal(out)
 		}
 		id := remoteLocalID(t, out)
+		// Establish terminal state before starting the wait, including when
+		// its state-wait timeout is shorter than collection's lock hold.
+		until := time.Now().Add(5 * time.Second)
+		for {
+			code, out = invoke("", "status", id)
+			var status struct {
+				Result struct {
+					State model.State `json:"state"`
+				} `json:"result"`
+			}
+			if err := json.Unmarshal([]byte(out), &status); err != nil || code != 0 {
+				t.Fatalf("status: %v %d %s", err, code, out)
+			}
+			if status.Result.State.Terminal() {
+				break
+			}
+			if time.Now().After(until) {
+				t.Fatal("remote fixture never terminalized")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		if err := os.WriteFile(gate, nil, 0600); err != nil {
 			t.Fatal(err)
 		}

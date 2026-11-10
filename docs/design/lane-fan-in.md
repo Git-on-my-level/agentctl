@@ -156,7 +156,7 @@ candidate matches when:
   the authority recorded none.
 - **integrity**: its observation integrity is `conflicted`, whatever its
   state. Reported as `matched_kind: integrity`; `trigger_at` is
-  `updated_at`.
+  `observation.observed_at`, falling back to `updated_at` for older evidence.
 
 Remote-forwarding candidates refresh through SSH status **after all journal
 handles close**, with eight concurrent probes, a 3s per-probe bound and a 4s
@@ -169,13 +169,16 @@ Probe failures do not stop other probes or discard observed matches: a winner
 is delivered with per-row warnings and per-id await argv. Without a winner,
 probe failures retry until the wait deadline, then return the first failure in
 local-ID order with all failures as warnings; no-timeout continues retrying.
+A later journal-scan failure takes precedence over retained probe failures.
 Oldest-trigger ordering and pending_matches cover only observed matches. Attention
 uses the remote `updated_at`; terminals use the remote `terminal_at`. Only the
 winning terminal is collected through remote await/result, retaining the outcome
 locally before delivery. Other matches are not collected. Remote collection
 acknowledges that result remotely even with `--no-acknowledge`; that flag suppresses
 the **local** stamp. Collection uses the resolved journal busy budget and the
-caller's deadline; `--no-timeout` adds no collection deadline. Remote observation
+parent context; once terminal is observed, `--timeout` no longer caps collection.
+The state wait has finished, so journal contention gets its full configured
+budget even when collection extends beyond the state-wait deadline. Remote observation
 integrity is authoritative under either kind filter. Remote `terminal_at` is
 retained for matching, while local admission time decides whether a forwarding
 row predates local acknowledgement tracking, so clock skew cannot hide it.
