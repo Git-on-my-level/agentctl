@@ -232,12 +232,13 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 		if len(matches) > 0 {
 			match := matches[0]
 			if match.execution.RemoteForwarded() && match.kind == awaitAnyKindTerminal {
-				collectDeadline := deadline
-				if collectDeadline.IsZero() {
-					collectDeadline = a.now().Add(10 * time.Second)
+				// Status already proved terminal. Let collection use the
+				// configured busy budget; only the caller's deadline limits it.
+				collectCtx, cancel := ctx, context.CancelFunc(func() {})
+				if !deadline.IsZero() {
+					collectCtx, cancel = context.WithDeadline(ctx, deadline.Add(remoteAwaitReportGrace))
 				}
-				collectCtx, cancel := context.WithDeadline(ctx, collectDeadline.Add(remoteAwaitReportGrace))
-				collected, problem := a.waitRemoteTerminal(collectCtx, c, match.execution, []string{"--timeout", "1ms"}, collectDeadline)
+				collected, problem := a.waitRemoteTerminal(collectCtx, c, match.execution, []string{"--no-timeout"}, deadline)
 				cancel()
 				if problem != nil && problem.Details["remote_terminal_collected"] != true {
 					return a.fail(renderer, problem)
@@ -358,6 +359,9 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 			return nil, watched, problem.WithActions(output.NextAction{Label: "Wait for this remote execution", Argv: []string{"agentctl", "await", execution.ID.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite})
 		}
 		execution.State = receipt.State
+		if receipt.Observation != nil {
+			execution.Observation.Integrity = receipt.Observation.Integrity
+		}
 		if receipt.Liveness != "" {
 			execution.Liveness = receipt.Liveness
 		}

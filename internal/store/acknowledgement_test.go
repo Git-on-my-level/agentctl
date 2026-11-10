@@ -140,3 +140,17 @@ func TestCleanupRemovesExecutionAcknowledgement(t *testing.T) {
 		t.Fatalf("acknowledgement survived cleanup: %v", err)
 	}
 }
+
+func TestRemoteAcknowledgementTrackingUsesLocalAdmissionClock(t *testing.T) {
+	now := time.Now().UTC()
+	past := now.Add(-time.Hour)
+	execution := model.Execution{State: model.StateCompleted, CreatedAt: now, TerminalAt: &past, Delegation: &model.DelegationBinding{RemotePlan: &model.DelegationRemotePlan{Host: "remote"}}}
+	index := AcknowledgementIndex{Epoch: now.Add(-time.Second)}
+	if !index.Unreconciled(execution) {
+		t.Fatal("remote clock hid a newly admitted uncollected result")
+	}
+	execution.Delegation = nil
+	if index.Unreconciled(execution) {
+		t.Fatal("legacy local terminal lost its epoch protection")
+	}
+}

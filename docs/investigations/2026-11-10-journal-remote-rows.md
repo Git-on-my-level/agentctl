@@ -91,7 +91,13 @@ acknowledges the winning remote result, as per-id remote await does.
 
 Tests cover prefix and exact selectors, success/failure/cancel/orphan,
 acknowledgement suppression and prefix draining, stable resume timestamps,
-and stalled SSH while a competing writer opens the scratch journal.
+and stalled SSH while a competing writer opens the scratch journal. Additional
+regressions prove that remote integrity conflicts are actionable under both
+kind filters, skewed terminal clocks remain visible without acknowledgement,
+and collection keeps its journal busy budget. The real binary test blocks the
+scratch remote journal for 700ms after status and for 11s under `--no-timeout`;
+both complete successfully. Collection adds no internal wall-clock deadline and
+uses the caller's deadline/context plus the configured contention allowance.
 Multica remains a cached local mirror, refreshed by its supervisor/per-id await.
 
 ## 4. Supervisor degradation: remote-row bug; m5 load symptom unproven

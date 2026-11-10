@@ -1098,3 +1098,40 @@ func TestAwaitAnyRemoteAttentionAndIdentity(t *testing.T) {
 		t.Fatalf("identity mismatch not actionable: %d %s", code, out)
 	}
 }
+
+func TestAwaitAnyRemoteIntegrityIsActionableForEitherKind(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	id := remoteLocalID(t, out)
+	f.writeJSON(t, "terminal", map[string]any{"id": remoteTestID, "origin_host_id": remoteTestHost, "state": "completed", "updated_at": "2026-11-08T00:00:00Z", "observation": map[string]any{"source": "status_api", "integrity": "conflicted", "observed_at": "2026-11-08T00:00:00Z"}})
+	for _, kind := range []string{"terminal", "attention"} {
+		code, out = f.command("", "await-any", "--execution", id, "--kinds", kind, "--timeout", "100ms")
+		if code != 13 || !strings.Contains(out, `"matched_kind":"integrity"`) {
+			t.Fatalf("%s: %d %s", kind, code, out)
+		}
+	}
+}
+
+func TestAwaitAnyRemoteClockSkewRemainsUnreconciled(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	id := remoteLocalID(t, out)
+	at := time.Now().UTC().Add(-time.Hour)
+	f.writeJSON(t, "terminal", map[string]any{"id": remoteTestID, "origin_host_id": remoteTestHost, "state": "completed", "updated_at": at, "terminal_at": at})
+	for i := 0; i < 2; i++ {
+		code, out = f.command("", "await-any", "--label-prefix", "noise.", "--no-acknowledge", "--timeout", "100ms")
+		if code != 0 || !strings.Contains(out, `"execution_id":"`+id+`"`) {
+			t.Fatalf("round %d: %d %s", i, code, out)
+		}
+	}
+	code, out = f.command("", "recent", "--unreconciled")
+	if code != 0 || !strings.Contains(out, id) {
+		t.Fatalf("uncollected result hidden: %d %s", code, out)
+	}
+}

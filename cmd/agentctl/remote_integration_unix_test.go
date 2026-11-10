@@ -50,12 +50,17 @@ func TestRemoteThroughBuiltBinary(t *testing.T) {
 	}
 	ssh := filepath.Join(dir, "fake-ssh")
 	script := "#!/bin/sh\nset -eu\nexport AGENTCTL_CONFIG=" + shellQuote(remoteConfig) + "\nexport AGENTCTL_STATE_HOME=" + shellQuote(remoteState) + "\nexport AGENTCTL_UPDATE_MODE=off\nexport TMPDIR=" + shellQuote(staged) + "\nexport PATH=" + shellQuote(dir) + ":\"$PATH\"\nwhile [ \"$1\" = -o ]; do shift 2; done\nexec /bin/sh -c \"$3\"\n"
+	gate := filepath.Join(dir, "collect-gate")
+	collecting := filepath.Join(dir, "collecting")
+	allow := filepath.Join(dir, "collect-allow")
+	hook := "if [ -f " + shellQuote(gate) + " ]; then case \"$3\" in *\"'await'\"*) touch " + shellQuote(collecting) + "; n=0; while [ ! -f " + shellQuote(allow) + " ] && [ \"$n\" -lt 1000 ]; do sleep 0.01; n=$((n+1)); done ;; esac; fi\n"
+	script = strings.Replace(script, "exec /bin/sh -c \"$3\"\n", hook+"exec /bin/sh -c \"$3\"\n", 1)
 	if err := os.WriteFile(ssh, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("AGENTCTL_SSH", ssh)
 	invoke := func(prompt string, args ...string) (int, string) {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		argv := append([]string{"--config", f.config, "--journal", f.journal}, args...)
 		cmd := exec.CommandContext(ctx, binary, argv...)
@@ -100,6 +105,64 @@ func TestRemoteThroughBuiltBinary(t *testing.T) {
 	launches := string(mustRead(t, f.count))
 	if strings.Count(launches, "launch") != 2 {
 		t.Fatalf("launches: %s", launches)
+	}
+	// A real remote CLI must retain its busy budget after status already
+	// proved terminal. No-timeout must not invent a shorter collection deadline.
+	for _, item := range []struct {
+		key   string
+		hold  time.Duration
+		flags []string
+	}{
+		{"bounded", 700 * time.Millisecond, []string{"--timeout", "3s"}},
+		{"unbounded", 11 * time.Second, []string{"--no-timeout"}},
+	} {
+		request := `{"schema_version":1,"request_key":"` + item.key + `","selector":{"family":"grok","host":"remote"}}`
+		if err := os.WriteFile(f.request, []byte(request), 0600); err != nil {
+			t.Fatal(err)
+		}
+		code, out = invoke("task", "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin", "--label", "noise."+item.key)
+		if code != 0 {
+			t.Fatal(out)
+		}
+		id := remoteLocalID(t, out)
+		if err := os.WriteFile(gate, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		held := make(chan error, 1)
+		go func() {
+			until := time.Now().Add(10 * time.Second)
+			for {
+				if _, err := os.Stat(collecting); err == nil {
+					break
+				}
+				if time.Now().After(until) {
+					held <- context.DeadlineExceeded
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
+			holder, err := store.Open(filepath.Join(remoteState, "journal.db"), store.Options{LockTimeout: time.Second})
+			if err != nil {
+				held <- err
+				return
+			}
+			if err := os.WriteFile(allow, nil, 0600); err != nil {
+				holder.Close()
+				held <- err
+				return
+			}
+			time.Sleep(item.hold)
+			held <- holder.Close()
+		}()
+		args := append([]string{"await-any", "--execution", id}, item.flags...)
+		code, out = invoke("", args...)
+		err := <-held
+		for _, path := range []string{gate, collecting, allow} {
+			_ = os.Remove(path)
+		}
+		if err != nil || code != 0 || !strings.Contains(out, `"execution_id":"`+id+`"`) {
+			t.Fatalf("%s collection: held=%v exit=%d %s", item.key, err, code, out)
+		}
 	}
 	// Exercise actual remote lock contention, rather than just inspecting argv.
 	if err := os.WriteFile(f.request, []byte(`{"schema_version":1,"request_key":"remote-busy","selector":{"family":"grok","host":"remote"}}`), 0600); err != nil {

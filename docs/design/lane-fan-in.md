@@ -166,7 +166,12 @@ uses the remote `updated_at`; terminals use the remote `terminal_at`. Only the
 winning terminal is collected through remote await/result, retaining the outcome
 locally before delivery. Other matches are not collected. Remote collection
 acknowledges that result remotely even with `--no-acknowledge`; that flag suppresses
-the **local** stamp. Supervisor recovery skips remote-forwarding rows.
+the **local** stamp. Collection uses the resolved journal busy budget and the
+caller's deadline; `--no-timeout` adds no collection deadline. Remote observation
+integrity is authoritative under either kind filter. Remote `terminal_at` is
+retained for matching, while local admission time decides whether a forwarding
+row predates local acknowledgement tracking, so clock skew cannot hide it.
+Supervisor recovery skips remote-forwarding rows.
 
 The match with the oldest `trigger_at` wins, ties broken by execution ID, so
 the choice is deterministic. `pending_matches` counts the other matches in the

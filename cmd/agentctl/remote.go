@@ -174,6 +174,7 @@ type remoteReceipt struct {
 	Liveness     model.Liveness              `json:"liveness"`
 	UpdatedAt    time.Time                   `json:"updated_at"`
 	TerminalAt   *time.Time                  `json:"terminal_at"`
+	Observation  *model.Observation          `json:"observation"`
 	Resolved     model.DelegationTarget      `json:"resolved"`
 	Capacity     *model.DelegationCapacity   `json:"capacity"`
 	Continuation *model.FollowUpContinuation `json:"continuation"`
@@ -202,7 +203,15 @@ func parseRemoteReceipt(body []byte) (remoteReceipt, *output.Error) {
 	case model.LivenessUnknown, model.LivenessAlive, model.LivenessBlocked, model.LivenessExited, model.LivenessUnreachable:
 		validLiveness = true
 	}
-	if err != nil || idErr != nil || hostErr != nil || !validState || !validLiveness {
+	validIntegrity := true
+	if receipt.Observation != nil {
+		switch receipt.Observation.Integrity {
+		case model.IntegrityVerified, model.IntegrityDegraded, model.IntegrityConflicted, model.IntegrityUnknown:
+		default:
+			validIntegrity = false
+		}
+	}
+	if err != nil || idErr != nil || hostErr != nil || !validState || !validLiveness || !validIntegrity {
 		return receipt, delegateError(output.CodeRemoteFailure, "delegate_remote_receipt_invalid", "remote receipt lacks a valid execution identity or state")
 	}
 	return receipt, nil
@@ -405,6 +414,9 @@ func (a *app) statusRemote(ctx context.Context, renderer output.Renderer, execut
 		execution.TerminalAt = &now
 	}
 	execution.Observation = model.Observation{Source: model.ObservationStatusAPI, Integrity: model.IntegrityVerified, ObservedAt: a.now().UTC()}
+	if receipt.Observation != nil {
+		execution.Observation.Integrity = receipt.Observation.Integrity
+	}
 	return writeExecution(renderer, execution, "status")
 }
 

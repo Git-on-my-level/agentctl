@@ -49,7 +49,13 @@ func (idx AcknowledgementIndex) Unreconciled(execution model.Execution) bool {
 	if idx.Epoch.IsZero() {
 		return false
 	}
-	return !execution.TerminalAt.Before(idx.Epoch)
+	trackedAt := *execution.TerminalAt
+	if execution.RemoteForwarded() {
+		// terminal_at belongs to the remote clock. Local admission proves when
+		// this journal began tracking the forwarding row, independent of skew.
+		trackedAt = execution.CreatedAt
+	}
+	return !trackedAt.Before(idx.Epoch)
 }
 
 func (j *Journal) AcknowledgementIndex(ctx context.Context) (AcknowledgementIndex, error) {
