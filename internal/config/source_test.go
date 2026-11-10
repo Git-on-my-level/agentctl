@@ -163,7 +163,7 @@ func TestSourceUpdateFailsClosedOnLiveOrCheckoutDrift(t *testing.T) {
 	if _, err := InitSource(ctx, configPath, SourceSpec{Remote: remote, CheckoutPath: checkout}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, []byte(validBundle), ConfigFileMode); err != nil {
+	if err := os.WriteFile(configPath, []byte(strings.Replace(validBundle, "/opt/bin/codex", "/different/codex", 1)), ConfigFileMode); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := UpdateSource(ctx, configPath, time.Now()); err == nil || !strings.Contains(err.Error(), "live config drifted") {
@@ -182,7 +182,7 @@ func TestSourceUpdateFailsClosedOnLiveOrCheckoutDrift(t *testing.T) {
 	if err := Save(configPath, MaterializeBundle(bundle), true); err != nil {
 		t.Fatal(err)
 	}
-	state.LiveSHA256, err = fileSHA256(configPath)
+	state.LiveSHA256, err = sourceConfigSHA256(MaterializeBundle(bundle))
 	if err != nil {
 		t.Fatal(err)
 	}

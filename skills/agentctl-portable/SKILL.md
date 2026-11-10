@@ -695,6 +695,11 @@ Only the running supervisor performs automatic retention: one small batch per
 five minutes, acknowledged terminal lineage-free records older than 14 days by
 default. Set the host-local config `journal.retention.enabled=false` to disable
 it or `journal.retention.days` to change the cutoff (1–3650; zero means 14).
+Git source sync preserves `journal` and `bootstrap` and excludes both from drift.
+After upgrading a host with legacy host-local drift, run
+`agentctl config source update` to migrate state while preserving local policy.
+Bundle-owned edits still conflict; `config source restore` is the offline
+alternative that restores pinned bundle values. Status/doctor never migrate.
 Policy reloads each maintenance pass. Each pass has a 30-second deadline;
 completed scan pages resume after a timeout unless an intervening write invalidates
 the proof. Unchanged completed generations skip the scan, except when the

@@ -22,7 +22,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const SourceSchemaVersion = 1
+// Version 1 hashed the entire live file. Version 2 hashes canonical config
+// with host-local policy removed; the bundle bytes retain their own digest.
+const SourceSchemaVersion = 2
 
 const defaultSourceBundle = "config-bundle.json"
 
@@ -42,8 +44,9 @@ type SourceSpec struct {
 	CheckoutPath string `json:"checkout_path"`
 }
 
-// SourceState binds the live owner-only config to the exact Git revision and
-// bundle bytes that last produced it.
+// SourceState binds the bundle-owned live config to the exact Git revision and
+// bundle bytes that last produced it. Schema 1's LiveSHA256 covers raw live file
+// bytes; schema 2's covers canonical config without Journal or Bootstrap.
 type SourceState struct {
 	SchemaVersion int        `json:"schema_version"`
 	Spec          SourceSpec `json:"source"`
@@ -99,6 +102,9 @@ func RestoreSource(ctx context.Context, configPath string) (SourceUpdate, error)
 }
 
 func RestoreSourceWithGit(ctx context.Context, git SourceGit, configPath string) (SourceUpdate, error) {
+	if git == nil {
+		return SourceUpdate{}, errors.New("nil Git runner")
+	}
 	cleanConfig, err := cleanSavePath(configPath)
 	if err != nil {
 		return SourceUpdate{}, err
@@ -139,6 +145,25 @@ func RestoreSourceWithGit(ctx context.Context, git SourceGit, configPath string)
 	if beforeLoadErr == nil {
 		materialized = applyHostLocalConfig(existing, materialized)
 	}
+	expected, err := appliedSourceConfigSHA256(ctx, git, state)
+	if err != nil {
+		return SourceUpdate{}, err
+	}
+	afterDigest, err := sourceConfigSHA256(materialized)
+	if err != nil {
+		return SourceUpdate{}, err
+	}
+	// Older source materialization omitted Anx. A verified pinned bundle can
+	// repair that omission, including schema-2 state written before the fix.
+	previousMaterialization := materialized
+	previousMaterialization.Anx = nil
+	previousDigest, err := sourceConfigSHA256(previousMaterialization)
+	if err != nil {
+		return SourceUpdate{}, err
+	}
+	if afterDigest != expected && previousDigest != expected {
+		return SourceUpdate{}, fmt.Errorf("%w: restored config digest does not match applied state", ErrConflict)
+	}
 	before, _ := fileSHA256(cleanConfig)
 	if err := Save(cleanConfig, materialized, true); err != nil {
 		return SourceUpdate{}, err
@@ -147,14 +172,18 @@ func RestoreSourceWithGit(ctx context.Context, git SourceGit, configPath string)
 	if err != nil {
 		return SourceUpdate{}, err
 	}
-	if after != state.LiveSHA256 {
-		return SourceUpdate{}, fmt.Errorf("%w: restored config digest does not match applied state", ErrConflict)
+	migrated := state.SchemaVersion != SourceSchemaVersion || state.LiveSHA256 != afterDigest
+	if migrated {
+		state.SchemaVersion, state.LiveSHA256 = SourceSchemaVersion, afterDigest
+		if err := SaveSourceState(statePath, state, true); err != nil {
+			return SourceUpdate{}, err
+		}
 	}
 	status, err := SourceStatusWithGit(ctx, git, cleanConfig)
 	if err != nil {
 		return SourceUpdate{}, err
 	}
-	return SourceUpdate{Changed: beforeLoadErr != nil || before != after, Status: status}, nil
+	return SourceUpdate{Changed: migrated || beforeLoadErr != nil || before != after, Status: status}, nil
 }
 
 // SourceGit is argv-based so no config value is ever interpreted by a shell.
@@ -172,10 +201,10 @@ func (g NativeSourceGit) Run(ctx context.Context, dir string, args ...string) ([
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = dir
 	cmd.Env = gitSourceEnvironment()
-	var output bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &output, &output
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		text := strings.TrimSpace(output.String())
+		text := strings.TrimSpace(stdout.String() + stderr.String())
 		kind := ErrSourceGit
 		lower := strings.ToLower(text)
 		for _, marker := range []string{"permission denied", "authentication failed", "could not read username", "publickey", "access denied"} {
@@ -186,7 +215,7 @@ func (g NativeSourceGit) Run(ctx context.Context, dir string, args ...string) ([
 		}
 		return nil, fmt.Errorf("%w: git %s: %v: %s", kind, strings.Join(redactSourceGitArgs(args), " "), err, redactSourceGitText(text))
 	}
-	return output.Bytes(), nil
+	return stdout.Bytes(), nil
 }
 
 func DefaultSourceCheckout() (string, error) {
@@ -376,7 +405,7 @@ func InitSourceWithGit(ctx context.Context, git SourceGit, configPath string, sp
 		}
 		rollbackLive = true
 	}
-	liveDigest, err := fileSHA256(cleanConfig)
+	liveDigest, err := sourceConfigSHA256(materialized)
 	if err != nil {
 		return SourceUpdate{}, err
 	}
@@ -419,16 +448,20 @@ func UpdateSourceWithGit(ctx context.Context, git SourceGit, configPath string, 
 	if err != nil {
 		return SourceUpdate{}, err
 	}
-	currentLive, err := fileSHA256(cleanConfig)
-	if err != nil {
-		return SourceUpdate{}, err
-	}
-	if currentLive != state.LiveSHA256 {
-		return SourceUpdate{}, fmt.Errorf("%w: live config drifted since the last source update", ErrConflict)
-	}
 	previousConfig, err := Load(cleanConfig)
 	if err != nil {
 		return SourceUpdate{}, err
+	}
+	currentLive, err := sourceConfigSHA256(previousConfig)
+	if err != nil {
+		return SourceUpdate{}, err
+	}
+	expected, err := appliedSourceConfigSHA256(ctx, git, state)
+	if err != nil {
+		return SourceUpdate{}, err
+	}
+	if currentLive != expected {
+		return SourceUpdate{}, fmt.Errorf("%w: live config drifted since the last source update", ErrConflict)
 	}
 	previousState := state
 	if err := verifyManagedCheckout(ctx, git, state.Spec); err != nil {
@@ -444,12 +477,19 @@ func UpdateSourceWithGit(ctx context.Context, git SourceGit, configPath string, 
 		}
 	}
 	materialized := applyHostLocalConfig(previousConfig, MaterializeBundle(bundle))
-	if commit == state.AppliedCommit && bundleDigest == state.BundleSHA256 {
+	if commit == state.AppliedCommit && bundleDigest == state.BundleSHA256 && configsEqual(previousConfig, materialized) {
+		migrated := state.SchemaVersion != SourceSchemaVersion
+		if migrated {
+			state.SchemaVersion, state.LiveSHA256 = SourceSchemaVersion, currentLive
+			if err := SaveSourceState(statePath, state, true); err != nil {
+				return SourceUpdate{}, err
+			}
+		}
 		status, err := SourceStatusWithGit(ctx, git, cleanConfig)
 		if err != nil {
 			return SourceUpdate{}, err
 		}
-		return SourceUpdate{Changed: false, Status: status}, nil
+		return SourceUpdate{Changed: migrated, Status: status}, nil
 	}
 	if _, err := git.Run(ctx, state.Spec.CheckoutPath, "checkout", "--detach", "--force", commit); err != nil {
 		return SourceUpdate{}, err
@@ -473,11 +513,12 @@ func UpdateSourceWithGit(ctx context.Context, git SourceGit, configPath string, 
 	if err := Save(cleanConfig, materialized, true); err != nil {
 		return SourceUpdate{}, rollback(err)
 	}
-	liveDigest, err := fileSHA256(cleanConfig)
+	liveDigest, err := sourceConfigSHA256(materialized)
 	if err != nil {
 		return SourceUpdate{}, rollback(err)
 	}
 	changed := commit != state.AppliedCommit || bundleDigest != state.BundleSHA256 || liveDigest != state.LiveSHA256
+	state.SchemaVersion = SourceSchemaVersion
 	state.AppliedCommit, state.BundleSHA256, state.LiveSHA256, state.AppliedAt = commit, bundleDigest, liveDigest, now.UTC()
 	if err := SaveSourceState(statePath, state, true); err != nil {
 		return SourceUpdate{}, rollback(err)
@@ -514,23 +555,29 @@ func SourceStatusWithGit(ctx context.Context, git SourceGit, configPath string) 
 	result.Source = state.Spec
 	result.AppliedCommit = state.AppliedCommit
 	result.BundleSHA256 = state.BundleSHA256
-	result.ExpectedLiveSHA = state.LiveSHA256
 	result.LastAppliedAt = &state.AppliedAt
-	if _, loadErr := Load(cleanConfig); loadErr != nil {
+	if git == nil {
+		return SourceStatus{}, errors.New("nil Git runner")
+	}
+	expected, expectedErr := appliedSourceConfigSHA256(ctx, git, state)
+	if expectedErr != nil {
+		result.Drift = append(result.Drift, "applied_bundle")
+	} else {
+		result.ExpectedLiveSHA = expected
+	}
+	if liveConfig, loadErr := Load(cleanConfig); loadErr != nil {
 		result.Drift = append(result.Drift, "live_config_unmanaged_or_invalid")
-	} else if live, digestErr := fileSHA256(cleanConfig); digestErr == nil {
+	} else if live, digestErr := sourceConfigSHA256(liveConfig); digestErr == nil {
 		result.LiveSHA256 = live
-		if live != state.LiveSHA256 {
+		if expectedErr == nil && live != expected {
 			result.Drift = append(result.Drift, "live_config")
 		}
 	} else {
 		result.Drift = append(result.Drift, "live_config_missing_or_unreadable")
 	}
-	if git == nil {
-		return SourceStatus{}, errors.New("nil Git runner")
-	}
 	if _, statErr := os.Lstat(state.Spec.CheckoutPath); statErr != nil {
 		result.Drift = append(result.Drift, "checkout_missing_or_unreadable")
+		result.InSync = false
 		return result, nil
 	}
 	commitBytes, commitErr := git.Run(ctx, state.Spec.CheckoutPath, "rev-parse", "HEAD^{commit}")
@@ -587,7 +634,7 @@ func LoadSourceState(path string) (SourceState, error) {
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return SourceState{}, errors.New("parse config source state: trailing JSON document")
 	}
-	if state.SchemaVersion != SourceSchemaVersion || state.AppliedCommit == "" || state.BundleSHA256 == "" || state.LiveSHA256 == "" || state.AppliedAt.IsZero() {
+	if (state.SchemaVersion != 1 && state.SchemaVersion != SourceSchemaVersion) || state.AppliedCommit == "" || state.BundleSHA256 == "" || state.LiveSHA256 == "" || state.AppliedAt.IsZero() {
 		return SourceState{}, errors.New("invalid config source state")
 	}
 	normalized, err := NormalizeSourceSpec(state.Spec)
@@ -598,7 +645,7 @@ func LoadSourceState(path string) (SourceState, error) {
 }
 
 func SaveSourceState(path string, state SourceState, overwrite bool) error {
-	if state.SchemaVersion != SourceSchemaVersion {
+	if state.SchemaVersion != 1 && state.SchemaVersion != SourceSchemaVersion {
 		return errors.New("invalid config source state schema")
 	}
 	parent := filepath.Dir(path)
@@ -704,6 +751,10 @@ func MaterializeBundle(bundle Bundle) Config {
 		copy := *bundle.Skills
 		cfg.Skills = &copy
 	}
+	if bundle.Anx != nil {
+		copy := *bundle.Anx
+		cfg.Anx = &copy
+	}
 	for name, profile := range bundle.Profiles {
 		cfg.Profiles[name] = profile.profile()
 	}
@@ -720,6 +771,48 @@ func applyHostLocalConfig(existing, materialized Config) Config {
 		materialized.Bootstrap = &copy
 	}
 	return materialized
+}
+
+// sourceConfigSHA256 covers every live setting except the host-local sections
+// that source init/update/restore preserve. Formatting is not source ownership.
+func sourceConfigSHA256(cfg Config) (string, error) {
+	cfg.Journal, cfg.Bootstrap = nil, nil
+	data, err := marshalConfig(cfg)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// Legacy state has only a whole-file digest, so recover its bundle-owned
+// baseline from the exact applied Git object, never the current live config or
+// a newly fetched bundle. Verify the recorded bundle digest before trusting it.
+// This is read-only and requires no network, including in status/doctor.
+func appliedSourceConfigSHA256(ctx context.Context, git SourceGit, state SourceState) (string, error) {
+	if state.SchemaVersion == SourceSchemaVersion {
+		return state.LiveSHA256, nil
+	}
+	data, err := git.Run(ctx, state.Spec.CheckoutPath, "show", state.AppliedCommit+":"+state.Spec.BundlePath)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	if hex.EncodeToString(sum[:]) != state.BundleSHA256 {
+		return "", fmt.Errorf("%w: applied bundle differs from source state", ErrConflict)
+	}
+	if int64(len(data)) > BundleMaxBytes {
+		return "", fmt.Errorf("config bundle exceeds %d-byte limit", BundleMaxBytes)
+	}
+	bundle, err := decodeBundle(data)
+	if err != nil {
+		return "", err
+	}
+	// Released schema-1 writers omitted Anx from materialization. Compare to
+	// their historical output before update/restore applies the corrected one.
+	previousMaterialization := MaterializeBundle(bundle)
+	previousMaterialization.Anx = nil
+	return sourceConfigSHA256(previousMaterialization)
 }
 
 func configsEqual(a, b Config) bool {
@@ -740,6 +833,9 @@ func configCanBeEnrichedBy(existing, desired Config) bool {
 		return false
 	}
 	if existing.Skills != nil && !reflect.DeepEqual(existing.Skills, desired.Skills) {
+		return false
+	}
+	if existing.Anx != nil && !reflect.DeepEqual(existing.Anx, desired.Anx) {
 		return false
 	}
 	for name, current := range existing.Profiles {

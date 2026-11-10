@@ -301,8 +301,50 @@ existing value remains a conflict, and the error reports the specific reason.
 An update reports `changed: true` when the pinned source revision advances,
 even if that commit leaves the materialized bundle bytes unchanged.
 The checkout is a managed cache, not an editing workspace. Dirty checkouts,
-live-config edits, remote changes, invalid bundles, and non-fast-forward Git
+bundle-owned live-config edits, remote changes, invalid bundles, and non-fast-forward Git
 history fail closed. Edit and push through a separate authoring clone.
+
+The host-local `journal` and `bootstrap` sections are preserved by source
+init/update/restore and excluded from live-config drift detection. Formatting
+changes alone are also ignored; bundle-owned values still fail closed.
+Config-source state schema version 2 records `live_config_sha256` as the SHA-256
+of canonical live config with these two sections omitted. Status output's
+`live_config_sha256` and `expected_live_config_sha256` use this same scope;
+`bundle_sha256` continues to hash the exact bundle bytes.
+
+Existing version 1 state is supported without reinitialization. Read-only
+status/doctor compare against the exact applied Git object's bundle, verified
+against the recorded `bundle_sha256`; they never migrate state or fetch. A
+missing or mismatched applied bundle reports `applied_bundle` drift and fails
+closed. The next successful update or restore upgrades the state to version 2.
+A state-only upgrade reports `changed: true` without changing `applied_at`;
+repeating it reports `changed: false`. Older binaries cannot read version 2 state.
+
+After upgrading from a release affected by host-local drift, converge with:
+
+```bash
+agentctl config source update
+```
+
+This preserves local policy (including `journal.retention.enabled=false`). If
+the source has not advanced and the live materialization is already complete,
+migration writes only the state file, leaving live config bytes intact.
+Bundle-owned drift still refuses the update with
+`conflict` (exit 8); inspect it before choosing restore. No force or init reset
+is needed. `agentctl config source restore` is the offline alternative and
+restores bundle-owned values from the clean pinned checkout while preserving
+valid host-local policy.
+
+`anx` is bundle-owned and is materialized by source init/update/restore, just
+like profiles and skills. Init refuses to remove or replace an existing live
+`anx` section. Older source writers silently omitted bundled `anx`; the next
+update repairs that omission even if the source commit is unchanged, preserves
+host-local policy, and records the corrected digest. Offline restore repairs
+it from the verified pinned bundle as well. Both schema-1 state and schema-2
+state produced before this fix are supported. Manual bundle-owned changes
+still refuse update before fetching, including changes to `anx`; recovery is
+not an adoption of live edits. A repair reports `changed: true`, then becomes
+idempotent on subsequent updates.
 
 `source status` and either command's `--plan` form perform no fetch and make no
 filesystem changes. Plan output distinguishes the current plan invocation from
