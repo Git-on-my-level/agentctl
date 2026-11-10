@@ -148,9 +148,13 @@ func TestOpenCodeCarryForwardEarlyExitRecordsDiagnostics(t *testing.T) {
 		name     string
 		stderr   string
 		exitCode int
+		// recognized is the stderr classification that must win over the
+		// early-exit code; empty means the early-exit code is expected.
+		recognized string
 	}{
 		{name: "nonzero_with_stderr", stderr: "fatal: private-opencode-stderr", exitCode: 23},
 		{name: "zero_without_events", exitCode: 0},
+		{name: "recognized_stderr_keeps_classification", stderr: "Error: authentication required", exitCode: 1, recognized: "authentication_required"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := carryFixture(t, "opencode")
@@ -170,6 +174,12 @@ func TestOpenCodeCarryForwardEarlyExitRecordsDiagnostics(t *testing.T) {
 			}
 
 			code, out = f.command(t, "feedback-private-token", "continue", first, "--request-key", "r2", "--mode", "carry_forward", "--prompt-stdin", "--wait")
+			if tc.recognized != "" {
+				if code == 0 || !strings.Contains(out, `"code":"`+tc.recognized+`"`) || strings.Contains(out, "opencode_exited_before_any_event") {
+					t.Fatalf("recognized stderr was masked: %d %s", code, out)
+				}
+				return
+			}
 			if code != 11 || !strings.Contains(out, `"code":"opencode_exited_before_any_event"`) || !strings.Contains(out, `"native_exit_code":`+strconv.Itoa(tc.exitCode)) {
 				t.Fatalf("continue %d %s", code, out)
 			}
