@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -40,10 +41,14 @@ func TestPromptOutsideRootRepairsMatchCommandParsers(t *testing.T) {
 		{"run_argv", "run", "argv", []string{"--cwd", root, "--prompt-file", path, "--prompt-delivery", "argv", "--plan", "--", "/bin/echo"}},
 		{"run_stdin", "run", "stdin", []string{"--cwd", root, "--prompt-file", path, "--prompt-delivery", "stdin", "--plan", "--", "/bin/echo"}},
 		{"run_stream", "run", "stream", []string{"--cwd", root, "--prompt-file", path, "--prompt-delivery", "stream", "--plan", "--", "/bin/echo"}},
+		{"run_launch", "run", "argv", []string{"--cwd", root, "--label", "review", "--timeout", "30s", "--prompt-file", path, "--", "/bin/echo"}},
 		{"delegate", "delegate", "", []string{"--cwd", root, "--request-file", request, "--prompt-file", path, "--authority", "native", "--plan"}},
+		{"delegate_launch", "delegate", "", []string{"--cwd", root, "--request-file", request, "--prompt-file", path, "--authority", "native", "--wait", "--label", "review"}},
 		{"continue", "continue", "", []string{ref, "--request-key", "repair-test", "--prompt-file", path, "--plan"}},
 		{"dispatch", "dispatch", "", []string{"--route", "example", "--title", "Repair test", "--idempotency-key", "repair-test", "--prompt-file", path, "--plan"}},
+		{"dispatch_launch", "dispatch", "", []string{"--route", "example", "--title", "Repair test", "--idempotency-key", "repair-test", "--prompt-file", path, "--label", "review"}},
 		{"steer", "steer", "", []string{ref, "--prompt-file", path, "--plan"}},
+		{"steer_launch", "steer", "", []string{ref, "--prompt-file", path, "--allow-interrupt", "--idempotency-key", "repair-test"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -85,10 +90,32 @@ func TestPromptOutsideRootRepairsMatchCommandParsers(t *testing.T) {
 			} else if len(flags) != 1 {
 				t.Fatalf("repair added unsupported command flags: %#v", flags)
 			}
-			if len(problem.NextActions) != 1 || !reflect.DeepEqual(problem.NextActions[0].Argv, []string{"agentctl", "help", tt.command}) || problem.NextActions[0].Mutates || problem.NextActions[0].SideEffectClass != output.ReadOnly {
+			wantMutates, wantClass := false, output.ReadOnly
+			if !argsPlan(tt.args) {
+				wantMutates = true
+				wantClass = output.ExternalSideEffect
+				if tt.command == "dispatch" {
+					wantClass = output.RemoteCoordinationWrite
+				}
+			}
+			if len(problem.NextActions) != 2 || problem.NextActions[0].Mutates != wantMutates || problem.NextActions[0].SideEffectClass != wantClass {
 				t.Fatalf("next_actions=%#v", problem.NextActions)
 			}
+			stdinAction := problem.NextActions[0]
+			if stdinAction.StdinFrom != path {
+				t.Fatalf("stdin repair stdin_from=%q, want %q", stdinAction.StdinFrom, path)
+			}
+			if !stdinRepairHasPromptSource(stdinAction.Argv, tt.command) {
+				t.Fatalf("stdin repair argv=%#v", stdinAction.Argv)
+			}
+			if problem := preservedRepairArgs(tt.args, stdinAction.Argv); problem != "" {
+				t.Fatal(problem)
+			}
+			if !reflect.DeepEqual(problem.NextActions[1].Argv, []string{"agentctl", "help", tt.command}) {
+				t.Fatalf("help action=%#v", problem.NextActions[1])
+			}
 			repaired := applyPromptRepairFlags(t, tt.args, repair)
+			actionArgs := append([]string{}, stdinAction.Argv[2:]...)
 			var parseProblem *output.Error
 			switch tt.command {
 			case "run":
@@ -97,14 +124,38 @@ func TestPromptOutsideRootRepairsMatchCommandParsers(t *testing.T) {
 				if opts.promptDelivery != tt.delivery || !reflect.DeepEqual(opts.argv, []string{"/bin/echo"}) {
 					t.Fatalf("repair changed native arguments or delivery: %#v", opts)
 				}
+				actionOpts, actionProblem := parseRun(actionArgs)
+				if actionProblem != nil || !actionOpts.promptStdin || actionOpts.plan != opts.plan || actionOpts.timeout != opts.timeout || !reflect.DeepEqual(actionOpts.argv, opts.argv) || !reflect.DeepEqual(actionOpts.labels, opts.labels) {
+					t.Fatalf("next action=%#v problem=%v repaired=%#v", actionOpts, actionProblem, opts)
+				}
 			case "delegate":
-				_, parseProblem = parseDelegate(repaired)
+				opts, problem := parseDelegate(repaired)
+				parseProblem = problem
+				actionOpts, actionProblem := parseDelegate(actionArgs)
+				if actionProblem != nil || !actionOpts.promptStdin || actionOpts.plan != opts.plan || actionOpts.wait != opts.wait || actionOpts.authority != opts.authority || !reflect.DeepEqual(actionOpts.labels, opts.labels) {
+					t.Fatalf("next action=%#v problem=%v repaired=%#v", actionOpts, actionProblem, opts)
+				}
 			case "continue":
-				_, _, _, parseProblem = parseContinue(repaired)
+				_, _, opts, problem := parseContinue(repaired)
+				parseProblem = problem
+				_, _, actionOpts, actionProblem := parseContinue(actionArgs)
+				if actionProblem != nil || !actionOpts.promptStdin || actionOpts.plan != opts.plan || actionOpts.wait != opts.wait || actionOpts.continuationMode != opts.continuationMode || !reflect.DeepEqual(actionOpts.labels, opts.labels) {
+					t.Fatalf("next action=%#v problem=%v repaired=%#v", actionOpts, actionProblem, opts)
+				}
 			case "dispatch":
-				_, parseProblem = parseDispatch(repaired)
+				opts, problem := parseDispatch(repaired)
+				parseProblem = problem
+				actionOpts, actionProblem := parseDispatch(actionArgs)
+				if actionProblem != nil || !actionOpts.promptStdin || actionOpts.plan != opts.plan || actionOpts.routeSelector != opts.routeSelector || !reflect.DeepEqual(actionOpts.labels, opts.labels) {
+					t.Fatalf("next action=%#v problem=%v repaired=%#v", actionOpts, actionProblem, opts)
+				}
 			case "steer":
-				_, _, parseProblem = parseSteer(repaired)
+				_, opts, problem := parseSteer(repaired)
+				parseProblem = problem
+				_, actionOpts, actionProblem := parseSteer(actionArgs)
+				if actionProblem != nil || !actionOpts.promptStdin || actionOpts.plan != opts.plan || actionOpts.allowInterr != opts.allowInterr || actionOpts.idempotencyKey != opts.idempotencyKey {
+					t.Fatalf("next action=%#v problem=%v repaired=%#v", actionOpts, actionProblem, opts)
+				}
 			}
 			if parseProblem != nil {
 				t.Fatalf("originating parser rejected emitted repair: %v; argv=%q", parseProblem, repaired)
@@ -153,6 +204,67 @@ func applyPromptRepairFlags(t *testing.T, args []string, repair map[string]any) 
 		}
 	}
 	return append(result, native...)
+}
+
+func argsPlan(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "--plan" {
+			return true
+		}
+	}
+	return false
+}
+
+// stdinRepairHasPromptSource requires --prompt-stdin to remain an agentctl
+// flag. Only run reserves a native "--" delimiter; the file itself is carried
+// separately as stdin_from, never as a shell redirection token.
+func stdinRepairHasPromptSource(argv []string, command string) bool {
+	limit := len(argv)
+	if command == "run" {
+		for i, arg := range argv {
+			if arg == "--" {
+				limit = i
+				break
+			}
+		}
+	}
+	for _, arg := range argv[:limit] {
+		if arg == "<" {
+			return false
+		}
+	}
+	for i := 0; i < limit; i++ {
+		if argv[i] == "--prompt-stdin" {
+			return true
+		}
+	}
+	return false
+}
+
+func preservedRepairArgs(args, action []string) string {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			suffix := args[i:]
+			if !reflect.DeepEqual(action[len(action)-len(suffix):], suffix) {
+				return fmt.Sprintf("native argv = %#v, want suffix %#v", action, suffix)
+			}
+			return ""
+		}
+		if args[i] == "--prompt-file" {
+			i++
+			continue
+		}
+		if !containsArg(action, args[i]) {
+			return fmt.Sprintf("dropped %s from %#v", args[i], action)
+		}
+		if i+1 < len(args) && args[i+1] != "--" && !strings.HasPrefix(args[i+1], "-") && !containsArg(action, args[i+1]) {
+			return fmt.Sprintf("dropped %s value %s from %#v", args[i], args[i+1], action)
+		}
+	}
+	return ""
 }
 
 func TestFanoutOutsideRootRepairUsesManifestGuidance(t *testing.T) {
@@ -217,5 +329,178 @@ func TestFanoutOutsideRootRepairUsesManifestGuidance(t *testing.T) {
 				t.Fatalf("manual manifest repair failed: %v", problem)
 			}
 		})
+	}
+}
+
+func TestPromptFileNotFoundIsPreciseAndRepairable(t *testing.T) {
+	root := testutil.TempDir(t)
+	missing := filepath.Join(root, "missing.md")
+	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
+	_, problem := a.loadPromptForCommand("delegate", runOptions{cwd: root, promptFile: "missing.md", promptDelivery: "argv",
+		promptRepairArgv: []string{"agentctl", "delegate", "--request-file", "request.json"}})
+	if problem == nil || problem.Code != output.CodeNotFound {
+		t.Fatalf("problem=%#v", problem)
+	}
+	if problem.Details["path"] != missing || problem.Details["requested_path"] != "missing.md" {
+		t.Fatalf("details=%#v", problem.Details)
+	}
+	// A missing file has no executable pipe repair: its source cannot be opened.
+	for _, action := range problem.NextActions {
+		if action.StdinFrom != "" {
+			t.Fatalf("missing file advertised an unrunnable stdin repair: %#v", action)
+		}
+	}
+	if _, ok := problem.Details["repair"]; ok {
+		t.Fatalf("missing file carries a repair object: %#v", problem.Details)
+	}
+}
+
+func TestPromptFileLiteralTildeReportsUnexpandedShellPath(t *testing.T) {
+	root := testutil.TempDir(t)
+	// The resolved home path exists, so the concrete pipe repair is runnable.
+	fakeHome := testutil.TempDir(t)
+	t.Setenv("HOME", fakeHome)
+	if err := os.MkdirAll(filepath.Join(fakeHome, "workspace/omi"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fakeHome, "workspace/omi/prompt-a.md"), []byte("task"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
+	_, problem := a.loadPromptForCommand("delegate", runOptions{cwd: root, promptFile: "~/workspace/omi/prompt-a.md", promptDelivery: "argv",
+		promptRepairArgv: []string{"agentctl", "delegate", "--request-file", "request.json"}})
+	if problem == nil || problem.Code != output.CodeNotFound {
+		t.Fatalf("problem=%#v", problem)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	concrete := filepath.Join(home, "workspace/omi/prompt-a.md")
+	if problem.Details["tilde_unexpanded"] != true || problem.Details["suggested_path"] != concrete {
+		t.Fatalf("details=%#v", problem.Details)
+	}
+	if !strings.Contains(problem.Message, "shell did not expand ~") {
+		t.Fatalf("message=%q", problem.Message)
+	}
+	if len(problem.NextActions) == 0 || problem.NextActions[0].StdinFrom != concrete || strings.Contains(problem.NextActions[0].StdinFrom, "$") {
+		t.Fatalf("actions=%#v", problem.NextActions)
+	}
+}
+
+func TestRunPromptStdinRepairStaysAheadOfTheDelimiter(t *testing.T) {
+	path := "/tmp/task.md"
+	_, planned := promptStdinRepair("run", runOptions{plan: true, promptRepairArgv: []string{"agentctl", "run", "--plan", "--label", "review", "--", "cursor-agent", "--plan"}}, path)
+	wantPlan := []string{"agentctl", "run", "--plan", "--label", "review", "--prompt-stdin", "--", "cursor-agent", "--plan"}
+	if !reflect.DeepEqual(planned.Argv, wantPlan) || planned.StdinFrom != path || planned.Mutates || planned.SideEffectClass != output.ReadOnly {
+		t.Fatalf("planned repair=%#v", planned)
+	}
+	_, live := promptStdinRepair("run", runOptions{promptRepairArgv: []string{"agentctl", "run", "--label", "review", "--", "cursor-agent", "--plan"}}, path)
+	wantLive := []string{"agentctl", "run", "--label", "review", "--prompt-stdin", "--", "cursor-agent", "--plan"}
+	if !reflect.DeepEqual(live.Argv, wantLive) || live.StdinFrom != path || !live.Mutates || live.SideEffectClass != output.ExternalSideEffect {
+		t.Fatalf("live repair=%#v", live)
+	}
+}
+
+func TestPromptRepairPreservesFlagShapedValuesAndPlan(t *testing.T) {
+	path := "/outside/task.md"
+	cases := []struct {
+		name      string
+		args      []string
+		plan      bool
+		wantTitle string
+		wantKey   string
+	}{
+		{name: "plan_as_title", args: []string{"--route", "example", "--title", "--plan", "--idempotency-key", "key-1", "--prompt-file", path}, wantTitle: "--plan", wantKey: "key-1"},
+		{name: "prompt_file_as_title", args: []string{"--route", "example", "--title", "--prompt-file", "--idempotency-key", "key-2", "--prompt-file", path}, wantTitle: "--prompt-file", wantKey: "key-2"},
+		{name: "delimiter_as_title", args: []string{"--route", "example", "--title", "--", "--idempotency-key", "key-3", "--prompt-file", path}, wantTitle: "--", wantKey: "key-3"},
+		{name: "planned_with_flag_title", args: []string{"--route", "example", "--title", "--plan", "--idempotency-key", "key-4", "--prompt-file", path, "--plan"}, plan: true, wantTitle: "--plan", wantKey: "key-4"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repairArgv := nonPromptCommandArgv("dispatch", tc.args)
+			_, action := promptStdinRepair("dispatch", runOptions{plan: tc.plan, promptRepairArgv: repairArgv}, path)
+			if action.StdinFrom != path {
+				t.Fatalf("action=%#v", action)
+			}
+			if tc.plan {
+				if action.Mutates || action.SideEffectClass != output.ReadOnly {
+					t.Fatalf("planned action=%#v", action)
+				}
+			} else if !action.Mutates || action.SideEffectClass != output.RemoteCoordinationWrite {
+				t.Fatalf("live action=%#v", action)
+			}
+			opts, problem := parseDispatch(action.Argv[2:])
+			if problem != nil {
+				t.Fatalf("emitted action does not parse: %v; argv=%q", problem, action.Argv)
+			}
+			if opts.title != tc.wantTitle || opts.idempotencyKey != tc.wantKey || opts.plan != tc.plan || !opts.promptStdin {
+				t.Fatalf("opts=%#v action=%#v", opts, action)
+			}
+		})
+	}
+}
+
+func TestFanoutMissingAndUnresolvedPromptsStayOnTheManifest(t *testing.T) {
+	root := testutil.TempDir(t)
+	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
+	missing := fanoutManifest{SchemaVersion: 1, PromptFile: "missing.md", Children: []fanoutChild{{Argv: []string{"/bin/echo"}}}}
+	if _, _, problem := a.loadFanoutPrompts(missing, root); !fanoutManifestRepair(problem, output.CodeNotFound) {
+		t.Fatalf("missing=%#v", problem)
+	}
+	child := fanoutManifest{SchemaVersion: 1, Children: []fanoutChild{{PromptFile: "missing.md", Argv: []string{"/bin/echo"}}}}
+	if _, _, problem := a.loadFanoutPrompts(child, root); !fanoutManifestRepair(problem, output.CodeNotFound) {
+		t.Fatalf("child=%#v", problem)
+	}
+	if err := os.WriteFile(filepath.Join(root, "notdir"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocked := fanoutManifest{SchemaVersion: 1, PromptFile: filepath.Join("notdir", "missing.md"), Children: []fanoutChild{{Argv: []string{"/bin/echo"}}}}
+	if _, _, problem := a.loadFanoutPrompts(blocked, root); !fanoutManifestRepair(problem, output.CodeAuthorizationDenied) {
+		t.Fatalf("unresolved=%#v", problem)
+	}
+	tilde, problem := a.loadPromptForCommand("fanout", runOptions{cwd: root, promptFile: "~/workspace/omi/prompt-a.md", promptDelivery: "argv"})
+	if tilde != nil || !fanoutManifestRepair(problem, output.CodeNotFound) || problem.Details["tilde_unexpanded"] != true {
+		t.Fatalf("tilde payload=%v problem=%#v", tilde, problem)
+	}
+}
+
+func fanoutManifestRepair(problem *output.Error, code output.Code) bool {
+	if problem == nil || problem.Code != code || problem.Details["recommended_prompt_source"] != "file" {
+		return false
+	}
+	repair, ok := problem.Details["repair"].(map[string]any)
+	if !ok || repair["manual_action"] == nil || repair["set_flags"] != nil || repair["remove_flags"] != nil {
+		return false
+	}
+	if !strings.Contains(fmt.Sprint(repair["explanation"]), "does not accept --prompt-stdin") {
+		return false
+	}
+	return len(problem.NextActions) == 1 && reflect.DeepEqual(problem.NextActions[0].Argv, []string{"agentctl", "help", "fanout"}) && !problem.NextActions[0].Mutates
+}
+
+func TestReadableRegularFileRejectsUnreadableAndDirectories(t *testing.T) {
+	root := testutil.TempDir(t)
+	readable := filepath.Join(root, "ok.md")
+	if err := os.WriteFile(readable, []byte("task"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !readableRegularFile(readable) {
+		t.Fatal("readable file rejected")
+	}
+	if readableRegularFile(root) {
+		t.Fatal("directory accepted")
+	}
+	if readableRegularFile(filepath.Join(root, "missing.md")) {
+		t.Fatal("missing file accepted")
+	}
+	if os.Geteuid() != 0 {
+		locked := filepath.Join(root, "locked.md")
+		if err := os.WriteFile(locked, []byte("task"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		if readableRegularFile(locked) {
+			t.Fatal("unreadable file accepted")
+		}
 	}
 }

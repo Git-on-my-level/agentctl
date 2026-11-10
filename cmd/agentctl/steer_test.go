@@ -225,6 +225,29 @@ func TestSteerInterruptResumeRequiresExplicitPermission(t *testing.T) {
 	if code == 0 || !strings.Contains(refused, `"code":"capability_unavailable"`) || !strings.Contains(refused, "steer_interrupt_not_permitted") {
 		t.Fatalf("steer without permission exit=%d output=%s", code, refused)
 	}
+	if !strings.Contains(refused, `"interrupt_warning"`) || !strings.Contains(refused, "in-flight native turn is discarded") {
+		t.Fatalf("missing interrupt warning: %s", refused)
+	}
+	if !strings.Contains(refused, `"argv":["agentctl","steer","`+fixture.id+`","--prompt-stdin","--allow-interrupt"]`) || !strings.Contains(refused, `"mutates":true`) {
+		t.Fatalf("missing copy-pasteable interrupt repair: %s", refused)
+	}
+	if !strings.Contains(refused, "original --prompt-stdin bytes were consumed") || !strings.Contains(refused, "stdin_from unknown") || strings.Contains(refused, "the same message is delivered after the native session resumes") {
+		t.Fatalf("stdin interrupt repair must require re-supplying the message: %s", refused)
+	}
+	var interrupted struct {
+		Error struct {
+			NextActions []struct {
+				StdinFrom     string   `json:"stdin_from"`
+				Preconditions []string `json:"preconditions"`
+			} `json:"next_actions"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(refused), &interrupted); err != nil {
+		t.Fatal(err)
+	}
+	if len(interrupted.Error.NextActions) != 1 || interrupted.Error.NextActions[0].StdinFrom != "" {
+		t.Fatalf("stdin interrupt action must not invent stdin_from: %s", refused)
+	}
 	if _, status := fixture.command("", "status", fixture.id); !strings.Contains(status, `"state":"running"`) {
 		t.Fatalf("a refused steer must not disturb the execution: %s", status)
 	}
@@ -240,6 +263,39 @@ func TestSteerInterruptResumeRequiresExplicitPermission(t *testing.T) {
 		t.Fatalf("result exit=%d %s", code, result)
 	}
 	fixture.assertMessageNeverPersisted()
+}
+
+func TestSteerInterruptRepairKeepsPromptFileAndRejectsUnknownStdin(t *testing.T) {
+	fixture := startSteerFixture(t, steerResumableAgent, "codex", "stdin", "exec", "--json", "-")
+	file, err := os.CreateTemp(".", "steer-interrupt-*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(file.Name())
+	if _, err := file.WriteString(steerSecret); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	absolute, err := filepath.Abs(file.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, refused := fixture.command("", "steer", fixture.id, "--prompt-file", file.Name())
+	if code == 0 || !strings.Contains(refused, `"code":"capability_unavailable"`) || !strings.Contains(refused, "steer_interrupt_not_permitted") {
+		t.Fatalf("steer without permission exit=%d output=%s", code, refused)
+	}
+	if !strings.Contains(refused, `"--prompt-file","`+resolved+`"`) || !strings.Contains(refused, "the same message is delivered from the prompt file") {
+		t.Fatalf("prompt-file interrupt repair must keep the file: %s", refused)
+	}
+	if strings.Contains(refused, "written to stdin again") {
+		t.Fatalf("prompt-file repair claimed stdin was consumed: %s", refused)
+	}
 }
 
 func TestSteerRejectsExecutionsWithoutARoute(t *testing.T) {

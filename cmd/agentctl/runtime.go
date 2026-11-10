@@ -59,6 +59,10 @@ type runOptions struct {
 	timeout                                  time.Duration
 	timeoutSet, noTimeoutSet, promptStdin    bool
 	argv                                     []string
+	// promptRepairArgv is the command's full non-prompt argv, used to emit a
+	// copy-pasteable --prompt-stdin repair without guessing flags. It keeps
+	// caller flags such as --plan, --wait, --authority, and labels.
+	promptRepairArgv []string
 }
 
 type promptPayload struct {
@@ -885,6 +889,9 @@ func (a *app) loadPromptForCommand(command string, opts runOptions) (*promptPayl
 	}
 	var reader io.Reader
 	payload := &promptPayload{Delivery: opts.promptDelivery}
+	if len(opts.promptRepairArgv) == 0 && command == "run" {
+		opts.promptRepairArgv = runPromptRepairArgv(opts)
+	}
 	if opts.promptStdin {
 		if a.stdinIsTerminal != nil && a.stdinIsTerminal() {
 			return nil, output.NewError(output.CodeUsage, "--prompt-stdin requires piped input", false)
@@ -912,6 +919,7 @@ func (a *app) loadPromptForCommand(command string, opts runOptions) (*promptPayl
 			return nil, output.Wrap(output.CodeAuthorizationDenied, "resolve prompt working root", false, err).WithDetail("root", root)
 		}
 		path := opts.promptFile
+		tilde := strings.HasPrefix(path, "~")
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(root, path)
 		}
@@ -926,7 +934,10 @@ func (a *app) loadPromptForCommand(command string, opts runOptions) (*promptPayl
 		originalPath := path
 		path, err = filepath.EvalSymlinks(path)
 		if err != nil {
-			return nil, output.Wrap(output.CodeAuthorizationDenied, "resolve prompt file", false, err).WithDetail("path", originalPath)
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, promptNotFoundError(command, opts, originalPath, opts.promptFile, tilde)
+			}
+			return nil, promptResolveError(command, opts, originalPath, err)
 		}
 		rel, err := filepath.Rel(resolvedRoot, path)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
@@ -963,39 +974,253 @@ func (a *app) loadPromptForCommand(command string, opts runOptions) (*promptPayl
 	return payload, nil
 }
 
+// promptNotFoundError distinguishes a missing prompt file from a boundary
+// refusal. A literal "~" is reported as an unexpanded shell path instead of a
+// misleading permission failure.
+func promptNotFoundError(command string, opts runOptions, path, requested string, tilde bool) *output.Error {
+	message := "prompt file not found"
+	details := map[string]any{"path": path, "requested_path": requested}
+	stdinPath := path
+	if tilde {
+		message = "prompt file not found: the shell did not expand ~ in the path; pass an absolute path or $HOME/..."
+		details["tilde_unexpanded"] = true
+		if requested == "~" || strings.HasPrefix(requested, "~/") {
+			// stdin_from is read by non-shell consumers, so it must be a concrete
+			// path, never a "$HOME" placeholder.
+			if home, err := os.UserHomeDir(); err == nil && home != "" {
+				stdinPath = filepath.Join(home, strings.TrimPrefix(requested, "~"))
+				details["suggested_path"] = stdinPath
+			}
+		}
+	}
+	problem := output.NewError(output.CodeNotFound, message, false)
+	for key, value := range details {
+		problem.WithDetail(key, value)
+	}
+	if command == "fanout" {
+		return withFanoutPromptRepair(problem)
+	}
+	problem.WithDetail("recommended_prompt_source", "stdin")
+	// Only advertise a pipe-from-file repair whose source can actually be
+	// opened (for example the resolved home path of a literal ~/ prompt). A
+	// missing file has no executable repair; the caller must supply the prompt.
+	if !readableRegularFile(stdinPath) {
+		return problem.WithActions(promptHelpAction(command))
+	}
+	repair, action := promptStdinRepair(command, opts, stdinPath)
+	problem.WithDetail("repair", repair)
+	return problem.WithActions(action, promptHelpAction(command))
+}
+
+func promptResolveError(command string, opts runOptions, path string, cause error) *output.Error {
+	problem := output.Wrap(output.CodeAuthorizationDenied, "resolve prompt file", false, cause).WithDetail("path", path)
+	if command == "fanout" {
+		return withFanoutPromptRepair(problem)
+	}
+	repair, action := promptStdinRepair(command, opts, path)
+	return problem.WithDetail("recommended_prompt_source", "stdin").WithDetail("repair", repair).WithActions(action, promptHelpAction(command))
+}
+
+func promptHelpAction(command string) output.NextAction {
+	return output.NextAction{Label: "Review " + command + " prompt sources", Argv: []string{"agentctl", "help", command}, Mutates: false, SideEffectClass: output.ReadOnly}
+}
+
+// promptStdinRepair returns the documented repair object and a copy-pasteable
+// argv that reads the same file through --prompt-stdin. Argv stays a pure argv:
+// the file to pipe in is a separate stdin_from field, never a shell redirect.
+// For run, --prompt-stdin is inserted before the native "--" delimiter so it
+// remains an agentctl flag. Mutation follows the parsed plan flag: an explicit
+// plan stays read-only, and any other repair can launch work.
+func promptStdinRepair(command string, opts runOptions, path string) (map[string]any, output.NextAction) {
+	setFlags := map[string]string{"--prompt-stdin": ""}
+	explanation := "prompt source selects how agentctl reads bytes; this command resolves native prompt delivery"
+	preconditions := []string{"replace --prompt-file with --prompt-stdin and pipe the file into agentctl stdin"}
+	if command == "run" {
+		setFlags["--prompt-delivery"] = firstNonEmptyString(opts.promptDelivery, "argv")
+		explanation = "prompt source selects how agentctl reads bytes; delivery selects how the native CLI receives them"
+		preconditions = append(preconditions, "preserve --prompt-delivery and the native argv")
+	}
+	repair := map[string]any{
+		"remove_flags":             []string{"--prompt-file"},
+		"set_flags":                setFlags,
+		"stdin_file":               path,
+		"preserve_other_arguments": true,
+		"explanation":              explanation,
+	}
+	argv := appendPromptStdinArgv(opts.promptRepairArgv, command)
+	mutates, class := promptRepairEffect(command, opts.plan)
+	action := output.NextAction{
+		Label:           "Pipe the prompt from its current path",
+		Argv:            argv,
+		StdinFrom:       path,
+		Mutates:         mutates,
+		SideEffectClass: class,
+		Preconditions:   append(preconditions, "stdin_from is not part of argv; pipe that file into the action's stdin"),
+	}
+	return repair, action
+}
+
+// runPromptRepairArgv rebuilds an expert run invocation from the parsed
+// options, excluding the prompt source. Caller flags stay in front of "--"
+// so a later stdin repair cannot fall into the native argv.
+func runPromptRepairArgv(opts runOptions) []string {
+	argv := []string{"agentctl", "run"}
+	if !opts.executionID.IsZero() {
+		argv = append(argv, "--execution-id", opts.executionID.String())
+	}
+	for _, label := range opts.labels {
+		argv = append(argv, "--label", label)
+	}
+	if opts.taskContractFile != "" {
+		argv = append(argv, "--task-contract", opts.taskContractFile)
+	}
+	if opts.adapter != "" {
+		argv = append(argv, "--adapter", opts.adapter)
+	}
+	if opts.timeoutSet {
+		argv = append(argv, "--timeout", opts.timeout.String())
+	}
+	if opts.noTimeoutSet {
+		argv = append(argv, "--no-timeout")
+	}
+	if opts.cwd != "" {
+		argv = append(argv, "--cwd", opts.cwd)
+	}
+	if opts.idempotencyKey != "" {
+		argv = append(argv, "--idempotency-key", opts.idempotencyKey)
+	}
+	if opts.issue != "" {
+		argv = append(argv, "--issue", opts.issue)
+	}
+	if opts.run != "" {
+		argv = append(argv, "--run", opts.run)
+	}
+	if opts.plan {
+		argv = append(argv, "--plan")
+	}
+	if opts.noStoreResult {
+		argv = append(argv, "--no-store-result")
+	}
+	if opts.allowMissingResult {
+		argv = append(argv, "--allow-missing-result")
+	}
+	if opts.allowUnreliableResult {
+		argv = append(argv, "--allow-unreliable-result")
+	}
+	if opts.promptDelivery != "" {
+		argv = append(argv, "--prompt-delivery", opts.promptDelivery)
+	}
+	argv = append(argv, "--")
+	return append(argv, opts.argv...)
+}
+
+// nonPromptCommandArgv copies a parsed command argv with the prompt source
+// removed. The caller's other flags stay in order. Values of value-taking
+// flags are copied verbatim even when they look like prompt flags or "--".
+func nonPromptCommandArgv(command string, args []string) []string {
+	argv := []string{"agentctl", command}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		// Prompt-source flags are removed before value-flag handling so the
+		// real prompt source is dropped while an identically named flag value
+		// was already consumed by the previous iteration.
+		switch arg {
+		case "--prompt-file":
+			if i+1 < len(args) {
+				i++
+			}
+			continue
+		case "--prompt-stdin":
+			// Prompt source is replaced by the repair's own --prompt-stdin.
+			continue
+		}
+		argv = append(argv, arg)
+		if commandFlagTakesValue(command, arg) && i+1 < len(args) {
+			i++
+			argv = append(argv, args[i])
+		}
+	}
+	return argv
+}
+
+// withResolvedCWD records the cwd delegate already resolved. A relative flag
+// would otherwise depend on the shell that later runs the repair.
+func withResolvedCWD(argv []string, cwd string) []string {
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "--" {
+			break
+		}
+		if argv[i] == "--cwd" {
+			argv[i+1] = cwd
+			return argv
+		}
+	}
+	return append(argv, "--cwd", cwd)
+}
+
+// appendPromptStdinArgv adds --prompt-stdin as an agentctl flag. Only run has
+// a native "--" delimiter, so only run inserts before it; other commands append
+// after their parsed flags so a flag-shaped value such as "--" stays a value.
+func appendPromptStdinArgv(argv []string, command string) []string {
+	if len(argv) == 0 {
+		argv = []string{"agentctl", command}
+	} else {
+		argv = append([]string{}, argv...)
+	}
+	stdin := []string{"--prompt-stdin"}
+	if command != "run" {
+		return append(argv, stdin...)
+	}
+	for i, arg := range argv {
+		if arg == "--" {
+			out := make([]string, 0, len(argv)+len(stdin))
+			out = append(out, argv[:i]...)
+			out = append(out, stdin...)
+			return append(out, argv[i:]...)
+		}
+	}
+	return append(argv, stdin...)
+}
+
+// promptRepairEffect classifies the repaired command itself from the parsed
+// plan flag, not from token shapes: a title or request key may literally be
+// "--plan". Dispatch creates remote coordination work; other live repairs
+// launch or steer native work.
+func promptRepairEffect(command string, plan bool) (bool, output.SideEffectClass) {
+	if plan {
+		return false, output.ReadOnly
+	}
+	if command == "dispatch" {
+		return true, output.RemoteCoordinationWrite
+	}
+	return true, output.ExternalSideEffect
+}
+
+// withFanoutPromptRepair points a fanout prompt failure at the manifest.
+// Fanout has no --prompt-stdin flag; the path is a manifest field.
+func withFanoutPromptRepair(problem *output.Error) *output.Error {
+	problem.WithDetail("recommended_prompt_source", "file").WithDetail("repair", map[string]any{
+		"manual_action":            "place the prompt file within the manifest directory and update the manifest's shared or child prompt_file field to that path",
+		"preserve_other_arguments": true,
+		"explanation":              "fanout reads prompt files from its manifest and does not accept --prompt-stdin",
+	})
+	action := promptHelpAction("fanout")
+	action.Label = "Review fanout manifest prompt paths"
+	action.Preconditions = []string{"keep every shared and child prompt_file within the manifest directory"}
+	return problem.WithActions(action)
+}
+
 func promptOutsideRootError(command string, opts runOptions, path, root string) *output.Error {
 	problem := output.NewError(output.CodeAuthorizationDenied, "prompt file must be within the "+command+" working root", false).
 		WithDetail("path", path).
 		WithDetail("root", root)
-	action := output.NextAction{Argv: []string{"agentctl", "help", command}, Mutates: false, SideEffectClass: output.ReadOnly}
 	if command == "fanout" {
 		// Fanout's prompt paths are manifest fields, not command-line flags.
-		problem.WithDetail("recommended_prompt_source", "file").WithDetail("repair", map[string]any{
-			"manual_action":            "place the prompt file within the manifest directory and update the manifest's shared or child prompt_file field to that path",
-			"preserve_other_arguments": true,
-			"explanation":              "fanout reads prompt files from its manifest and does not accept --prompt-stdin",
-		})
-		action.Label = "Review fanout manifest prompt paths"
-		action.Preconditions = []string{"keep every shared and child prompt_file within the manifest directory"}
-	} else {
-		setFlags := map[string]string{"--prompt-stdin": ""}
-		explanation := "prompt source selects how agentctl reads bytes; this command resolves native prompt delivery"
-		action.Label = "Use piped prompt stdin for an external scratch file"
-		action.Preconditions = []string{"replace --prompt-file with --prompt-stdin and pipe the file into agentctl"}
-		if command == "run" {
-			setFlags["--prompt-delivery"] = firstNonEmptyString(opts.promptDelivery, "argv")
-			explanation = "prompt source selects how agentctl reads bytes; delivery selects how the native CLI receives them"
-			action.Preconditions = append(action.Preconditions, "preserve --prompt-delivery and the native argv")
-		}
-		problem.WithDetail("recommended_prompt_source", "stdin").WithDetail("repair", map[string]any{
-			"remove_flags":             []string{"--prompt-file"},
-			"set_flags":                setFlags,
-			"stdin_file":               path,
-			"preserve_other_arguments": true,
-			"explanation":              explanation,
-		})
+		return withFanoutPromptRepair(problem)
 	}
-	return problem.WithActions(action)
+	repair, action := promptStdinRepair(command, opts, path)
+	problem.WithDetail("recommended_prompt_source", "stdin").WithDetail("repair", repair)
+	return problem.WithActions(action, promptHelpAction(command))
 }
 
 func loadTaskContract(path string) (*taskContractPayload, *output.Error) {
@@ -2340,4 +2565,19 @@ func sameSourceState(left, right *string) bool {
 		return left == nil && right == nil
 	}
 	return *left == *right
+}
+
+// readableRegularFile reports whether path is a regular file this process can
+// open for reading, so a pipe repair is only advertised when it can run.
+func readableRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	_ = file.Close()
+	return true
 }

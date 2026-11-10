@@ -356,7 +356,8 @@ func (a *app) steerCommand(ctx context.Context, renderer output.Renderer, c comm
 	if problem != nil {
 		return problem
 	}
-	prompt, problem := a.loadPromptForCommand("steer", runOptions{promptFile: opts.promptFile, promptStdin: opts.promptStdin, promptDelivery: "argv"})
+	prompt, problem := a.loadPromptForCommand("steer", runOptions{promptFile: opts.promptFile, promptStdin: opts.promptStdin, promptDelivery: "argv", plan: opts.plan,
+		promptRepairArgv: nonPromptCommandArgv("steer", args)})
 	if problem != nil {
 		return problem
 	}
@@ -422,9 +423,27 @@ func (a *app) steerCommand(ctx context.Context, renderer output.Renderer, c comm
 	delivery, _ := item.Constraints["delivery"].(string)
 	route := map[string]any{"delivery": delivery, "status": item.Status, "constraints": item.Constraints}
 	if delivery == string(adapter.SteerInterruptResume) && !opts.allowInterr && !opts.plan {
+		warning := "the in-flight native turn is discarded; restate anything the agent must keep in the message"
+		argv := []string{"agentctl", "steer", id.String()}
+		label := "Permit interrupt-and-resume steering"
+		preconditions := []string{warning}
+		if opts.promptStdin {
+			// The original stdin bytes are consumed. The action can only name
+			// the channel; the caller must supply the same message again.
+			argv = append(argv, "--prompt-stdin")
+			label = "Permit interrupt-and-resume steering with a re-supplied message"
+			preconditions = append(preconditions, "the original --prompt-stdin bytes were consumed and cannot be recovered; write the same message to stdin again (stdin_from unknown)")
+		} else {
+			argv = append(argv, "--prompt-file", prompt.Path)
+			preconditions = append(preconditions, "the same message is delivered from the prompt file after the native session resumes")
+		}
+		if opts.idempotencyKey != "" {
+			argv = append(argv, "--idempotency-key", opts.idempotencyKey)
+		}
+		argv = append(argv, "--allow-interrupt")
 		return withID(output.NewError(output.CodeCapabilityUnavailable, "this execution can only be steered by interrupting its native process and resuming the session, which discards the in-flight turn", false).
-			WithDetail("diagnostic_code", "steer_interrupt_not_permitted").WithDetail("route", route).
-			WithActions(output.NextAction{Label: "Permit interrupt-and-resume steering", Argv: []string{"agentctl", "steer", id.String(), "--allow-interrupt", "--prompt-file", "<path>"}, Mutates: true, SideEffectClass: output.ExternalSideEffect, Preconditions: []string{"accept that the in-flight native turn is discarded"}}))
+			WithDetail("diagnostic_code", "steer_interrupt_not_permitted").WithDetail("route", route).WithDetail("interrupt_warning", warning).
+			WithActions(output.NextAction{Label: label, Argv: argv, Mutates: true, SideEffectClass: output.ExternalSideEffect, Preconditions: preconditions}))
 	}
 	if opts.plan {
 		result := map[string]any{"plan": true, "id": id, "adapter": execution.Adapter, "state": execution.State, "route": route,

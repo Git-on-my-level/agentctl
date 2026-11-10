@@ -40,7 +40,7 @@ Inspect `native.argv`, `native.env`, and `native.permissions` on the plan before
 Coding is the default access. It adds Cursor `--force`, Codex
 `--dangerously-bypass-approvals-and-sandbox`, Claude Code
 `--permission-mode bypassPermissions`, OpenCode `--auto`, and Devin ACP permission approval only when `delegation.unattended_coding_permissions` is true.
-`settings.access: "read_only"` never adds those flags; Claude Code, OpenCode, and Devin refuse it. Expert `run` does not apply this grant.
+`selector.settings.access: "read_only"` never adds those flags; Claude Code, OpenCode, and Devin refuse it. Expert `run` does not apply this grant.
 Do not hand-write cursor or codex argv for a new agent, and do not edit a
 global CLI allowlist to widen permissions.
 
@@ -133,8 +133,9 @@ request; leave everything else absent. The selector must include at least
 `delegate_invalid_request`, before resolution or launch. “grok” means `{"family":"grok"}`;
 “cursor grok 4.6” means `{"harness":"cursor","family":"grok","version":"4.6"}`.
 Other word orders produce the same constraints. Never guess a version or native
-slug from memory. Add explicit speed/effort under `settings` when requested.
-`settings.auto_compact_window` (for example `"300k"`) sets a Claude Code lane's
+slug from memory. Add explicit speed/effort inside the selector, under
+`selector.settings`, when requested. `selector.settings.auto_compact_window`
+(for example `"300k"`) sets a Claude Code lane's
 compaction window for that launch; other harnesses refuse it.
 When a profile configures capacity pools and the user named no model, request
 `{"pool":"<name>"}` instead of a family or model. agentctl picks an account from
@@ -161,9 +162,9 @@ both coding and read-only Cursor recipes add `--trust`; read-only delegation
 refuses before launch without it (`workspace_trust_required`). Trust is never
 implied by a model preference. Unattended coding permissions are a separate
 `delegation.unattended_coding_permissions` grant. When it is true, coding
-launches (omitted `settings.access`, or `"coding"`) include Cursor `--force`,
+launches (omitted `selector.settings.access`, or `"coding"`) include Cursor `--force`,
 Codex `--dangerously-bypass-approvals-and-sandbox`, Claude Code
-`--permission-mode bypassPermissions`, OpenCode `--auto`, and Devin ACP permission approval. Set `settings.access` to `read_only` for
+`--permission-mode bypassPermissions`, OpenCode `--auto`, and Devin ACP permission approval. Set `selector.settings.access` to `read_only` for
 Cursor `--mode ask` and Codex `--sandbox read-only`; that access never
 receives the coding permission flags. ZCode `read_only` occupies the project
 config slot. `delegate --plan` returns `launch_constraints` from the same

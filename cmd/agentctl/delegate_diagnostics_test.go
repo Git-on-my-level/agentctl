@@ -125,3 +125,27 @@ func TestReadDelegateRequestFileErrorsDoNotExposeContents(t *testing.T) {
 		t.Fatalf("symlink issue=%#v", issue)
 	}
 }
+
+func TestDelegateTopLevelSettingsDiagnosticNamesSelectorLocation(t *testing.T) {
+	f := newDelegateFixture(t, delegateSuccessScript)
+	if err := os.WriteFile(f.request, []byte(`{"schema_version":1,"request_key":"test-work-1","selector":{"model":"gpt-6.1-sol"},"settings":{"access":"read_only"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out := f.invoke("private-prompt", "--plan", "--authority", "native")
+	if code != output.ExitCodeFor(output.CodeUsage) {
+		t.Fatalf("exit=%d %s", code, out)
+	}
+	issue := decodeDelegateDiagnostic(t, out)
+	if issue.Details["field_path"] != "$.settings" || issue.Details["suggested_field_path"] != "$.selector.settings" {
+		t.Fatalf("issue=%#v", issue)
+	}
+	suggestion, _ := issue.Details["suggestion"].(string)
+	if !strings.Contains(suggestion, "move it to $.selector.settings") {
+		t.Fatalf("suggestion=%q", suggestion)
+	}
+	example, _ := json.Marshal(issue.Details["example_request"])
+	if _, err := delegation.DecodeRequest(example); err != nil {
+		t.Fatalf("invalid example: %s %v", example, err)
+	}
+	assertDelegateNoExecutionSideEffects(t, f)
+}

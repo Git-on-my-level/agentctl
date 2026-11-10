@@ -8,7 +8,9 @@ Check `agentctl help delegate` before using an older installed binary.
 ## Caller recipe
 
 1. Extract only the user's explicit harness, model family/version, host, and
-   settings. Leave unspecified fields absent. Keep task text in the prompt.
+   settings. Settings live inside the selector (`selector.settings`), never at
+   the request top level. Leave unspecified fields absent. Keep task text in the
+   prompt.
 2. Write a request with a stable key for this logical task. Inspect `--plan` when
    useful; it is read-only, can probe the executable version, and reserves nothing.
 3. Run with `--wait` to require a successful, nonempty stored final answer. Inspect
@@ -50,10 +52,11 @@ keys, or labels. Only the key digest is stored. Prompt bytes are not journaled.
 | `use Grok version 4.6 through Cursor` | `{"harness":"cursor","family":"grok","version":"4.6"}` |
 
 These are interpretation examples, not a permutation dictionary. A version is a
-string, never a number or range. Preserve explicit speed/effort in `settings`;
-do not fill omitted fields from memory. At least `family` or exact native `model`
-is required, or a configured pool may be named. Host aliases match exactly;
-remote native delegation forwards over SSH to the configured host.
+string, never a number or range. Preserve explicit speed/effort inside the
+selector, under `selector.settings`; do not fill omitted fields from memory. At
+least `family` or exact native `model` is required, or a configured pool may be
+named. Host aliases match exactly; remote native delegation forwards over SSH to
+the configured host.
 
 ## Reviewed configuration
 

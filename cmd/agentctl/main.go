@@ -288,15 +288,47 @@ func invocationAllowsAutomaticMaintenance(args []string) bool {
 }
 
 func inlineHelpTopic(args []string) (string, bool) {
-	if len(args) < 2 || args[len(args)-1] != "--help" && args[len(args)-1] != "-h" {
-		return "", false
+	helpAt := -1
+	command := ""
+	if len(args) != 0 {
+		command = args[0]
 	}
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		if arg == "--" {
-			return "", false
+			break
+		}
+		// A token consumed as a flag value is not a help request, even when
+		// its text is --help. `continue exec --request-key --help` names a
+		// request key, not the continue topic.
+		if strings.HasPrefix(arg, "-") && commandFlagTakesValue(command, arg) {
+			if i+1 < len(args) {
+				i++
+			}
+			continue
+		}
+		if arg == "--help" || arg == "-h" {
+			helpAt = i
+			break
 		}
 	}
-	return strings.Join(args[:len(args)-1], " "), true
+	if helpAt < 0 {
+		return "", false
+	}
+	// Help is about the command word, not positional ids or flag values.
+	// Stop at the first flag so `delegate --request-file x --help` still
+	// resolves the delegate topic.
+	words := make([]string, 0, helpAt)
+	for _, arg := range args[:helpAt] {
+		if strings.HasPrefix(arg, "-") {
+			break
+		}
+		words = append(words, arg)
+	}
+	if len(words) != 0 && words[0] == "help" {
+		words = words[1:]
+	}
+	return strings.Join(words, " "), true
 }
 
 func (a *app) parseCommon(args []string) (common, []string, error) {

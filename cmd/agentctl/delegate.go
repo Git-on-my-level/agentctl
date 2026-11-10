@@ -174,6 +174,9 @@ func mapDelegationError(err error) *output.Error {
 				WithDetail("allowed_keys", issue.AllowedKeys).
 				WithDetail("example_request", issue.ExampleRequest).
 				WithDetail("example_guidance", "replace placeholders with a new request key and an exact model from the reviewed configured catalog")
+			if issue.Suggestion != "" {
+				problem.WithDetail("suggestion", issue.Suggestion).WithDetail("suggested_field_path", issue.SuggestedPath)
+			}
 		}
 		if issue.Code == "delegate_no_matching_tuple" || issue.Code == "delegate_ambiguous_selector" {
 			selectors := make([]delegation.Selector, 0, len(issue.Candidates))
@@ -291,7 +294,8 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 		return delegateError(output.CodeUsage, "delegate_invalid_cwd", "working directory must exist")
 	}
 	opts.cwd = cwd
-	prompt, problem := a.loadPromptForCommand("delegate", runOptions{cwd: cwd, promptFile: opts.promptFile, promptStdin: opts.promptStdin, promptDelivery: "argv"})
+	prompt, problem := a.loadPromptForCommand("delegate", runOptions{cwd: cwd, promptFile: opts.promptFile, promptStdin: opts.promptStdin, promptDelivery: "argv", plan: opts.plan,
+		promptRepairArgv: withResolvedCWD(nonPromptCommandArgv("delegate", args), cwd)})
 	if problem != nil {
 		return problem
 	}

@@ -108,6 +108,9 @@ JSON output contains:
 ```
 
 `next_actions` uses argv arrays, not prose commands requiring shell parsing.
+`argv` is always a pure argument vector: shell syntax such as redirection never
+appears in it. When an action reads stdin from a file, the file is named in the
+separate `stdin_from` field, and the caller pipes that file into `argv`'s stdin.
 Actions include required preconditions and whether they mutate state. They are
 derived from the durable execution contract: a bounded run points at its
 recorded deadline, while an unbounded run recommends `await --no-timeout` as
@@ -524,7 +527,14 @@ escape for callers that intentionally need weaker or broader behavior:
   sources. `--prompt-delivery argv|stdin|stream` is explicit and defaults to `argv`
   only after a source is selected. Prompt bytes are excluded from plan output,
   the journal, events, and status; only digest, byte count, source, and delivery
-  participate in plan and idempotency metadata.
+  participate in plan and idempotency metadata. A prompt path that does not
+  exist returns `not_found` (exit 3), not `authorization_denied`, with the
+  absolute path tried and a `--prompt-stdin` repair action whose `stdin_from`
+  field names the file to pipe into stdin. A literal
+  leading `~` is reported as an unexpanded shell path (`tilde_unexpanded`) with
+  a `$HOME/...` suggestion. Only a path that exists but escapes the command's
+  working root returns `authorization_denied` (exit 7); that refusal is not
+  loosened and also carries the stdin repair.
 - `fanout --manifest` delegates shared or per-child prompts through explicit
   native argv, preflighting every child before any task launch. It reports each
   child's ID, optional name, labels, prompt digest, launch attempt, recorded
