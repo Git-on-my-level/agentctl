@@ -155,8 +155,15 @@ fixture commits because the hermetic wrapper hides the global restamp identity.
 scratch Git config containing only the already configured host name/email lets
 the guard restamp those local fixture commits and makes that test pass. The
 identity guard stays enabled; no host/global config or source fixture identity
-is changed. The full CI/pre-push reruns use that isolated configuration. Their
-final results are recorded in the PR.
+is changed. The full CI/pre-push reruns used that isolated configuration. It exposed two
+more pre-existing config-source failures: overriding the fixture's Git global
+config prevents its `insteadOf` rewrite, and managed Git refuses its deliberate
+force-push to a local bare `main`. Both `TestSourceUpdateAcceptsInsteadOfRewrittenRemote`
+and `TestSourceUpdateRejectsNonFastForwardAndPreservesAppliedState` reproduced
+on clean `b182f2a` with that same configuration. These host/test-environment
+conflicts are not changes to agentctl behavior; the guards are left enabled.
+All remaining CI targets are run separately and hosted CI uses its normal
+unwrapped Git environment. Final results are recorded in the PR.
 
 Release this PR through the normal reviewed release process before expecting
 installed fleet behavior to change. No release or merge is part of this work.
