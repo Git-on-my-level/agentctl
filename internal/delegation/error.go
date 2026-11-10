@@ -21,8 +21,14 @@ type Error struct {
 	// at a plausible but wrong path. It is static text, never request content.
 	Suggestion string
 	// SuggestedPath is the documented JSON path for that field.
-	SuggestedPath  string
-	ExampleRequest *Request
+	SuggestedPath string
+	// RepairFlag is the delegate CLI flag spelling for a field that is
+	// accepted on the command line instead of in the request.
+	RepairFlag string
+	// RepairFlagValue is the placeholder value for RepairFlag; empty for a
+	// boolean flag.
+	RepairFlagValue string
+	ExampleRequest  *Request
 }
 
 func (e *Error) Error() string {

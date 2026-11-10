@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -148,4 +149,116 @@ func TestDelegateTopLevelSettingsDiagnosticNamesSelectorLocation(t *testing.T) {
 		t.Fatalf("invalid example: %s %v", example, err)
 	}
 	assertDelegateNoExecutionSideEffects(t, f)
+}
+
+// Agents put labels in the request file and only see the generic unknown-field
+// error. The repair must name --label and carry a copyable delegate argv.
+func TestDelegateLabelsDiagnosticRepairsWithLabelFlag(t *testing.T) {
+	f := newDelegateFixture(t, delegateSuccessScript)
+	if err := os.WriteFile(f.request, []byte(`{"schema_version":1,"request_key":"test-work-1","selector":{"family":"grok"},"labels":["label-alpha","label-beta"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out := f.invoke("private-prompt", "--plan", "--authority", "native")
+	if code != output.ExitCodeFor(output.CodeUsage) {
+		t.Fatalf("exit=%d %s", code, out)
+	}
+	issue := decodeDelegateDiagnostic(t, out)
+	if issue.Details["field_path"] != "$.labels" || issue.Details["violation"] != "unknown_field" {
+		t.Fatalf("issue=%#v", issue)
+	}
+	suggestion, _ := issue.Details["suggestion"].(string)
+	if !strings.Contains(suggestion, "--label <value>") || !strings.Contains(suggestion, "repeatable") {
+		t.Fatalf("suggestion=%q", suggestion)
+	}
+	if _, ok := issue.Details["suggested_field_path"]; ok {
+		t.Fatalf("labels are not a request path: %#v", issue.Details)
+	}
+	if issue.Details["repair_flag"] != "--label" {
+		t.Fatalf("repair_flag=%#v", issue.Details["repair_flag"])
+	}
+	want := []string{"agentctl", "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin", "--plan", "--authority", "native", "--label", "<label>"}
+	if len(issue.NextActions) != 1 || !reflect.DeepEqual(issue.NextActions[0].Argv, want) {
+		t.Fatalf("actions=%#v", issue.NextActions)
+	}
+	if action := issue.NextActions[0]; action.SideEffectClass != output.ExternalSideEffect || !action.Mutates ||
+		!strings.Contains(strings.Join(action.Preconditions, " "), "remove $.labels from the request file") {
+		t.Fatalf("action=%#v", action)
+	}
+	if strings.Contains(out, "label-alpha") || strings.Contains(out, "label-beta") || strings.Contains(out, "private-prompt") {
+		t.Fatalf("leaked request content: %s", out)
+	}
+	assertDelegateNoExecutionSideEffects(t, f)
+}
+
+func TestDelegateSelectorAccountDiagnosticNamesPoolAlternative(t *testing.T) {
+	f := newDelegateFixture(t, delegateSuccessScript)
+	if err := os.WriteFile(f.request, []byte(`{"schema_version":1,"request_key":"test-work-1","selector":{"family":"grok","account":"private-account"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out := f.invoke("private-prompt", "--plan", "--authority", "native")
+	if code != output.ExitCodeFor(output.CodeUsage) {
+		t.Fatalf("exit=%d %s", code, out)
+	}
+	issue := decodeDelegateDiagnostic(t, out)
+	if issue.Details["field_path"] != "$.selector.account" {
+		t.Fatalf("issue=%#v", issue)
+	}
+	suggestion, _ := issue.Details["suggestion"].(string)
+	if !strings.Contains(suggestion, "accounts are not selectable") || !strings.Contains(suggestion, `{"pool":"<name>"}`) || !strings.Contains(suggestion, "name a model") {
+		t.Fatalf("suggestion=%q", suggestion)
+	}
+	if issue.Details["suggested_field_path"] != "$.selector.pool" {
+		t.Fatalf("suggested=%#v", issue.Details["suggested_field_path"])
+	}
+	if _, ok := issue.Details["repair_flag"]; ok || hasArgvRepair(issue.NextActions) {
+		t.Fatalf("account is not an argv repair: %#v %#v", issue.Details, issue.NextActions)
+	}
+	example, _ := json.Marshal(issue.Details["example_request"])
+	if _, err := delegation.DecodeRequest(example); err != nil {
+		t.Fatalf("invalid example: %s %v", example, err)
+	}
+	if strings.Contains(out, "private-account") {
+		t.Fatalf("leaked account: %s", out)
+	}
+	assertDelegateNoExecutionSideEffects(t, f)
+}
+
+func TestDelegateTopLevelFlagFieldDiagnosticNamesFlag(t *testing.T) {
+	for _, tc := range []struct{ field, value, flag string }{
+		{"timeout", `"10m"`, "--timeout"},
+		{"cwd", `"/tmp"`, "--cwd"},
+		{"detach", `true`, "--detach"},
+		{"wait", `true`, "--wait"},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			f := newDelegateFixture(t, delegateSuccessScript)
+			if err := os.WriteFile(f.request, []byte(`{"schema_version":1,"request_key":"test-work-1","selector":{"family":"grok"},"`+tc.field+`":`+tc.value+`}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			code, out := f.invoke("private-prompt", "--plan", "--authority", "native")
+			if code != output.ExitCodeFor(output.CodeUsage) {
+				t.Fatalf("exit=%d %s", code, out)
+			}
+			issue := decodeDelegateDiagnostic(t, out)
+			suggestion, _ := issue.Details["suggestion"].(string)
+			if issue.Details["field_path"] != "$."+tc.field || !strings.Contains(suggestion, "delegate flag, not a request field") || !strings.Contains(suggestion, tc.flag) {
+				t.Fatalf("issue=%#v", issue)
+			}
+			if issue.Details["repair_flag"] != tc.flag || len(issue.NextActions) != 1 || !slices.Contains(issue.NextActions[0].Argv, tc.flag) {
+				t.Fatalf("actions=%#v", issue.NextActions)
+			}
+			assertDelegateNoExecutionSideEffects(t, f)
+		})
+	}
+}
+
+func hasArgvRepair(actions []output.NextAction) bool {
+	for _, action := range actions {
+		for _, precondition := range action.Preconditions {
+			if strings.Contains(precondition, "belongs on the delegate command line") {
+				return true
+			}
+		}
+	}
+	return false
 }
