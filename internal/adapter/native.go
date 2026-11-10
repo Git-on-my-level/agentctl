@@ -235,6 +235,13 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 		return
 	}
 	if overLimit && !retainObservationAfterLimit(obs, openCodeRetryPending) {
+		if strings.HasPrefix(obs.SourceState, "opencode.") {
+			// Dropped for the output limit, but OpenCode did emit it: an early
+			// exit after this point is not "exited before any event".
+			p.mu.Lock()
+			p.sawOpenCode = true
+			p.mu.Unlock()
+		}
 		return
 	}
 	p.ingestObservation(obs)

@@ -178,6 +178,20 @@ func TestOpenCodeStepFinishResetsPartsAfterStreamLimit(t *testing.T) {
 	}
 }
 
+// A first event dropped for the output limit is still an event: the early-exit
+// diagnosis must not claim OpenCode emitted nothing.
+func TestOpenCodeEventDroppedForStreamLimitStillCounts(t *testing.T) {
+	tool := []byte(`{"type":"tool_use","sessionID":"s","part":{"type":"tool","tool":"bash","input":{"command":"` + strings.Repeat("x", 80) + `"},"output":"huge"}}`)
+	record := &processRecord{parser: opencodeJSONParser{}, maxOutput: 16}
+	record.ingest(tool, false)
+	if len(record.parseWarnings) == 0 || record.parseWarnings[0] != diagnosticStreamLimitExceeded {
+		t.Fatalf("event was not over the limit: warnings = %#v", record.parseWarnings)
+	}
+	if !record.sawOpenCode {
+		t.Fatal("an OpenCode event dropped for the stream limit was not recorded as seen")
+	}
+}
+
 func TestOpenCodeRunFailureModes(t *testing.T) {
 	t.Run("nonzero exit beats collected text", func(t *testing.T) {
 		path := fixtureExecutable(t, `printf '%s\n' '{"type":"text","sessionID":"s","part":{"type":"text","text":"partial","time":{"end":1}}}'; exit 3`)
