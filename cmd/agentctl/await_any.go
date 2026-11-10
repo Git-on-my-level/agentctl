@@ -295,9 +295,22 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 			if err := ctx.Err(); err != nil {
 				return output.Wrap(output.CodeTimeout, "await-any scan interrupted", true, err)
 			}
-			if execution.RemoteForwarded() && !execution.State.Terminal() && execution.Observation.Integrity != model.IntegrityConflicted {
-				remoteCandidates = append(remoteCandidates, execution)
-				continue
+			if execution.RemoteForwarded() && execution.Observation.Integrity != model.IntegrityConflicted {
+				refresh := !execution.State.Terminal()
+				if !refresh {
+					// A terminal launch receipt has not yet collected the
+					// remote outcome/integrity. Only collection writes this
+					// small event marker; do not load answer bodies to test it.
+					_, collected, err := journal.LatestEventOfKind(ctx, execution.ID, model.EventTerminal)
+					if err != nil {
+						return mapStoreError("read remote collection marker", err)
+					}
+					refresh = !collected
+				}
+				if refresh {
+					remoteCandidates = append(remoteCandidates, execution)
+					continue
+				}
 			}
 			match, ok, problem := awaitAnyClassify(ctx, journal, options, execution, skipReconciled, index)
 			if problem != nil {

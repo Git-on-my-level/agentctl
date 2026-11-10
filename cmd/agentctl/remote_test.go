@@ -1100,18 +1100,31 @@ func TestAwaitAnyRemoteAttentionAndIdentity(t *testing.T) {
 }
 
 func TestAwaitAnyRemoteIntegrityIsActionableForEitherKind(t *testing.T) {
-	f := newRemoteFixture(t)
-	code, out := f.invoke("task", "--label", "noise.remote")
-	if code != 0 {
-		t.Fatal(out)
-	}
-	id := remoteLocalID(t, out)
-	f.writeJSON(t, "terminal", map[string]any{"id": remoteTestID, "origin_host_id": remoteTestHost, "state": "completed", "updated_at": "2026-11-08T00:00:00Z", "observation": map[string]any{"source": "status_api", "integrity": "conflicted", "observed_at": "2026-11-08T00:00:00Z"}})
-	for _, kind := range []string{"terminal", "attention"} {
-		code, out = f.command("", "await-any", "--execution", id, "--kinds", kind, "--timeout", "100ms")
-		if code != 13 || !strings.Contains(out, `"matched_kind":"integrity"`) {
-			t.Fatalf("%s: %d %s", kind, code, out)
-		}
+	for _, initial := range []string{"running", "completed"} {
+		t.Run(initial, func(t *testing.T) {
+			f := newRemoteFixture(t)
+			var receipt map[string]any
+			if err := json.Unmarshal(mustRead(t, filepath.Join(f.root, "receipt")), &receipt); err != nil {
+				t.Fatal(err)
+			}
+			receipt["result"].(map[string]any)["state"] = initial
+			body, _ := json.Marshal(receipt)
+			if err := os.WriteFile(filepath.Join(f.root, "receipt"), body, 0600); err != nil {
+				t.Fatal(err)
+			}
+			code, out := f.invoke("task", "--label", "noise.remote")
+			if code != 0 {
+				t.Fatal(out)
+			}
+			id := remoteLocalID(t, out)
+			f.writeJSON(t, "terminal", map[string]any{"id": remoteTestID, "origin_host_id": remoteTestHost, "state": "completed", "updated_at": "2026-11-08T00:00:00Z", "observation": map[string]any{"source": "status_api", "integrity": "conflicted", "observed_at": "2026-11-08T00:00:00Z"}})
+			for _, kind := range []string{"terminal", "attention"} {
+				code, out = f.command("", "await-any", "--execution", id, "--kinds", kind, "--timeout", "100ms")
+				if code != 13 || !strings.Contains(out, `"matched_kind":"integrity"`) {
+					t.Fatalf("%s: %d %s", kind, code, out)
+				}
+			}
+		})
 	}
 }
 
