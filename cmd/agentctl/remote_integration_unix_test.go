@@ -14,13 +14,17 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
+	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
 // Execute the generated SSH shell commands against an isolated real agentctl.
 // This catches protocol, quoting, remote-local host resolution, and detached
 // continuation bugs that canned receipts cannot detect. No network is used.
 func TestRemoteThroughBuiltBinary(t *testing.T) {
-	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	binary := filepath.Join(dir, "agentctl")
 	if out, err := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v %s", err, out)
@@ -97,6 +101,28 @@ func TestRemoteThroughBuiltBinary(t *testing.T) {
 	if strings.Count(launches, "launch") != 2 {
 		t.Fatalf("launches: %s", launches)
 	}
+	// Exercise actual remote lock contention, rather than just inspecting argv.
+	if err := os.WriteFile(f.request, []byte(`{"schema_version":1,"request_key":"remote-busy","selector":{"family":"grok","host":"remote"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := store.Open(filepath.Join(remoteState, "journal.db"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	for _, fromEnv := range []bool{false, true} {
+		budgetArgs := []string{"delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin", "--plan"}
+		if fromEnv {
+			t.Setenv(journalBusyBudgetEnv, "70ms")
+		} else {
+			budgetArgs = append(budgetArgs, "--journal-busy-budget", "70ms")
+		}
+		code, out = invoke("task", budgetArgs...)
+		if code != 6 || !strings.Contains(out, `"busy_budget_ms":70`) || !strings.Contains(out, `"diagnostic_code":"journal_busy"`) {
+			t.Fatalf("remote budget (env=%v): %d %s", fromEnv, code, out)
+		}
+	}
+	holder.Close()
 	// Both detached owners ran with deadlines and were collected terminal before
 	// the fixture is removed. No servers, supervisors, or remote agents persist.
 }

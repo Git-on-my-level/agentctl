@@ -2210,6 +2210,8 @@ func allowlistedFailureMessage(failure model.OutcomeFailure) string {
 		return "ZCode read_only launch refused: project config slot held"
 	case "zcode_read_only_unavailable":
 		return "ZCode read_only launch refused before process start; inspect launch error details"
+	case "opencode_provider_invalid_request":
+		return "OpenCode provider rejected the request"
 	case "provider_capacity":
 		return failureMessageCapacity
 	case "workspace_trust_required":
@@ -2314,6 +2316,8 @@ func localCompletionDiagnostic(code string) bool {
 
 func classifyOutcomeFailure(message, diagnosticCode, nativeCode, harness, providerCategory string) (string, string, string, bool) {
 	switch diagnosticCode {
+	case "opencode_provider_invalid_request":
+		return diagnosticCode, "provider", "provider", false
 	case "native_event_write_failed", "native_owner_failed", "detached_worker_start_failed":
 		return diagnosticCode, "observation", "", false
 	case "native_version_probe_failed", "journal_busy":

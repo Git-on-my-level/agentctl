@@ -223,14 +223,28 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 					message = "await-any deadline elapsed while the journal was busy"
 				}
 				return a.fail(renderer, output.NewError(output.CodeTimeout, message, true).
-					WithDetail("selector", options.selector()).WithDetail("kinds", options.kindList()).WithDetail("watched", lastWatched))
+					WithDetail("selector", options.selector()).WithDetail("kinds", options.kindList()).WithDetail("watched", max(lastWatched, watched)))
 			}
 			return a.fail(renderer, problem)
 		}
 		poll = nextAwaitPoll(poll, watched != lastWatched)
 		lastWatched = watched
 		if len(matches) > 0 {
-			return a.deliverAwaitAny(ctx, renderer, c, options, matches[0], len(matches)-1, watched)
+			match := matches[0]
+			if match.execution.RemoteForwarded() && match.kind == awaitAnyKindTerminal {
+				collectDeadline := deadline
+				if collectDeadline.IsZero() {
+					collectDeadline = a.now().Add(10 * time.Second)
+				}
+				collectCtx, cancel := context.WithDeadline(ctx, collectDeadline.Add(remoteAwaitReportGrace))
+				collected, problem := a.waitRemoteTerminal(collectCtx, c, match.execution, []string{"--timeout", "1ms"}, collectDeadline)
+				cancel()
+				if problem != nil && problem.Details["remote_terminal_collected"] != true {
+					return a.fail(renderer, problem)
+				}
+				match.execution = collected
+			}
+			return a.deliverAwaitAny(ctx, renderer, c, options, match, len(matches)-1, watched)
 		}
 		if !deadline.IsZero() && !a.now().Before(deadline) {
 			return a.fail(renderer, output.NewError(output.CodeTimeout, "await-any deadline elapsed", true).
@@ -264,6 +278,7 @@ func (a *app) awaitAnyScan(ctx context.Context, c common, options awaitAnyOption
 func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAnyOptions, opened *bool) ([]awaitAnyMatch, int, *output.Error) {
 	matches := []awaitAnyMatch{}
 	watched := 0
+	remoteCandidates := []model.Execution{}
 	skipReconciled := options.labelPrefix != "" && !options.includeAcknowledged
 	visit := func(journal *store.Journal, candidates []model.Execution) error {
 		watched += len(candidates)
@@ -278,6 +293,10 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 		for _, execution := range candidates {
 			if err := ctx.Err(); err != nil {
 				return output.Wrap(output.CodeTimeout, "await-any scan interrupted", true, err)
+			}
+			if execution.RemoteForwarded() && !execution.State.Terminal() && execution.Observation.Integrity != model.IntegrityConflicted {
+				remoteCandidates = append(remoteCandidates, execution)
+				continue
 			}
 			match, ok, problem := awaitAnyClassify(ctx, journal, options, execution, skipReconciled, index)
 			if problem != nil {
@@ -313,20 +332,53 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 			return nil, 0, problem
 		}
 		*opened = true
-		defer journal.Close()
 		candidates := []model.Execution{}
 		for _, id := range options.executionIDs {
 			execution, err := journal.GetExecution(ctx, id)
 			if err != nil {
+				journal.Close()
 				return nil, 0, mapStoreError("read awaited execution", err).WithDetail("execution_id", id.String())
 			}
 			candidates = append(candidates, execution)
 		}
-		if err := visit(journal, candidates); err != nil {
+		err := visit(journal, candidates)
+		journal.Close()
+		if err != nil {
 			return nil, 0, err.(*output.Error)
 		}
 	}
 
+	// All journal handles are closed before SSH. Status is observational: only
+	// the eventual winner is collected or acknowledged, including remotely.
+	for _, execution := range remoteCandidates {
+		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		receipt, problem := remoteObservation(probeCtx, execution, "status", []string{"--journal-busy-budget", c.journalBusyBudget.String()})
+		cancel()
+		if problem != nil {
+			return nil, watched, problem.WithActions(output.NextAction{Label: "Wait for this remote execution", Argv: []string{"agentctl", "await", execution.ID.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite})
+		}
+		execution.State = receipt.State
+		if receipt.Liveness != "" {
+			execution.Liveness = receipt.Liveness
+		}
+		if !receipt.UpdatedAt.IsZero() {
+			execution.UpdatedAt = receipt.UpdatedAt
+		}
+		execution.TerminalAt = receipt.TerminalAt
+		if execution.State.Terminal() && execution.TerminalAt == nil {
+			at := execution.UpdatedAt
+			execution.TerminalAt = &at
+		}
+		// Newly observed terminals have not been collected locally. The
+		// acknowledgement index applies once a terminal is stored locally.
+		match, ok, problem := awaitAnyClassify(ctx, nil, options, execution, false, store.AcknowledgementIndex{})
+		if problem != nil {
+			return nil, watched, problem
+		}
+		if ok {
+			matches = append(matches, match)
+		}
+	}
 	sort.SliceStable(matches, func(i, j int) bool {
 		if !matches[i].triggerAt.Equal(matches[j].triggerAt) {
 			return matches[i].triggerAt.Before(matches[j].triggerAt)
@@ -368,7 +420,11 @@ func awaitAnyClassify(ctx context.Context, journal *store.Journal, options await
 		if !options.kinds[awaitAnyKindAttention] {
 			return awaitAnyMatch{}, false, nil
 		}
-		at, err := latestAttentionAt(ctx, journal, execution)
+		at := execution.UpdatedAt
+		var err error
+		if journal != nil {
+			at, err = latestAttentionAt(ctx, journal, execution)
+		}
 		if err != nil {
 			return awaitAnyMatch{}, false, mapStoreError("read attention events", err).WithDetail("execution_id", execution.ID.String())
 		}

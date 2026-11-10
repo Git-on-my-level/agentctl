@@ -497,3 +497,12 @@ func TestCapacityRequiresHarnessSignalAndAuthenticationWins(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenCodeProviderInvalidRequestOutcome(t *testing.T) {
+	result := adapter.Result{State: adapter.StateFailed, Error: "private provider text", Data: map[string]any{"diagnostic_code": "opencode_provider_invalid_request", "failure_structured": true}}
+	e := model.Execution{ID: ids.ExecutionID("exec-abandon-abandon-abandon-abandon-abandon-aisle"), OriginHostID: ids.HostID("host-yard-total-plastic-uncover-drip-angry"), Adapter: "opencode", State: model.StateFailed}
+	outcome := withAllowlistedFailure(buildOutcome(e, result, time.Now().UTC(), false))
+	if outcome.Failure == nil || outcome.Failure.Code != "opencode_provider_invalid_request" || outcome.Failure.Kind != "provider" || outcome.Failure.Retryable || outcome.Failure.Message != "OpenCode provider rejected the request" {
+		t.Fatalf("%+v", outcome.Failure)
+	}
+}

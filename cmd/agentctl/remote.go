@@ -172,6 +172,8 @@ type remoteReceipt struct {
 	OriginHostID ids.HostID                  `json:"origin_host_id"`
 	State        model.State                 `json:"state"`
 	Liveness     model.Liveness              `json:"liveness"`
+	UpdatedAt    time.Time                   `json:"updated_at"`
+	TerminalAt   *time.Time                  `json:"terminal_at"`
 	Resolved     model.DelegationTarget      `json:"resolved"`
 	Capacity     *model.DelegationCapacity   `json:"capacity"`
 	Continuation *model.FollowUpContinuation `json:"continuation"`
@@ -241,7 +243,7 @@ func (a *app) delegateRemote(ctx context.Context, renderer output.Renderer, c co
 		return stage.problem(delegateError(output.CodeRemoteFailure, "delegate_remote_receipt_invalid", "remote staging directory is invalid"))
 	}
 	staged := shellQuote(dir + "/request.json")
-	args := append(remoteLaunchFlags(opts), "--authority", "native")
+	args := append(remoteLaunchFlags(opts), "--authority", "native", "--journal-busy-budget", c.journalBusyBudget.String())
 	command := "cd " + shellQuote(opts.cwd) + " && " + remoteCommand("agentctl", "delegate", "--output", "json", "--cwd", opts.cwd) + " --request-file " + staged + " " + remoteCommand(args...)
 	// Let agentctl classify a missing cwd rather than allowing shell cd to hide it.
 	command = "if [ -d " + shellQuote(opts.cwd) + " ]; then " + command + "; else " + remoteCommand("agentctl", "delegate", "--output", "json", "--cwd", opts.cwd) + " --request-file " + staged + " " + remoteCommand(args...) + "; fi"
@@ -409,12 +411,12 @@ func (a *app) statusRemote(ctx context.Context, renderer output.Renderer, execut
 // Remote await --content is raw text even in JSON mode. Collect metadata first,
 // then the structured result, retaining the native content source and bounds.
 func (a *app) observeRemoteTerminal(ctx context.Context, c common, execution model.Execution, flags []string) (model.Execution, *output.Error) {
-	receipt, awaitProblem := remoteObservation(ctx, execution, "await", flags)
+	receipt, awaitProblem := remoteObservation(ctx, execution, "await", append(append([]string{}, flags...), "--journal-busy-budget", c.journalBusyBudget.String()))
 	if awaitProblem != nil {
 		switch awaitProblem.Code {
 		case output.CodeExecutionFailed, output.CodeExecutionCancelled, output.CodeExecutionUnknown:
 			var problem *output.Error
-			receipt, problem = remoteObservation(ctx, execution, "status", nil)
+			receipt, problem = remoteObservation(ctx, execution, "status", []string{"--journal-busy-budget", c.journalBusyBudget.String()})
 			if problem != nil {
 				return execution, problem
 			}
@@ -426,7 +428,7 @@ func (a *app) observeRemoteTerminal(ctx context.Context, c common, execution mod
 		return execution, remoteErrorLocal(delegateError(output.CodeRemoteFailure, "delegate_remote_receipt_invalid", "remote await did not return terminal evidence"), execution)
 	}
 	plan := execution.Delegation.RemotePlan
-	body, problem := sshStep(ctx, plan.SSHDestination, remoteCommand("agentctl", "result", plan.ExecutionID.String(), "--output", "json", "--allow-empty"), nil)
+	body, problem := sshStep(ctx, plan.SSHDestination, remoteCommand("agentctl", "result", plan.ExecutionID.String(), "--output", "json", "--allow-empty", "--journal-busy-budget", c.journalBusyBudget.String()), nil)
 	if problem != nil {
 		return execution, remoteErrorLocal(problem, execution)
 	}
@@ -466,6 +468,11 @@ func (a *app) observeRemoteTerminal(ctx context.Context, c common, execution mod
 	now := a.now().UTC()
 	next := latest
 	next.State, next.Liveness, next.UpdatedAt, next.TerminalAt = receipt.State, model.LivenessExited, now, &now
+	if receipt.TerminalAt != nil {
+		next.TerminalAt = receipt.TerminalAt
+	} else if execution.TerminalAt != nil {
+		next.TerminalAt = execution.TerminalAt
+	}
 	next.Observation = model.Observation{Source: model.ObservationStatusAPI, Integrity: model.IntegrityVerified, ObservedAt: now}
 	outcome := result.Outcome
 	outcome.ExecutionID = execution.ID
@@ -564,7 +571,7 @@ func (a *app) continueRemote(ctx context.Context, renderer output.Renderer, c co
 	if len(opts.labels) == 0 {
 		opts.labels = append([]string(nil), source.Labels...)
 	}
-	args := []string{"agentctl", "continue", plan.ExecutionID.String(), "--output", "json", "--request-key", key, "--mode", opts.continuationMode, "--prompt-stdin"}
+	args := []string{"agentctl", "continue", plan.ExecutionID.String(), "--output", "json", "--request-key", key, "--mode", opts.continuationMode, "--prompt-stdin", "--journal-busy-budget", c.journalBusyBudget.String()}
 	if opts.plan {
 		args = append(args, "--plan")
 	}

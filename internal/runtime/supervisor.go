@@ -34,7 +34,9 @@ func (b SupervisorExecutions) ListNonTerminal(ctx context.Context) ([]supervisor
 	}
 	result := make([]supervisor.Execution, 0, len(values))
 	for _, value := range values {
-		if value.NativeRecoveryParked() {
+		// Forwarding envelopes are observed over SSH by await/await-any; they
+		// deliberately have no local native source for recovery to reconstruct.
+		if value.NativeRecoveryParked() || value.RemoteForwarded() {
 			continue
 		}
 		result = append(result, supervisor.Execution{ID: value.ID.String(), State: string(value.State), Liveness: string(value.Liveness), Revision: value.Revision, UpdatedAt: value.UpdatedAt})

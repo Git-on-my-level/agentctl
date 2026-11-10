@@ -892,3 +892,209 @@ func TestRemoteWaitReplayAfterDeadlineUsesCollectedOutcome(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoteBusyBudgetForwarded(t *testing.T) {
+	for _, budget := range []string{"300s", "0"} {
+		t.Run(budget, func(t *testing.T) {
+			f := newRemoteFixture(t)
+			code, out := f.invoke("task", "--timeout", "40m", "--journal-busy-budget", budget, "--label", "noise.test")
+			if code != 0 {
+				t.Fatalf("%d %s", code, out)
+			}
+			command := string(mustRead(t, filepath.Join(f.root, "launch-command")))
+			duration, _ := time.ParseDuration(budget)
+			if !strings.Contains(command, remoteCommand("--journal-busy-budget", duration.String())) {
+				t.Fatalf("budget dropped: %s", command)
+			}
+		})
+	}
+}
+
+func TestAwaitAnyRemotePrefix(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	id := remoteLocalID(t, out)
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "200ms")
+	if code != 0 || !strings.Contains(out, `"execution_id":"`+id+`"`) {
+		t.Fatalf("remote terminal invisible: %d %s", code, out)
+	}
+	e := f.execution(t, id)
+	if e.State != model.StateCompleted {
+		t.Fatalf("terminal not collected: %+v", e)
+	}
+	j, err := store.Open(f.journal, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := ids.ParseExecutionID(id)
+	_, err = j.GetAcknowledgement(context.Background(), parsed)
+	j.Close()
+	if err != nil {
+		t.Fatalf("winner not acknowledged: %v", err)
+	}
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "10ms")
+	if code != 9 {
+		t.Fatalf("acknowledged terminal repeated: %d %s", code, out)
+	}
+}
+
+func TestAwaitAnyRemoteFailureAndNoAcknowledge(t *testing.T) {
+	for _, state := range []model.State{model.StateCompleted, model.StateFailed, model.StateCancelled, model.StateOrphaned} {
+		t.Run(string(state), func(t *testing.T) {
+			f := newRemoteFixture(t)
+			code, out := f.invoke("task", "--label", "noise.remote")
+			if code != 0 {
+				t.Fatal(out)
+			}
+			id := remoteLocalID(t, out)
+			at := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+			f.writeJSON(t, "terminal", map[string]any{"id": remoteTestID, "origin_host_id": remoteTestHost, "state": state, "terminal_at": at, "updated_at": at, "liveness": "exited"})
+			f.writeOutcome(t, state)
+			code, out = f.command("", "await-any", "--execution", id, "--timeout", "1s", "--no-acknowledge")
+			want := map[model.State]int{model.StateCompleted: 0, model.StateFailed: 11, model.StateCancelled: 12, model.StateOrphaned: 13}[state]
+			if code != want || !strings.Contains(out, `"acknowledged":false`) || !strings.Contains(out, `"trigger_at":"2026-11-08T00:00:00Z"`) {
+				t.Fatalf("%d %s", code, out)
+			}
+			e := f.execution(t, id)
+			if e.State != state || e.TerminalAt == nil || !e.TerminalAt.Equal(at) {
+				t.Fatalf("terminal time/state lost: %+v", e)
+			}
+			j, err := store.Open(f.journal, store.Options{ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, _ := ids.ParseExecutionID(id)
+			_, ackErr := j.GetAcknowledgement(context.Background(), parsed)
+			_, outcomeErr := j.GetOutcome(context.Background(), parsed)
+			j.Close()
+			if !errors.Is(ackErr, store.ErrNotFound) || outcomeErr != nil {
+				t.Fatalf("ack=%v outcome=%v", ackErr, outcomeErr)
+			}
+			// Advancing --since must work against the cached terminal too.
+			code, out = f.command("", "await-any", "--execution", id, "--since", at.Format(time.RFC3339Nano), "--timeout", "10ms")
+			if code != 9 {
+				t.Fatalf("terminal repeated after since: %d %s", code, out)
+			}
+		})
+	}
+}
+
+func TestAwaitAnyRemoteStalledStatusReleasesJournal(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	script := string(mustRead(t, filepath.Join(f.root, "fake-ssh")))
+	// No descendants: cancellation reaps the SSH fixture itself.
+	script = strings.Replace(script, "*\"'status'\"*) cat terminal", `*"'status'"*) touch probing; exec sleep 10`, 1)
+	if err := os.WriteFile(filepath.Join(f.root, "fake-ssh"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var waitCode int
+	var waitOut string
+	go func() {
+		defer close(done)
+		waitCode, waitOut = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "300ms")
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(f.root, "probing")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("SSH not started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	j, err := store.Open(f.journal, store.Options{LockTimeout: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("SSH holds journal: %v", err)
+	}
+	j.Close()
+	<-done
+	if waitCode != 9 || !strings.Contains(waitOut, `"timeout"`) {
+		t.Fatalf("%d %s", waitCode, waitOut)
+	}
+}
+
+func TestAwaitAnyRemoteCollectsOnlyWinner(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("first", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	first := remoteLocalID(t, out)
+	f.writeJSON(t, "receipt", map[string]any{"id": remoteNextID, "origin_host_id": remoteTestHost, "state": "running", "resolved": model.DelegationTarget{Harness: "cursor", Model: "remote-only-model", Host: "other-workstation", Authority: model.AuthorityNative}, "provenance": map[string]any{"configuration_sha256": "sha256:" + strings.Repeat("b", 64)}})
+	body := strings.Replace(string(mustRead(t, f.request)), "test-work-1", "test-work-2", 1)
+	if err := os.WriteFile(f.request, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out = f.invoke("second", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	second := remoteLocalID(t, out)
+	at := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+	for _, item := range []struct {
+		name, id string
+		at       time.Time
+	}{{"terminal", remoteTestID, at}, {"terminal-next", remoteNextID, at.Add(time.Minute)}} {
+		f.writeJSON(t, item.name, map[string]any{"id": item.id, "origin_host_id": remoteTestHost, "state": "completed", "updated_at": item.at, "terminal_at": item.at})
+	}
+	if err := os.WriteFile(filepath.Join(f.root, "result-next"), bytes.ReplaceAll(mustRead(t, filepath.Join(f.root, "result")), []byte(remoteTestID), []byte(remoteNextID)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	script := string(mustRead(t, filepath.Join(f.root, "fake-ssh")))
+	for _, command := range []string{"await", "status", "result"} {
+		file := "terminal"
+		if command == "result" {
+			file = "result"
+		}
+		script = strings.Replace(script, "*\"'"+command+"'\"*) cat "+file, "*\"'"+command+"'\"*) case \"$3\" in *"+remoteNextID+"*) cat "+file+"-next ;; *) cat "+file+" ;; esac", 1)
+	}
+	if err := os.WriteFile(filepath.Join(f.root, "fake-ssh"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "2s")
+	if code != 0 || !strings.Contains(out, `"execution_id":"`+first+`"`) || !strings.Contains(out, `"pending_matches":1`) {
+		t.Fatalf("%d %s", code, out)
+	}
+	if e := f.execution(t, second); e.State != model.StateRunning {
+		t.Fatalf("loser collected: %+v", e)
+	}
+	calls := string(mustRead(t, filepath.Join(f.root, "ssh-argv")))
+	if strings.Count(calls, "'result'") != 1 || strings.Contains(calls, "'result' '"+remoteNextID+"'") {
+		t.Fatalf("losing remote was collected: %s", calls)
+	}
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "2s")
+	if code != 0 || !strings.Contains(out, `"execution_id":"`+second+`"`) {
+		t.Fatalf("second never drained: %d %s", code, out)
+	}
+}
+
+func TestAwaitAnyRemoteAttentionAndIdentity(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	id := remoteLocalID(t, out)
+	f.writeJSON(t, "terminal", map[string]any{"id": remoteTestID, "origin_host_id": remoteTestHost, "state": "attention", "updated_at": "2026-11-08T00:00:00Z"})
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "1s")
+	if code != 10 || !strings.Contains(out, `"execution_id":"`+id+`"`) || !strings.Contains(out, `"matched_kind":"attention"`) {
+		t.Fatalf("%d %s", code, out)
+	}
+	if e := f.execution(t, id); e.State != model.StateRunning {
+		t.Fatalf("attention collection mutated local row: %+v", e)
+	}
+	f.writeJSON(t, "terminal", map[string]any{"id": remoteNextID, "origin_host_id": remoteTestHost, "state": "completed"})
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "1s")
+	if code != 11 || !strings.Contains(out, "delegate_remote_receipt_invalid") || !strings.Contains(out, `"execution_id":"`+id+`"`) || !strings.Contains(out, `"await","`+id+`"`) {
+		t.Fatalf("identity mismatch not actionable: %d %s", code, out)
+	}
+}
