@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
+	"github.com/Git-on-my-level/agentctl/internal/diagnostic"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/store"
@@ -32,6 +34,8 @@ sleep "${CONTINUE_FIXTURE_DELAY:-0}"
 		body += `printf '%s\n' '{"sessionId":"s1","turnId":"t1","response":"prior-answer-token"}'`
 	case "openclaw":
 		body += `printf '%s\n' '{"payloads":[{"text":"prior-answer-token"}]}'`
+	case "opencode":
+		body += `printf '%s\n' '{"type":"step_start","sessionID":"s1","part":{"type":"step-start"}}' '{"type":"text","sessionID":"s1","part":{"type":"text","text":"prior-answer-token","time":{"end":1}}}' '{"type":"step_finish","sessionID":"s1","part":{"type":"step-finish","reason":"stop"}}'`
 	default:
 		body += `printf '%s\n' '{"type":"system","subtype":"init","session_id":"chat-1"}' '{"type":"result","subtype":"success","is_error":false,"result":"prior-answer-token"}'`
 	}
@@ -62,7 +66,7 @@ sleep "${CONTINUE_FIXTURE_DELAY:-0}"
 }
 
 func TestCarryForwardRoundsFrozenRecipeLineageAndPrivacy(t *testing.T) {
-	for _, harness := range []string{"zcode", "openclaw", "cursor"} {
+	for _, harness := range []string{"zcode", "openclaw", "opencode", "cursor"} {
 		t.Run(harness, func(t *testing.T) {
 			f := carryFixture(t, harness)
 			code, out := f.invoke("original-private-task", "--wait")
@@ -134,6 +138,77 @@ func TestCarryForwardRoundsFrozenRecipeLineageAndPrivacy(t *testing.T) {
 				if strings.Contains(string(raw), secret) {
 					t.Fatalf("prompt leaked to journal: %s", secret)
 				}
+			}
+		})
+	}
+}
+
+func TestOpenCodeCarryForwardEarlyExitRecordsDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		stderr   string
+		exitCode int
+		// recognized is the stderr classification that must win over the
+		// early-exit code; empty means the early-exit code is expected.
+		recognized string
+	}{
+		{name: "nonzero_with_stderr", stderr: "fatal: private-opencode-stderr", exitCode: 23},
+		{name: "zero_without_events", exitCode: 0},
+		{name: "recognized_stderr_keeps_classification", stderr: "Error: authentication required", exitCode: 1, recognized: "authentication_required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := carryFixture(t, "opencode")
+			code, out := f.invoke("original-private-task", "--wait")
+			if code != 0 {
+				t.Fatalf("delegate %d %s", code, out)
+			}
+			first := resultID(t, out)
+			script := "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'opencode 2.2.6'; exit 0; fi\n" +
+				"for arg do last=\"$arg\"; done\nprintf '%s' \"$last\" > \"$CARRY_TEST_CAPTURE\"\n"
+			if tc.stderr != "" {
+				script += "printf '%s\\n' '" + tc.stderr + "' >&2\n"
+			}
+			script += "exit " + strconv.Itoa(tc.exitCode) + "\n"
+			if err := os.WriteFile(filepath.Join(f.root, "cursor-agent"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+
+			code, out = f.command(t, "feedback-private-token", "continue", first, "--request-key", "r2", "--mode", "carry_forward", "--prompt-stdin", "--wait")
+			if tc.recognized != "" {
+				if code == 0 || !strings.Contains(out, `"code":"`+tc.recognized+`"`) || strings.Contains(out, "opencode_exited_before_any_event") {
+					t.Fatalf("recognized stderr was masked: %d %s", code, out)
+				}
+				return
+			}
+			if code != 11 || !strings.Contains(out, `"code":"opencode_exited_before_any_event"`) || !strings.Contains(out, `"native_exit_code":`+strconv.Itoa(tc.exitCode)) {
+				t.Fatalf("continue %d %s", code, out)
+			}
+			if tc.stderr != "" && strings.Contains(out, tc.stderr) || strings.Contains(out, "feedback-private-token") {
+				t.Fatalf("continue leaked native or prompt text: %s", out)
+			}
+			if tc.stderr != "" {
+				metadata := diagnostic.FromStderrLine([]byte(tc.stderr), "opencode")
+				if !strings.Contains(out, metadata.Hash) || !strings.Contains(out, `"bytes":`+strconv.Itoa(metadata.Bytes)) || !strings.Contains(out, `"code":"unclassified"`) {
+					t.Fatalf("missing stderr fingerprint (want %#v): %s", metadata, out)
+				}
+			} else if strings.Contains(out, `"stderr":`) {
+				t.Fatalf("zero exit acquired a stderr diagnostic: %s", out)
+			}
+
+			captured, err := os.ReadFile(filepath.Join(f.root, "capture"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var prompt carryForwardEnvelope
+			if err := json.Unmarshal(captured, &prompt); err != nil || prompt.SourceExecutionID != first || prompt.Instruction != "feedback-private-token" || prompt.PriorResult.Text != "prior-answer-token" {
+				t.Fatalf("carry-forward prompt %s err=%v", captured, err)
+			}
+			raw, err := os.ReadFile(f.journal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.stderr != "" && strings.Contains(string(raw), tc.stderr) {
+				t.Fatal("raw stderr entered the journal")
 			}
 		})
 	}

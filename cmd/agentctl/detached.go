@@ -246,7 +246,22 @@ func (a *app) settleDetachedAdmission(c common, id ids.ExecutionID, problem *out
 	if problem.Code == output.CodeTimeout || problem.Code == output.CodeExecutionCancelled {
 		state = adapter.StateCancelled
 	}
-	_, err := a.finalizeResult(context.Background(), c, journal, current, adapter.Result{Success: false, State: state, Data: map[string]any{"diagnostic_code": "detached_worker_start_failed"}}, a.now().UTC(), false)
+	result := adapter.Result{Success: false, State: state, Error: problem.Message, Data: map[string]any{"diagnostic_code": "detached_worker_start_failed"}}
+	if code, _ := problem.Details["diagnostic_code"].(string); code == "native_version_probe_failed" || code == "native_version_probe_timeout" || code == "macos_login_keychain_locked" || code == "journal_busy" {
+		result.Data["diagnostic_code"] = code
+	}
+	if value, ok := problem.Details["native_exit_code"]; ok {
+		switch code := value.(type) {
+		case int:
+			result.ExitCode = &code
+		case float64:
+			converted := int(code)
+			if float64(converted) == code {
+				result.ExitCode = &converted
+			}
+		}
+	}
+	_, err := a.finalizeResult(context.Background(), c, journal, current, result, a.now().UTC(), false)
 	problem.WithDetail("terminal_recorded", err == nil)
 }
 

@@ -235,6 +235,13 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 		return
 	}
 	if overLimit && !retainObservationAfterLimit(obs, openCodeRetryPending) {
+		if strings.HasPrefix(obs.SourceState, "opencode.") {
+			// Dropped for the output limit, but OpenCode did emit it: an early
+			// exit after this point is not "exited before any event".
+			p.mu.Lock()
+			p.sawOpenCode = true
+			p.mu.Unlock()
+		}
 		return
 	}
 	p.ingestObservation(obs)
@@ -648,6 +655,11 @@ func (p *processRecord) finish(err error) {
 		} else if structured, _ := p.result.Data["failure_structured"].(bool); !structured {
 			p.result = p.zcodeFailureResultLocked()
 		}
+	}
+	// A recognized stderr cause (authentication, network, capacity) is more
+	// actionable than "no events"; only unexplained early exits get this code.
+	if p.result == nil && p.parser != nil && p.parser.Name() == "opencode-json" && !p.sawOpenCode && !p.cancelled && (p.stderrDiagnostic == nil || p.stderrDiagnostic.Code == "unclassified") {
+		p.result = &Result{Success: false, State: StateFailed, Error: "opencode exited before emitting any event", ExitCode: p.exitCode, SessionRef: p.ref, Data: map[string]any{"diagnostic_code": "opencode_exited_before_any_event", "terminal_source_state": "opencode.run"}}
 	}
 	if p.result == nil {
 		if p.cancelled {
