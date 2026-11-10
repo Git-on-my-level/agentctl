@@ -122,8 +122,8 @@ func checkObject(d *json.Decoder, depth int, path string) error {
 			return requestError("key_spelling", "delegation request keys must use their exact documented spelling", fieldPath, path)
 		}
 		if _, ok := allowedKeys[path][name]; !ok {
-			if suggestion, target := misplacedFieldSuggestion(path, name); suggestion != "" {
-				return requestErrorWithSuggestion("unknown_field", "delegation request contains an unknown field", fieldPath, path, suggestion, target)
+			if repair, ok := misplacedFieldRepair(path, name); ok {
+				return requestErrorWithRepair("unknown_field", "delegation request contains an unknown field", fieldPath, path, repair)
 			}
 			return requestError("unknown_field", "delegation request contains an unknown field", fieldPath, path)
 		}
@@ -168,30 +168,88 @@ func requestError(violation, diagnostic, path, scope string) *Error {
 		}}
 }
 
-// misplacedFieldSuggestion recognizes the documented settings fields supplied
-// one level too high. The parser stays strict; the error carries the exact
-// documented location and a corrected example instead of only "unknown field".
-func misplacedFieldSuggestion(path, name string) (suggestion, target string) {
+// fieldRepair is the deterministic repair for a recognized misplaced field.
+// The parser stays strict; only the error text and next action change.
+type fieldRepair struct {
+	suggestion string
+	// target is the documented JSON path, empty when the field is not a
+	// request field at all.
+	target string
+	// flag is the delegate CLI flag spelling for a field that is accepted on
+	// the command line instead of in the request.
+	flag string
+	// flagValue is the placeholder for that flag's value; empty for booleans.
+	flagValue string
+	example   *Request
+}
+
+// delegateFlagFields maps request-shaped keys that are really delegate flags to
+// the flag spelling that accepts them. Labels and accounts are repaired
+// separately because they are not a simple move to another request path.
+var delegateFlagFields = map[string]struct{ flag, value string }{
+	"timeout":               {"--timeout", "<duration>"},
+	"cwd":                   {"--cwd", "<path>"},
+	"authority":             {"--authority", "<auto|native|multica>"},
+	"detach":                {"--detach", ""},
+	"wait":                  {"--wait", ""},
+	"plan":                  {"--plan", ""},
+	"content":               {"--content", ""},
+	"prompt_file":           {"--prompt-file", "<path>"},
+	"prompt_stdin":          {"--prompt-stdin", ""},
+	"request_file":          {"--request-file", "<path>"},
+	"anx_card":              {"--anx-card", "card:<slug>"},
+	"require_result_source": {"--require-result-source", "<source>"},
+	"min_result_bytes":      {"--min-result-bytes", "<n>"},
+}
+
+// misplacedFieldRepair recognizes fields supplied where they are not accepted:
+// settings one level too high, labels that are command flags, accounts that a
+// pool chooses, and request-shaped delegate flags. The field itself stays
+// rejected; the error carries the exact documented location or flag instead of
+// only "unknown field".
+func misplacedFieldRepair(path, name string) (fieldRepair, bool) {
 	settingsFields := map[string]bool{"speed": true, "effort": true, "access": true, "auto_compact_window": true}
 	switch {
 	case path == "$" && name == "settings":
-		return "settings belongs under selector: move it to $.selector.settings", "$.selector.settings"
+		return fieldRepair{suggestion: "settings belongs under selector: move it to $.selector.settings", target: "$.selector.settings",
+			example: &Request{SchemaVersion: 1, RequestKey: "<unique-request-key>",
+				Selector: Selector{Model: "<configured-model>", Settings: &Settings{Access: "coding"}}}}, true
 	case path == "$" && settingsFields[name]:
-		return name + " belongs under selector.settings: move it to $.selector.settings." + name, "$.selector.settings." + name
+		return fieldRepair{suggestion: name + " belongs under selector.settings: move it to $.selector.settings." + name, target: "$.selector.settings." + name,
+			example: &Request{SchemaVersion: 1, RequestKey: "<unique-request-key>",
+				Selector: Selector{Model: "<configured-model>", Settings: &Settings{Access: "coding"}}}}, true
 	case path == "$.selector" && settingsFields[name]:
-		return name + " belongs under selector.settings: move it to $.selector.settings." + name, "$.selector.settings." + name
+		return fieldRepair{suggestion: name + " belongs under selector.settings: move it to $.selector.settings." + name, target: "$.selector.settings." + name,
+			example: &Request{SchemaVersion: 1, RequestKey: "<unique-request-key>",
+				Selector: Selector{Model: "<configured-model>", Settings: &Settings{Access: "coding"}}}}, true
+	case (path == "$" || path == "$.selector") && (name == "label" || name == "labels"):
+		return fieldRepair{suggestion: "labels are not request fields: pass them with --label <value> on the delegate command (repeatable)",
+			flag: "--label", flagValue: "<label>"}, true
+	case (path == "$" || path == "$.selector") && name == "account":
+		return fieldRepair{suggestion: "accounts are not selectable in a request: accounts come from a capacity pool, so use {\"pool\":\"<name>\"} for capacity-balanced selection, or name a model with $.selector.model",
+			target:  "$.selector.pool",
+			example: &Request{SchemaVersion: 1, RequestKey: "<unique-request-key>", Selector: Selector{Pool: "<configured-pool>"}}}, true
+	case path == "$":
+		if flag, ok := delegateFlagFields[name]; ok {
+			suggestion := name + " is a delegate flag, not a request field: pass " + flag.flag
+			if flag.value != "" {
+				suggestion += " " + flag.value
+			}
+			return fieldRepair{suggestion: suggestion + " on the delegate command line", flag: flag.flag, flagValue: flag.value}, true
+		}
 	}
-	return "", ""
+	return fieldRepair{}, false
 }
 
-func requestErrorWithSuggestion(violation, diagnostic, path, scope, suggestion, target string) *Error {
+func requestErrorWithRepair(violation, diagnostic, path, scope string, repair fieldRepair) *Error {
 	issue := requestError(violation, diagnostic, path, scope)
-	issue.Suggestion = suggestion
-	issue.SuggestedPath = target
-	issue.Diagnostic = diagnostic + " at " + path + "; " + suggestion
-	issue.ExampleRequest = &Request{
-		SchemaVersion: 1, RequestKey: "<unique-request-key>",
-		Selector: Selector{Model: "<configured-model>", Settings: &Settings{Access: "coding"}},
+	issue.Suggestion = repair.suggestion
+	issue.SuggestedPath = repair.target
+	issue.RepairFlag = repair.flag
+	issue.RepairFlagValue = repair.flagValue
+	issue.Diagnostic = diagnostic + " at " + path + "; " + repair.suggestion
+	if repair.example != nil {
+		issue.ExampleRequest = repair.example
 	}
 	return issue
 }

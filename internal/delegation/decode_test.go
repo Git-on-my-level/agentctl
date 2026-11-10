@@ -227,3 +227,76 @@ func TestDecodeRequestSelectorLevelSettingsFieldNamesSettingsObject(t *testing.T
 		t.Fatalf("issue=%#v err=%v", issue, err)
 	}
 }
+
+// Agents put labels and accounts in the request file because the generic
+// unknown-field error names neither. The parser still rejects them, but the
+// error must say where they belong.
+func TestDecodeRequestRepairsLabelsAndAccounts(t *testing.T) {
+	cases := []struct {
+		name, body, path, contains, target, flag, flagValue string
+		poolExample                                         bool
+	}{
+		{
+			name: "labels array", path: "$.labels",
+			body:     `{"schema_version":1,"request_key":"k","selector":{"family":"grok"},"labels":["private-label-value"]}`,
+			contains: "--label <value>", flag: "--label", flagValue: "<label>",
+		},
+		{
+			name: "label string", path: "$.label",
+			body:     `{"schema_version":1,"request_key":"k","selector":{"family":"grok"},"label":"private-label-value"}`,
+			contains: "repeatable", flag: "--label", flagValue: "<label>",
+		},
+		{
+			name: "selector account", path: "$.selector.account",
+			body:     `{"schema_version":1,"request_key":"k","selector":{"family":"grok","account":"private-account"}}`,
+			contains: "accounts are not selectable", target: "$.selector.pool", poolExample: true,
+		},
+		{
+			name: "top-level account", path: "$.account",
+			body:     `{"schema_version":1,"request_key":"k","selector":{"family":"grok"},"account":"private-account"}`,
+			contains: `{"pool":"<name>"}`, target: "$.selector.pool", poolExample: true,
+		},
+		{
+			name: "timeout flag", path: "$.timeout",
+			body:     `{"schema_version":1,"request_key":"k","selector":{"family":"grok"},"timeout":"10m"}`,
+			contains: "delegate flag, not a request field", flag: "--timeout", flagValue: "<duration>",
+		},
+		{
+			name: "boolean detach flag", path: "$.detach",
+			body:     `{"schema_version":1,"request_key":"k","selector":{"family":"grok"},"detach":true}`,
+			contains: "--detach", flag: "--detach",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := DecodeRequest([]byte(tc.body))
+			var issue *Error
+			if !errors.As(err, &issue) {
+				t.Fatalf("accepted misplaced field: %v", err)
+			}
+			if issue.FieldPath != tc.path || issue.Violation != "unknown_field" {
+				t.Fatalf("issue=%#v", issue)
+			}
+			if !strings.Contains(issue.Error(), tc.contains) || !strings.Contains(issue.Suggestion, tc.contains) {
+				t.Fatalf("missing repair %q in %q", tc.contains, issue.Error())
+			}
+			if issue.SuggestedPath != tc.target || issue.RepairFlag != tc.flag || issue.RepairFlagValue != tc.flagValue {
+				t.Fatalf("repair=%#v", issue)
+			}
+			if issue.ExampleRequest == nil {
+				t.Fatal("no example request")
+			}
+			if tc.poolExample != (issue.ExampleRequest.Selector.Pool != "") {
+				t.Fatalf("example=%#v", issue.ExampleRequest)
+			}
+			example, _ := json.Marshal(issue.ExampleRequest)
+			if _, err := DecodeRequest(example); err != nil {
+				t.Fatalf("example violates schema: %s: %v", example, err)
+			}
+			encoded, _ := json.Marshal(issue)
+			if bytes.Contains(encoded, []byte("private-")) {
+				t.Fatalf("leaked request value: %s", encoded)
+			}
+		})
+	}
+}

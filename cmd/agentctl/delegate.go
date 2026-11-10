@@ -131,11 +131,11 @@ func delegateError(code output.Code, diagnostic, message string) *output.Error {
 }
 
 func readDelegateRequest(path string) (delegation.Request, *output.Error) {
-	r, _, problem := readDelegateRequestBody(path)
+	r, _, problem := readDelegateRequestBody(path, nil)
 	return r, problem
 }
 
-func readDelegateRequestBody(path string) (delegation.Request, []byte, *output.Error) {
+func readDelegateRequestBody(path string, repairArgv []string) (delegation.Request, []byte, *output.Error) {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > delegation.MaxRequestBytes {
 		return delegation.Request{}, nil, delegateError(output.CodeUsage, "delegate_request_file", "request must be an existing regular non-symlink file of at most 64 KiB")
@@ -155,12 +155,12 @@ func readDelegateRequestBody(path string) (delegation.Request, []byte, *output.E
 	}
 	request, err := delegation.DecodeRequest(body)
 	if err != nil {
-		return request, nil, mapDelegationError(err)
+		return request, nil, mapDelegationError(err, repairArgv)
 	}
 	return request, body, nil
 }
 
-func mapDelegationError(err error) *output.Error {
+func mapDelegationError(err error, repairArgv []string) *output.Error {
 	var issue *delegation.Error
 	if errors.As(err, &issue) {
 		code := output.CodeUsage
@@ -175,7 +175,16 @@ func mapDelegationError(err error) *output.Error {
 				WithDetail("example_request", issue.ExampleRequest).
 				WithDetail("example_guidance", "replace placeholders with a new request key and an exact model from the reviewed configured catalog")
 			if issue.Suggestion != "" {
-				problem.WithDetail("suggestion", issue.Suggestion).WithDetail("suggested_field_path", issue.SuggestedPath)
+				problem.WithDetail("suggestion", issue.Suggestion)
+				if issue.SuggestedPath != "" {
+					problem.WithDetail("suggested_field_path", issue.SuggestedPath)
+				}
+			}
+			if issue.RepairFlag != "" {
+				problem.WithDetail("repair_flag", issue.RepairFlag)
+				if action, ok := delegatedFieldRepairAction(issue, repairArgv); ok {
+					problem.WithActions(action)
+				}
 			}
 		}
 		if issue.Code == "delegate_no_matching_tuple" || issue.Code == "delegate_ambiguous_selector" {
@@ -200,6 +209,49 @@ func mapDelegationError(err error) *output.Error {
 		return problem
 	}
 	return delegateError(output.CodeUsage, "delegate_invalid_request", "invalid structured delegation request")
+}
+
+// delegatedFieldRepairAction turns a field that belongs on the delegate command
+// line into a copyable argv. The request file itself is never rewritten, so the
+// action states that the field must be removed before rerunning.
+// delegateRepairArgv is the caller's full invocation: global scope options,
+// then the delegate subcommand and its own arguments.
+func delegateRepairArgv(c common, args []string) []string {
+	argv := append([]string{"agentctl"}, commonScopeArgv(c)...)
+	return append(append(argv, "delegate"), args...)
+}
+
+func delegatedFieldRepairAction(issue *delegation.Error, invocation []string) (output.NextAction, bool) {
+	// Only --label is safe to append blindly: it takes a value, repeats, and
+	// conflicts with no other delegate flag. Flag-shaped keys such as wait,
+	// plan or request_file keep their hint text but get no argv, because
+	// appending them can duplicate a required flag or combine exclusive ones.
+	if issue.RepairFlag != "--label" || len(invocation) == 0 {
+		return output.NextAction{}, false
+	}
+	argv := append(append([]string(nil), invocation...), issue.RepairFlag)
+	placeholder := ""
+	if issue.RepairFlagValue != "" {
+		placeholder = issue.RepairFlagValue
+		argv = append(argv, placeholder)
+	}
+	preconditions := []string{"remove " + issue.FieldPath + " from the request file; " + issue.RepairFlag + " belongs on the delegate command line"}
+	if placeholder != "" {
+		preconditions = append(preconditions, "replace "+placeholder+" with each value you removed; repeat "+issue.RepairFlag+" once per value")
+	}
+	for _, arg := range invocation {
+		if arg == "--prompt-stdin" || arg == "-prompt-stdin" {
+			preconditions = append(preconditions, "pipe the same prompt into stdin again; --prompt-stdin reads it fresh")
+			break
+		}
+	}
+	return output.NextAction{
+		Label:           "Move " + issue.FieldPath + " to " + issue.RepairFlag + " and rerun",
+		Argv:            argv,
+		Mutates:         true,
+		SideEffectClass: output.ExternalSideEffect,
+		Preconditions:   preconditions,
+	}, true
 }
 
 func delegateEntries(profile config.Profile) []delegation.Entry {
@@ -281,7 +333,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	if c.contextFile != "" {
 		return delegateError(output.CodeCapabilityUnavailable, "delegate_context_unpinned", "structured delegation does not yet pin external context handles; supply bounded task context in the prompt")
 	}
-	request, requestBody, problem := readDelegateRequestBody(opts.requestFile)
+	request, requestBody, problem := readDelegateRequestBody(opts.requestFile, delegateRepairArgv(c, args))
 	if problem != nil {
 		return problem
 	}
@@ -384,7 +436,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 		var err error
 		resolution, err = delegation.Resolve(selector, delegateEntries(profile))
 		if err != nil {
-			return recoverAdmission(mapDelegationError(err))
+			return recoverAdmission(mapDelegationError(err, delegateRepairArgv(c, args)))
 		}
 	}
 	if opts.authority == "multica" {

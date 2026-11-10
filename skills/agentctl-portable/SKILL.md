@@ -142,6 +142,9 @@ When a profile configures capacity pools and the user named no model, request
 published usage, stops sending new work at `switch_threshold` (default 0.95), and
 reports its choice as `capacity`. Never combine a pool with harness, family,
 version, model, speed or effort, and never use a pool when the user named a model.
+Labels are command metadata: pass `--label <value>` (repeatable) to `delegate`,
+never as request fields. Accounts are not selectable; a request that names one is
+refused with a repair to `pool` or an exact model.
 
 ```json
 {"schema_version":1,"request_key":"review-01","selector":{"family":"grok"}}

@@ -1084,9 +1084,11 @@ func (a *app) resultUnreconciled(ctx context.Context, renderer output.Renderer, 
 	return nil
 }
 
-// Preserve the caller's scope and disclosure choices in executable next actions.
-func unreconciledContinuation(c common, opts resultOptions, before string) []string {
-	argv := []string{"agentctl", "--output", string(c.mode)}
+// commonScopeArgv rebuilds the global options that select configuration,
+// profile, context and journal, so an executable next action runs in the same
+// scope as the invocation that produced it.
+func commonScopeArgv(c common) []string {
+	var argv []string
 	for _, flag := range []struct{ name, value string }{
 		{"--profile", c.profile}, {"--context-file", c.contextFile},
 		{"--config", c.configPath}, {"--config-bundle", c.configBundle},
@@ -1096,6 +1098,12 @@ func unreconciledContinuation(c common, opts resultOptions, before string) []str
 			argv = append(argv, flag.name, flag.value)
 		}
 	}
+	return argv
+}
+
+// Preserve the caller's scope and disclosure choices in executable next actions.
+func unreconciledContinuation(c common, opts resultOptions, before string) []string {
+	argv := append([]string{"agentctl", "--output", string(c.mode)}, commonScopeArgv(c)...)
 	argv = append(argv, "result", "--unreconciled", "--limit", strconv.Itoa(opts.limit), "--before", before)
 	for _, label := range opts.labels {
 		argv = append(argv, "--label", label)
