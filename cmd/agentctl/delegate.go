@@ -215,7 +215,11 @@ func mapDelegationError(err error, args []string) *output.Error {
 // line into a copyable argv. The request file itself is never rewritten, so the
 // action states that the field must be removed before rerunning.
 func delegatedFieldRepairAction(issue *delegation.Error, args []string) (output.NextAction, bool) {
-	if issue.RepairFlag == "" || len(args) == 0 {
+	// Only --label is safe to append blindly: it takes a value, repeats, and
+	// conflicts with no other delegate flag. Flag-shaped keys such as wait,
+	// plan or request_file keep their hint text but get no argv, because
+	// appending them can duplicate a required flag or combine exclusive ones.
+	if issue.RepairFlag != "--label" || len(args) == 0 {
 		return output.NextAction{}, false
 	}
 	argv := append([]string{"agentctl", "delegate"}, args...)
@@ -229,6 +233,13 @@ func delegatedFieldRepairAction(issue *delegation.Error, args []string) (output.
 	if placeholder != "" {
 		preconditions = append(preconditions, "replace "+placeholder+" with each value you removed; repeat "+issue.RepairFlag+" once per value")
 	}
+	for _, arg := range args {
+		if arg == "--prompt-stdin" || arg == "-prompt-stdin" {
+			preconditions = append(preconditions, "pipe the same prompt into stdin again; --prompt-stdin reads it fresh")
+			break
+		}
+	}
+	preconditions = append(preconditions, "keep any global options (--config, --profile, --journal) you passed before the delegate subcommand")
 	return output.NextAction{
 		Label:           "Move " + issue.FieldPath + " to " + issue.RepairFlag + " and rerun",
 		Argv:            argv,

@@ -399,13 +399,15 @@ example requires a new logical-task key and a reviewed configured model; it is
 not a default model selection.
 
 A recognized misplaced field also carries `suggestion` and, when it belongs on
-the command line, `repair_flag` plus a next action whose argv keeps the caller's
-delegate arguments and adds the flag. Labels are `--label <value>` command
+the command line, `repair_flag`. Labels are `--label <value>` command
 metadata, never request fields, so `$.labels` and `$.label` are refused with
 that repair. Accounts are not selectable: `$.account` and `$.selector.account`
 point at `{"pool":"<name>"}` for capacity-balanced selection or an exact model.
 Other top-level keys that match a delegate flag name (`timeout`, `cwd`,
-`detach`, `wait`, and the rest) are reported as flags, not request fields. The
+`detach`, `wait`, and the rest) are reported as flags, not request fields. Only labels get a next action
+argv (the caller's delegate arguments plus `--label`), because appending other
+flags can duplicate a required flag or combine exclusive ones such as `--wait`
+and `--plan`; the argv omits global options given before `delegate`. The
 request itself stays strict; only the error gains the repair.
 
 No-match/ambiguity errors include at most 32 sorted, deduplicated reviewed

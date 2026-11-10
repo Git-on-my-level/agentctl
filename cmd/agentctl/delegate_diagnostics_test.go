@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -229,6 +228,7 @@ func TestDelegateTopLevelFlagFieldDiagnosticNamesFlag(t *testing.T) {
 		{"cwd", `"/tmp"`, "--cwd"},
 		{"detach", `true`, "--detach"},
 		{"wait", `true`, "--wait"},
+		{"request_file", `"r.json"`, "--request-file"},
 	} {
 		t.Run(tc.field, func(t *testing.T) {
 			f := newDelegateFixture(t, delegateSuccessScript)
@@ -244,7 +244,9 @@ func TestDelegateTopLevelFlagFieldDiagnosticNamesFlag(t *testing.T) {
 			if issue.Details["field_path"] != "$."+tc.field || !strings.Contains(suggestion, "delegate flag, not a request field") || !strings.Contains(suggestion, tc.flag) {
 				t.Fatalf("issue=%#v", issue)
 			}
-			if issue.Details["repair_flag"] != tc.flag || len(issue.NextActions) != 1 || !slices.Contains(issue.NextActions[0].Argv, tc.flag) {
+			// No argv: appending these flags can duplicate a required flag or
+			// combine exclusive ones (--wait with --plan), so only the hint ships.
+			if issue.Details["repair_flag"] != tc.flag || hasArgvRepair(issue.NextActions) {
 				t.Fatalf("actions=%#v", issue.NextActions)
 			}
 			assertDelegateNoExecutionSideEffects(t, f)
