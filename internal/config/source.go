@@ -153,7 +153,15 @@ func RestoreSourceWithGit(ctx context.Context, git SourceGit, configPath string)
 	if err != nil {
 		return SourceUpdate{}, err
 	}
-	if afterDigest != expected {
+	// Older source materialization omitted Anx. A verified pinned bundle can
+	// repair that omission, including schema-2 state written before the fix.
+	previousMaterialization := materialized
+	previousMaterialization.Anx = nil
+	previousDigest, err := sourceConfigSHA256(previousMaterialization)
+	if err != nil {
+		return SourceUpdate{}, err
+	}
+	if afterDigest != expected && previousDigest != expected {
 		return SourceUpdate{}, fmt.Errorf("%w: restored config digest does not match applied state", ErrConflict)
 	}
 	before, _ := fileSHA256(cleanConfig)
@@ -164,7 +172,7 @@ func RestoreSourceWithGit(ctx context.Context, git SourceGit, configPath string)
 	if err != nil {
 		return SourceUpdate{}, err
 	}
-	migrated := state.SchemaVersion != SourceSchemaVersion
+	migrated := state.SchemaVersion != SourceSchemaVersion || state.LiveSHA256 != afterDigest
 	if migrated {
 		state.SchemaVersion, state.LiveSHA256 = SourceSchemaVersion, afterDigest
 		if err := SaveSourceState(statePath, state, true); err != nil {
@@ -193,10 +201,10 @@ func (g NativeSourceGit) Run(ctx context.Context, dir string, args ...string) ([
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = dir
 	cmd.Env = gitSourceEnvironment()
-	var output bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &output, &output
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		text := strings.TrimSpace(output.String())
+		text := strings.TrimSpace(stdout.String() + stderr.String())
 		kind := ErrSourceGit
 		lower := strings.ToLower(text)
 		for _, marker := range []string{"permission denied", "authentication failed", "could not read username", "publickey", "access denied"} {
@@ -207,7 +215,7 @@ func (g NativeSourceGit) Run(ctx context.Context, dir string, args ...string) ([
 		}
 		return nil, fmt.Errorf("%w: git %s: %v: %s", kind, strings.Join(redactSourceGitArgs(args), " "), err, redactSourceGitText(text))
 	}
-	return output.Bytes(), nil
+	return stdout.Bytes(), nil
 }
 
 func DefaultSourceCheckout() (string, error) {
@@ -469,7 +477,7 @@ func UpdateSourceWithGit(ctx context.Context, git SourceGit, configPath string, 
 		}
 	}
 	materialized := applyHostLocalConfig(previousConfig, MaterializeBundle(bundle))
-	if commit == state.AppliedCommit && bundleDigest == state.BundleSHA256 {
+	if commit == state.AppliedCommit && bundleDigest == state.BundleSHA256 && configsEqual(previousConfig, materialized) {
 		migrated := state.SchemaVersion != SourceSchemaVersion
 		if migrated {
 			state.SchemaVersion, state.LiveSHA256 = SourceSchemaVersion, currentLive
@@ -743,6 +751,10 @@ func MaterializeBundle(bundle Bundle) Config {
 		copy := *bundle.Skills
 		cfg.Skills = &copy
 	}
+	if bundle.Anx != nil {
+		copy := *bundle.Anx
+		cfg.Anx = &copy
+	}
 	for name, profile := range bundle.Profiles {
 		cfg.Profiles[name] = profile.profile()
 	}
@@ -796,7 +808,11 @@ func appliedSourceConfigSHA256(ctx context.Context, git SourceGit, state SourceS
 	if err != nil {
 		return "", err
 	}
-	return sourceConfigSHA256(MaterializeBundle(bundle))
+	// Released schema-1 writers omitted Anx from materialization. Compare to
+	// their historical output before update/restore applies the corrected one.
+	previousMaterialization := MaterializeBundle(bundle)
+	previousMaterialization.Anx = nil
+	return sourceConfigSHA256(previousMaterialization)
 }
 
 func configsEqual(a, b Config) bool {
@@ -817,6 +833,9 @@ func configCanBeEnrichedBy(existing, desired Config) bool {
 		return false
 	}
 	if existing.Skills != nil && !reflect.DeepEqual(existing.Skills, desired.Skills) {
+		return false
+	}
+	if existing.Anx != nil && !reflect.DeepEqual(existing.Anx, desired.Anx) {
 		return false
 	}
 	for name, current := range existing.Profiles {

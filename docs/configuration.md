@@ -327,12 +327,24 @@ agentctl config source update
 ```
 
 This preserves local policy (including `journal.retention.enabled=false`). If
-the source has not advanced, migration writes only the state file, leaving live
-config bytes intact. Bundle-owned drift still refuses the update with
+the source has not advanced and the live materialization is already complete,
+migration writes only the state file, leaving live config bytes intact.
+Bundle-owned drift still refuses the update with
 `conflict` (exit 8); inspect it before choosing restore. No force or init reset
 is needed. `agentctl config source restore` is the offline alternative and
 restores bundle-owned values from the clean pinned checkout while preserving
 valid host-local policy.
+
+`anx` is bundle-owned and is materialized by source init/update/restore, just
+like profiles and skills. Init refuses to remove or replace an existing live
+`anx` section. Older source writers silently omitted bundled `anx`; the next
+update repairs that omission even if the source commit is unchanged, preserves
+host-local policy, and records the corrected digest. Offline restore repairs
+it from the verified pinned bundle as well. Both schema-1 state and schema-2
+state produced before this fix are supported. Manual bundle-owned changes
+still refuse update before fetching, including changes to `anx`; recovery is
+not an adoption of live edits. A repair reports `changed: true`, then becomes
+idempotent on subsequent updates.
 
 `source status` and either command's `--plan` form perform no fetch and make no
 filesystem changes. Plan output distinguishes the current plan invocation from
