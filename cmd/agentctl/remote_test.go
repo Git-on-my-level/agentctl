@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
+	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
@@ -1096,6 +1098,130 @@ func TestAwaitAnyRemoteAttentionAndIdentity(t *testing.T) {
 	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "1s")
 	if code != 11 || !strings.Contains(out, "delegate_remote_receipt_invalid") || !strings.Contains(out, `"execution_id":"`+id+`"`) || !strings.Contains(out, `"await","`+id+`"`) {
 		t.Fatalf("identity mismatch not actionable: %d %s", code, out)
+	}
+}
+
+func cloneRemoteCandidate(t *testing.T, f remoteFixture, source, destination string) string {
+	t.Helper()
+	e := f.execution(t, source)
+	e.ID = ids.ExecutionID("")
+	e.Delegation.RemotePlan.SSHDestination = destination
+	if destination == "unreachable" {
+		e.Delegation.RemotePlan.Host = "unreachable-workstation"
+		e.Delegation.Resolved.Host = "unreachable-workstation"
+	}
+	j, err := store.Open(f.journal, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	created, _, err := j.CreateExecution(context.Background(), e, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return created.ID.String()
+}
+
+func TestAwaitAnyRemoteWinnerSurvivesProbeErrors(t *testing.T) {
+	for _, failedFirst := range []bool{false, true} {
+		t.Run(fmt.Sprint(failedFirst), func(t *testing.T) {
+			f := newRemoteFixture(t)
+			code, out := f.invoke("winner", "--label", "noise.remote")
+			if code != 0 {
+				t.Fatal(out)
+			}
+			winner := remoteLocalID(t, out)
+			failed := cloneRemoteCandidate(t, f, winner, "unreachable")
+			script := string(mustRead(t, filepath.Join(f.root, "fake-ssh")))
+			script = strings.Replace(script, "case \"$3\" in", "if [ \"$2\" = unreachable ]; then exit 255; fi\ncase \"$3\" in", 1)
+			if err := os.WriteFile(filepath.Join(f.root, "fake-ssh"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			first, second := winner, failed
+			if failedFirst {
+				first, second = failed, winner
+			}
+			code, out = f.command("", "await-any", "--execution", first, "--execution", second, "--timeout", "1s")
+			var doc struct {
+				Result struct {
+					ExecutionID string `json:"execution_id"`
+				} `json:"result"`
+				Warnings []output.Warning `json:"warnings"`
+			}
+			if err := json.Unmarshal([]byte(out), &doc); err != nil {
+				t.Fatal(err)
+			}
+			if code != 0 || doc.Result.ExecutionID != winner || len(doc.Warnings) != 1 || doc.Warnings[0].Details["execution_id"] != failed {
+				t.Fatalf("winner hidden by unreachable host: %d %s", code, out)
+			}
+			if e := f.execution(t, failed); e.State != model.StateRunning {
+				t.Fatalf("failed probe changed row: %+v", e)
+			}
+		})
+	}
+}
+
+func TestAwaitAnyRemoteProbeErrorWaitsForDeadline(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	cloneRemoteCandidate(t, f, remoteLocalID(t, out), "unreachable")
+	if err := os.WriteFile(filepath.Join(f.root, "fail"), []byte("255"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"diagnostic", "fail-output"} {
+		if err := os.WriteFile(filepath.Join(f.root, name), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := time.Now()
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "200ms")
+	if code != 11 || !strings.Contains(out, `"remote_failure"`) || time.Since(start) < 180*time.Millisecond {
+		t.Fatalf("probe error returned before deadline: %s %d %s", time.Since(start), code, out)
+	}
+	var doc struct {
+		Warnings []output.Warning `json:"warnings"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil || len(doc.Warnings) != 2 {
+		t.Fatalf("missing per-host errors: %v %s", err, out)
+	}
+}
+
+func TestAwaitAnyRemoteProbeErrorRecoversWithoutTimeout(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	script := string(mustRead(t, filepath.Join(f.root, "fake-ssh")))
+	script = strings.Replace(script, `*"'status'"*) cat terminal`, `*"'status'"*) if [ ! -f retried ]; then touch retried; exit 255; fi; cat terminal`, 1)
+	if err := os.WriteFile(filepath.Join(f.root, "fake-ssh"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--no-timeout")
+	if code != 0 || strings.Contains(out, "await_any_remote_probe_failed") {
+		t.Fatalf("transient probe error did not recover: %d %s", code, out)
+	}
+}
+
+func TestAwaitAnyLabelPrefixCandidateLimit(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	source := remoteLocalID(t, out)
+	for range awaitAnyMaxExecutions {
+		cloneRemoteCandidate(t, f, source, "operator@ssh-alias")
+	}
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "200ms")
+	if code != 2 || !strings.Contains(out, `"candidate_limit":256`) {
+		t.Fatalf("prefix candidate set not bounded: %d %s", code, out)
+	}
+	if calls := string(mustRead(t, filepath.Join(f.root, "ssh-argv"))); strings.Contains(calls, "'status'") {
+		t.Fatal("oversized selector started SSH probes")
 	}
 }
 

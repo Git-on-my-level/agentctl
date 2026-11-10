@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,55 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/store"
 	"github.com/Git-on-my-level/agentctl/internal/testutil"
 )
+
+func TestAwaitAnyRemoteScanBoundsAndRotation(t *testing.T) {
+	candidates := make([]model.Execution, 3*awaitAnyRemoteConcurrency+1)
+	for i := range candidates {
+		id, err := ids.NewExecutionID(ids.CryptoGenerator{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		candidates[i].ID = id
+	}
+	var active, peak atomic.Int32
+	start := time.Now()
+	results, next := awaitAnyProbeRemote(context.Background(), candidates, 0, func(ctx context.Context, e model.Execution) (remoteReceipt, *output.Error) {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > awaitAnyRemoteProbeBudget {
+			t.Error("probe has no bounded deadline")
+		}
+		n := active.Add(1)
+		defer active.Add(-1)
+		for old := peak.Load(); n > old && !peak.CompareAndSwap(old, n); old = peak.Load() {
+		}
+		<-ctx.Done()
+		return remoteReceipt{}, output.NewError(output.CodeTimeout, "slow host", true)
+	})
+	elapsed := time.Since(start)
+	if peak.Load() != awaitAnyRemoteConcurrency || active.Load() != 0 {
+		t.Fatalf("concurrency/reaping: peak=%d active=%d", peak.Load(), active.Load())
+	}
+	if elapsed < awaitAnyRemoteScanBudget-100*time.Millisecond || elapsed > awaitAnyRemoteScanBudget+time.Second {
+		t.Fatalf("scan exceeded budget: %s", elapsed)
+	}
+	if len(results) >= len(candidates) || len(results) < awaitAnyRemoteConcurrency || next != awaitAnyRemoteConcurrency {
+		t.Fatalf("scan did not defer/rotate: probed=%d next=%d", len(results), next)
+	}
+	// Retry the first budget-interrupted row instead of repeatedly giving
+	// the same late wave a shortened probe window.
+	again, _ := awaitAnyProbeRemote(context.Background(), candidates, next, func(ctx context.Context, e model.Execution) (remoteReceipt, *output.Error) {
+		if e.ID == candidates[next].ID {
+			deadline, _ := ctx.Deadline()
+			if time.Until(deadline) < awaitAnyRemoteProbeBudget-100*time.Millisecond {
+				t.Error("resumed row did not get a full probe window")
+			}
+		}
+		return remoteReceipt{State: model.StateRunning}, nil
+	})
+	if len(again) != len(candidates) || again[0].execution.ID != candidates[next].ID {
+		t.Fatalf("later rows starved: next=%d results=%+v", next, again)
+	}
+}
 
 type awaitAnyDocument struct {
 	OK     bool `json:"ok"`

@@ -67,6 +67,20 @@ do not infer a continuous 120s holder solely from repeated failed acquisitions.
 An offline backup with the production freelist/page layout would allow safe
 reproduction without experimenting on the live file.
 
+### Review follow-up: next starvation instrumentation
+
+The independent PR review (2026-11-11) found no demonstrated journal handle
+held across network I/O or sleep in the inspected paths. Its strongest remaining
+single-command hypothesis is `reconcile`: `cmd/agentctl/reconcile.go:163–182`
+opens a write handle retained while classifying rows and proving process
+ownership (`:367`, `:541`). A large stale journal could make those operations
+slow. This is a hypothesis, not a reproduction of the incident. Instrument
+write-handle tenure around that classification/ownership work next, recording
+row counts and process-proof latency with the holder PID/stack. The alternative
+is aggregate short writes from many agents starving successive opens; measure
+individual holder tenure and acquisition gaps to distinguish it from a single
+long hold. Reconcile is intentionally unchanged in this PR.
+
 ## 2. Busy-budget override: bug
 
 `parseCommon` accepts the flag after subcommand flags. The resolved allowance
@@ -99,6 +113,22 @@ scratch remote journal for 700ms after status and for 11s under `--no-timeout`;
 both complete successfully. Collection adds no internal wall-clock deadline and
 uses the caller's deadline/context plus the configured contention allowance.
 Multica remains a cached local mirror, refreshed by its supervisor/per-id await.
+
+### Review regressions: mixed failures and scan bounds
+
+On the pre-review-fix head, `TestAwaitAnyRemoteWinnerSurvivesProbeErrors`
+reproduced a ready winner discarded by an unreachable host in either selector
+order; `TestAwaitAnyRemoteProbeErrorWaitsForDeadline` returned a remote failure
+after 30ms despite a 200ms wait. `TestAwaitAnyLabelPrefixCandidateLimit` observed
+257 candidates and timed out after beginning SSH probes. The fixes retain
+observed winners, report per-row failures as warnings, and defer a probe error
+until no winner exists at the caller deadline. Eight workers, 3s probes and a
+4s remote status scan budget bound fan-out; scans resume at the first row
+interrupted by the scan budget so each row eventually gets a full probe window.
+`TestAwaitAnyRemoteScanBoundsAndRotation` covers concurrency, cancellation/reaping,
+budget and continued coverage. Prefixes over 256 matching rows fail explicitly
+before SSH (including acknowledged rows); ordering and pending counts describe
+only observed matches. Help and the portable skill document these limits.
 
 ## 4. Supervisor degradation: remote-row bug; m5 load symptom unproven
 
@@ -145,6 +175,16 @@ from these exact runs is needed to distinguish payload/context/tool-schema
 rejection from a possible native shared-state defect.
 
 ## Validation and operator follow-ups
+
+During review validation on 2026-11-11, a Linux ARM64 container with Go 1.26.10
+hung in the unchanged `TestOversizedStructuredRecordReturnsTypedDiagnostic`.
+Clean `origin/main` (`b182f2a`) reproduced it with
+`go test ./internal/adapter -run '^TestOversizedStructuredRecordReturnsTypedDiagnostic$' -count=1 -timeout 20s`:
+`panic: test timed out after 20s`, naming that test. The native macOS adapter
+package passed. This platform-specific test issue is outside the two review
+fixes. The local complete-suite validation therefore runs config fixtures in
+isolated Linux (avoiding the managed-Git conflicts below) and all other packages
+on macOS; no test is skipped. Hosted CI validates its normal Linux environment.
 
 The existing `TestRemoteThroughBuiltBinary` failed on **clean b182f2a** with
 `not_found / load profile config` on this Mac. Its remote config used an

@@ -572,10 +572,18 @@ lowercase `[a-z0-9_.-]`, never `/`; for example `two-lane.<lane>` or
 `await-any --label-prefix <prefix> --timeout <duration>`; it exits like `await`
 (0, 9, 10, 11, 12, 13), names the execution in `execution_id` and
 `matched_kind`, and acknowledges only that execution locally. Remote forwarding
-rows are polled over SSH after closing the journal (3s per status, bounded by
-the wait deadline, with unchanged polls backing off to 4s). A transport failure
-returns an explicit error naming the row and a per-id `await` action. Only the
-winning terminal is collected through remote await/result; this acknowledges
+rows are polled over SSH after closing the journal: at most 8 concurrent
+probes, 3s per probe, and 4s per remote status scan (plus up to 2s SSH pipe
+cleanup), bounded by the wait deadline. Budget-limited scans resume interrupted rows before the remaining
+tail, so each row eventually gets a full probe window; `pending_matches` and oldest-trigger ordering cover observed matches.
+Unchanged polls back off to 4s. Selectors accept at most 256 executions; a prefix
+counts all matching rows, including acknowledged rows. An oversized prefix
+returns usage with `candidate_limit` before SSH; narrow it or use explicit IDs.
+Per-host probe failures become warnings naming the local row, remote identity
+and per-id `await` argv, and never hide an observed winner. Probes keep retrying;
+only when no winner exists at the wait deadline do remaining probe failures
+return an error. `--no-timeout` keeps retrying until a winner or cancellation.
+Only the winning terminal is collected through remote await/result; this acknowledges
 its remote result even with `--no-acknowledge`, which suppresses the local
 stamp. Other remote matches remain uncollected. The supervisor skips remote
 forwarding rows; use await/await-any to observe them. Loop until

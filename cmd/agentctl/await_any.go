@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/ids"
@@ -18,11 +19,14 @@ import (
 // returns the first one that needs the caller. See docs/design/lane-fan-in.md.
 
 const (
-	awaitAnyMaxExecutions = 256
-	awaitAnyKindTerminal  = "terminal"
-	awaitAnyKindAttention = "attention"
-	awaitAnyKindStall     = "stall"
-	awaitAnyKindIntegrity = "integrity"
+	awaitAnyMaxExecutions     = 256
+	awaitAnyRemoteConcurrency = 8
+	awaitAnyRemoteScanBudget  = 4 * time.Second
+	awaitAnyRemoteProbeBudget = 3 * time.Second
+	awaitAnyKindTerminal      = "terminal"
+	awaitAnyKindAttention     = "attention"
+	awaitAnyKindStall         = "stall"
+	awaitAnyKindIntegrity     = "integrity"
 )
 
 type awaitAnyOptions struct {
@@ -39,6 +43,100 @@ type awaitAnyMatch struct {
 	execution model.Execution
 	kind      string
 	triggerAt time.Time
+}
+
+type awaitAnyRemoteScan struct {
+	next     int
+	deferred int
+	problems map[ids.ExecutionID]*output.Error
+}
+
+func (s *awaitAnyRemoteScan) warnings() []output.Warning {
+	keys := make([]string, 0, len(s.problems))
+	for id := range s.problems {
+		keys = append(keys, id.String())
+	}
+	sort.Strings(keys)
+	warnings := []output.Warning{}
+	for _, key := range keys {
+		problem := s.problems[ids.ExecutionID(key)]
+		// Keep diagnostics and provider prose out of public scan warnings.
+		warnings = append(warnings, output.Warning{Code: "await_any_remote_probe_failed", Message: "Remote status probe failed; retry with per-execution await", Details: map[string]any{
+			"execution_id": key, "remote": problem.Details["remote"], "code": problem.Code, "await_argv": []string{"agentctl", "await", key},
+		}})
+	}
+	if s.deferred > 0 {
+		warnings = append(warnings, output.Warning{Code: "await_any_remote_scan_partial", Message: "Remote scan budget exhausted; remaining rows resume on the next scan", Details: map[string]any{"deferred": s.deferred}})
+	}
+	return warnings
+}
+
+func (s *awaitAnyRemoteScan) deadlineError() *output.Error {
+	if len(s.problems) == 0 {
+		return nil
+	}
+	// Warnings are sorted by local ID; retain the original error and per-id
+	// action for the first failure, with every host's failure in the envelope.
+	var first ids.ExecutionID
+	for id := range s.problems {
+		if first.IsZero() || id.String() < first.String() {
+			first = id
+		}
+	}
+	return s.problems[first].WithDetail("await_any_deadline_elapsed", true)
+}
+
+type awaitAnyProbeResult struct {
+	execution       model.Execution
+	receipt         remoteReceipt
+	problem         *output.Error
+	scanInterrupted bool
+}
+
+// A fixed worker pool limits SSH fan-out. Resume at the first scan-interrupted
+// row so every row gets a full probe window eventually. Join all workers
+// (including SSH cancellation/reaping) before returning.
+func awaitAnyProbeRemote(ctx context.Context, candidates []model.Execution, start int, probe func(context.Context, model.Execution) (remoteReceipt, *output.Error)) ([]awaitAnyProbeResult, int) {
+	if len(candidates) == 0 {
+		return nil, 0
+	}
+	scanCtx, cancel := context.WithTimeout(ctx, awaitAnyRemoteScanBudget)
+	defer cancel()
+	scanDeadline, _ := scanCtx.Deadline()
+	results := make([]awaitAnyProbeResult, len(candidates))
+	var mu sync.Mutex
+	var workers sync.WaitGroup
+	scheduled := 0
+	for range min(awaitAnyRemoteConcurrency, len(candidates)) {
+		workers.Go(func() {
+			for {
+				mu.Lock()
+				if scanCtx.Err() != nil || scheduled == len(candidates) {
+					mu.Unlock()
+					return
+				}
+				i := scheduled
+				scheduled++
+				mu.Unlock()
+				execution := candidates[(start+i)%len(candidates)]
+				probeCtx, cancel := context.WithTimeout(scanCtx, awaitAnyRemoteProbeBudget)
+				probeDeadline, _ := probeCtx.Deadline()
+				receipt, problem := probe(probeCtx, execution)
+				interrupted := problem != nil && probeCtx.Err() != nil && !probeDeadline.Before(scanDeadline)
+				cancel()
+				results[i] = awaitAnyProbeResult{execution: execution, receipt: receipt, problem: problem, scanInterrupted: interrupted}
+			}
+		})
+	}
+	workers.Wait()
+	resume := scheduled
+	for i, result := range results[:scheduled] {
+		if result.scanInterrupted {
+			resume = i
+			break
+		}
+	}
+	return results[:scheduled], (start + resume) % len(candidates)
 }
 
 func awaitAnyUsage() *output.Error {
@@ -195,6 +293,7 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 		return a.fail(renderer, output.Wrap(output.CodeExecutionCancelled, "await-any cancelled", false, ctx.Err()).WithDetail("selector", options.selector()))
 	}
 	lastWatched := 0
+	remoteScan := awaitAnyRemoteScan{problems: map[ids.ExecutionID]*output.Error{}}
 	var poll time.Duration
 	for {
 		if ctx.Err() != nil {
@@ -203,12 +302,14 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 		// One scan (open and reads) is bounded by the wait's deadline, with
 		// waitOpenFloor of grace so the final poll can still complete.
 		scanCtx, cancelScan := a.waitOpenContext(ctx, deadline)
-		matches, watched, opened, problem := a.awaitAnyScan(scanCtx, c, options)
+		matches, watched, opened, problem := a.awaitAnyScan(scanCtx, c, options, &remoteScan)
 		scanExpired := scanCtx.Err() != nil
 		cancelScan()
-		if problem == nil && scanExpired && !deadline.IsZero() && ctx.Err() == nil {
-			// The scan outlasted its deadline grace: report the timeout
-			// rather than a match found after it.
+		if ctx.Err() != nil {
+			return cancelled()
+		}
+		if problem == nil && len(matches) == 0 && len(remoteScan.problems) == 0 && scanExpired && !deadline.IsZero() {
+			// No observed winner or remote error can explain the expiry.
 			problem = output.NewError(output.CodeTimeout, "await-any scan exceeded its deadline", true)
 		}
 		if problem != nil {
@@ -216,6 +317,9 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 				return cancelled()
 			}
 			if !deadline.IsZero() && scanExpired {
+				if probeProblem := remoteScan.deadlineError(); probeProblem != nil {
+					return a.fail(renderer.WithWarnings(remoteScan.warnings()...), probeProblem)
+				}
 				// Neither a busy journal nor a long scan may hold the wait past
 				// --timeout.
 				message := "await-any deadline elapsed during the scan"
@@ -230,6 +334,7 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 		poll = nextAwaitPoll(poll, watched != lastWatched)
 		lastWatched = watched
 		if len(matches) > 0 {
+			renderer = renderer.WithWarnings(remoteScan.warnings()...)
 			match := matches[0]
 			if match.execution.RemoteForwarded() && match.kind == awaitAnyKindTerminal {
 				// Status already proved terminal. Let collection use the
@@ -248,6 +353,9 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 			return a.deliverAwaitAny(ctx, renderer, c, options, match, len(matches)-1, watched)
 		}
 		if !deadline.IsZero() && !a.now().Before(deadline) {
+			if probeProblem := remoteScan.deadlineError(); probeProblem != nil {
+				return a.fail(renderer.WithWarnings(remoteScan.warnings()...), probeProblem)
+			}
 			return a.fail(renderer, output.NewError(output.CodeTimeout, "await-any deadline elapsed", true).
 				WithDetail("selector", options.selector()).WithDetail("kinds", options.kindList()).WithDetail("watched", watched))
 		}
@@ -271,18 +379,22 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 // Exact-ID reads share one handle; label queries use advisory pages with the
 // handle released between pages. ctx bounds the whole scan. opened distinguishes
 // journal contention from a deadline reached after a successful open.
-func (a *app) awaitAnyScan(ctx context.Context, c common, options awaitAnyOptions) (matches []awaitAnyMatch, watched int, opened bool, problem *output.Error) {
-	matches, watched, problem = a.awaitAnyScanJournal(ctx, c, options, &opened)
+func (a *app) awaitAnyScan(ctx context.Context, c common, options awaitAnyOptions, remoteScan *awaitAnyRemoteScan) (matches []awaitAnyMatch, watched int, opened bool, problem *output.Error) {
+	matches, watched, problem = a.awaitAnyScanJournal(ctx, c, options, &opened, remoteScan)
 	return matches, watched, opened, problem
 }
 
-func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAnyOptions, opened *bool) ([]awaitAnyMatch, int, *output.Error) {
+func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAnyOptions, opened *bool, remoteScan *awaitAnyRemoteScan) ([]awaitAnyMatch, int, *output.Error) {
 	matches := []awaitAnyMatch{}
 	watched := 0
 	remoteCandidates := []model.Execution{}
 	skipReconciled := options.labelPrefix != "" && !options.includeAcknowledged
 	visit := func(journal *store.Journal, candidates []model.Execution) error {
 		watched += len(candidates)
+		if options.labelPrefix != "" && watched > awaitAnyMaxExecutions {
+			return output.NewError(output.CodeUsage, "await-any label prefix matches too many executions; narrow the prefix or use explicit IDs", false).
+				WithDetail("label_prefix", options.labelPrefix).WithDetail("candidate_limit", awaitAnyMaxExecutions)
+		}
 		var index store.AcknowledgementIndex
 		if skipReconciled && options.kinds[awaitAnyKindTerminal] {
 			var err error
@@ -364,13 +476,34 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 
 	// All journal handles are closed before SSH. Status is observational: only
 	// the eventual winner is collected or acknowledged, including remotely.
-	for _, execution := range remoteCandidates {
-		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		receipt, problem := remoteObservation(probeCtx, execution, "status", []string{"--journal-busy-budget", c.journalBusyBudget.String()})
-		cancel()
-		if problem != nil {
-			return nil, watched, problem.WithActions(output.NextAction{Label: "Wait for this remote execution", Argv: []string{"agentctl", "await", execution.ID.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite})
+	results, next := awaitAnyProbeRemote(ctx, remoteCandidates, remoteScan.next, func(probeCtx context.Context, execution model.Execution) (remoteReceipt, *output.Error) {
+		return remoteObservation(probeCtx, execution, "status", []string{"--journal-busy-budget", c.journalBusyBudget.String()})
+	})
+	remoteScan.next = next
+	remoteScan.deferred = len(remoteCandidates) - len(results)
+	for _, result := range results {
+		if result.scanInterrupted {
+			remoteScan.deferred++
 		}
+	}
+	// Drop errors for rows that no longer need probing, retaining errors for
+	// deferred rows until a later scan can observe them successfully.
+	current := map[ids.ExecutionID]bool{}
+	for _, execution := range remoteCandidates {
+		current[execution.ID] = true
+	}
+	for id := range remoteScan.problems {
+		if !current[id] {
+			delete(remoteScan.problems, id)
+		}
+	}
+	for _, result := range results {
+		execution, receipt, problem := result.execution, result.receipt, result.problem
+		if problem != nil {
+			remoteScan.problems[execution.ID] = problem.WithActions(output.NextAction{Label: "Wait for this remote execution", Argv: []string{"agentctl", "await", execution.ID.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite})
+			continue
+		}
+		delete(remoteScan.problems, execution.ID)
 		execution.State = receipt.State
 		if receipt.Observation != nil {
 			execution.Observation.Integrity = receipt.Observation.Integrity

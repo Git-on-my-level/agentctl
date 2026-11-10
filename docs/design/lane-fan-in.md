@@ -159,9 +159,17 @@ candidate matches when:
   `updated_at`.
 
 Remote-forwarding candidates refresh through SSH status **after all journal
-handles close**, with a 3s bound per row and the overall wait deadline. Transport
-failures return a structured error naming the local execution and a per-id
-`await` action. They never silently become an empty match set. Remote attention
+handles close**, with eight concurrent probes, a 3s per-probe bound and a 4s
+remote status scan budget, clipped by the overall wait deadline (SSH pipe
+cleanup can add up to 2s). Budget-limited scans resume with the first interrupted
+row on subsequent polls, giving each row a full probe window eventually. Selectors are capped at 256 rows; prefixes count all
+matching rows, including acknowledged ones, and return usage with
+`candidate_limit` before SSH when oversized. Narrow the prefix or use exact IDs.
+Probe failures do not stop other probes or discard observed matches: a winner
+is delivered with per-row warnings and per-id await argv. Without a winner,
+probe failures retry until the wait deadline, then return the first failure in
+local-ID order with all failures as warnings; no-timeout continues retrying.
+Oldest-trigger ordering and pending_matches cover only observed matches. Attention
 uses the remote `updated_at`; terminals use the remote `terminal_at`. Only the
 winning terminal is collected through remote await/result, retaining the outcome
 locally before delivery. Other matches are not collected. Remote collection
