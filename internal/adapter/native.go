@@ -689,6 +689,14 @@ func (p *processRecord) finish(err error) {
 			usage := *p.opencodeTokenUsage
 			p.result.TokenUsage = &usage
 		}
+		// Keep the explicit provider rejection without retaining provider text.
+		if p.result.State == StateFailed && p.opencodeProviderError && p.opencodeProviderErrorType == "provider.invalid-request" && p.opencodeHTTPStatus != 429 {
+			if p.result.Data == nil {
+				p.result.Data = map[string]any{}
+			}
+			p.result.Data["diagnostic_code"] = "opencode_provider_invalid_request"
+			p.result.Data["failure_structured"] = true
+		}
 		if p.result.State == StateFailed && p.opencodeHTTPStatus == 429 && p.opencodeProviderError {
 			// A 429 is capacity evidence only while the unresolved terminal
 			// cause is the provider error itself. When finish chose a local

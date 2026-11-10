@@ -240,7 +240,8 @@ Optional `route.ssh_hosts` maps the canonical host to an SSH alias or user@host;
 otherwise SSH uses the canonical host. `AGENTCTL_SSH` overrides ssh from PATH.
 The destination needs agentctl, the same absolute cwd, and a host alias it
 recognizes as local. Requests/selectors are forwarded unchanged; pool, account,
-and model selection happen remotely. Remote runs always detach; no worktree sync,
+and model selection happen remotely. The resolved journal-busy budget (flag, environment, or default, including zero)
+is forwarded through remote delegate/continue and terminal collection. Remote runs always detach; no worktree sync,
 daemon, version probe, or load-based host selection. SSH owns authentication.
 Keep using the local id. Receipts expose `remote` and execution JSON exposes
 `delegation.remote`: host, ssh_destination, execution_id, origin_host_id.
@@ -321,7 +322,9 @@ live owner and resume is unavailable; expert `run` adds no permission flag.
 Granted coding delegation adds OpenCode v2 `--auto`, reports constrained because
 explicit denials remain enforced, and refuses `read_only`. Structured 429 retry
 events retain attempt/delay/provider-type/status metadata without provider text;
-numeric step token counters accumulate into execution `token_usage`.
+numeric step token counters accumulate into execution `token_usage`. An unresolved
+`provider.invalid-request` becomes nonretryable `opencode_provider_invalid_request`
+(provider kind) with a fixed message; it does not prove a cwd collision.
 
 Never infer prompt delivery from an adapter name. Use `argv` only for a native
 form that expects a positional prompt and `stdin` only for a verified
@@ -568,7 +571,28 @@ lowercase `[a-z0-9_.-]`, never `/`; for example `two-lane.<lane>` or
 `card-<handle>`) and wake on the first one with
 `await-any --label-prefix <prefix> --timeout <duration>`; it exits like `await`
 (0, 9, 10, 11, 12, 13), names the execution in `execution_id` and
-`matched_kind`, and acknowledges only that execution. Loop until
+`matched_kind`, and acknowledges only that execution locally. Remote forwarding
+rows are polled over SSH after closing the journal: at most 8 concurrent
+probes, 3s per probe, and 4s per remote status scan (plus up to 2s SSH pipe
+cleanup), bounded by the wait deadline. Budget-limited scans resume interrupted rows before the remaining
+tail, so each row eventually gets a full probe window; `pending_matches` and oldest-trigger ordering cover observed matches.
+Unchanged polls back off to 4s. Selectors accept at most 256 executions; a prefix
+counts all matching rows, including acknowledged rows. An oversized prefix
+returns usage with `candidate_limit` before SSH; narrow it or use explicit IDs.
+Per-host probe failures become warnings naming the local row, remote identity
+and per-id `await` argv, and never hide an observed winner. Probes keep retrying;
+only when no winner exists at the wait deadline do remaining probe failures
+return an error. `--no-timeout` keeps retrying until a winner or cancellation.
+Once a terminal is observed, its collection uses the journal-busy budget
+independently of the state-wait `--timeout`; parent cancellation still applies.
+Integrity conflicts use the remote/local `observation.observed_at` as
+`trigger_at`, falling back to `updated_at` for older evidence, so `--since`
+can resume after new conflicts without losing them behind an older state time.
+A current journal-scan failure takes precedence over retained probe errors.
+Only the winning terminal is collected through remote await/result; this acknowledges
+its remote result even with `--no-acknowledge`, which suppresses the local
+stamp. Other remote matches remain uncollected. The supervisor skips remote
+forwarding rows; use await/await-any to observe them. Loop until
 `pending_matches` is 0, passing the last `trigger_at` as `--since` to move past
 attention. For a durable fan-in callback use
 `subscribe create --label-prefix <prefix>`; it covers executions launched later

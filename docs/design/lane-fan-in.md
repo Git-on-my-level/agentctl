@@ -80,7 +80,8 @@ An exhausted budget returns the existing error unchanged in class:
 `details.diagnostic_code: journal_busy`, plus `busy_attempts`,
 `busy_waited_ms`, and `busy_budget_ms`. The detached delegate worker inherits
 the launcher's resolved budget through its private pipe, including an explicit
-`--journal-busy-budget` flag or `0`. The worker's owned-execution writes already wait indefinitely, as
+`--journal-busy-budget` flag or `0`. Remote delegate/continue and terminal collection forward that resolved budget
+over SSH too; flag position does not affect it. The worker's owned-execution writes already wait indefinitely, as
 before.
 
 Scoped writable opens validate an already initialized schema without a write
@@ -138,9 +139,8 @@ Exactly one of `--execution` and `--label-prefix` is required (exit 2).
 
 ### Matching
 
-Each poll (one second apart) reads one journal snapshot: the read-only handle
-holds the journal's shared lock for the whole scan, which excludes every
-writer, so candidates, acknowledgements and attention events agree. A busy
+Each poll reads advisory journal pages, releasing the read-only handle between
+pages. Unchanged polls back off from 500ms to 4s with jitter. A busy
 journal is retried within the busy budget but never past `--timeout`. A
 candidate matches when:
 
@@ -156,11 +156,37 @@ candidate matches when:
   the authority recorded none.
 - **integrity**: its observation integrity is `conflicted`, whatever its
   state. Reported as `matched_kind: integrity`; `trigger_at` is
-  `updated_at`.
+  `observation.observed_at`, falling back to `updated_at` for older evidence.
+
+Remote-forwarding candidates refresh through SSH status **after all journal
+handles close**, with eight concurrent probes, a 3s per-probe bound and a 4s
+remote status scan budget, clipped by the overall wait deadline (SSH pipe
+cleanup can add up to 2s). Budget-limited scans resume with the first interrupted
+row on subsequent polls, giving each row a full probe window eventually. Selectors are capped at 256 rows; prefixes count all
+matching rows, including acknowledged ones, and return usage with
+`candidate_limit` before SSH when oversized. Narrow the prefix or use exact IDs.
+Probe failures do not stop other probes or discard observed matches: a winner
+is delivered with per-row warnings and per-id await argv. Without a winner,
+probe failures retry until the wait deadline, then return the first failure in
+local-ID order with all failures as warnings; no-timeout continues retrying.
+A later journal-scan failure takes precedence over retained probe failures.
+Oldest-trigger ordering and pending_matches cover only observed matches. Attention
+uses the remote `updated_at`; terminals use the remote `terminal_at`. Only the
+winning terminal is collected through remote await/result, retaining the outcome
+locally before delivery. Other matches are not collected. Remote collection
+acknowledges that result remotely even with `--no-acknowledge`; that flag suppresses
+the **local** stamp. Collection uses the resolved journal busy budget and the
+parent context; once terminal is observed, `--timeout` no longer caps collection.
+The state wait has finished, so journal contention gets its full configured
+budget even when collection extends beyond the state-wait deadline. Remote observation
+integrity is authoritative under either kind filter. Remote `terminal_at` is
+retained for matching, while local admission time decides whether a forwarding
+row predates local acknowledgement tracking, so clock skew cannot hide it.
+Supervisor recovery skips remote-forwarding rows.
 
 The match with the oldest `trigger_at` wins, ties broken by execution ID, so
 the choice is deterministic. `pending_matches` counts the other matches in the
-same snapshot; a caller loops until it reaches 0.
+same scan; a caller loops until it reaches 0.
 
 ### Result and exit codes
 

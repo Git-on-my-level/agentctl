@@ -46,3 +46,14 @@ func TestParkedNativeRecoverySurvivesSupervisorRestart(t *testing.T) {
 		t.Fatalf("pause rewritten: %+v", got)
 	}
 }
+
+func TestSupervisorSkipsRemoteForwarding(t *testing.T) {
+	engine, journal, _ := testEngine(t, NewRegistry())
+	// This row deliberately has no local source binding: the remote host owns it.
+	execution := model.Execution{ID: "exec-abandon-abandon-abandon-abandon-abandon-aisle", State: model.StateRunning, Delegation: &model.DelegationBinding{RemotePlan: &model.DelegationRemotePlan{Host: "remote"}}}
+	journal.executions[execution.ID] = execution
+	listed, err := (SupervisorExecutions{Engine: engine}).ListNonTerminal(context.Background())
+	if err != nil || len(listed) != 0 {
+		t.Fatalf("remote scheduled for native reprobe: %v %v", listed, err)
+	}
+}

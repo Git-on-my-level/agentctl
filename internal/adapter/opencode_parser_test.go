@@ -708,3 +708,15 @@ func TestOpenCodeFullBufferStillProcessesStepControls(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenCodeInvalidRequestRetainsClassifier(t *testing.T) {
+	record := &processRecord{parser: opencodeJSONParser{}, done: make(chan struct{}), ref: SourceRef{Adapter: "opencode"}}
+	record.ingest([]byte(`{"type":"error","error":{"type":"provider.invalid-request","message":"private provider text"}}`), false)
+	record.finish(nil)
+	if record.result == nil || record.result.Data["diagnostic_code"] != "opencode_provider_invalid_request" {
+		t.Fatalf("classifier lost: %+v", record.result)
+	}
+	if record.result.Content != "" {
+		t.Fatal("failed output became answer")
+	}
+}

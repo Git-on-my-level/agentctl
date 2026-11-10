@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
+	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
@@ -890,5 +892,494 @@ func TestRemoteWaitReplayAfterDeadlineUsesCollectedOutcome(t *testing.T) {
 				t.Fatal("collected replay contacted SSH", err)
 			}
 		})
+	}
+}
+
+func TestRemoteBusyBudgetForwarded(t *testing.T) {
+	for _, budget := range []string{"300s", "0"} {
+		t.Run(budget, func(t *testing.T) {
+			f := newRemoteFixture(t)
+			code, out := f.invoke("task", "--timeout", "40m", "--journal-busy-budget", budget, "--label", "noise.test")
+			if code != 0 {
+				t.Fatalf("%d %s", code, out)
+			}
+			command := string(mustRead(t, filepath.Join(f.root, "launch-command")))
+			duration, _ := time.ParseDuration(budget)
+			if !strings.Contains(command, remoteCommand("--journal-busy-budget", duration.String())) {
+				t.Fatalf("budget dropped: %s", command)
+			}
+		})
+	}
+}
+
+func TestAwaitAnyRemotePrefix(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	id := remoteLocalID(t, out)
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "200ms")
+	if code != 0 || !strings.Contains(out, `"execution_id":"`+id+`"`) {
+		t.Fatalf("remote terminal invisible: %d %s", code, out)
+	}
+	e := f.execution(t, id)
+	if e.State != model.StateCompleted {
+		t.Fatalf("terminal not collected: %+v", e)
+	}
+	j, err := store.Open(f.journal, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := ids.ParseExecutionID(id)
+	_, err = j.GetAcknowledgement(context.Background(), parsed)
+	j.Close()
+	if err != nil {
+		t.Fatalf("winner not acknowledged: %v", err)
+	}
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "10ms")
+	if code != 9 {
+		t.Fatalf("acknowledged terminal repeated: %d %s", code, out)
+	}
+}
+
+func TestAwaitAnyRemoteFailureAndNoAcknowledge(t *testing.T) {
+	for _, state := range []model.State{model.StateCompleted, model.StateFailed, model.StateCancelled, model.StateOrphaned} {
+		t.Run(string(state), func(t *testing.T) {
+			f := newRemoteFixture(t)
+			code, out := f.invoke("task", "--label", "noise.remote")
+			if code != 0 {
+				t.Fatal(out)
+			}
+			id := remoteLocalID(t, out)
+			at := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+			f.writeJSON(t, "terminal", map[string]any{"id": remoteTestID, "origin_host_id": remoteTestHost, "state": state, "terminal_at": at, "updated_at": at, "liveness": "exited"})
+			f.writeOutcome(t, state)
+			code, out = f.command("", "await-any", "--execution", id, "--timeout", "1s", "--no-acknowledge")
+			want := map[model.State]int{model.StateCompleted: 0, model.StateFailed: 11, model.StateCancelled: 12, model.StateOrphaned: 13}[state]
+			if code != want || !strings.Contains(out, `"acknowledged":false`) || !strings.Contains(out, `"trigger_at":"2026-11-08T00:00:00Z"`) {
+				t.Fatalf("%d %s", code, out)
+			}
+			e := f.execution(t, id)
+			if e.State != state || e.TerminalAt == nil || !e.TerminalAt.Equal(at) {
+				t.Fatalf("terminal time/state lost: %+v", e)
+			}
+			j, err := store.Open(f.journal, store.Options{ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, _ := ids.ParseExecutionID(id)
+			_, ackErr := j.GetAcknowledgement(context.Background(), parsed)
+			_, outcomeErr := j.GetOutcome(context.Background(), parsed)
+			j.Close()
+			if !errors.Is(ackErr, store.ErrNotFound) || outcomeErr != nil {
+				t.Fatalf("ack=%v outcome=%v", ackErr, outcomeErr)
+			}
+			// Advancing --since must work against the cached terminal too.
+			code, out = f.command("", "await-any", "--execution", id, "--since", at.Format(time.RFC3339Nano), "--timeout", "10ms")
+			if code != 9 {
+				t.Fatalf("terminal repeated after since: %d %s", code, out)
+			}
+		})
+	}
+}
+
+func TestAwaitAnyRemoteStalledStatusReleasesJournal(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	script := string(mustRead(t, filepath.Join(f.root, "fake-ssh")))
+	// No descendants: cancellation reaps the SSH fixture itself.
+	script = strings.Replace(script, "*\"'status'\"*) cat terminal", `*"'status'"*) touch probing; exec sleep 10`, 1)
+	if err := os.WriteFile(filepath.Join(f.root, "fake-ssh"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var waitCode int
+	var waitOut string
+	go func() {
+		defer close(done)
+		waitCode, waitOut = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "300ms")
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(f.root, "probing")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("SSH not started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	j, err := store.Open(f.journal, store.Options{LockTimeout: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("SSH holds journal: %v", err)
+	}
+	j.Close()
+	<-done
+	if waitCode != 9 || !strings.Contains(waitOut, `"timeout"`) {
+		t.Fatalf("%d %s", waitCode, waitOut)
+	}
+}
+
+func TestAwaitAnyRemoteCollectsOnlyWinner(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("first", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	first := remoteLocalID(t, out)
+	f.writeJSON(t, "receipt", map[string]any{"id": remoteNextID, "origin_host_id": remoteTestHost, "state": "running", "resolved": model.DelegationTarget{Harness: "cursor", Model: "remote-only-model", Host: "other-workstation", Authority: model.AuthorityNative}, "provenance": map[string]any{"configuration_sha256": "sha256:" + strings.Repeat("b", 64)}})
+	body := strings.Replace(string(mustRead(t, f.request)), "test-work-1", "test-work-2", 1)
+	if err := os.WriteFile(f.request, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out = f.invoke("second", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	second := remoteLocalID(t, out)
+	at := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+	for _, item := range []struct {
+		name, id string
+		at       time.Time
+	}{{"terminal", remoteTestID, at}, {"terminal-next", remoteNextID, at.Add(time.Minute)}} {
+		f.writeJSON(t, item.name, map[string]any{"id": item.id, "origin_host_id": remoteTestHost, "state": "completed", "updated_at": item.at, "terminal_at": item.at})
+	}
+	if err := os.WriteFile(filepath.Join(f.root, "result-next"), bytes.ReplaceAll(mustRead(t, filepath.Join(f.root, "result")), []byte(remoteTestID), []byte(remoteNextID)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	script := string(mustRead(t, filepath.Join(f.root, "fake-ssh")))
+	for _, command := range []string{"await", "status", "result"} {
+		file := "terminal"
+		if command == "result" {
+			file = "result"
+		}
+		script = strings.Replace(script, "*\"'"+command+"'\"*) cat "+file, "*\"'"+command+"'\"*) case \"$3\" in *"+remoteNextID+"*) cat "+file+"-next ;; *) cat "+file+" ;; esac", 1)
+	}
+	if err := os.WriteFile(filepath.Join(f.root, "fake-ssh"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "2s")
+	if code != 0 || !strings.Contains(out, `"execution_id":"`+first+`"`) || !strings.Contains(out, `"pending_matches":1`) {
+		t.Fatalf("%d %s", code, out)
+	}
+	if e := f.execution(t, second); e.State != model.StateRunning {
+		t.Fatalf("loser collected: %+v", e)
+	}
+	calls := string(mustRead(t, filepath.Join(f.root, "ssh-argv")))
+	if strings.Count(calls, "'result'") != 1 || strings.Contains(calls, "'result' '"+remoteNextID+"'") {
+		t.Fatalf("losing remote was collected: %s", calls)
+	}
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "2s")
+	if code != 0 || !strings.Contains(out, `"execution_id":"`+second+`"`) {
+		t.Fatalf("second never drained: %d %s", code, out)
+	}
+}
+
+func TestAwaitAnyRemoteAttentionAndIdentity(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	id := remoteLocalID(t, out)
+	f.writeJSON(t, "terminal", map[string]any{"id": remoteTestID, "origin_host_id": remoteTestHost, "state": "attention", "updated_at": "2026-11-08T00:00:00Z"})
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "1s")
+	if code != 10 || !strings.Contains(out, `"execution_id":"`+id+`"`) || !strings.Contains(out, `"matched_kind":"attention"`) {
+		t.Fatalf("%d %s", code, out)
+	}
+	if e := f.execution(t, id); e.State != model.StateRunning {
+		t.Fatalf("attention collection mutated local row: %+v", e)
+	}
+	f.writeJSON(t, "terminal", map[string]any{"id": remoteNextID, "origin_host_id": remoteTestHost, "state": "completed"})
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "1s")
+	if code != 11 || !strings.Contains(out, "delegate_remote_receipt_invalid") || !strings.Contains(out, `"execution_id":"`+id+`"`) || !strings.Contains(out, `"await","`+id+`"`) {
+		t.Fatalf("identity mismatch not actionable: %d %s", code, out)
+	}
+}
+
+func cloneRemoteCandidate(t *testing.T, f remoteFixture, source, destination string) string {
+	t.Helper()
+	e := f.execution(t, source)
+	e.ID = ids.ExecutionID("")
+	e.Delegation.RemotePlan.SSHDestination = destination
+	if destination == "unreachable" {
+		e.Delegation.RemotePlan.Host = "unreachable-workstation"
+		e.Delegation.Resolved.Host = "unreachable-workstation"
+	}
+	j, err := store.Open(f.journal, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	created, _, err := j.CreateExecution(context.Background(), e, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return created.ID.String()
+}
+
+func TestAwaitAnyRemoteWinnerSurvivesProbeErrors(t *testing.T) {
+	for _, failedFirst := range []bool{false, true} {
+		t.Run(fmt.Sprint(failedFirst), func(t *testing.T) {
+			f := newRemoteFixture(t)
+			code, out := f.invoke("winner", "--label", "noise.remote")
+			if code != 0 {
+				t.Fatal(out)
+			}
+			winner := remoteLocalID(t, out)
+			failed := cloneRemoteCandidate(t, f, winner, "unreachable")
+			script := string(mustRead(t, filepath.Join(f.root, "fake-ssh")))
+			script = strings.Replace(script, "case \"$3\" in", "if [ \"$2\" = unreachable ]; then exit 255; fi\ncase \"$3\" in", 1)
+			if err := os.WriteFile(filepath.Join(f.root, "fake-ssh"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			first, second := winner, failed
+			if failedFirst {
+				first, second = failed, winner
+			}
+			code, out = f.command("", "await-any", "--execution", first, "--execution", second, "--timeout", "1s")
+			var doc struct {
+				Result struct {
+					ExecutionID string `json:"execution_id"`
+				} `json:"result"`
+				Warnings []output.Warning `json:"warnings"`
+			}
+			if err := json.Unmarshal([]byte(out), &doc); err != nil {
+				t.Fatal(err)
+			}
+			if code != 0 || doc.Result.ExecutionID != winner || len(doc.Warnings) != 1 || doc.Warnings[0].Details["execution_id"] != failed {
+				t.Fatalf("winner hidden by unreachable host: %d %s", code, out)
+			}
+			if e := f.execution(t, failed); e.State != model.StateRunning {
+				t.Fatalf("failed probe changed row: %+v", e)
+			}
+		})
+	}
+}
+
+func TestAwaitAnyRemoteProbeErrorWaitsForDeadline(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	cloneRemoteCandidate(t, f, remoteLocalID(t, out), "unreachable")
+	if err := os.WriteFile(filepath.Join(f.root, "fail"), []byte("255"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"diagnostic", "fail-output"} {
+		if err := os.WriteFile(filepath.Join(f.root, name), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := time.Now()
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "200ms")
+	if code != 11 || !strings.Contains(out, `"remote_failure"`) || time.Since(start) < 180*time.Millisecond {
+		t.Fatalf("probe error returned before deadline: %s %d %s", time.Since(start), code, out)
+	}
+	var doc struct {
+		Warnings []output.Warning `json:"warnings"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil || len(doc.Warnings) != 2 {
+		t.Fatalf("missing per-host errors: %v %s", err, out)
+	}
+}
+
+func TestAwaitAnyRemoteProbeErrorRecoversWithoutTimeout(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	script := string(mustRead(t, filepath.Join(f.root, "fake-ssh")))
+	script = strings.Replace(script, `*"'status'"*) cat terminal`, `*"'status'"*) if [ ! -f retried ]; then touch retried; exit 255; fi; cat terminal`, 1)
+	if err := os.WriteFile(filepath.Join(f.root, "fake-ssh"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--no-timeout")
+	if code != 0 || strings.Contains(out, "await_any_remote_probe_failed") {
+		t.Fatalf("transient probe error did not recover: %d %s", code, out)
+	}
+}
+
+func TestAwaitAnyLabelPrefixCandidateLimit(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	source := remoteLocalID(t, out)
+	for range awaitAnyMaxExecutions {
+		cloneRemoteCandidate(t, f, source, "operator@ssh-alias")
+	}
+	code, out = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "200ms")
+	if code != 2 || !strings.Contains(out, `"candidate_limit":256`) {
+		t.Fatalf("prefix candidate set not bounded: %d %s", code, out)
+	}
+	if calls := string(mustRead(t, filepath.Join(f.root, "ssh-argv"))); strings.Contains(calls, "'status'") {
+		t.Fatal("oversized selector started SSH probes")
+	}
+}
+
+func TestAwaitAnyRemoteIntegrityIsActionableForEitherKind(t *testing.T) {
+	for _, initial := range []string{"running", "completed"} {
+		t.Run(initial, func(t *testing.T) {
+			f := newRemoteFixture(t)
+			var receipt map[string]any
+			if err := json.Unmarshal(mustRead(t, filepath.Join(f.root, "receipt")), &receipt); err != nil {
+				t.Fatal(err)
+			}
+			receipt["result"].(map[string]any)["state"] = initial
+			body, _ := json.Marshal(receipt)
+			if err := os.WriteFile(filepath.Join(f.root, "receipt"), body, 0600); err != nil {
+				t.Fatal(err)
+			}
+			code, out := f.invoke("task", "--label", "noise.remote")
+			if code != 0 {
+				t.Fatal(out)
+			}
+			id := remoteLocalID(t, out)
+			f.writeJSON(t, "terminal", map[string]any{"id": remoteTestID, "origin_host_id": remoteTestHost, "state": "completed", "updated_at": "2026-11-08T00:00:00Z", "observation": map[string]any{"source": "status_api", "integrity": "conflicted", "observed_at": "2026-11-08T00:00:00Z"}})
+			for _, kind := range []string{"terminal", "attention"} {
+				code, out = f.command("", "await-any", "--execution", id, "--kinds", kind, "--timeout", "100ms")
+				if code != 13 || !strings.Contains(out, `"matched_kind":"integrity"`) {
+					t.Fatalf("%s: %d %s", kind, code, out)
+				}
+			}
+		})
+	}
+}
+
+func TestAwaitAnyRemoteClockSkewRemainsUnreconciled(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	id := remoteLocalID(t, out)
+	at := time.Now().UTC().Add(-time.Hour)
+	f.writeJSON(t, "terminal", map[string]any{"id": remoteTestID, "origin_host_id": remoteTestHost, "state": "completed", "updated_at": at, "terminal_at": at})
+	for i := 0; i < 2; i++ {
+		code, out = f.command("", "await-any", "--label-prefix", "noise.", "--no-acknowledge", "--timeout", "100ms")
+		if code != 0 || !strings.Contains(out, `"execution_id":"`+id+`"`) {
+			t.Fatalf("round %d: %d %s", i, code, out)
+		}
+	}
+	code, out = f.command("", "recent", "--unreconciled")
+	if code != 0 || !strings.Contains(out, id) {
+		t.Fatalf("uncollected result hidden: %d %s", code, out)
+	}
+}
+
+func TestAwaitAnyRemoteConflictAfterSince(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	id := remoteLocalID(t, out)
+	f.writeJSON(t, "terminal", map[string]any{"id": remoteTestID, "origin_host_id": remoteTestHost, "state": "completed", "updated_at": "2026-11-08T10:00:00Z", "terminal_at": "2026-11-08T10:00:00Z", "observation": map[string]any{"source": "status_api", "integrity": "conflicted", "observed_at": "2026-11-08T11:00:00Z"}})
+	for _, kind := range []string{"terminal", "attention"} {
+		code, out = f.command("", "await-any", "--execution", id, "--kinds", kind, "--since", "2026-11-08T10:30:00Z", "--timeout", "100ms")
+		if code != 13 || !strings.Contains(out, `"trigger_at":"2026-11-08T11:00:00Z"`) || !strings.Contains(out, `"matched_kind":"integrity"`) {
+			t.Fatalf("new remote conflict hidden by since (%s): %d %s", kind, code, out)
+		}
+	}
+	code, out = f.command("", "await-any", "--execution", id, "--since", "2026-11-08T11:00:00Z", "--timeout", "100ms")
+	if code != 9 {
+		t.Fatalf("conflict repeated after resume: %d %s", code, out)
+	}
+}
+
+func TestAwaitAnyRemoteCollectionHonorsCancellation(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	id := remoteLocalID(t, out)
+	script := string(mustRead(t, filepath.Join(f.root, "fake-ssh")))
+	script = strings.Replace(script, `*"'await'"*) cat terminal`, `*"'await'"*) touch collecting; exec sleep 10`, 1)
+	if err := os.WriteFile(filepath.Join(f.root, "fake-ssh"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	done := make(chan int, 1)
+	go func() {
+		done <- a.run(ctx, []string{"--config", f.config, "--journal", f.journal, "await-any", "--execution", id, "--timeout", "100ms"})
+	}()
+	for {
+		if _, err := os.Stat(filepath.Join(f.root, "collecting")); err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			<-done
+			t.Fatal("remote collection did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case code := <-done:
+		if code != 12 {
+			t.Fatalf("cancellation: %d %s", code, stdout.String())
+		}
+	case <-time.After(2 * time.Second):
+		<-done
+		t.Fatal("collection ignored parent cancellation")
+	}
+}
+
+func TestAwaitAnyJournalTimeoutOverridesOldProbeError(t *testing.T) {
+	f := newRemoteFixture(t)
+	code, out := f.invoke("task", "--label", "noise.remote")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	script := string(mustRead(t, filepath.Join(f.root, "fake-ssh")))
+	script = strings.Replace(script, `*"'status'"*) cat terminal`, `*"'status'"*) touch probed; exit 255`, 1)
+	if err := os.WriteFile(filepath.Join(f.root, "fake-ssh"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var waitCode int
+	var waitOut string
+	go func() {
+		defer close(done)
+		waitCode, waitOut = f.command("", "await-any", "--label-prefix", "noise.", "--timeout", "800ms", "--journal-busy-budget", "2s")
+	}()
+	until := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(f.root, "probed")); err == nil {
+			break
+		}
+		if time.Now().After(until) {
+			<-done
+			t.Fatal("remote probe did not run")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	holder, err := store.Open(f.journal, store.Options{LockTimeout: time.Second})
+	if err != nil {
+		<-done
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		holder.Close()
+		<-done
+		t.Fatal("journal contention exceeded wait deadline")
+	}
+	if waitCode != 9 || !strings.Contains(waitOut, "while the journal was busy") || strings.Contains(waitOut, "await_any_remote_probe_failed") {
+		t.Fatalf("old probe error masked current journal timeout: %d %s", waitCode, waitOut)
 	}
 }
