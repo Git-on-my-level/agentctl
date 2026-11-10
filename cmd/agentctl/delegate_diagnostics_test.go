@@ -175,7 +175,9 @@ func TestDelegateLabelsDiagnosticRepairsWithLabelFlag(t *testing.T) {
 	if issue.Details["repair_flag"] != "--label" {
 		t.Fatalf("repair_flag=%#v", issue.Details["repair_flag"])
 	}
-	want := []string{"agentctl", "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin", "--plan", "--authority", "native", "--label", "<label>"}
+	// The fixture selects a nondefault --config and --journal; the repair must
+	// rerun in that scope, not against the default profile and journal.
+	want := []string{"agentctl", "--config", f.config, "--journal", f.journal, "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin", "--plan", "--authority", "native", "--label", "<label>"}
 	if len(issue.NextActions) != 1 || !reflect.DeepEqual(issue.NextActions[0].Argv, want) {
 		t.Fatalf("actions=%#v", issue.NextActions)
 	}

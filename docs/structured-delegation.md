@@ -407,7 +407,8 @@ Other top-level keys that match a delegate flag name (`timeout`, `cwd`,
 `detach`, `wait`, and the rest) are reported as flags, not request fields. Only labels get a next action
 argv (the caller's delegate arguments plus `--label`), because appending other
 flags can duplicate a required flag or combine exclusive ones such as `--wait`
-and `--plan`; the argv omits global options given before `delegate`. The
+and `--plan`; the argv keeps the caller's global scope options (`--config`,
+`--config-bundle`, `--profile`, `--journal`). The
 request itself stays strict; only the error gains the repair.
 
 No-match/ambiguity errors include at most 32 sorted, deduplicated reviewed

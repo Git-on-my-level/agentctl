@@ -135,7 +135,7 @@ func readDelegateRequest(path string) (delegation.Request, *output.Error) {
 	return r, problem
 }
 
-func readDelegateRequestBody(path string, args []string) (delegation.Request, []byte, *output.Error) {
+func readDelegateRequestBody(path string, repairArgv []string) (delegation.Request, []byte, *output.Error) {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > delegation.MaxRequestBytes {
 		return delegation.Request{}, nil, delegateError(output.CodeUsage, "delegate_request_file", "request must be an existing regular non-symlink file of at most 64 KiB")
@@ -155,12 +155,12 @@ func readDelegateRequestBody(path string, args []string) (delegation.Request, []
 	}
 	request, err := delegation.DecodeRequest(body)
 	if err != nil {
-		return request, nil, mapDelegationError(err, args)
+		return request, nil, mapDelegationError(err, repairArgv)
 	}
 	return request, body, nil
 }
 
-func mapDelegationError(err error, args []string) *output.Error {
+func mapDelegationError(err error, repairArgv []string) *output.Error {
 	var issue *delegation.Error
 	if errors.As(err, &issue) {
 		code := output.CodeUsage
@@ -182,7 +182,7 @@ func mapDelegationError(err error, args []string) *output.Error {
 			}
 			if issue.RepairFlag != "" {
 				problem.WithDetail("repair_flag", issue.RepairFlag)
-				if action, ok := delegatedFieldRepairAction(issue, args); ok {
+				if action, ok := delegatedFieldRepairAction(issue, repairArgv); ok {
 					problem.WithActions(action)
 				}
 			}
@@ -214,16 +214,22 @@ func mapDelegationError(err error, args []string) *output.Error {
 // delegatedFieldRepairAction turns a field that belongs on the delegate command
 // line into a copyable argv. The request file itself is never rewritten, so the
 // action states that the field must be removed before rerunning.
-func delegatedFieldRepairAction(issue *delegation.Error, args []string) (output.NextAction, bool) {
+// delegateRepairArgv is the caller's full invocation: global scope options,
+// then the delegate subcommand and its own arguments.
+func delegateRepairArgv(c common, args []string) []string {
+	argv := append([]string{"agentctl"}, commonScopeArgv(c)...)
+	return append(append(argv, "delegate"), args...)
+}
+
+func delegatedFieldRepairAction(issue *delegation.Error, invocation []string) (output.NextAction, bool) {
 	// Only --label is safe to append blindly: it takes a value, repeats, and
 	// conflicts with no other delegate flag. Flag-shaped keys such as wait,
 	// plan or request_file keep their hint text but get no argv, because
 	// appending them can duplicate a required flag or combine exclusive ones.
-	if issue.RepairFlag != "--label" || len(args) == 0 {
+	if issue.RepairFlag != "--label" || len(invocation) == 0 {
 		return output.NextAction{}, false
 	}
-	argv := append([]string{"agentctl", "delegate"}, args...)
-	argv = append(argv, issue.RepairFlag)
+	argv := append(append([]string(nil), invocation...), issue.RepairFlag)
 	placeholder := ""
 	if issue.RepairFlagValue != "" {
 		placeholder = issue.RepairFlagValue
@@ -233,13 +239,12 @@ func delegatedFieldRepairAction(issue *delegation.Error, args []string) (output.
 	if placeholder != "" {
 		preconditions = append(preconditions, "replace "+placeholder+" with each value you removed; repeat "+issue.RepairFlag+" once per value")
 	}
-	for _, arg := range args {
+	for _, arg := range invocation {
 		if arg == "--prompt-stdin" || arg == "-prompt-stdin" {
 			preconditions = append(preconditions, "pipe the same prompt into stdin again; --prompt-stdin reads it fresh")
 			break
 		}
 	}
-	preconditions = append(preconditions, "keep any global options (--config, --profile, --journal) you passed before the delegate subcommand")
 	return output.NextAction{
 		Label:           "Move " + issue.FieldPath + " to " + issue.RepairFlag + " and rerun",
 		Argv:            argv,
@@ -328,7 +333,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	if c.contextFile != "" {
 		return delegateError(output.CodeCapabilityUnavailable, "delegate_context_unpinned", "structured delegation does not yet pin external context handles; supply bounded task context in the prompt")
 	}
-	request, requestBody, problem := readDelegateRequestBody(opts.requestFile, args)
+	request, requestBody, problem := readDelegateRequestBody(opts.requestFile, delegateRepairArgv(c, args))
 	if problem != nil {
 		return problem
 	}
@@ -431,7 +436,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 		var err error
 		resolution, err = delegation.Resolve(selector, delegateEntries(profile))
 		if err != nil {
-			return recoverAdmission(mapDelegationError(err, args))
+			return recoverAdmission(mapDelegationError(err, delegateRepairArgv(c, args)))
 		}
 	}
 	if opts.authority == "multica" {
