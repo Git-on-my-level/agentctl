@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/output"
@@ -230,5 +232,62 @@ func TestSourceRestorePlanDistinguishesLiveDriftFromCheckoutDrift(t *testing.T) 
 				t.Fatalf("would_restore=%v blockers=%v", got, blockers)
 			}
 		})
+	}
+}
+
+func TestConfigSourceLegacyHostLocalRecoveryThroughCLI(t *testing.T) {
+	root := testutil.TempDir(t)
+	author := filepath.Join(root, "author")
+	if err := os.Mkdir(author, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitFixtureCommand(t, author, "init", "--quiet", "-b", "main")
+	data, err := os.ReadFile(cliBundle(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(author, "config-bundle.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitFixtureCommand(t, author, "add", ".")
+	gitFixtureCommand(t, author, "-c", "user.name=Agentctl Test", "-c", "user.email=agentctl@example.test", "commit", "--quiet", "-m", "fixture")
+	configPath := filepath.Join(root, "runtime", "config.json")
+	if _, err := config.InitSource(context.Background(), configPath, config.SourceSpec{Remote: author, CheckoutPath: filepath.Join(root, "managed")}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	statePath, _ := config.SourceStatePath(configPath)
+	state, err := config.LoadSourceState(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, _ := os.ReadFile(configPath)
+	state.SchemaVersion = 1
+	state.LiveSHA256 = fmt.Sprintf("%x", sha256.Sum256(live))
+	if err := config.SaveSourceState(statePath, state, true); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	off := false
+	cfg.Journal = &config.Journal{Retention: &config.JournalRetention{Enabled: &off}}
+	cfg.Bootstrap = &config.Bootstrap{InstructionPointers: "off"}
+	if err := config.Save(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range [][]string{{"config", "doctor"}, {"config", "source", "update"}, {"config", "doctor"}} {
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		if code := a.run(context.Background(), append([]string{"--config", configPath}, command...)); code != 0 {
+			t.Fatalf("%v exit=%d stdout=%s stderr=%s", command, code, stdout.String(), stderr.String())
+		}
+		if strings.Contains(stdout.String(), `"valid":false`) || !strings.Contains(stdout.String(), `"in_sync":true`) {
+			t.Fatalf("%v unhealthy: %s", command, stdout.String())
+		}
+	}
+	got, err := config.Load(configPath)
+	if err != nil || got.Journal == nil || got.Journal.Retention.Enabled == nil || *got.Journal.Retention.Enabled || got.Bootstrap.InstructionPointers != "off" {
+		t.Fatalf("CLI recovery lost host-local policy: %#v err=%v", got, err)
 	}
 }
