@@ -147,7 +147,7 @@ func (r *cleanupReader) remove(before time.Time, options CleanupOptions, targets
 			err = r.with(false, func(j *Journal) error {
 				// The generation comparison covers every legacy/current writer, including
 				// a new subscription or lineage link created between the read and write.
-				return j.db.Update(func(tx *bbolt.Tx) error {
+				return j.update(func(tx *bbolt.Tx) error {
 					if tx.ID() != snapshot.version+1 {
 						return ErrConflict
 					}
@@ -239,6 +239,11 @@ func (r *cleanupReader) remove(before time.Time, options CleanupOptions, targets
 								}
 								if err != nil {
 									return err
+								}
+								if bytes.Equal(record.bucket, bIdempotency) {
+									if err := noteChildrenIndexMutation(tx, record.key); err != nil {
+										return err
+									}
 								}
 							}
 						}

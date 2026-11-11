@@ -63,6 +63,9 @@ func putAttributionBinding(tx *bbolt.Tx, e model.Execution) error {
 		if err := bucket.Put(append(prefix, []byte(e.ID.String())...), body); err != nil {
 			return err
 		}
+		if err := noteChildrenIndexMutation(tx, append(prefix, []byte(e.ID.String())...)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

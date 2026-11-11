@@ -132,7 +132,7 @@ func (j *Journal) EnqueueDelivery(ctx context.Context, request DeliveryRequest) 
 	}
 	var result DeliveryRecord
 	var reused bool
-	err := j.db.Update(func(tx *bbolt.Tx) error {
+	err := j.update(func(tx *bbolt.Tx) error {
 		var txErr error
 		result, reused, txErr = enqueueDeliveryTx(tx, request, j.clock().UTC(), j.generator)
 		return txErr
@@ -348,7 +348,7 @@ func (j *Journal) AckDelivery(ctx context.Context, id string, receipt DeliveryRe
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return j.db.Update(func(tx *bbolt.Tx) error {
+	return j.update(func(tx *bbolt.Tx) error {
 		item, _, err := loadDelivery(tx, id)
 		if err != nil {
 			return err
@@ -508,7 +508,7 @@ func (j *Journal) RetryDelivery(ctx context.Context, id string, next time.Time, 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return j.db.Update(func(tx *bbolt.Tx) error {
+	return j.update(func(tx *bbolt.Tx) error {
 		item, _, err := loadDelivery(tx, id)
 		if err != nil {
 			return err
@@ -558,7 +558,7 @@ func (j *Journal) BeginDeliveryAttempt(ctx context.Context, id string) (Delivery
 		return DeliveryRecord{}, err
 	}
 	var result DeliveryRecord
-	err := j.db.Update(func(tx *bbolt.Tx) error {
+	err := j.update(func(tx *bbolt.Tx) error {
 		item, _, err := loadDelivery(tx, id)
 		if err != nil {
 			return err
@@ -635,7 +635,7 @@ func (j *Journal) PauseDelivery(ctx context.Context, id, reason string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return j.db.Update(func(tx *bbolt.Tx) error {
+	return j.update(func(tx *bbolt.Tx) error {
 		item, _, err := loadDelivery(tx, id)
 		if err != nil {
 			return err
@@ -670,7 +670,7 @@ func (j *Journal) DeadLetterDelivery(ctx context.Context, id, reason string) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return j.db.Update(func(tx *bbolt.Tx) error {
+	return j.update(func(tx *bbolt.Tx) error {
 		outbox, err := ensureJournalBucket(tx, bOutbox)
 		if err != nil {
 			return err

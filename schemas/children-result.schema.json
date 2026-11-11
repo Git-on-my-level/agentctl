@@ -24,7 +24,7 @@
       "const": 1
     },
     "complete": {
-      "description": "The retained attributed index was completely read within bounds; this does not prove that an unreceipted remote launch did not happen.",
+      "description": "The retained attributed index was completely read within bounds with stable membership across pages; this does not prove that an unreceipted remote launch did not happen.",
       "const": true
     },
     "coverage": {

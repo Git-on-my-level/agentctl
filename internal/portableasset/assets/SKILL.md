@@ -488,7 +488,7 @@ waiter while siblings can keep running. External/old waiters remain unknown. A l
 Remote rows can have stale cached state. After a lost SSH receipt, preserve uncertain admission and retry the identical key; complete covers the retained index, not every attempted launch. Parent-graph retention still protects acknowledged terminal graphs. Coverage includes only newly attributed retained executions. A 1.5s processing
 budget, 50ms read-lock attempts, and bounded indexed reads fail with
 `children_query_incomplete` (exit 9) instead of partial success. Treat every error
-as unknown coverage, never an empty set.
+as unknown coverage, never an empty set. Membership changes between pages also fail closed; certified outcome writes do not invalidate the scope, while uncertified older writes conservatively require a retry. Lifecycle state remains live per page.
 
 Native owners flag outstanding children on terminal execution/outcome with
 `uncollected_children`, exact `collect_argv`, and a warning. Completed parents
