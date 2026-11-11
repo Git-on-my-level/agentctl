@@ -41,10 +41,13 @@ Tests isolate HOME/XDG state through `go-hermetic.sh`; callback fixtures use
 local disposable destinations. No real page, Telegram, paid native call, operator
 journal write, host installation, merge, tag, release or GCP tier was used.
 
+`PLAIN_GIT_DIR` and `NOTIFY_BLOCK_DIR` below name the recorded disposable
+plain-git and notification-stub directories using portable variables.
+
 ```sh
-PYTHONDONTWRITEBYTECODE=1 PATH=/Volumes/Ephemeral/scratch/pr147-tests/plain-bin:$PATH make ci
-PYTHONDONTWRITEBYTECODE=1 PATH=/Volumes/Ephemeral/scratch/pr147-tests/plain-bin:$PATH scripts/go-hermetic.sh go test -race ./cmd/agentctl ./internal/store ./internal/runtime -count=1
-PYTHONDONTWRITEBYTECODE=1 PATH=/Volumes/Ephemeral/scratch/pr147-tests/plain-bin:$PATH scripts/go-hermetic.sh go test -race ./cmd/agentctl ./internal/store -run 'TestChildren|TestAwaitContinuesWhenWaiterRegistrationFails|TestWaiter|TestAutomaticCleanupRemovesUnkeyedCallerAttribution|TestManagedChildrenAndLaunchAttributionFailClosedOnContention|TestNativeAdmissionPreservesParentAfterContendedJournal' -count=3
+PYTHONDONTWRITEBYTECODE=1 PATH="$PLAIN_GIT_DIR:$NOTIFY_BLOCK_DIR:$PATH" make ci
+PYTHONDONTWRITEBYTECODE=1 PATH="$PLAIN_GIT_DIR:$NOTIFY_BLOCK_DIR:$PATH" scripts/go-hermetic.sh go test -race ./cmd/agentctl ./internal/store ./internal/runtime -count=1
+PYTHONDONTWRITEBYTECODE=1 PATH="$PLAIN_GIT_DIR:$NOTIFY_BLOCK_DIR:$PATH" scripts/go-hermetic.sh go test -race ./cmd/agentctl ./internal/store -run 'TestChildren|TestAwaitContinuesWhenWaiterRegistrationFails|TestWaiter|TestAutomaticCleanupRemovesUnkeyedCallerAttribution|TestManagedChildrenAndLaunchAttributionFailClosedOnContention|TestNativeAdmissionPreservesParentAfterContendedJournal' -count=3
 git diff --check
 ```
 
