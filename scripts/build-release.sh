@@ -10,9 +10,9 @@ VERSION=${VERSION:-}
 TARGETS=${TARGETS:-}
 PYTHON=${PYTHON:-python3}
 # Space-separated per-release-line minimums: each listed Go line must meet its
-# own fixed patch (GO-2026-6809 is fixed in 1.26.10 and 1.27.3). A line older
+# own fixed patch (GO-2026-6859 is fixed in 1.26.11 and 1.27.4). A line older
 # than every listed line is rejected; a line newer than every listed line passes.
-MIN_RELEASE_GO_VERSION=${MIN_RELEASE_GO_VERSION:-go1.26.10 go1.27.3}
+MIN_RELEASE_GO_VERSION=${MIN_RELEASE_GO_VERSION:-go1.26.11 go1.27.4}
 
 die() { printf 'error: %s\n' "$*" >&2; exit 2; }
 usage() {
