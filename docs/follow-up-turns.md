@@ -56,7 +56,11 @@ A failed or cancelled follow-up does not block the session: continue again
 from the same completed turn with a new request key.
 
 OpenCode v2 uses `run --format json --session <recorded-id> -- <instruction>`
-with the original frozen recipe. Never use latest-session selection or invent a
+with the original frozen recipe. Native recovery requires CLI 2.2.6 in both the
+recorded execution and the current version probe. Before actual continuation,
+a bounded native `session export --sanitize` checks existence; its output is
+discarded. A missing or unprovable session refuses without sending the prompt.
+Plans do not run that export. Never use latest-session selection or invent a
 session id: OpenCode creates unknown ids silently. A disconnected client does
 not prove the background turn stopped. In a recovery instruction, ask it to
 inspect history and return the previous final answer if complete, otherwise

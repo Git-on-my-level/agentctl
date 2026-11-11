@@ -252,7 +252,20 @@ func opencodeResumeArgv(base []string, sessionID, delivery string) ([]string, er
 	if argvHasFlag(base, "--session", "-s", "--continue", "-c", "--fork", "--no-session", "--worktree", "-w") {
 		return nil, fmt.Errorf("OpenCode resume requires a recipe without session selection")
 	}
+	if argvHasFlag(base, "--server", "--standalone") {
+		return nil, fmt.Errorf("OpenCode resume requires the verified background-service recipe")
+	}
 	return append(append([]string(nil), trimTrailingDelimiter(base)...), "--session", sessionID, "--"), nil
+}
+
+// OpenCodeResumeVersionSupported is the verified native-history recovery
+// contract, not a guess based on the presence of --session in CLI help.
+func OpenCodeResumeVersionSupported(version string) bool {
+	switch strings.TrimSpace(version) {
+	case "2.2.6", "v2.2.6", "opencode 2.2.6", "opencode v2.2.6":
+		return true
+	}
+	return false
 }
 
 func zcodeResumeArgv(base []string, sessionID, delivery string) ([]string, error) {

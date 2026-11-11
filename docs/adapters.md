@@ -267,11 +267,20 @@ meaning.
 - Sum `step_finish.part.tokens` counters across the execution into numeric
   `token_usage` metadata: input, output, cache read/write, and reasoning when
   present. Cost, text, reasoning content, and raw token objects are not retained.
+- Native continuation and failed-turn parking are verified only for CLI 2.2.6.
+  Both the recorded execution version and freshly probed executable must match.
+  Explicit `--server` and `--standalone` recipes remain unverified and refused.
 - Delegated completed and exited failed turns continue with the frozen recipe
   plus `--session <recorded-id>` before `--`. Only the recorded binding selects
   the session: an unknown OpenCode id would silently create a new session.
   Argv prompt delivery and `run --format json` are required; recipes that
   already select/fork a session or create a worktree are refused.
+  On execution, before admission or prompt delivery, the same executable checks
+  the exact session using `session export --sanitize -- <recorded-id>` in the
+  frozen environment and working directory. Both streams are discarded; a
+  nonzero exit or timeout fails closed as `continue_opencode_session_unverified`.
+  Plans probe the version but do not export history. Concurrent external deletion
+  between this check and launch is outside agentctl's control.
 - Known-session network and explicit provider-capacity failures park as
   `attention`/`blocked` with `paused_network`/`paused_capacity` after client exit.
   Same-key replay never relaunches. Use a new-key `continue` instruction to

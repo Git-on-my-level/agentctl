@@ -18,6 +18,9 @@ func (a *app) parkNativeFailure(journal *store.Journal, execution model.Executio
 	if nativeSessionID(execution) == "" {
 		return execution, false, nil // no exact checkpoint exists to resume
 	}
+	if execution.Adapter == "opencode" && !verifiedOpenCodeExecution(execution) {
+		return execution, false, nil
+	}
 	plan := execution.Delegation.NativePlan
 	if plan == nil {
 		return execution, false, nil

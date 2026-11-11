@@ -593,7 +593,7 @@ func TestOpenCodeContinuationRejectsAmbiguousRecipes(t *testing.T) {
 			}
 		})
 	}
-	for _, flags := range [][]string{{"--session", "other"}, {"--session=other"}, {"-s", "other"}, {"-s=other"}, {"--continue"}, {"-c"}, {"--fork"}, {"--no-session"}, {"--worktree"}, {"-w=other"}} {
+	for _, flags := range [][]string{{"--session", "other"}, {"--session=other"}, {"-s", "other"}, {"-s=other"}, {"--continue"}, {"-c"}, {"--fork"}, {"--no-session"}, {"--worktree"}, {"-w=other"}, {"--server", "http://example.invalid"}, {"--standalone"}} {
 		base := append(append([]string(nil), valid...), flags...)
 		base = append(base, "--")
 		if _, err := ContinuationArgv("opencode", base, PromptDeliveryArgv, "s-1"); err == nil {

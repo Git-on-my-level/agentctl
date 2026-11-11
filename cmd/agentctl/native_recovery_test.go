@@ -164,7 +164,16 @@ func opencodeRecoveryFixture(t *testing.T, failure string, session bool) delegat
 	if !session {
 		start = ":"
 	}
-	script := "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'opencode 2.2.6'; exit 0; fi\necho launch >> '" + f.count + "'\n" + `
+	script := "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'opencode 2.2.6'; exit 0; fi\n" + `if [ "$1" = session ]; then
+ [ "$#" = 5 ] && [ "$2" = export ] && [ "$3" = --sanitize ] && [ "$4" = -- ] && [ "$5" = s1 ] || exit 21
+ echo check >> "` + filepath.Join(f.root, "exports") + `"
+ echo private-native-export >&2
+ [ "${OPENCODE_TEST_EXPORT_MISSING:-0}" != 1 ] || exit 1
+ [ "${OPENCODE_TEST_EXPORT_STALL:-0}" != 1 ] || exec sleep 30
+ echo private-native-export
+ exit 0
+fi
+` + "echo launch >> '" + f.count + "'\n" + `
 case " $* " in
 *" --session s1 -- "*)
  for arg do last="$arg"; done

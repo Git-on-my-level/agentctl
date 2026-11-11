@@ -401,7 +401,12 @@ close an idle parked execution locally. ZCode coding-session continuation is
 verified only for CLI 0.17.0; its disposable read_only session storage cannot
 resume. ZCode process-interruption steering remains unavailable. Carry-forward
 still requires a completed turn with a verified stored answer. OpenCode recovery
-uses only the recorded session and frozen recipe. Its background turn may finish
+uses only the recorded session and frozen recipe; both recorded and current
+CLI versions must be 2.2.6. Before sending the prompt, actual continuation checks
+existence through a bounded native `session export --sanitize` with both streams
+discarded. Missing or unprovable sessions refuse; plans do not export history.
+External deletion racing the check and launch remains outside agentctl's control.
+Its background turn may finish
 after client transport loss: inspect native history and return the prior final
 answer if already complete; do not repeat completed work. `await` does not
 reconnect to the background service. Process-interruption steering is unavailable.

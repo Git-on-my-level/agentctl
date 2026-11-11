@@ -178,6 +178,9 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		return mapAdapterError("adapter probe failed", err)
 	}
 	if runtime.Name() == "opencode" && opts.resumeSession != "" && opts.delegation != nil && opts.delegation.NativePlan != nil {
+		if !adapter.OpenCodeResumeVersionSupported(probe.BackendVersion) {
+			return output.NewError(output.CodeCapabilityUnavailable, "OpenCode session continuation is verified only for CLI 2.2.6", false).WithDetail("diagnostic_code", "continue_opencode_version_unverified")
+		}
 		// An admitted continuation selects its recorded session in argv. Future
 		// turns use the frozen, selection-free recipe, so negotiate resume from
 		// that recipe rather than treating our own --session as caller selection.
@@ -241,6 +244,11 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			return output.Wrap(output.CodeInternal, "write output", false, err)
 		}
 		return nil
+	}
+	if runtime.Name() == "opencode" && opts.resumeSession != "" {
+		if problem := verifyOpenCodeSession(operationCtx, opts); problem != nil {
+			return problem
+		}
 	}
 	// Do not create a durable execution when the operation was already
 	// interrupted before launch preparation began. Once an execution is

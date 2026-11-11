@@ -723,3 +723,25 @@ func TestOpenCodeInvalidRequestRetainsClassifier(t *testing.T) {
 		t.Fatal("failed output became answer")
 	}
 }
+
+func TestOpenCodeProbeGatesResumeOnVerifiedVersion(t *testing.T) {
+	for _, version := range []string{"opencode 2.2.6", "opencode v2.2.6", "opencode 1.17.13", "opencode 2.2.7"} {
+		path := fixtureExecutable(t, `printf '%s\n' '`+version+`'`)
+		got, err := NewOpenCode().Probe(context.Background(), ProbeRequest{Executable: path, Argv: []string{path, "run", "--format", "json", "--", "task"}, PromptDelivery: PromptDeliveryArgv, PromptArgs: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, c := range got.Capabilities {
+			if c.Name == CapabilityResume {
+				found = true
+				if (c.Status == CapabilitySupported) != OpenCodeResumeVersionSupported(version) {
+					t.Fatalf("%s: %s %s", version, c.Status, c.Reason)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("resume capability missing")
+		}
+	}
+}
