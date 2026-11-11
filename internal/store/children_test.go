@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -231,5 +233,99 @@ func TestChildrenSkipsRefusedReservationsButKeepsLaunchedCancellation(t *testing
 	got, err := cleanupForPath(path).Children(ctx, ChildrenScope{Provider: "claude", NativeSessionID: hash('a')}, now)
 	if err != nil || len(got) != 1 || got[0].ID != ordinary.ID || got[0].Reason != "terminal_uncollected" {
 		t.Fatalf("reservation/cancellation distinction: %+v %v", got, err)
+	}
+}
+
+func TestChildrenAttentionRequiresAttentionSubscription(t *testing.T) {
+	for _, kinds := range [][]string{{"terminal"}, {"progress"}, {"attention"}, {"terminal", "attention"}, nil} {
+		t.Run(fmt.Sprint(kinds), func(t *testing.T) {
+			ctx := context.Background()
+			j, _, now := openTestJournal(t)
+			e := sampleExecution(now)
+			e.State = model.StateAttention
+			e.CallerIdentity = &model.CallerIdentity{Provider: "codex", NativeSessionID: hash('a'), Provenance: "explicit"}
+			e, _, err := j.CreateExecution(ctx, e, contracts.MutationKey{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sub := durableTestSubscription(durableTestID(ids.TypeSubscription, 1))
+			sub.Filter.ExecutionIDs, sub.Filter.Kinds = []string{e.ID.String()}, kinds
+			sub.ExpiresAt = now.Add(time.Hour)
+			if _, _, err := j.PutSubscription(ctx, sub); err != nil {
+				t.Fatal(err)
+			}
+			path := j.path
+			j.Close()
+			scope := ChildrenScope{Provider: "codex", NativeSessionID: hash('a')}
+			got, err := cleanupForPath(path).Children(ctx, scope, now)
+			want := 1
+			if len(kinds) == 0 || slices.Contains(kinds, "attention") {
+				want = 0
+			}
+			if err != nil || len(got) != want {
+				t.Fatalf("attention coverage: %+v %v", got, err)
+			}
+			got, err = cleanupForPath(path).Children(ctx, scope, now.Add(2*time.Hour))
+			if err != nil || len(got) != 1 {
+				t.Fatalf("expired attention coverage: %+v %v", got, err)
+			}
+		})
+	}
+}
+
+func TestAutomaticCleanupRemovesUnkeyedCallerAttribution(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	var created []model.Execution
+	for _, keyed := range []bool{false, true} {
+		e := sampleExecution(now)
+		e.CallerIdentity = &model.CallerIdentity{Provider: "codex", NativeSessionID: hash('a'), Provenance: "explicit"}
+		e.State, e.Liveness, e.TerminalAt = model.StateCompleted, model.LivenessExited, &now
+		key := contracts.MutationKey{}
+		if keyed {
+			key = contracts.MutationKey{Scope: "execution:run", Key: "keep-replay", InputDigest: hash('b')}
+		}
+		e, _, err := j.CreateExecution(ctx, e, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(e.SourceBindings) != 0 {
+			t.Fatal("fixture has authority binding")
+		}
+		if _, _, err := j.AcknowledgeExecution(ctx, e.ID, AcknowledgementAwait); err != nil {
+			t.Fatal(err)
+		}
+		created = append(created, e)
+	}
+	path := j.path
+	j.Close()
+	progress, err := cleanupForPath(path).Maintain(ctx, now.Add(time.Hour))
+	if err != nil || progress.Executions != 1 {
+		t.Fatalf("automatic cleanup: %+v %v", progress, err)
+	}
+	read, err := Open(path, Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer read.Close()
+	if _, err := read.GetExecution(ctx, created[0].ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unkeyed retained: %v", err)
+	}
+	if _, err := read.GetExecution(ctx, created[1].ID); err != nil {
+		t.Fatalf("request-key replay lost: %v", err)
+	}
+	if err := read.db.View(func(tx *bbolt.Tx) error {
+		return tx.Bucket(bIdempotency).ForEach(func(_, raw []byte) error {
+			var r mutationRecord
+			if err := json.Unmarshal(raw, &r); err != nil {
+				return err
+			}
+			if r.ObjectID == created[0].ID.String() {
+				t.Fatalf("attribution metadata survived automatic cleanup: %+v", r)
+			}
+			return nil
+		})
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

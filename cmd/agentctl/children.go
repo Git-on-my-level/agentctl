@@ -107,7 +107,7 @@ func (a *app) children(ctx context.Context, renderer output.Renderer, c common, 
 			running++
 		}
 	}
-	result := map[string]any{"schema_version": 1, "complete": true, "coverage": "retained_attributed_executions_only", "state_consistency": "live_per_page", "parent_execution_id": scope.Parent, "provider": scope.Provider, "native_session_id": scope.NativeSessionID, "count": len(children), "terminal_uncollected": terminal, "running_without_known_waiter": running, "waiter_evidence": "durable_terminal_subscriptions_only", "executions": children}
+	result := map[string]any{"schema_version": 1, "complete": true, "coverage": "retained_attributed_executions_only", "state_consistency": "live_per_page", "parent_execution_id": scope.Parent, "provider": scope.Provider, "native_session_id": scope.NativeSessionID, "count": len(children), "terminal_uncollected": terminal, "running_without_known_waiter": running, "waiter_evidence": "live_exact_await_and_state_subscriptions", "executions": children}
 	if summary {
 		result["executions"] = []store.ChildExecution{}
 	}

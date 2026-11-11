@@ -478,8 +478,9 @@ stripped from native child environments. Query that session with
 `children --provider claude --native-session-id <session-id>`; use `--summary`
 for counts. `children --execution <id>` selects one managed parent explicitly.
 Retain `collect_argv` for each result and execute it to collect the child.
-Unknown waiter status includes unregistered await processes; supported durable
-terminal subscriptions exclude active local children. Remote forwarding rows
+Exact-ID await process locks and supported durable subscriptions exclude active
+local children. Attention requires an attention subscription; a terminal waiter
+cannot suppress it. Unknown coverage includes older awaits and await-any. Remote forwarding rows
 stay conservative and use local collection IDs. Coverage includes only newly
 attributed retained executions. A 1.5s processing budget, 50ms read-lock attempts,
 and bounded indexed reads fail with `children_query_incomplete` (exit 9) instead

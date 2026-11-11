@@ -36,7 +36,7 @@ type ChildExecution struct {
 // Children only visits caller-indexed projections, attribution snapshots,
 // selected acknowledgements and bounded subscription metadata. Event/result history is
 // never scanned. Each page drops the shared flock so writers can progress.
-// A live await has no durable registration: unknown coverage remains actionable.
+// Exact-ID awaits supply process-held lock evidence; unknown coverage stays actionable.
 func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Time) ([]ChildExecution, error) {
 	if scope.Parent == nil && (scope.Provider == "" || scope.NativeSessionID == "") {
 		return nil, ErrChildrenBounded
@@ -146,11 +146,21 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 					item.Reason = "terminal_uncollected"
 					item.WaiterStatus = "not_applicable"
 				} else if !e.RemoteForwarded() {
-					// A terminal event filter covers every terminal state; progress-
-					// only subscriptions cannot prove a wake on completion/failure.
+					// Attention needs an attention wake; a terminal-only waiter cannot
+					// unblock permission/input. A live await is not coverage for
+					// conflicted evidence: it exits immediately on integrity conflicts.
 					covered := false
-					state := model.StateCompleted
-					event := &model.Event{ExecutionID: e.ID, Authority: e.Authority, Kind: model.EventTerminal, State: &state}
+					state, kind := model.StateCompleted, model.EventTerminal
+					if e.State == model.StateAttention {
+						state, kind = e.State, model.EventAttention
+					} else if e.Observation.Integrity != model.IntegrityConflicted {
+						var err error
+						covered, err = hasLiveWaiter(ctx, r.path, e.ID)
+						if err != nil {
+							return err
+						}
+					}
+					event := &model.Event{ExecutionID: e.ID, Authority: e.Authority, Kind: kind, State: &state}
 					for _, record := range subscriptions {
 						if matchesEvent(record.Subscription, event, now, func() []string { return e.Labels }) {
 							covered = true

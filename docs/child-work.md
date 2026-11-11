@@ -84,12 +84,25 @@ never acknowledges collection or reads a result. These newly attributed rows
 do not depend on the legacy acknowledgement epoch.
 
 Nonterminal children have reason `running_without_known_waiter` and
-`waiter_status: unknown`. Active local executions with a supported, unexpired
-durable terminal subscription are excluded. The query cannot prove a supervisor
-is healthy or that the callback destination will consume a result. An `await`
-process has no durable registration today: its absence or presence cannot be
-proven here. Integrations with separate process evidence can refine that
-unknown status. Remote forwarding rows stay conservative: local subscriptions
+`waiter_status: unknown` when no supported waiter evidence exists. Active local
+executions are excluded when an exact-ID `await` holds its process lock, or a
+supported, unexpired durable subscription covers the relevant event. A child in
+`attention` requires an attention subscription; neither a terminal subscription
+nor a live await (including `--ignore-attention`) suppresses that blocked child.
+Terminal uncollected children are never suppressed by waiters.
+
+On Linux and macOS, `await <id>` holds an exclusive lock in its unique private
+`<journal>.waiters/<execution-id>/await-*` sidecar. Multiple awaits can coexist;
+exit, timeout, cancellation, and process death release their locks. Normal exit
+removes its file; a crash can leave an empty file. Queries use
+shared probes that cannot mistake concurrent queries for waiters, open only
+selected files read-only, never create a waiter directory or file, and ignore
+unlocked crash residue. More than 128 sidecars for one child fails closed.
+Sidecar errors fail the query; unsupported
+platforms, older await binaries, and `await-any` remain unknown. Evidence is live
+per page: a waiter can exit immediately after observation. The query cannot
+prove a supervisor is healthy or that a callback destination consumes a result.
+Remote forwarding rows stay conservative: local subscriptions
 do not prove collection because local terminal event fanout does not observe
 remote completion. No SSH or Multica API calls occur. A remote launch whose
 receipt was lost before local forwarding admission remains subject to the
@@ -99,8 +112,10 @@ that local row exists.
 ## Bounds and failure behavior
 
 Admission atomically writes parent and provider/session indexes into the existing
-execution-owned idempotency graph. Discovery seeks only the selected caller's
-index and reads the referenced projections and acknowledgements. It never walks
+execution-owned idempotency graph. Attribution metadata does not confer request-key
+replay retention: an acknowledged, unkeyed caller-attributed execution without
+other references remains eligible for automatic cleanup. Discovery seeks only
+the selected caller's index and reads the referenced projections and acknowledgements. It never walks
 unrelated executions, event history, results, or all acknowledgement history.
 There is no new background index migration and old binaries need no schema
 upgrade to coexist with these records.
@@ -126,8 +141,8 @@ existing explicit-label coverage for that history during rollout.
 
 This is the first stage of the parent-exit safeguard, providing attribution and
 a fast query for coordkit's Stop hook. It does not alter native exit behavior,
-automatically continue a parent, add inbox warnings, or register live await
-leases. The automatic single continuation, non-resumable harness warning path,
+automatically continue a parent, or add inbox warnings. The automatic single
+continuation, non-resumable harness warning path,
 and default-on kill switch remain follow-up work. Native CLIs and Multica retain
 execution authority; dispatch only attributes its existing local execution row.
 Structured Multica delegate remains unavailable under its existing contract.

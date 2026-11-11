@@ -1262,6 +1262,12 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 	if timeoutSet {
 		deadline = a.now().Add(timeout)
 	}
+	var waiter *store.Waiter
+	defer func() {
+		if waiter != nil {
+			_ = waiter.Close()
+		}
+	}()
 	for {
 		if ctx.Err() != nil {
 			return a.fail(renderer, output.Wrap(output.CodeExecutionCancelled, "await cancelled", false, ctx.Err()).WithDetail("execution_id", id.String()))
@@ -1285,6 +1291,12 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		_ = journal.Close()
 		if err != nil {
 			return a.fail(renderer, mapStoreError("read awaited execution", err))
+		}
+		if waiter == nil && !execution.State.Terminal() && !execution.RemoteForwarded() && execution.Observation.Integrity != model.IntegrityConflicted {
+			waiter, err = store.RegisterWaiter(ctx, journal.Path(), id)
+			if err != nil {
+				return a.fail(renderer, mapStoreError("register awaited execution", err))
+			}
 		}
 		poll = nextAwaitPoll(poll, execution.Revision != lastRevision)
 		lastRevision = execution.Revision
