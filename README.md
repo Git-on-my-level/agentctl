@@ -49,6 +49,12 @@ agentctl doesn't replace your agent CLIs, proxy model APIs, or store your
 credentials or transcripts. Each CLI keeps its own login, permissions, and
 sessions.
 
+`agentctl children` discovers retained attributed work for the current caller.
+Its completeness claim covers stable membership of that retained index; mutations
+between pages fail closed. Lost remote receipts still
+require identical-key recovery, and existing parent-graph retention remains in
+force. See [child work and its coverage boundaries](docs/child-work.md).
+
 ## Supported agents
 
 | Agent | Executable |
@@ -157,3 +163,5 @@ described in [Security](SECURITY.md).
 ## License
 
 [Apache License 2.0](LICENSE). Third-party notices are in [NOTICE](NOTICE).
+
+Caller attribution and bounded read-only child discovery: [child work](docs/child-work.md).

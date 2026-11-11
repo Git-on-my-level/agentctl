@@ -70,6 +70,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 		"event-page":           "schemas/event-page.schema.json",
 		"execution":            "schemas/execution.schema.json",
 		"fanout-manifest":      "schemas/fanout-manifest.schema.json",
+		"children-result":      "schemas/children-result.schema.json",
 		"identity-report":      "schemas/identity-report.schema.json",
 		"recent-result":        "schemas/recent-result.schema.json",
 		"reconcile-plan":       "schemas/reconcile-plan.schema.json",

@@ -291,6 +291,27 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		mutation = *opts.mutationOverride
 	}
 	execution.Delegation = opts.delegation
+	if opts.reservedExecution.IsZero() {
+		// Recover metadata from a keyed replay before resolving this invocation's
+		// caller. Admission holds the flock, so ownership cannot be lost to a
+		// best-effort identity read racing another writer.
+		existing := false
+		if mutation.Enabled() {
+			_, existing, err = journal.GetExecutionByMutation(operationCtx, mutation)
+			if err != nil {
+				journal.Close()
+				return mapStoreError("recover admission attribution", err)
+			}
+		}
+		if !existing {
+			parentID, callerIdentity, attributionProblem := a.launchAttribution(operationCtx, c, journal)
+			if attributionProblem != nil {
+				journal.Close()
+				return attributionProblem
+			}
+			execution.ParentExecutionID, execution.CallerIdentity = parentID, callerIdentity
+		}
+	}
 	// The operation context can be cancelled concurrently with this small local
 	// commit. Complete it under a live context so every created execution either
 	// launches or reaches one durable terminal state.

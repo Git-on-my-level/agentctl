@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"go.etcd.io/bbolt"
@@ -245,6 +246,10 @@ func (snapshot *cleanupSnapshot) selectCleanup(before, now time.Time, options Cl
 		if err := json.Unmarshal(raw, &value); err != nil {
 			return corrupt(err)
 		}
+		binding := snapshot.Bucket(bIdempotency).Get([]byte(attributionBindingScope + "\x00" + value.ID.String()))
+		if err := hydrateAttributionRecord(binding, &value); err != nil {
+			return corrupt(err)
+		}
 		if err := value.Validate(); err != nil {
 			return corrupt(err)
 		}
@@ -290,7 +295,9 @@ func (snapshot *cleanupSnapshot) selectCleanup(before, now time.Time, options Cl
 			if err := json.Unmarshal(raw, &record); err != nil {
 				return corrupt(err)
 			}
-			if record.ObjectType == "execution" {
+			// Launch snapshots and caller indexes are execution-owned metadata,
+			// not request-key replay promises (including existing PR records).
+			if record.ObjectType == "execution" && record.Scope != attributionBindingScope && !strings.HasPrefix(record.Scope, childrenIndexScope) {
 				protect(record.ObjectID, "request_key_replay")
 			}
 			return nil

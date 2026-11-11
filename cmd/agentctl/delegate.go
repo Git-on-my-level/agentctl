@@ -18,6 +18,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/delegation"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/launchrecipe"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
@@ -26,6 +27,9 @@ import (
 )
 
 type delegateOptions struct {
+	parentID                                *ids.ExecutionID
+	callerIdentity                          *model.CallerIdentity
+	caller                                  *model.ExecutionCaller
 	detachedReceipt                         bool
 	continuationMode                        string
 	requestFile, promptFile, cwd, authority string
@@ -779,6 +783,12 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		result := map[string]any{"id": execution.ID, "origin_host_id": execution.OriginHostID, "state": execution.State, "liveness": execution.Liveness,
 			"authority": execution.Authority, "reused": reused, "requested": binding.Requested, "resolved": binding.Resolved,
 			"provenance": map[string]any{"configuration_sha256": binding.ConfigurationSHA256, "defaulted": binding.Defaulted}, "request_sha256": binding.RequestSHA256}
+		if execution.ParentExecutionID != nil {
+			result["parent_execution_id"] = execution.ParentExecutionID
+		}
+		if execution.CallerIdentity != nil {
+			result["caller_identity"] = execution.CallerIdentity
+		}
 		if binding.RemotePlan != nil {
 			result["remote"] = binding.RemotePlan
 		}

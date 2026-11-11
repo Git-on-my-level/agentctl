@@ -7,6 +7,12 @@ register an agent, grant access, resume work, or replace the native/Multica
 execution authority. Standalone agents do not need agentctl to register with an
 external coordination service.
 
+Launch admission and the bounded `children` query share this identity resolver.
+For unmanaged harnesses, `AGENTCTL_CALLER_PROVIDER` and
+`AGENTCTL_CALLER_NATIVE_SESSION_ID` make the same explicit assertion as the CLI
+provider/session pair; both are stripped before launching a native child.
+See [child work](child-work.md) for attribution, precedence, and query coverage.
+
 ## Invocation and precedence
 
 ```sh

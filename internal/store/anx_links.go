@@ -16,7 +16,7 @@ func (j *Journal) ProtectANXRun(ctx context.Context, id ids.ExecutionID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return j.db.Update(func(tx *bbolt.Tx) error {
+	return j.update(func(tx *bbolt.Tx) error {
 		if tx.Bucket(bExecutions).Get([]byte(id.String())) == nil {
 			return ErrNotFound
 		}

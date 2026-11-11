@@ -198,7 +198,7 @@ func (j *Journal) initialize() error {
 	if complete {
 		return nil
 	}
-	return j.db.Update(func(tx *bbolt.Tx) error {
+	return j.update(func(tx *bbolt.Tx) error {
 		for _, name := range [][]byte{bMetadata, bExecutions, bEvents, bEventsByExecution, bDedupe, bTerminal, bIdempotency, bOutcomes, bAcknowledgements, bStatusContacts} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return err
@@ -235,6 +235,9 @@ func (j *Journal) validateSchema() error {
 		if bucket == nil || string(bucket.Get(keySchema)) != "1" {
 			return fmt.Errorf("%w: missing or unsupported journal schema", ErrCorrupt)
 		}
+		if tx.Bucket(bIdempotency) == nil || tx.Bucket(bExecutions) == nil {
+			return fmt.Errorf("%w: missing required index or execution bucket", ErrCorrupt)
+		}
 		return nil
 	})
 }
@@ -265,7 +268,7 @@ func (j *Journal) CreateExecution(ctx context.Context, execution model.Execution
 	}
 	var result model.Execution
 	var reused bool
-	err := j.db.Update(func(tx *bbolt.Tx) error {
+	err := j.update(func(tx *bbolt.Tx) error {
 		if mutation.Enabled() {
 			record, err := lookupMutation(tx, mutation)
 			if err != nil {
@@ -337,6 +340,9 @@ func (j *Journal) CreateExecution(ctx context.Context, execution model.Execution
 			return err
 		}
 		if err := putDelegationBinding(tx, execution); err != nil {
+			return err
+		}
+		if err := putAttributionBinding(tx, execution); err != nil {
 			return err
 		}
 		if err := putCallerBinding(tx, execution); err != nil {
@@ -415,7 +421,7 @@ func (j *Journal) UpdateExecution(ctx context.Context, next model.Execution, exp
 		return model.Execution{}, err
 	}
 	var result model.Execution
-	err := j.db.Update(func(tx *bbolt.Tx) error {
+	err := j.update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bExecutions)
 		raw := bucket.Get([]byte(next.ID.String()))
 		if raw == nil {
@@ -538,7 +544,7 @@ func (j *Journal) AppendEvent(ctx context.Context, event model.Event, canonicalP
 	}
 	var result model.Event
 	var reused bool
-	err := j.db.Update(func(tx *bbolt.Tx) error {
+	err := j.update(func(tx *bbolt.Tx) error {
 		var err error
 		result, reused, err = j.appendEventTx(tx, event, canonicalProjection)
 		return err
@@ -686,7 +692,7 @@ func (j *Journal) CommitObservedEvent(ctx context.Context, next model.Execution,
 	var storedExecution model.Execution
 	var storedEvent model.Event
 	var reused bool
-	err := j.db.Update(func(tx *bbolt.Tx) error {
+	err := j.update(func(tx *bbolt.Tx) error {
 		executions := tx.Bucket(bExecutions)
 		raw := executions.Get([]byte(next.ID.String()))
 		if raw == nil {
@@ -753,7 +759,7 @@ func (j *Journal) CommitTerminalOutcome(ctx context.Context, next model.Executio
 	var storedOutcome model.Outcome
 	var storedEvent model.Event
 	var reused bool
-	err := j.db.Update(func(tx *bbolt.Tx) error {
+	err := j.update(func(tx *bbolt.Tx) error {
 		executions := tx.Bucket(bExecutions)
 		raw := executions.Get([]byte(next.ID.String()))
 		if raw == nil {
@@ -996,6 +1002,7 @@ type dedupeRecord struct {
 	ProjectionDigest string `json:"projection_digest"`
 }
 type mutationRecord struct {
+	Attribution *launchAttribution          `json:"launch_attribution,omitempty"`
 	Caller      *model.ExecutionCaller      `json:"caller,omitempty"`
 	NativePlan  *model.DelegationNativePlan `json:"native_plan,omitempty"`
 	Delegation  *model.DelegationBinding    `json:"delegation,omitempty"`
@@ -1046,12 +1053,16 @@ func (j *Journal) ClearMutation(ctx context.Context, mutation contracts.Mutation
 	if !mutation.Enabled() {
 		return nil
 	}
-	return j.db.Update(func(tx *bbolt.Tx) error {
+	return j.update(func(tx *bbolt.Tx) error {
 		record, err := lookupMutation(tx, mutation)
 		if err != nil || record == nil {
 			return err
 		}
-		return tx.Bucket(bIdempotency).Delete([]byte(mutation.Scope + "\x00" + mutation.Key))
+		key := []byte(mutation.Scope + "\x00" + mutation.Key)
+		if err := tx.Bucket(bIdempotency).Delete(key); err != nil {
+			return err
+		}
+		return noteChildrenIndexMutation(tx, key)
 	})
 }
 func putMutation(tx *bbolt.Tx, key contracts.MutationKey, objectType, objectID string) error {
@@ -1060,7 +1071,11 @@ func putMutation(tx *bbolt.Tx, key contracts.MutationKey, objectType, objectID s
 	if err != nil {
 		return err
 	}
-	return tx.Bucket(bIdempotency).Put([]byte(key.Scope+"\x00"+key.Key), raw)
+	indexKey := []byte(key.Scope + "\x00" + key.Key)
+	if err := tx.Bucket(bIdempotency).Put(indexKey, raw); err != nil {
+		return err
+	}
+	return noteChildrenIndexMutation(tx, indexKey)
 }
 func newHostID(g ids.Generator) (ids.HostID, error) {
 	id, err := g.New(ids.TypeHost)

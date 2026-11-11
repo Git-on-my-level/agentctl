@@ -157,12 +157,22 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 	if problem != nil {
 		return problem.WithDetail("client_key", clientKey)
 	}
-	journal := scopedJournal{path: initialJournal.Path(), busyBudget: c.journalBusyBudget}
-	initialJournal.Close()
-	prepared, found, err := journal.GetExecutionByMutation(ctx, mutation)
+	prepared, found, err := initialJournal.GetExecutionByMutation(ctx, mutation)
 	if err != nil {
+		initialJournal.Close()
 		return mapStoreError("recover prepared dispatch", err).WithDetail("client_key", clientKey)
 	}
+	var parentID *ids.ExecutionID
+	var callerIdentity *model.CallerIdentity
+	if !found {
+		parentID, callerIdentity, problem = a.launchAttribution(ctx, c, initialJournal)
+		if problem != nil {
+			initialJournal.Close()
+			return problem
+		}
+	}
+	journal := scopedJournal{path: initialJournal.Path(), busyBudget: c.journalBusyBudget}
+	initialJournal.Close()
 	reused := found
 	runtimeVerifiedNow := false
 	target := dispatchTarget{Route: selected}
@@ -183,7 +193,7 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 			return output.Wrap(output.CodeInternal, "create prepared dispatch aliases", false, bindingErr)
 		}
 		candidate := model.Execution{
-			Caller:    caller,
+			Caller: caller, ParentExecutionID: parentID, CallerIdentity: callerIdentity,
 			Authority: model.AuthorityMultica, Adapter: "multica", Mode: model.ModeMultica,
 			Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown,
 			SourceState: dispatchStringPointer("dispatch_prepared"), SourceBindings: bindings,

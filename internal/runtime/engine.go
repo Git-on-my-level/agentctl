@@ -713,6 +713,7 @@ func (e *Engine) updateCASFromRevision(ctx context.Context, desired model.Execut
 		desired.Repository = current.Repository
 		desired.Workspace = current.Workspace
 		desired.ParentExecutionID = current.ParentExecutionID
+		desired.CallerIdentity = current.CallerIdentity
 		desired.Delegation = current.Delegation
 		desired.Supersedes = current.Supersedes
 		desired.SupersededBy = current.SupersededBy

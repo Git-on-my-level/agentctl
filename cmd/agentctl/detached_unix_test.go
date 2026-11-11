@@ -87,7 +87,7 @@ func TestDetachedLifecycleThroughBuiltBinary(t *testing.T) {
 			receipt := filepath.Join(f.root, "receipt.json")
 			args := []string{"-c", `"$@" > "$TEST_LIFECYCLE_RECEIPT" && sleep 30`, "parent", binary, "--config", f.config, "--journal", f.journal, "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-file", promptFile, "--detach", "--timeout", "10s"}
 			parent := exec.Command("/bin/sh", args...)
-			parent.Env = append(os.Environ(), "TEST_LIFECYCLE_RECEIPT="+receipt, "TEST_LIFECYCLE_ACCOUNT=second", "AGENTCTL_UPDATE_MODE=off")
+			parent.Env = append(os.Environ(), "TEST_LIFECYCLE_RECEIPT="+receipt, "TEST_LIFECYCLE_ACCOUNT=second", "AGENTCTL_UPDATE_MODE=off", "AGENTCTL_CALLER_PROVIDER=claude", "AGENTCTL_CALLER_NATIVE_SESSION_ID=detached-parent-session")
 			parent.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 			if err := parent.Start(); err != nil {
 				t.Fatal(err)
@@ -111,6 +111,9 @@ func TestDetachedLifecycleThroughBuiltBinary(t *testing.T) {
 			}
 			if doc.Result.State.Terminal() {
 				t.Fatalf("receipt claimed completion: %+v", doc.Result)
+			}
+			if doc.Result.CallerIdentity == nil || doc.Result.CallerIdentity.Provider != "claude" {
+				t.Fatalf("detached admission lost caller: %+v", doc.Result.CallerIdentity)
 			}
 			// Kill the caller's entire process group, then wipe only the prompt source.
 			if err := syscall.Kill(-parent.Process.Pid, syscall.SIGKILL); err != nil {
@@ -151,7 +154,7 @@ func TestDetachedLifecycleThroughBuiltBinary(t *testing.T) {
 				t.Fatalf("replay launched again: %s", launches)
 			}
 			journal, _ := os.ReadFile(f.journal)
-			if bytes.Contains(journal, []byte("private-detached-task")) {
+			if bytes.Contains(journal, []byte("private-detached-task")) || bytes.Contains(journal, []byte("detached-parent-session")) {
 				t.Fatal("prompt leaked into journal")
 			}
 		})

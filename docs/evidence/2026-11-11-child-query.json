@@ -1,0 +1,170 @@
+{
+  "measured_at": "2026-11-11T04:22:53.540825+00:00",
+  "host": "m5-mbp",
+  "journal_bytes": 2404827136,
+  "binary_sha256": "1e13b7326c7c6564e6d7097adc7a9d6d9f3168ca2f7bf79df04d02370f064715",
+  "access": "read_only; no real journal attribution/index migration or writes",
+  "coverage_note": "Existing journal predates these caller indexes. Measurements validate seeking absent caller scopes in the real large journal, not populated new indexes. Populated indexes, collection and page bounds are exercised by isolated tests.",
+  "observations": [
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 404.883,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 13.589,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 10.165,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 8.853,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 8.296,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 9.082,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 9.18,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 9.49,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 8.764,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 8.614,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 7.384,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 7.541,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 7.407,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 7.498,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 7.369,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 7.194,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 7.255,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 7.333,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 7.955,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 7.485,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    }
+  ]
+}

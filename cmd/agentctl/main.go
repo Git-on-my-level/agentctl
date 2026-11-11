@@ -184,6 +184,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.routeCommand(renderer, commonArgs, rest[1:])
 	case "doctor":
 		err = a.doctor(ctx, renderer, commonArgs, rest[1:])
+	case "children":
+		err = a.children(ctx, renderer, commonArgs, rest[1:])
 	case "identity":
 		err = a.identityCommand(ctx, renderer, commonArgs, rest[1:])
 	case "orient":
@@ -1260,6 +1262,13 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 	if timeoutSet {
 		deadline = a.now().Add(timeout)
 	}
+	var waiter *store.Waiter
+	waiterAttempted := false
+	defer func() {
+		if waiter != nil {
+			_ = waiter.Close()
+		}
+	}()
 	for {
 		if ctx.Err() != nil {
 			return a.fail(renderer, output.Wrap(output.CodeExecutionCancelled, "await cancelled", false, ctx.Err()).WithDetail("execution_id", id.String()))
@@ -1283,6 +1292,12 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		_ = journal.Close()
 		if err != nil {
 			return a.fail(renderer, mapStoreError("read awaited execution", err))
+		}
+		if !waiterAttempted && !execution.State.Terminal() && execution.Observation.Integrity != model.IntegrityConflicted {
+			// Coverage evidence is best effort; a read-only/full state volume
+			// must not break the primary wait. Unknown coverage stays actionable.
+			waiterAttempted = true
+			waiter, _ = store.RegisterWaiter(ctx, journal.Path(), id)
 		}
 		poll = nextAwaitPoll(poll, execution.Revision != lastRevision)
 		lastRevision = execution.Revision

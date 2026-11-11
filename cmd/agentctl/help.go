@@ -59,6 +59,12 @@ func helpTopics() map[string]commandHelp {
 			Examples: [][]string{{"agentctl", "delegate", "--request-file", "request.json", "--prompt-file", "task.md", "--plan"}, {"agentctl", "delegate", "--request-file", "request.json", "--prompt-file", "task.md", "--wait"}, {"agentctl", "delegate", "--request-file", "request.json", "--prompt-file", "task.md", "--detach"}},
 			Related:  []string{"schema", "config", "run", "dispatch", "result", "recent", "continue", "steer"},
 		},
+		"children": {
+			Name: "children", Summary: "Find this caller's uncollected children and active children without known durable waiters.", Usage: childrenUsage,
+			SideEffectClass: output.ReadOnly,
+			Defaults:        []string{"current identity scope; --execution selects one parent, --provider plus --native-session-id selects one native session", "attributed retained rows only; no historical backfill", "1.5 second scan budget, 50ms read-lock attempts, bounded pages; incomplete scans fail closed with children_query_incomplete", "never takes a write lock, reads results, acknowledges, contacts SSH, or runs maintenance", "exact-ID await process locks are observed on Linux/macOS; older awaits and await-any remain unknown", "exact-ID await locks cover native and remote rows; local subscriptions cover only local rows; attention always remains actionable", "--summary preserves counts and omits executions"},
+			Examples:        [][]string{{"agentctl", "children"}, {"agentctl", "children", "--provider", "claude", "--native-session-id", "example-session", "--summary"}}, Related: []string{"identity", "await", "subscribe", "recent"},
+		},
 		"identity": {
 			Name: "identity", Summary: "Read provider, native-conversation correlation, and capability evidence without probes or writes.", Usage: identityUsage,
 			SideEffectClass: output.ReadOnly,

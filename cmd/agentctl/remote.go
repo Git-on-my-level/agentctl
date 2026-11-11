@@ -237,6 +237,19 @@ func (a *app) delegateRemote(ctx context.Context, renderer output.Renderer, c co
 			problem = remoteErrorLocal(problem, replay[0])
 		}
 	}()
+	if len(replay) != 0 {
+		opts.parentID, opts.callerIdentity, opts.caller = replay[0].ParentExecutionID, replay[0].CallerIdentity, replay[0].Caller
+	} else {
+		var attributionProblem *output.Error
+		opts.parentID, opts.callerIdentity, attributionProblem = a.launchAttribution(ctx, c)
+		if attributionProblem != nil {
+			return attributionProblem
+		}
+		opts.caller, attributionProblem = a.executionCaller()
+		if attributionProblem != nil {
+			return attributionProblem
+		}
+	}
 	destination := sshDestination(profile, host)
 	if len(replay) != 0 {
 		destination = replay[0].Delegation.RemotePlan.SSHDestination
@@ -354,6 +367,7 @@ func (a *app) recordRemote(ctx context.Context, renderer output.Renderer, c comm
 		execution.Supersedes = []ids.ExecutionID{source.ID}
 		execution.CWD = source.CWD
 	}
+	execution.ParentExecutionID, execution.CallerIdentity, execution.Caller = opts.parentID, opts.callerIdentity, opts.caller
 	journal, problem := a.openWriteContext(ctx, c)
 	if problem != nil {
 		return problem
@@ -579,6 +593,15 @@ func (a *app) awaitRemote(ctx context.Context, renderer output.Renderer, c commo
 }
 
 func (a *app) continueRemote(ctx context.Context, renderer output.Renderer, c common, source model.Execution, key string, prompt []byte, opts delegateOptions, mutation contracts.MutationKey) *output.Error {
+	var attributionProblem *output.Error
+	opts.parentID, opts.callerIdentity, attributionProblem = a.launchAttribution(ctx, c)
+	if attributionProblem != nil {
+		return attributionProblem
+	}
+	opts.caller, attributionProblem = a.executionCaller()
+	if attributionProblem != nil {
+		return attributionProblem
+	}
 	plan := source.Delegation.RemotePlan
 	if len(opts.labels) == 0 {
 		opts.labels = append([]string(nil), source.Labels...)
