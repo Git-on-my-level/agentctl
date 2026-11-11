@@ -27,6 +27,10 @@ func TestChildExitInboxRequiresCompleteRetainedMembership(t *testing.T) {
 		"expired-missing-digest", "expired-empty-digest", "expired-null-digest", "expired-invalid-digest",
 		"expired-compact-missing-digest", "expired-compact-empty-digest", "expired-compact-null-digest", "expired-compact-invalid-digest",
 		"expired-short-digest", "expired-uppercase-digest", "expired-unprefixed-digest", "expired-nonstring-digest",
+		"expired-duplicate-scope", "expired-duplicate-key", "expired-duplicate-digest", "expired-duplicate-type", "expired-duplicate-id",
+		"expired-duplicate-scope-case", "expired-duplicate-scope-escape", "expired-duplicate-scope-unicode",
+		"expired-compact-duplicate-digest", "expired-duplicate-extension", "expired-duplicate-unknown",
+		"expired-compact-forward", "expired-full-forward",
 	} {
 		t.Run(variant, func(t *testing.T) {
 			ctx := context.Background()
@@ -153,10 +157,38 @@ func TestChildExitInboxRequiresCompleteRetainedMembership(t *testing.T) {
 						record["input_digest"] = 42
 					case "expired-invalid-digest", "expired-compact-invalid-digest":
 						record["input_digest"] = "sha256:" + strings.Repeat("g", 64)
+					case "expired-duplicate-extension":
+						record["extension"] = json.RawMessage(`{"x":null,"x":1}`)
+					case "expired-compact-forward", "expired-full-forward":
+						record["extension"] = map[string]any{"items": []any{1, "unique", nil}}
 					}
 					raw, err := json.Marshal(record)
 					if err != nil {
 						return err
+					}
+					var duplicate string
+					switch variant {
+					case "expired-duplicate-scope":
+						duplicate = `"scope":null,`
+					case "expired-duplicate-key":
+						duplicate = `"key":null,`
+					case "expired-duplicate-digest", "expired-compact-duplicate-digest":
+						duplicate = `"input_digest":null,`
+					case "expired-duplicate-type":
+						duplicate = `"object_type":"execution",`
+					case "expired-duplicate-id":
+						duplicate = `"object_id":null,`
+					case "expired-duplicate-scope-case":
+						duplicate = `"Scope":null,`
+					case "expired-duplicate-scope-escape":
+						duplicate = `"\u0073cope":null,`
+					case "expired-duplicate-scope-unicode":
+						duplicate = `"ſcope":null,`
+					case "expired-duplicate-unknown":
+						duplicate = `"extension":0,"extension":1,`
+					}
+					if duplicate != "" {
+						raw = append([]byte("{"+duplicate), raw[1:]...)
 					}
 					return tx.Bucket([]byte("idempotency")).Put([]byte(scope+"\x00"+child.ID.String()), raw)
 				}
@@ -178,7 +210,7 @@ func TestChildExitInboxRequiresCompleteRetainedMembership(t *testing.T) {
 			}
 			children, childErr := reader.Children(ctx, store.ChildrenScope{Parent: &parent.ID}, time.Now().UTC())
 			reader.Close()
-			settled := variant == "retained-collected" || variant == "expired-compact" || variant == "expired-full"
+			settled := variant == "retained-collected" || variant == "expired-compact" || variant == "expired-full" || variant == "expired-compact-forward" || variant == "expired-full-forward"
 			incomplete := !settled && variant != "retained-uncollected"
 			if strings.HasPrefix(variant, "expired-") && !settled && !errors.Is(childErr, store.ErrCorrupt) {
 				t.Errorf("malformed expiry must be corruption: %v", childErr)

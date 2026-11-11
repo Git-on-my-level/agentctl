@@ -258,6 +258,9 @@ func decodeChildMembership(tx *bbolt.Tx, prefix, key, raw []byte) (ids.Execution
 	// Compact replay tombstones omit BOTH scope and key. Full records retain
 	// BOTH matching values. Presence matters: null/empty is not omission.
 	if index.ObjectType == expiredExecutionObject {
+		if err := validateChildExpiryJSON(raw); err != nil {
+			return "", false, err
+		}
 		var shape struct {
 			Scope json.RawMessage `json:"scope"`
 			Key   json.RawMessage `json:"key"`
