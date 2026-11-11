@@ -153,6 +153,10 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 		}
 		return nil
 	}
+	parentID, callerIdentity, problem := a.launchAttribution(ctx, c)
+	if problem != nil {
+		return problem
+	}
 	initialJournal, problem := a.openWrite(c)
 	if problem != nil {
 		return problem.WithDetail("client_key", clientKey)
@@ -183,7 +187,7 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 			return output.Wrap(output.CodeInternal, "create prepared dispatch aliases", false, bindingErr)
 		}
 		candidate := model.Execution{
-			Caller:    caller,
+			Caller: caller, ParentExecutionID: parentID, CallerIdentity: callerIdentity,
 			Authority: model.AuthorityMultica, Adapter: "multica", Mode: model.ModeMultica,
 			Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown,
 			SourceState: dispatchStringPointer("dispatch_prepared"), SourceBindings: bindings,

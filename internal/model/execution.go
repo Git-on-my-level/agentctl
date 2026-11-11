@@ -394,6 +394,7 @@ func (r NativeRateLimit) Validate() error {
 var nativeRateLimitProviderErrorType = regexp.MustCompile(`^(?:unclassified|provider\.[a-z0-9][a-z0-9._-]{0,54})$`)
 
 type Execution struct {
+	CallerIdentity       *CallerIdentity    `json:"caller_identity,omitempty"`
 	Caller               *ExecutionCaller   `json:"caller,omitempty"`
 	LastOperationFailure *OperationFailure  `json:"last_operation_failure,omitempty"`
 	SchemaVersion        int                `json:"schema_version"`
@@ -447,6 +448,16 @@ var (
 )
 
 func (e Execution) Validate() error {
+	if e.ParentExecutionID != nil {
+		if _, err := ids.ParseExecutionID(e.ParentExecutionID.String()); err != nil || *e.ParentExecutionID == e.ID {
+			return errors.New("invalid parent execution id")
+		}
+	}
+	if e.CallerIdentity != nil {
+		if err := e.CallerIdentity.Validate(); err != nil {
+			return err
+		}
+	}
 	if e.Caller != nil {
 		if err := e.Caller.Validate(); err != nil {
 			return fmt.Errorf("caller: %w", err)
@@ -591,6 +602,9 @@ func (e Execution) Validate() error {
 }
 
 func ValidateTransition(previous, next Execution) error {
+	if !reflect.DeepEqual(previous.ParentExecutionID, next.ParentExecutionID) || !reflect.DeepEqual(previous.CallerIdentity, next.CallerIdentity) {
+		return errors.New("execution launch attribution is immutable")
+	}
 	if !reflect.DeepEqual(previous.Caller, next.Caller) {
 		return errors.New("execution caller is immutable")
 	}

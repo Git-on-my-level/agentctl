@@ -1,0 +1,170 @@
+{
+  "measured_at": "2026-11-11T04:02:33.254560+00:00",
+  "host": "m5-mbp",
+  "journal_bytes": 2402779136,
+  "binary_sha256": "7c7be8783f253c76791ae5ef648efc49eac3ed019062a60df6c0a7e74a534cf4",
+  "access": "read_only; no real journal attribution/index migration or writes",
+  "coverage_note": "Existing journal predates these caller indexes. Measurements validate seeking absent caller scopes in the real large journal, not populated new indexes. Populated indexes, collection and page bounds are exercised by isolated tests.",
+  "observations": [
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 498.473,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 37.893,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 36.098,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 31.224,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 30.141,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 28.902,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 29.632,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 38.804,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 34.314,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "managed_parent",
+      "elapsed_ms": 33.126,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 23.581,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 22.216,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 26.987,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 24.003,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 33.794,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 92.785,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 92.954,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 56.019,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 38.871,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    },
+    {
+      "scope": "explicit_unmanaged_session",
+      "elapsed_ms": 56.048,
+      "exit_code": 0,
+      "complete": true,
+      "count": 0,
+      "diagnostic_code": null
+    }
+  ]
+}

@@ -14,6 +14,8 @@
     "reused"
   ],
   "properties": {
+    "parent_execution_id": {"$ref": "execution.schema.json#/properties/id"},
+    "caller_identity": {"$ref": "execution.schema.json#/properties/caller_identity"},
     "remote": {"type": "object", "additionalProperties": false, "description": "Frozen SSH provenance; use the local id for commands. The cross-host reference is agentctl://<origin_host_id>/<execution_id>.", "required": ["host", "ssh_destination", "execution_id", "origin_host_id"], "properties": {"host": {"type": "string", "minLength": 1, "maxLength": 256}, "ssh_destination": {"type": "string", "minLength": 1, "maxLength": 128}, "execution_id": {"$ref": "execution.schema.json#/properties/id"}, "origin_host_id": {"$ref": "execution.schema.json#/properties/origin_host_id"}}},
     "transport": {"type": "object", "additionalProperties": false, "required": ["host", "ssh_destination", "request_staged", "journal_written"], "properties": {"host": {"type": "string"}, "ssh_destination": {"type": "string"}, "request_staged": {"type": "boolean"}, "journal_written": {"const": false}, "remote_id": {"$ref":"execution.schema.json#/properties/id"}, "remote_origin_host_id": {"$ref":"execution.schema.json#/properties/origin_host_id"}, "remote_continues": {"$ref":"execution.schema.json#/properties/id"}, "remote_reused": {"type":"boolean"}}},
 	"launch_status": {"enum": ["admitted", "launched"], "description": "Detached admission is durable before worker creation. admitted requires status/await to establish native launch or outcome."},

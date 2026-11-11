@@ -184,6 +184,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.routeCommand(renderer, commonArgs, rest[1:])
 	case "doctor":
 		err = a.doctor(ctx, renderer, commonArgs, rest[1:])
+	case "children":
+		err = a.children(ctx, renderer, commonArgs, rest[1:])
 	case "identity":
 		err = a.identityCommand(ctx, renderer, commonArgs, rest[1:])
 	case "orient":

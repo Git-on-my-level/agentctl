@@ -174,6 +174,7 @@ func schemaCatalog() []map[string]any {
 		{"name": "event-page", "version": 1, "file": "schemas/event-page.schema.json"},
 		{"name": "execution", "version": 1, "file": "schemas/execution.schema.json"},
 		{"name": "fanout-manifest", "version": 1, "file": "schemas/fanout-manifest.schema.json"},
+		{"name": "children-result", "version": 1, "file": "schemas/children-result.schema.json"},
 		{"name": "identity-report", "version": 1, "file": "schemas/identity-report.schema.json"},
 		{"name": "recent-result", "version": 1, "file": "schemas/recent-result.schema.json"},
 		{"name": "reconcile-plan", "version": 1, "file": "schemas/reconcile-plan.schema.json"},

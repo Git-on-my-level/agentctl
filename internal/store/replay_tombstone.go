@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 var ErrReplayExpired = errors.New("execution replay expired")
@@ -25,7 +26,7 @@ func replayTombstone(raw []byte) ([]byte, error) {
 		return nil, corrupt(err)
 	}
 	// These internal snapshots are not externally reusable request keys.
-	if record.Scope == callerBindingScope || record.Scope == delegationBindingScope {
+	if strings.HasPrefix(record.Scope, childrenIndexScope) || record.Scope == attributionBindingScope || record.Scope == callerBindingScope || record.Scope == delegationBindingScope {
 		return nil, nil
 	}
 	return json.Marshal(struct {

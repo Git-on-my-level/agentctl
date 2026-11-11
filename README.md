@@ -157,3 +157,5 @@ described in [Security](SECURITY.md).
 ## License
 
 [Apache License 2.0](LICENSE). Third-party notices are in [NOTICE](NOTICE).
+
+Caller attribution and bounded read-only child discovery: [child work](docs/child-work.md).

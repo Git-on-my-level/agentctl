@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentctl:schema:children-result:v1",
+  "x-agentctl-docs": "../docs/child-work.md#query-contract",
+  "title": "Caller-scoped outstanding children v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "complete",
+    "coverage",
+    "state_consistency",
+    "parent_execution_id",
+    "provider",
+    "native_session_id",
+    "count",
+    "terminal_uncollected",
+    "running_without_known_waiter",
+    "waiter_evidence",
+    "executions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "complete": {
+      "const": true
+    },
+    "coverage": {
+      "const": "retained_attributed_executions_only"
+    },
+    "state_consistency": {
+      "const": "live_per_page"
+    },
+    "parent_execution_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "provider": {
+      "type": "string"
+    },
+    "native_session_id": {
+      "type": "string"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 200
+    },
+    "terminal_uncollected": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "running_without_known_waiter": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "waiter_evidence": {
+      "const": "durable_terminal_subscriptions_only"
+    },
+    "executions": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "created_at",
+          "state",
+          "authority",
+          "adapter",
+          "reason",
+          "waiter_status",
+          "collect_argv"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "execution.schema.json#/properties/id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "state": {
+            "$ref": "execution.schema.json#/properties/state"
+          },
+          "authority": {
+            "$ref": "execution.schema.json#/properties/authority"
+          },
+          "adapter": {
+            "type": "string"
+          },
+          "remote": {
+            "$ref": "execution.schema.json#/properties/delegation/properties/remote"
+          },
+          "reason": {
+            "enum": [
+              "terminal_uncollected",
+              "running_without_known_waiter"
+            ]
+          },
+          "waiter_status": {
+            "enum": [
+              "unknown",
+              "not_applicable"
+            ]
+          },
+          "collect_argv": {
+            "type": "array",
+            "minItems": 4,
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

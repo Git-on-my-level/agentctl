@@ -468,6 +468,25 @@ cursor, omp, zcode, devin, other) on invocation; old/unset callers remain unknow
 The declaration is stripped from inherited child environments; nested callers
 must identify themselves. `recent --caller unknown` finds unattributed records.
 
+Use `children` before ending a managed parent to discover its terminal
+uncollected children and active children without known durable waiters. It shares
+`identity` resolution and never acknowledges results or contacts remote hosts.
+For an unmanaged Claude session, set `AGENTCTL_CALLER_PROVIDER=claude` and
+`AGENTCTL_CALLER_NATIVE_SESSION_ID` to that session on each launch invocation;
+only the provider-scoped identity hash is stored, and these declarations are
+stripped from native child environments. Query that session with
+`children --provider claude --native-session-id <session-id>`; use `--summary`
+for counts. `children --execution <id>` selects one managed parent explicitly.
+Retain `collect_argv` for each result and execute it to collect the child.
+Unknown waiter status includes unregistered await processes; supported durable
+terminal subscriptions exclude active local children. Remote forwarding rows
+stay conservative and use local collection IDs. Coverage includes only newly
+attributed retained executions. A 1.5s processing budget, 50ms read-lock attempts,
+and bounded indexed reads fail with `children_query_incomplete` (exit 9) instead
+of partial success. Treat every error as unknown coverage, never an empty set.
+This query does not yet enforce parent exit or automatically continue a parent.
+See [child work](https://github.com/Git-on-my-level/agentctl/blob/main/docs/child-work.md).
+
 Use `recent` to recover
 execution IDs from the local journal. It is read-only, newest-first,
 prompt/result-record-free, and does not aggregate other hosts. Repeated label

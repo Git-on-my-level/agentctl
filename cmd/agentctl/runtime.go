@@ -99,6 +99,10 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	if callerProblem != nil {
 		return callerProblem
 	}
+	parentID, callerIdentity, attributionProblem := a.launchAttribution(ctx, c)
+	if attributionProblem != nil {
+		return attributionProblem
+	}
 	if warning := offPolicyRunWarning(c, opts.adapter, opts.argv); warning != nil {
 		renderer = renderer.WithWarnings(*warning)
 	}
@@ -259,6 +263,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Labels: append([]string(nil), opts.labels...), CWD: launchCWD, Repository: repository, Workspace: workspace, Supersedes: append([]ids.ExecutionID{}, opts.supersedes...), TaskContract: taskContractValue(taskContract), DeadlineAt: deadlineAt, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
 	mutation := contracts.MutationKey{}
 	execution.Caller = caller
+	execution.ParentExecutionID, execution.CallerIdentity = parentID, callerIdentity
 	if opts.idempotencyKey != "" {
 		digest, dErr := mutationDigest(runtime.Name(), opts.cwd, opts.argv, opts.labels, opts.noStoreResult, prompt, taskContract)
 		if dErr != nil {

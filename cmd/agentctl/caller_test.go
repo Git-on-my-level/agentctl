@@ -18,7 +18,7 @@ import (
 func enableCallerEnvironment(a *app) {
 	base := a.getenv
 	a.getenv = func(key string) string {
-		if key == adapter.CallerHarnessEnv {
+		if key == adapter.CallerHarnessEnv || key == adapter.CallerProviderEnv || key == adapter.CallerSessionEnv {
 			return os.Getenv(key)
 		}
 		return base(key)
@@ -147,6 +147,8 @@ func TestUndeclaredRunCallerStaysUnknown(t *testing.T) {
 
 func TestDispatchCallerAdmissionPlanReplayAndEnvironmentIsolation(t *testing.T) {
 	t.Setenv(adapter.CallerHarnessEnv, "hermes")
+	t.Setenv(adapter.CallerProviderEnv, "claude")
+	t.Setenv(adapter.CallerSessionEnv, "dispatch-session-first")
 	root := testutil.TempDir(t)
 	agents := `[{"id":"agent-fixture","name":"Fixture Agent","model":"fixture-model","runtime_id":"runtime-fixture","status":"idle","archived_at":null}]`
 	runtimes := `[{"id":"runtime-fixture","custom_name":"Fixture Host","provider":"codex","status":"online"}]`
@@ -180,6 +182,7 @@ func TestDispatchCallerAdmissionPlanReplayAndEnvironmentIsolation(t *testing.T) 
 	for i := 0; i < 2; i++ {
 		if i == 1 {
 			t.Setenv(adapter.CallerHarnessEnv, "cursor")
+			t.Setenv(adapter.CallerSessionEnv, "dispatch-session-retry")
 		}
 		stdout.Reset()
 		a.stdin = strings.NewReader("private-dispatch-prompt-token")
@@ -197,6 +200,10 @@ func TestDispatchCallerAdmissionPlanReplayAndEnvironmentIsolation(t *testing.T) 
 		}
 		if doc.Result.Execution.Caller == nil || doc.Result.Execution.Caller.Harness != model.CallerHermes || doc.Result.Execution.Caller.Provenance != model.CallerDeclared {
 			t.Fatalf("dispatch caller=%#v", doc.Result.Execution.Caller)
+		}
+		expected := sessionIdentity("claude", "dispatch-session-first", "explicit", "self_reported")
+		if doc.Result.Execution.CallerIdentity == nil || doc.Result.Execution.CallerIdentity.NativeSessionID != *expected.ID {
+			t.Fatalf("dispatch session changed on replay: %+v", doc.Result.Execution.CallerIdentity)
 		}
 		if i == 0 {
 			firstID = doc.Result.Execution.ID.String()
@@ -230,6 +237,8 @@ func TestDispatchCallerAdmissionPlanReplayAndEnvironmentIsolation(t *testing.T) 
 }
 
 func TestDelegateAndContinueCallerAdmissionsRemainIndependent(t *testing.T) {
+	t.Setenv(adapter.CallerProviderEnv, "claude")
+	t.Setenv(adapter.CallerSessionEnv, "caller-session-first")
 	f := newDelegateFixture(t, continueAgent)
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
@@ -247,14 +256,20 @@ func TestDelegateAndContinueCallerAdmissionsRemainIndependent(t *testing.T) {
 	t.Setenv(adapter.CallerHarnessEnv, "hermes")
 	first := resultID(t, invoke("first", "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin", "--wait"))
 	t.Setenv(adapter.CallerHarnessEnv, "cursor")
+	t.Setenv(adapter.CallerSessionEnv, "caller-session-second")
 	second := resultID(t, invoke("second", "continue", first, "--request-key", "caller-turn-2", "--prompt-stdin", "--wait"))
 	t.Setenv(adapter.CallerHarnessEnv, "codex")
+	t.Setenv(adapter.CallerSessionEnv, "caller-session-retry")
 	retry := resultID(t, invoke("second", "continue", first, "--request-key", "caller-turn-2", "--prompt-stdin", "--wait"))
 	if retry != second {
 		t.Fatal("caller declaration changed continue replay")
 	}
-	for _, tc := range []struct{ id, caller string }{{first, "hermes"}, {second, "cursor"}} {
+	for _, tc := range []struct{ id, caller, session string }{{first, "hermes", "caller-session-first"}, {second, "cursor", "caller-session-second"}} {
 		out := invoke("", "status", tc.id)
+		expected := sessionIdentity("claude", tc.session, "explicit", "self_reported")
+		if !strings.Contains(out, *expected.ID) {
+			t.Fatalf("launch session attribution lost: %s", out)
+		}
 		if !strings.Contains(out, `"caller":{"harness":"`+tc.caller+`","provenance":"caller_declared"}`) {
 			t.Fatalf("turn caller lost: %s", out)
 		}

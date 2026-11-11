@@ -42,6 +42,15 @@
         "stderr": {"$ref": "outcome.schema.json#/properties/failure/allOf/0/properties/stderr"}
       }
     },
+    "caller_identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provider", "native_session_id", "provenance"],
+      "properties": {
+        "provider": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+        "native_session_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "provenance": {"enum": ["explicit", "native_environment", "native_stream"]}
+      }
+    },
     "caller": {
       "type": "object",
       "additionalProperties": false,
