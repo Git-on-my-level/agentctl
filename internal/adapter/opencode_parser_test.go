@@ -549,8 +549,11 @@ func TestOpenCodeManifestDeclaresBoundedSameProcessContract(t *testing.T) {
 	if status[CapabilityEvents].Constraints["content"] != "metadata_only" {
 		t.Fatalf("events constraints = %#v", status[CapabilityEvents].Constraints)
 	}
-	if status[CapabilityResume].Implementation != CapabilityUnavailable {
+	if status[CapabilityResume].Implementation != CapabilityConditional || status[CapabilityResume].Constraints["scope"] != "native_session" {
 		t.Fatalf("resume = %#v", status[CapabilityResume])
+	}
+	if status[CapabilitySteer].Implementation != CapabilityUnavailable {
+		t.Fatalf("steer = %#v", status[CapabilitySteer])
 	}
 	content := status[CapabilityResultContent]
 	if content.Constraints["max_bytes"] != opencodeAnswerLimit {
@@ -718,5 +721,27 @@ func TestOpenCodeInvalidRequestRetainsClassifier(t *testing.T) {
 	}
 	if record.result.Content != "" {
 		t.Fatal("failed output became answer")
+	}
+}
+
+func TestOpenCodeProbeGatesResumeOnVerifiedVersion(t *testing.T) {
+	for _, version := range []string{"opencode 2.2.6", "opencode v2.2.6", "opencode 1.17.13", "opencode 2.2.7"} {
+		path := fixtureExecutable(t, `printf '%s\n' '`+version+`'`)
+		got, err := NewOpenCode().Probe(context.Background(), ProbeRequest{Executable: path, Argv: []string{path, "run", "--format", "json", "--", "task"}, PromptDelivery: PromptDeliveryArgv, PromptArgs: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, c := range got.Capabilities {
+			if c.Name == CapabilityResume {
+				found = true
+				if (c.Status == CapabilitySupported) != OpenCodeResumeVersionSupported(version) {
+					t.Fatalf("%s: %s %s", version, c.Status, c.Reason)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("resume capability missing")
+		}
 	}
 }
