@@ -49,7 +49,7 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 			return nil
 		}
 		size, records := 0, 0
-		return b.ForEach(func(_, raw []byte) error {
+		return b.ForEach(func(key, raw []byte) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -58,11 +58,11 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 			if records > 1024 || size > 4<<20 {
 				return ErrChildrenBounded
 			}
-			var record SubscriptionRecord
-			if err := json.Unmarshal(raw, &record); err != nil {
-				return corrupt(err)
+			record, understood, err := decodeFanoutSubscription(key, raw)
+			if err != nil {
+				return err
 			}
-			if fanoutUnderstands(raw, record.Subscription) {
+			if understood {
 				subscriptions = append(subscriptions, record)
 			}
 			return nil
