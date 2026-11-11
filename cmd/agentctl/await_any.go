@@ -403,6 +403,7 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 	matches := []awaitAnyMatch{}
 	watched := 0
 	remoteCandidates := []model.Execution{}
+	waiterCandidates := []ids.ExecutionID{}
 	skipReconciled := options.labelPrefix != "" && !options.includeAcknowledged
 	visit := func(journal *store.Journal, candidates []model.Execution) error {
 		watched += len(candidates)
@@ -423,9 +424,7 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 				return output.Wrap(output.CodeTimeout, "await-any scan interrupted", true, err)
 			}
 			if options.watch != nil && !execution.State.Terminal() {
-				if problem := options.watch(execution.ID); problem != nil {
-					return problem
-				}
+				waiterCandidates = append(waiterCandidates, execution.ID)
 			}
 			if execution.RemoteForwarded() && execution.Observation.Integrity != model.IntegrityConflicted {
 				refresh := !execution.State.Terminal()
@@ -494,6 +493,17 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 		}
 	}
 
+	// Validate the entire selector before publishing waiter evidence. Registration
+	// performs filesystem I/O only after all journal handles close, preserving the
+	// candidate bound's error precedence and short shared-lock holds.
+	for _, id := range waiterCandidates {
+		if err := ctx.Err(); err != nil {
+			return nil, watched, output.Wrap(output.CodeTimeout, "await-any waiter registration interrupted", true, err)
+		}
+		if problem := options.watch(id); problem != nil {
+			return nil, watched, problem
+		}
+	}
 	// All journal handles are closed before SSH. Status is observational: only
 	// the eventual winner is collected or acknowledged, including remotely.
 	results, next := awaitAnyProbeRemote(ctx, remoteCandidates, remoteScan.next, func(probeCtx context.Context, execution model.Execution) (remoteReceipt, *output.Error) {

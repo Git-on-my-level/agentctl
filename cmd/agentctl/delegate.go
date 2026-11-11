@@ -692,13 +692,21 @@ func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding
 }
 
 func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c common, execution model.Execution, opts delegateOptions, reused bool) (problem *output.Error) {
-	if opts.wait {
-		closeWaiter, waiterProblem := a.registerWaiter(c, execution.ID)
-		if waiterProblem != nil {
-			return waiterProblem
+	var closeWaiter func()
+	defer func() {
+		if closeWaiter != nil {
+			closeWaiter()
 		}
-		defer closeWaiter()
+	}()
+	armWaiter := func() *output.Error {
+		if closeWaiter != nil {
+			return nil
+		}
+		var problem *output.Error
+		closeWaiter, problem = a.registerWaiter(c, execution.ID)
+		return problem
 	}
+
 	defer func() {
 		if problem != nil && failedResultReplay(execution, reused) {
 			problem.WithDetail("replayed", true).WithDetail("reused", true).WithActions(retryWithNewKeyAction(execution))
@@ -708,6 +716,9 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		}
 	}()
 	if execution.RemoteForwarded() && opts.wait {
+		if problem := armWaiter(); problem != nil {
+			return problem
+		}
 		var remoteProblem *output.Error
 		var deadline time.Time
 		if execution.DeadlineAt != nil && !execution.State.Terminal() {
@@ -732,6 +743,9 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		if execution.DeadlineAt != nil && a.now().After(execution.DeadlineAt.Add(10*time.Second)) {
 			return delegateExecutionError(output.CodeTimeout, "delegated execution deadline elapsed without a terminal outcome", execution)
 		}
+		if problem := armWaiter(); problem != nil {
+			return problem
+		}
 		select {
 		case <-ctx.Done():
 			return delegateExecutionError(output.CodeTimeout, "stopped waiting for delegated execution", execution)
@@ -753,6 +767,9 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 	}
 	var outcome *model.Outcome
 	if opts.wait {
+		if problem := armWaiter(); problem != nil {
+			return problem
+		}
 		if execution.Observation.Integrity == model.IntegrityConflicted {
 			return delegateExecutionError(output.CodeExecutionUnknown, "delegated outcome has conflicting evidence", execution)
 		}
