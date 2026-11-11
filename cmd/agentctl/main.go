@@ -1293,7 +1293,7 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		if err != nil {
 			return a.fail(renderer, mapStoreError("read awaited execution", err))
 		}
-		if !waiterAttempted && !execution.State.Terminal() && !execution.RemoteForwarded() && execution.Observation.Integrity != model.IntegrityConflicted {
+		if !waiterAttempted && !execution.State.Terminal() && execution.Observation.Integrity != model.IntegrityConflicted {
 			// Coverage evidence is best effort; a read-only/full state volume
 			// must not break the primary wait. Unknown coverage stays actionable.
 			waiterAttempted = true

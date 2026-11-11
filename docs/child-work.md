@@ -84,9 +84,10 @@ never acknowledges collection or reads a result. These newly attributed rows
 do not depend on the legacy acknowledgement epoch.
 
 Nonterminal children have reason `running_without_known_waiter` and
-`waiter_status: unknown` when no supported waiter evidence exists. Active local
-executions are excluded when an exact-ID `await` holds its process lock, or a
-supported, unexpired durable terminal subscription covers completion. A child in
+`waiter_status: unknown` when no supported waiter evidence exists. Active native
+and remote forwarding executions are excluded when an exact-ID `await` holds
+its local process lock. Supported, unexpired terminal subscriptions additionally
+cover local executions; they never prove a remote completion wake. A child in
 `attention` always remains actionable, even with an attention subscription or a
 live await (including `--ignore-attention`). Subscription creation only backfills
 terminal events, so a matching attention filter may have missed the event that
@@ -98,8 +99,7 @@ On Linux and macOS, `await <id>` holds an exclusive lock in its unique private
 exit, timeout, cancellation, and process death release their locks. Registration
 is best effort and attempted once: sidecar creation/locking failure leaves
 coverage unknown while the original await polling and cancellation continue.
-Normal exit
-removes its file; a crash can leave an empty file. Queries use
+Normal exit removes its file; a crash can leave an empty file. Queries use
 shared probes that cannot mistake concurrent queries for waiters, open only
 selected files read-only, never create a waiter directory or file, and ignore
 unlocked crash residue. More than 128 sidecars for one child fails closed.
@@ -107,9 +107,10 @@ Sidecar errors fail the query; unsupported
 platforms, older await binaries, and `await-any` remain unknown. Evidence is live
 per page: a waiter can exit immediately after observation. The query cannot
 prove a supervisor is healthy or that a callback destination consumes a result.
-Remote forwarding rows stay conservative: local subscriptions
-do not prove collection because local terminal event fanout does not observe
-remote completion. No SSH or Multica API calls occur. A remote launch whose
+Remote forwarding rows use the same exact-ID waiter locks, released when the
+local remote collector exits or is cancelled. Their cached state can still be
+stale; local subscriptions do not prove collection because local terminal event
+fanout does not observe remote completion. No SSH or Multica API calls occur. A remote launch whose
 receipt was lost before local forwarding admission remains subject to the
 existing identical-key recovery contract; it is not discoverable here until
 that local row exists.
@@ -123,7 +124,10 @@ other references remains eligible for automatic cleanup. Discovery seeks only
 the selected caller's index and reads the referenced projections and acknowledgements. It never walks
 unrelated executions, event history, results, or all acknowledgement history.
 There is no new background index migration and old binaries need no schema
-upgrade to coexist with these records.
+upgrade to coexist with these records. Retention hydrates the immutable
+attribution snapshot before evaluating graph protection, so older supervisor
+projection rewrites cannot sever a live child from its retained parent. Corrupt
+or conflicting snapshots fail cleanup closed without rewriting projections.
 
 The query has a 1.5-second total processing budget. Every journal open is
 read-only with a 50 ms lock allowance; handles close between pages of at most
@@ -151,3 +155,21 @@ continuation, non-resumable harness warning path,
 and default-on kill switch remain follow-up work. Native CLIs and Multica retain
 execution authority; dispatch only attributes its existing local execution row.
 Structured Multica delegate remains unavailable under its existing contract.
+
+## Coverage and retention boundaries
+
+`complete: true` means the selected retained-attributed index was completely
+read within the safety bounds. It is not proof that every attempted launch has
+a local execution row. In particular, a lost SSH receipt remains uncertain:
+retry the identical request key to recover remote admission before relying on
+its local forwarding row. Never convert that transport error plus an empty
+retained index into a claim that no remote work launched. Adding a durable local
+pre-receipt intent requires a separate pending/uncertain-admission contract;
+this query does not invent remote IDs or own remote execution lifecycle.
+
+Parent links retain the existing execution-graph deletion guard, even after all
+linked rows are terminal and acknowledged. This protects lineage, replay and
+external references; it is not a new lifecycle-aware graph collection policy.
+Changing that policy requires a separate design and deletion safety review.
+See the [round2 review disposition](evidence/2026-11-11-pr147-round2.md) for
+published contract and base-branch code evidence.

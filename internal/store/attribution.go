@@ -68,6 +68,12 @@ func putAttributionBinding(tx *bbolt.Tx, e model.Execution) error {
 }
 func hydrateAttributionBinding(tx *bbolt.Tx, e *model.Execution) error {
 	raw := tx.Bucket(bIdempotency).Get([]byte(attributionBindingScope + "\x00" + e.ID.String()))
+	return hydrateAttributionRecord(raw, e)
+}
+
+// Shared by journal reads and retention's paged immutable-metadata snapshot.
+// Hydration validates provenance without rewriting legacy projection bytes.
+func hydrateAttributionRecord(raw []byte, e *model.Execution) error {
 	if raw == nil {
 		return nil
 	}

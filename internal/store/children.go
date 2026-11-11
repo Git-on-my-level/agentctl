@@ -145,7 +145,7 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 				if e.State.Terminal() {
 					item.Reason = "terminal_uncollected"
 					item.WaiterStatus = "not_applicable"
-				} else if !e.RemoteForwarded() && e.State != model.StateAttention {
+				} else if e.State != model.StateAttention {
 					// Attention always remains actionable: subscriptions only backfill
 					// terminal events, so a matching filter may have missed attention.
 					// A live await exits immediately on integrity conflicts.
@@ -159,10 +159,14 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 						}
 					}
 					event := &model.Event{ExecutionID: e.ID, Authority: e.Authority, Kind: kind, State: &state}
-					for _, record := range subscriptions {
-						if matchesEvent(record.Subscription, event, now, func() []string { return e.Labels }) {
-							covered = true
-							break
+					// Local event subscriptions cannot prove a remote completion wake.
+					// Exact-ID await locks do prove an active local remote collector.
+					if !e.RemoteForwarded() {
+						for _, record := range subscriptions {
+							if matchesEvent(record.Subscription, event, now, func() []string { return e.Labels }) {
+								covered = true
+								break
+							}
 						}
 					}
 
