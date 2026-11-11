@@ -1,14 +1,14 @@
 {
-  "measured_at": "2026-11-11T04:02:33.254560+00:00",
+  "measured_at": "2026-11-11T04:22:53.540825+00:00",
   "host": "m5-mbp",
-  "journal_bytes": 2402779136,
-  "binary_sha256": "7c7be8783f253c76791ae5ef648efc49eac3ed019062a60df6c0a7e74a534cf4",
+  "journal_bytes": 2404827136,
+  "binary_sha256": "1e13b7326c7c6564e6d7097adc7a9d6d9f3168ca2f7bf79df04d02370f064715",
   "access": "read_only; no real journal attribution/index migration or writes",
   "coverage_note": "Existing journal predates these caller indexes. Measurements validate seeking absent caller scopes in the real large journal, not populated new indexes. Populated indexes, collection and page bounds are exercised by isolated tests.",
   "observations": [
     {
       "scope": "managed_parent",
-      "elapsed_ms": 498.473,
+      "elapsed_ms": 404.883,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -16,7 +16,7 @@
     },
     {
       "scope": "managed_parent",
-      "elapsed_ms": 37.893,
+      "elapsed_ms": 13.589,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -24,7 +24,7 @@
     },
     {
       "scope": "managed_parent",
-      "elapsed_ms": 36.098,
+      "elapsed_ms": 10.165,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -32,7 +32,7 @@
     },
     {
       "scope": "managed_parent",
-      "elapsed_ms": 31.224,
+      "elapsed_ms": 8.853,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -40,7 +40,7 @@
     },
     {
       "scope": "managed_parent",
-      "elapsed_ms": 30.141,
+      "elapsed_ms": 8.296,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -48,7 +48,7 @@
     },
     {
       "scope": "managed_parent",
-      "elapsed_ms": 28.902,
+      "elapsed_ms": 9.082,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -56,7 +56,7 @@
     },
     {
       "scope": "managed_parent",
-      "elapsed_ms": 29.632,
+      "elapsed_ms": 9.18,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -64,7 +64,7 @@
     },
     {
       "scope": "managed_parent",
-      "elapsed_ms": 38.804,
+      "elapsed_ms": 9.49,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -72,7 +72,7 @@
     },
     {
       "scope": "managed_parent",
-      "elapsed_ms": 34.314,
+      "elapsed_ms": 8.764,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -80,7 +80,7 @@
     },
     {
       "scope": "managed_parent",
-      "elapsed_ms": 33.126,
+      "elapsed_ms": 8.614,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -88,7 +88,7 @@
     },
     {
       "scope": "explicit_unmanaged_session",
-      "elapsed_ms": 23.581,
+      "elapsed_ms": 7.384,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -96,7 +96,7 @@
     },
     {
       "scope": "explicit_unmanaged_session",
-      "elapsed_ms": 22.216,
+      "elapsed_ms": 7.541,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -104,7 +104,7 @@
     },
     {
       "scope": "explicit_unmanaged_session",
-      "elapsed_ms": 26.987,
+      "elapsed_ms": 7.407,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -112,7 +112,7 @@
     },
     {
       "scope": "explicit_unmanaged_session",
-      "elapsed_ms": 24.003,
+      "elapsed_ms": 7.498,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -120,7 +120,7 @@
     },
     {
       "scope": "explicit_unmanaged_session",
-      "elapsed_ms": 33.794,
+      "elapsed_ms": 7.369,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -128,7 +128,7 @@
     },
     {
       "scope": "explicit_unmanaged_session",
-      "elapsed_ms": 92.785,
+      "elapsed_ms": 7.194,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -136,7 +136,7 @@
     },
     {
       "scope": "explicit_unmanaged_session",
-      "elapsed_ms": 92.954,
+      "elapsed_ms": 7.255,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -144,7 +144,7 @@
     },
     {
       "scope": "explicit_unmanaged_session",
-      "elapsed_ms": 56.019,
+      "elapsed_ms": 7.333,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -152,7 +152,7 @@
     },
     {
       "scope": "explicit_unmanaged_session",
-      "elapsed_ms": 38.871,
+      "elapsed_ms": 7.955,
       "exit_code": 0,
       "complete": true,
       "count": 0,
@@ -160,7 +160,7 @@
     },
     {
       "scope": "explicit_unmanaged_session",
-      "elapsed_ms": 56.048,
+      "elapsed_ms": 7.485,
       "exit_code": 0,
       "complete": true,
       "count": 0,

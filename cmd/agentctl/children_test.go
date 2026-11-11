@@ -75,6 +75,17 @@ func TestChildrenManagedAttributionAndCallerIsolation(t *testing.T) {
 	if code, out := query("--execution", parent.ID.String()); code != 0 || !strings.Contains(out, child.ID.String()) {
 		t.Fatalf("explicit parent=%d %s", code, out)
 	}
+	// Keyed replay retains the original caller even if the current managed
+	// environment points at an unavailable parent in this journal.
+	a.updateNotice = nil
+	env["AGENTCTL_EXECUTION_ID"] = remoteTestID
+	stdout.Reset()
+	if code := a.run(context.Background(), args); code != 0 {
+		t.Fatalf("caller metadata blocked replay: %d %s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), child.ID.String()) || !strings.Contains(stdout.String(), parent.ID.String()) {
+		t.Fatalf("replay changed original ownership: %s", stdout.String())
+	}
 }
 
 func TestChildrenExplicitSessionEnvironmentAndPrivacy(t *testing.T) {
@@ -149,5 +160,63 @@ func TestChildrenRemoteForwardingRetainsLocalCaller(t *testing.T) {
 	after, _ := os.ReadFile(filepath.Join(f.root, "ssh-argv"))
 	if !bytes.Equal(before, after) {
 		t.Fatal("children contacted remote host")
+	}
+}
+
+func TestManagedChildrenAndLaunchAttributionFailClosedOnContention(t *testing.T) {
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
+	j, err := store.Open(path, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	parent := identityFixture(t, j, "codex", "managed-parent")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	env := map[string]string{"AGENTCTL_EXECUTION_ID": parent.ID.String(), "AGENTCTL_ADAPTER": "codex", "CODEX_THREAD_ID": "managed-parent"}
+	a.getenv = func(k string) string { return env[k] }
+	if code := a.run(context.Background(), []string{"--journal", path, "children"}); code != 9 || !strings.Contains(stdout.String(), "children_query_incomplete") {
+		t.Fatalf("contention became unknown/empty: %d %s", code, stdout.String())
+	}
+	// Remote launch attribution cannot proceed to transport without evidence.
+	gotParent, caller, problem := a.launchAttribution(context.Background(), common{journalPath: path})
+	if problem == nil || !problem.Retryable || gotParent != nil || caller != nil {
+		t.Fatalf("contended attribution admitted: %v %+v %v", gotParent, caller, problem)
+	}
+	// Standalone identity remains a best-effort observation, preserving its API.
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--journal", path, "identity"}); code != 0 {
+		t.Fatalf("standalone identity changed: %d %s", code, stdout.String())
+	}
+}
+
+func TestNativeAdmissionPreservesParentAfterContendedJournal(t *testing.T) {
+	path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
+	j, err := store.Open(path, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := identityFixture(t, j, "codex", "managed-parent")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	env := map[string]string{"AGENTCTL_EXECUTION_ID": parent.ID.String(), "AGENTCTL_ADAPTER": "codex", "CODEX_THREAD_ID": "managed-parent"}
+	a.getenv = func(k string) string { return env[k] }
+	closed := make(chan struct{})
+	time.AfterFunc(150*time.Millisecond, func() { _ = j.Close(); close(closed) })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	code := a.run(ctx, []string{"--journal", path, "run", "--adapter", "generic-process", "--", "/bin/sh", "-c", `printf '%s\n' '{"type":"result","status":"completed","result":"answer"}'`})
+	<-closed
+	if code != 0 {
+		t.Fatalf("contended launch: %d %s", code, stdout.String())
+	}
+	var doc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Result.ParentExecutionID == nil || *doc.Result.ParentExecutionID != parent.ID {
+		t.Fatalf("lost parent after lock recovery: %+v", doc.Result)
 	}
 }

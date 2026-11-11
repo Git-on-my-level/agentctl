@@ -12,6 +12,15 @@ launching caller separately from the execution's own native session:
   correlates a conversation; it is neither authentication nor a resume handle.
   The existing `caller.harness` declaration remains independent.
 
+Native and Multica admission capture managed caller evidence while holding their
+existing journal admission lock, after checking keyed replay. A detached worker
+uses its reserved attribution without re-resolving its parent's identity.
+Remote admission requires available managed evidence before transport; contention
+returns a retryable `caller_identity_unavailable` instead of launching untracked
+work. Standalone `identity` retains its best-effort observation behavior. A genuinely
+absent execution (for example inherited context pointing into a different
+journal) remains unknown, distinct from a failed read of available evidence.
+
 These values are immutable admission metadata, excluded from semantic request
 keys. Replaying a request retains its original attribution. Detached workers use
 that original admission. Immutable snapshots in the execution-owned idempotency
@@ -67,6 +76,8 @@ provenance, but collection commands always use the local forwarding ID and
 retain explicit journal/config/profile options. `--summary` omits items while
 preserving the full counts.
 
+Refused continuation reservations (`admission_refused`) are excluded because
+no native work launched. Ordinary canceled executions remain eligible.
 Terminal executions without a collection acknowledgement have reason
 `terminal_uncollected`, regardless of terminal state or a subscription. A query
 never acknowledges collection or reads a result. These newly attributed rows

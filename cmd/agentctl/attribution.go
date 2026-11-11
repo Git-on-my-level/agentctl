@@ -6,12 +6,17 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
+	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
-func (a *app) launchAttribution(ctx context.Context, c common) (*ids.ExecutionID, *model.CallerIdentity, *output.Error) {
-	report, problem := a.resolveCallerIdentity(ctx, c, "", "", "")
+func (a *app) launchAttribution(ctx context.Context, c common, borrowed ...*store.Journal) (*ids.ExecutionID, *model.CallerIdentity, *output.Error) {
+	option := identityResolutionOptions{failUnavailable: true}
+	if len(borrowed) != 0 {
+		option.journal = borrowed[0]
+	}
+	report, problem := a.resolveCallerIdentity(ctx, c, "", "", "", option)
 	if problem != nil {
-		return nil, nil, problem
+		return nil, nil, problem.WithDetail("diagnostic_code", "caller_identity_unavailable")
 	}
 	var parent *ids.ExecutionID
 	// Only journal-observed execution evidence binds a local parent. Inherited

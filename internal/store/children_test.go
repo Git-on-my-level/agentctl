@@ -210,3 +210,26 @@ func TestCleanupRemovesAttributionSnapshotAndIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestChildrenSkipsRefusedReservationsButKeepsLaunchedCancellation(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	makeCancelled := func(source string) model.Execution {
+		e := sampleExecution(now)
+		e.CallerIdentity = &model.CallerIdentity{Provider: "claude", NativeSessionID: hash('a'), Provenance: "explicit"}
+		e.State, e.Liveness, e.TerminalAt, e.SourceState = model.StateCancelled, model.LivenessExited, &now, &source
+		e, _, err := j.CreateExecution(ctx, e, contracts.MutationKey{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	makeCancelled(admissionRefusedSource)
+	ordinary := makeCancelled("cancelled")
+	path := j.path
+	j.Close()
+	got, err := cleanupForPath(path).Children(ctx, ChildrenScope{Provider: "claude", NativeSessionID: hash('a')}, now)
+	if err != nil || len(got) != 1 || got[0].ID != ordinary.ID || got[0].Reason != "terminal_uncollected" {
+		t.Fatalf("reservation/cancellation distinction: %+v %v", got, err)
+	}
+}

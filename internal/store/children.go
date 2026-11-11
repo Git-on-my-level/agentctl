@@ -129,6 +129,9 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 				} else if e.CallerIdentity == nil || e.CallerIdentity.Provider != scope.Provider || e.CallerIdentity.NativeSessionID != scope.NativeSessionID {
 					return corrupt(errors.New("children session index mismatch"))
 				}
+				if refusedAdmission(e) {
+					continue
+				}
 				if e.State.Terminal() {
 					// Attributed rows are new and do not need the historical ack epoch.
 					if b := tx.Bucket(bAcknowledgements); b != nil && b.Get([]byte(e.ID.String())) != nil {

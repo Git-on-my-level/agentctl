@@ -49,8 +49,11 @@ func (a *app) children(ctx context.Context, renderer output.Renderer, c common, 
 	// A single budget covers identity lookup, journal opens, and the whole scan.
 	ctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
-	report, problem := a.resolveCallerIdentity(ctx, c, execution, provider, session)
+	report, problem := a.resolveCallerIdentity(ctx, c, execution, provider, session, identityResolutionOptions{failUnavailable: true})
 	if problem != nil {
+		if problem.Retryable || ctx.Err() != nil {
+			return childrenQueryIncomplete()
+		}
 		return problem
 	}
 	scope := store.ChildrenScope{}
@@ -75,7 +78,7 @@ func (a *app) children(ctx context.Context, renderer output.Renderer, c common, 
 	children, err := reader.Children(ctx, scope, a.now().UTC())
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, store.ErrBusy) || errors.Is(err, store.ErrChildrenBounded) {
-			return output.NewError(output.CodeTimeout, "children query incomplete; retry without treating this as an empty result", true).WithDetail("diagnostic_code", "children_query_incomplete").WithDetail("complete", false)
+			return childrenQueryIncomplete()
 		}
 		return mapStoreError("query children", err)
 	}
@@ -112,4 +115,8 @@ func (a *app) children(ctx context.Context, renderer output.Renderer, c common, 
 		return output.Wrap(output.CodeInternal, "write children", false, err)
 	}
 	return nil
+}
+
+func childrenQueryIncomplete() *output.Error {
+	return output.NewError(output.CodeTimeout, "children query incomplete; retry without treating this as an empty result", true).WithDetail("diagnostic_code", "children_query_incomplete").WithDetail("complete", false)
 }

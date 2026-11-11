@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"os"
 	"regexp"
 	"runtime"
 	"strings"
@@ -124,8 +126,17 @@ func (a *app) identityCommand(ctx context.Context, renderer output.Renderer, c c
 	return nil
 }
 
+type identityResolutionOptions struct {
+	failUnavailable bool
+	journal         *store.Journal // borrowed admission handle; never reopen while it owns the flock
+}
+
 // Shared by identity, launch attribution, and children; never probes native stores.
-func (a *app) resolveCallerIdentity(ctx context.Context, c common, executionRef, provider, session string) (identityReport, *output.Error) {
+func (a *app) resolveCallerIdentity(ctx context.Context, c common, executionRef, provider, session string, options ...identityResolutionOptions) (identityReport, *output.Error) {
+	option := identityResolutionOptions{}
+	if len(options) != 0 {
+		option = options[0]
+	}
 	if executionRef == "" && provider == "" && a.getenv != nil {
 		provider = canonicalAdapterName(a.getenv(adapter.CallerProviderEnv))
 		session = a.getenv(adapter.CallerSessionEnv)
@@ -160,7 +171,7 @@ func (a *app) resolveCallerIdentity(ctx context.Context, c common, executionRef,
 				if explicitExecution {
 					report.Execution = identityValue(id.String(), "explicit", "self_reported")
 				}
-				found, problem := a.identityFromJournal(ctx, c, id, &report, explicitExecution)
+				found, problem := a.identityFromJournal(ctx, c, id, &report, explicitExecution, option.failUnavailable, option.journal)
 				if problem != nil {
 					return report, problem
 				}
@@ -211,26 +222,38 @@ func identityHarnesses(getenv func(string) string) []identityHarness {
 	return result
 }
 
-func (a *app) identityFromJournal(ctx context.Context, c common, id ids.ExecutionID, report *identityReport, required bool) (bool, *output.Error) {
-	path, err := a.journalPath(c)
-	if err != nil {
-		if required {
-			return false, output.NewError(output.CodeDependencyUnavailable, "identity journal unavailable", false)
+func (a *app) identityFromJournal(ctx context.Context, c common, id ids.ExecutionID, report *identityReport, required, failUnavailable bool, borrowed *store.Journal) (bool, *output.Error) {
+	journal := borrowed
+	if journal == nil {
+		path, err := a.journalPath(c)
+		if err != nil {
+			if required || failUnavailable {
+				return false, output.NewError(output.CodeDependencyUnavailable, "identity journal unavailable", false)
+			}
+			return false, nil
 		}
-		return false, nil
-	}
-	journal, err := store.Open(path, store.Options{ReadOnly: true, LockTimeout: 50 * time.Millisecond})
-	if err != nil {
-		if required {
-			return false, output.NewError(output.CodeDependencyUnavailable, "identity journal unavailable", true)
+		journal, err = store.Open(path, store.Options{ReadOnly: true, LockTimeout: 50 * time.Millisecond})
+		if err != nil {
+			if !required && (errors.Is(err, store.ErrNotFound) || errors.Is(err, os.ErrNotExist)) {
+				return false, nil
+			}
+			if required || failUnavailable {
+				return false, output.NewError(output.CodeDependencyUnavailable, "identity journal unavailable", true)
+			}
+			return false, nil
 		}
-		return false, nil
+		defer journal.Close()
 	}
-	defer journal.Close()
 	execution, err := journal.GetExecution(ctx, id)
 	if err != nil {
+		if !required && errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
 		if required {
 			return false, output.NewError(output.CodeNotFound, "identity execution unavailable", false)
+		}
+		if failUnavailable {
+			return false, output.NewError(output.CodeDependencyUnavailable, "identity execution observation unavailable", true)
 		}
 		return false, nil
 	}
