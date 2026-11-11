@@ -177,6 +177,18 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	if err != nil {
 		return mapAdapterError("adapter probe failed", err)
 	}
+	if runtime.Name() == "opencode" && opts.resumeSession != "" && opts.delegation != nil && opts.delegation.NativePlan != nil {
+		// An admitted continuation selects its recorded session in argv. Future
+		// turns use the frozen, selection-free recipe, so negotiate resume from
+		// that recipe rather than treating our own --session as caller selection.
+		plan := opts.delegation.NativePlan
+		recipe := append(append([]string(nil), plan.Recipe()...), "prompt")
+		for i := range probe.Capabilities {
+			if probe.Capabilities[i].Name == adapter.CapabilityResume {
+				probe.Capabilities[i] = adapter.NegotiateResume(runtime.Manifest(), recipe, plan.PromptDelivery, 1)
+			}
+		}
+	}
 	if runtime.Name() == "zcode" && containsArg(opts.argv, "--resume") && probe.BackendVersion != "0.17.0" {
 		return output.NewError(output.CodeCapabilityUnavailable, "ZCode session continuation is verified only for CLI 0.17.0", false).WithDetail("diagnostic_code", "continue_zcode_version_unverified")
 	}

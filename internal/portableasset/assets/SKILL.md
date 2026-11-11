@@ -318,7 +318,8 @@ form, completed final-step text, and a final `step_finish` with
 prefix; excess text is discarded and the result is marked truncated.
 Missing/non-stop finishes fail without
 returning partial text; other invocations are not result-capable. Cancellation goes through the
-live owner and resume is unavailable; expert `run` adds no permission flag.
+live owner. Delegated turns can continue with the recorded session via `run --session`;
+expert `run` adds no permission flag.
 Granted coding delegation adds OpenCode v2 `--auto`, reports constrained because
 explicit denials remain enforced, and refuses `read_only`. Structured 429 retry
 events retain attempt/delay/provider-type/status metadata without provider text;
@@ -388,7 +389,7 @@ look up a native session id yourself. Use one new request key per turn; a retry
 with the same key and prompt recovers that turn, or launches it if the first
 attempt was refused because another turn was running.
 
-Delegated Codex/ZCode network or explicit provider-capacity failures with a
+Delegated Codex/ZCode/OpenCode network or explicit provider-capacity failures with a
 recorded native checkpoint park as `attention`/`blocked`, with source state
 `paused_network` or `paused_capacity`, after the child exits. `delegate --wait`
 exits 10 with `retryable=true`; same-key replay returns the pause without
@@ -399,7 +400,11 @@ unknown errors, authentication and quota failures are not parked. Cancel can
 close an idle parked execution locally. ZCode coding-session continuation is
 verified only for CLI 0.17.0; its disposable read_only session storage cannot
 resume. ZCode process-interruption steering remains unavailable. Carry-forward
-still requires a completed turn with a verified stored answer.
+still requires a completed turn with a verified stored answer. OpenCode recovery
+uses only the recorded session and frozen recipe. Its background turn may finish
+after client transport loss: inspect native history and return the prior final
+answer if already complete; do not repeat completed work. `await` does not
+reconnect to the background service. Process-interruption steering is unavailable.
 
 For a harness with no verified resume route, choose an explicit carry-forward
 round. The same choice is available for resumable harnesses when a fresh session

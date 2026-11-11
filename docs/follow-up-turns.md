@@ -55,9 +55,18 @@ remote agentctl enforces native continuation eligibility and serial admission.
 A failed or cancelled follow-up does not block the session: continue again
 from the same completed turn with a new request key.
 
+OpenCode v2 uses `run --format json --session <recorded-id> -- <instruction>`
+with the original frozen recipe. Never use latest-session selection or invent a
+session id: OpenCode creates unknown ids silently. A disconnected client does
+not prove the background turn stopped. In a recovery instruction, ask it to
+inspect history and return the previous final answer if complete, otherwise
+reconcile prior effects before continuing. `await` observes the parked execution;
+it does not reconnect to OpenCode. Foreign clients sharing the native session
+remain outside agentctl's lineage admission. See [adapter evidence](adapters.md#opencode).
+
 ## Transient failure parking
 
-Delegated Codex/ZCode children that exit with an explicit network or capacity
+Delegated Codex/ZCode/OpenCode children that exit with an explicit network or capacity
 failure and a recorded native session park as `attention`/`blocked`, with
 `source_state=paused_network` or `paused_capacity`. The attention event carries
 the fixed failure diagnostic and an exited-child receipt. The execution/event
@@ -203,6 +212,7 @@ build their argv from the same verified route, so an adapter that reports
 | Cursor | yes | `--resume <chat>` after a completed turn kept context across three turns. (An interrupted Cursor turn does not, which is why Cursor cannot be steered.) |
 | OMP | yes, for expert launches only in practice | `--resume <session>` after a completed turn kept context when run by hand. It has no delegate recipe on a host that does not list it as preferred. |
 | Devin ACP, Devin cloud ACP | conditional | Loads the recorded session only when initialize advertises loadSession, then verifies the same ACP config options again; print-mode runs cannot continue. A cloud continuation recalled the prior turn live. |
+| OpenCode 2.2.6 | yes | `run --session <recorded-id>`; completed and exited failed turns retain native context, including server recovery after client loss. No process-interruption steering. |
 | ZCode 0.17.0 coding | yes | `--resume <sessionId> --prompt`; synthetic continuity smoke recorded with the resilience change. Failed-turn recovery requires the recorded session; read_only storage is disposable and refused. No process-interruption steering. |
 | Generic process, Multica | no | No native session to resume; Multica owns its own continuation. |
 

@@ -549,8 +549,11 @@ func TestOpenCodeManifestDeclaresBoundedSameProcessContract(t *testing.T) {
 	if status[CapabilityEvents].Constraints["content"] != "metadata_only" {
 		t.Fatalf("events constraints = %#v", status[CapabilityEvents].Constraints)
 	}
-	if status[CapabilityResume].Implementation != CapabilityUnavailable {
+	if status[CapabilityResume].Implementation != CapabilityConditional || status[CapabilityResume].Constraints["scope"] != "native_session" {
 		t.Fatalf("resume = %#v", status[CapabilityResume])
+	}
+	if status[CapabilitySteer].Implementation != CapabilityUnavailable {
+		t.Fatalf("steer = %#v", status[CapabilitySteer])
 	}
 	content := status[CapabilityResultContent]
 	if content.Constraints["max_bytes"] != opencodeAnswerLimit {

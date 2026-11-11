@@ -12,7 +12,7 @@ import (
 // the native child; the original recipe and checkpoint stay on this execution.
 func (a *app) parkNativeFailure(journal *store.Journal, execution model.Execution, result adapter.Result) (model.Execution, bool, error) {
 	if execution.Authority != model.AuthorityNative || execution.Delegation == nil || result.State != adapter.StateFailed ||
-		(execution.Adapter != "codex" && execution.Adapter != "zcode") {
+		(execution.Adapter != "codex" && execution.Adapter != "zcode" && execution.Adapter != "opencode") {
 		return execution, false, nil
 	}
 	if nativeSessionID(execution) == "" {

@@ -33,6 +33,7 @@ func TestNegotiateSteerIsInvocationScoped(t *testing.T) {
 		{name: "omp", manifest: ompManifest(), argv: []string{"omp", "-p", "--mode", "json", "task"}, delivery: PromptDeliveryArgv, promptArgs: 1, status: CapabilityUnavailable, reason: "interrupted during its first turn"},
 		{name: "devin", manifest: devinManifest(), argv: []string{"devin", "-p", "--", "task"}, delivery: PromptDeliveryArgv, promptArgs: 1, status: CapabilityUnavailable, reason: "session id"},
 		{name: "zcode", manifest: zcodeManifest(), argv: []string{"zcode", "--json", "--prompt", "task"}, delivery: PromptDeliveryArgv, promptArgs: 1, status: CapabilityUnavailable, reason: "no verified steering"},
+		{name: "opencode", manifest: opencodeManifest(), argv: []string{"opencode", "run", "--format", "json", "--", "task"}, delivery: PromptDeliveryArgv, promptArgs: 1, status: CapabilityUnavailable, reason: "background turns can outlive"},
 		{name: "generic", manifest: genericManifest(), argv: []string{"/bin/echo", "task"}, delivery: PromptDeliveryArgv, promptArgs: 1, status: CapabilityUnavailable, reason: "no verified steering route"},
 		{name: "multica", manifest: multicaManifest(), argv: []string{"multica"}, delivery: PromptDeliveryStdin, status: CapabilityUnavailable, reason: "Multica owns run input"},
 		{name: "static claude", manifest: claudeManifest(), status: CapabilityDegraded},
@@ -364,6 +365,7 @@ func TestNegotiateResumeIsSeparateFromSteer(t *testing.T) {
 		{name: "cursor embedded prompt", manifest: cursorManifest(), argv: []string{"cursor-agent", "--print", "task"}, status: CapabilityUnavailable, reason: "agentctl-managed prompt delivery"},
 		{name: "devin", manifest: devinManifest(), argv: []string{"devin", "-p", "--", "task"}, delivery: PromptDeliveryArgv, promptArgs: 1, status: CapabilityUnavailable, reason: "session id"},
 		{name: "zcode", manifest: zcodeManifest(), argv: []string{"zcode", "--json", "--prompt", "task"}, delivery: PromptDeliveryArgv, promptArgs: 1, status: CapabilitySupported},
+		{name: "opencode", manifest: opencodeManifest(), argv: []string{"opencode", "run", "--format", "json", "--", "task"}, delivery: PromptDeliveryArgv, promptArgs: 1, status: CapabilitySupported},
 		{name: "generic", manifest: genericManifest(), argv: []string{"/bin/echo", "task"}, delivery: PromptDeliveryArgv, promptArgs: 1, status: CapabilityUnavailable, reason: "no verified native session resume"},
 		{name: "multica", manifest: multicaManifest(), argv: []string{"multica"}, delivery: PromptDeliveryStdin, status: CapabilityUnavailable, reason: "Multica owns"},
 	} {
@@ -386,6 +388,7 @@ func TestContinuationArgv(t *testing.T) {
 		{adapter: "claude-code", delivery: PromptDeliveryStream, base: []string{"claude", "--print", "--input-format", "stream-json"}, want: []string{"claude", "--print", "--input-format", "stream-json", "--resume", "s-1"}},
 		{adapter: "codex", delivery: PromptDeliveryStdin, base: []string{"codex", "exec", "--json", "-"}, want: []string{"codex", "exec", "resume", "--json", "s-1", "-"}},
 		{adapter: "zcode", delivery: PromptDeliveryArgv, base: []string{"zcode", "--json", "--mode", "yolo", "--prompt"}, want: []string{"zcode", "--json", "--mode", "yolo", "--resume", "s-1", "--prompt"}},
+		{adapter: "opencode", delivery: PromptDeliveryArgv, base: []string{"opencode-wrapper", "run", "--format", "json", "--model", "provider/test", "--auto", "--"}, want: []string{"opencode-wrapper", "run", "--format", "json", "--model", "provider/test", "--auto", "--session", "s-1", "--"}},
 	} {
 		got, err := ContinuationArgv(test.adapter, test.base, test.delivery, "s-1")
 		if err != nil || !reflect.DeepEqual(got, test.want) {
@@ -569,5 +572,39 @@ func TestResumeOperationUsesTheNegotiatedRoute(t *testing.T) {
 	var adapterErr *AdapterError
 	if !errors.As(err, &adapterErr) || adapterErr.Code != ErrCapabilityUnavailable {
 		t.Fatalf("devin resume = %v", err)
+	}
+}
+
+func TestOpenCodeContinuationRejectsAmbiguousRecipes(t *testing.T) {
+	valid := []string{"opencode", "run", "--format", "json"}
+	for _, tc := range []struct {
+		name, delivery string
+		base           []string
+	}{
+		{"stdin", PromptDeliveryStdin, valid},
+		{"unmanaged", "", valid},
+		{"wrong command", PromptDeliveryArgv, []string{"opencode", "serve", "--format", "json"}},
+		{"missing format", PromptDeliveryArgv, []string{"opencode", "run", "--"}},
+		{"wrong format", PromptDeliveryArgv, []string{"opencode", "run", "--format", "default", "--"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ContinuationArgv("opencode", tc.base, tc.delivery, "s-1"); err == nil {
+				t.Fatal("unsafe recipe accepted")
+			}
+		})
+	}
+	for _, flags := range [][]string{{"--session", "other"}, {"--session=other"}, {"-s", "other"}, {"-s=other"}, {"--continue"}, {"-c"}, {"--fork"}, {"--no-session"}, {"--worktree"}, {"-w=other"}} {
+		base := append(append([]string(nil), valid...), flags...)
+		base = append(base, "--")
+		if _, err := ContinuationArgv("opencode", base, PromptDeliveryArgv, "s-1"); err == nil {
+			t.Fatalf("session selection accepted: %q", flags)
+		}
+	}
+	got, err := FailedContinuationArgv("opencode", valid, PromptDeliveryArgv, "s-1")
+	if err != nil || !reflect.DeepEqual(got, append(append([]string(nil), valid...), "--session", "s-1", "--")) {
+		t.Fatalf("exited recovery: %q %v", got, err)
+	}
+	if _, err := FailedContinuationArgv("opencode", valid, PromptDeliveryArgv, " "); err == nil {
+		t.Fatal("missing checkpoint accepted")
 	}
 }
