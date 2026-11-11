@@ -201,6 +201,16 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 	if problem != nil {
 		return problem
 	}
+	return a.continuePrepared(ctx, renderer, c, id, requestKey, opts, prompt, nil)
+}
+
+// continuePrepared shares exact keyed admission, frozen recipes and native route
+// checks with the public command. Automatic turns carry immutable provenance.
+func (a *app) continuePrepared(ctx context.Context, renderer output.Renderer, c common, id ids.ExecutionID, requestKey string, opts delegateOptions, prompt *promptPayload, automaticOf *ids.ExecutionID) *output.Error {
+	if c.contextFile != "" {
+		return delegateError(output.CodeCapabilityUnavailable, "continue_context_unpinned", "a follow-up turn does not pin external context handles; supply bounded context in the prompt")
+	}
+	var problem *output.Error
 	if prompt == nil || len(bytes.TrimSpace(prompt.Bytes)) == 0 {
 		return delegateError(output.CodeUsage, "continue_empty_prompt", "continue requires a nonempty prompt")
 	}
@@ -370,7 +380,7 @@ func (a *app) continueCommand(ctx context.Context, renderer output.Renderer, c c
 		labels = append([]string(nil), source.Labels...)
 	}
 	admissionReused, admissionRecorded := false, false
-	run := runOptions{env: append([]string(nil), plan.Env...), adapter: source.Adapter, cwd: *source.CWD, argv: append([]string(nil), argv...), preparedPrompt: prompt, plan: opts.plan, timeout: opts.timeout, labels: labels,
+	run := runOptions{automaticContinuationOf: automaticOf, collectionWaiter: opts.wait, env: append([]string(nil), plan.Env...), adapter: source.Adapter, cwd: *source.CWD, argv: append([]string(nil), argv...), preparedPrompt: prompt, plan: opts.plan, timeout: opts.timeout, labels: labels,
 		delegation: binding, supersedes: []ids.ExecutionID{id}, mutationOverride: &mutation, admissionReused: &admissionReused, admissionRecorded: &admissionRecorded}
 	if opts.continuationMode == "native" {
 		run.resumeSession = session

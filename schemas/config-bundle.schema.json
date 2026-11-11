@@ -131,6 +131,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "child_exit_auto_continue": {"type": "boolean", "default": true, "description": "Allow at most one automatic native child-collection continuation per parent; false keeps warnings and inbox surfacing."},
         "cursor_workspace_trust": {"description": "Required grant for Cursor read_only delegation; when granted all Cursor recipes add --trust.", "type": "boolean" },
         "unattended_coding_permissions": { "type": "boolean", "description": "Explicit grant for coding delegates: Cursor --force, Codex --dangerously-bypass-approvals-and-sandbox, Claude Code --permission-mode bypassPermissions, OpenCode --auto, and Devin ACP one-operation permission approvals. Never applied to read_only or expert run argv." }
       }

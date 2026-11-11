@@ -339,6 +339,9 @@ func (j *Journal) CreateExecution(ctx context.Context, execution model.Execution
 		if err := putDelegationBinding(tx, execution); err != nil {
 			return err
 		}
+		if err := putAutomaticContinuationBinding(tx, execution); err != nil {
+			return err
+		}
 		if err := putAttributionBinding(tx, execution); err != nil {
 			return err
 		}
@@ -999,15 +1002,16 @@ type dedupeRecord struct {
 	ProjectionDigest string `json:"projection_digest"`
 }
 type mutationRecord struct {
-	Attribution *launchAttribution          `json:"launch_attribution,omitempty"`
-	Caller      *model.ExecutionCaller      `json:"caller,omitempty"`
-	NativePlan  *model.DelegationNativePlan `json:"native_plan,omitempty"`
-	Delegation  *model.DelegationBinding    `json:"delegation,omitempty"`
-	Scope       string                      `json:"scope"`
-	Key         string                      `json:"key"`
-	InputDigest string                      `json:"input_digest"`
-	ObjectType  string                      `json:"object_type"`
-	ObjectID    string                      `json:"object_id"`
+	AutomaticContinuationOf *ids.ExecutionID            `json:"auto_continuation_of,omitempty"`
+	Attribution             *launchAttribution          `json:"launch_attribution,omitempty"`
+	Caller                  *model.ExecutionCaller      `json:"caller,omitempty"`
+	NativePlan              *model.DelegationNativePlan `json:"native_plan,omitempty"`
+	Delegation              *model.DelegationBinding    `json:"delegation,omitempty"`
+	Scope                   string                      `json:"scope"`
+	Key                     string                      `json:"key"`
+	InputDigest             string                      `json:"input_digest"`
+	ObjectType              string                      `json:"object_type"`
+	ObjectID                string                      `json:"object_id"`
 }
 
 func lookupMutation(tx *bbolt.Tx, key contracts.MutationKey) (*mutationRecord, error) {

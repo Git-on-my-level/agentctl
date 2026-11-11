@@ -37,22 +37,24 @@ type inboxReason struct {
 }
 
 type inboxExecution struct {
-	ID                    ids.ExecutionID `json:"id"`
-	Labels                []string        `json:"labels"`
-	Authority             model.Authority `json:"authority"`
-	Adapter               string          `json:"adapter"`
-	Mode                  model.Mode      `json:"mode"`
-	State                 model.State     `json:"state"`
-	Liveness              model.Liveness  `json:"liveness"`
-	WorkHealth            string          `json:"work_health"`
-	ToolHealth            string          `json:"tool_health"`
-	CreatedAt             time.Time       `json:"created_at"`
-	UpdatedAt             time.Time       `json:"updated_at"`
-	ObservationAgeSeconds float64         `json:"observation_age_seconds"`
-	Unreconciled          bool            `json:"unreconciled"`
-	RenotifyAgeTier       string          `json:"renotify_age_tier,omitempty"`
-	RenotifyAgeSeconds    *float64        `json:"renotify_age_seconds,omitempty"`
-	Reasons               []inboxReason   `json:"reasons"`
+	UncollectedChildren   []model.UncollectedChild `json:"uncollected_children,omitempty"`
+	ChildExitGuard        *model.ChildExitGuard    `json:"child_exit_guard,omitempty"`
+	ID                    ids.ExecutionID          `json:"id"`
+	Labels                []string                 `json:"labels"`
+	Authority             model.Authority          `json:"authority"`
+	Adapter               string                   `json:"adapter"`
+	Mode                  model.Mode               `json:"mode"`
+	State                 model.State              `json:"state"`
+	Liveness              model.Liveness           `json:"liveness"`
+	WorkHealth            string                   `json:"work_health"`
+	ToolHealth            string                   `json:"tool_health"`
+	CreatedAt             time.Time                `json:"created_at"`
+	UpdatedAt             time.Time                `json:"updated_at"`
+	ObservationAgeSeconds float64                  `json:"observation_age_seconds"`
+	Unreconciled          bool                     `json:"unreconciled"`
+	RenotifyAgeTier       string                   `json:"renotify_age_tier,omitempty"`
+	RenotifyAgeSeconds    *float64                 `json:"renotify_age_seconds,omitempty"`
+	Reasons               []inboxReason            `json:"reasons"`
 	// NextActions is per item because inbox reports many executions at once and
 	// a document-level action cannot name which one it applies to.
 	NextActions []output.NextAction `json:"next_actions"`
@@ -107,6 +109,8 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 		return mapStoreError("list status contacts", err)
 	}
 	now := a.now().UTC()
+	childQueryCtx, cancelChildQueries := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancelChildQueries()
 	items := make([]inboxExecution, 0, opts.limit)
 	unacked, ordered := make([]inboxExecution, 0, opts.limit), make([]inboxExecution, 0, opts.limit)
 	matched := 0
@@ -114,6 +118,22 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 		execution := executions[i]
 		if !inboxFilterMatches(execution, opts) {
 			continue
+		}
+		if execution.ChildExitGuard != nil && !execution.RemoteForwarded() {
+			children, childErr := journal.Children(childQueryCtx, store.ChildrenScope{Parent: &execution.ID}, now)
+			guard := *execution.ChildExitGuard
+			if childErr != nil {
+				guard.CheckError = "children_query_incomplete"
+				execution.ChildExitGuard = &guard
+			} else {
+				for i := range children {
+					children[i].CollectArgv = childCollectArgv(c, children[i].ID)
+				}
+				execution.UncollectedChildren = children
+				if len(children) == 0 {
+					execution.ChildExitGuard = nil
+				}
+			}
 		}
 		item, actionable := projectInboxAt(execution, contacts[execution.ID], now, opts.staleAfter, acks, renderer.Mode)
 		if !actionable {
@@ -269,6 +289,17 @@ func projectInboxAt(execution model.Execution, contact, now time.Time, staleAfte
 		reasons = append(reasons, inboxReason{Code: "observation_integrity_conflicted", Domain: "integrity", Summary: "normalized execution evidence conflicts; outcome-dependent commands remain unavailable until the authority is reconciled"})
 	}
 	actions := []output.NextAction{}
+	if execution.ChildExitGuard != nil {
+		workHealth = "child_collection_required"
+		reasons = append(reasons, inboxReason{Code: "uncollected_children", Domain: "collection", Summary: "this turn exited with child work that still needs a collector"})
+		if execution.ChildExitGuard.CheckError != "" {
+			reasons = append(reasons, inboxReason{Code: "children_query_incomplete", Domain: "collection", Summary: "outstanding child coverage is unknown; retry the children query"})
+			actions = append(actions, output.NextAction{Label: "Recheck child collection coverage", Argv: []string{"agentctl", "children", "--execution", execution.ID.String()}, SideEffectClass: output.ReadOnly})
+		}
+		for _, child := range execution.UncollectedChildren {
+			actions = append(actions, output.NextAction{Label: "Collect child " + child.ID.String(), Argv: child.CollectArgv, Mutates: true, SideEffectClass: output.LocalOperationalWrite})
+		}
+	}
 	if execution.State == model.StateAttention {
 		workHealth = "attention_required"
 		reasons = append(reasons, inboxReason{Code: "attention_required", Domain: "work", Summary: "the execution authority requires a decision or intervention"})
@@ -318,6 +349,7 @@ func projectInboxAt(execution model.Execution, contact, now time.Time, staleAfte
 		labels = []string{}
 	}
 	item := inboxExecution{
+		UncollectedChildren: execution.UncollectedChildren, ChildExitGuard: execution.ChildExitGuard,
 		ID: execution.ID, Labels: labels, Authority: execution.Authority, Adapter: execution.Adapter, Mode: execution.Mode,
 		State: execution.State, Liveness: execution.Liveness, WorkHealth: workHealth, ToolHealth: string(execution.Liveness),
 		CreatedAt: execution.CreatedAt, UpdatedAt: execution.UpdatedAt, ObservationAgeSeconds: observationAge.Seconds(),
@@ -436,7 +468,7 @@ func scopeInboxAction(action output.NextAction, c common) output.NextAction {
 		action.Preconditions = []string{}
 		return action
 	}
-	if len(argv) < 2 || argv[0] != "agentctl" || (argv[1] != "status" && argv[1] != "events" && argv[1] != "await" && argv[1] != "result") {
+	if len(argv) < 2 || argv[0] != "agentctl" || (argv[1] != "status" && argv[1] != "events" && argv[1] != "await" && argv[1] != "result" && argv[1] != "children") {
 		return action
 	}
 	scoped := []string{"agentctl"}

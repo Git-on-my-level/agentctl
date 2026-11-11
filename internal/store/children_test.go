@@ -233,3 +233,49 @@ func TestChildrenSkipsRefusedReservationsButKeepsLaunchedCancellation(t *testing
 		t.Fatalf("reservation/cancellation distinction: %+v %v", got, err)
 	}
 }
+
+func TestAutomaticContinuationProvenanceSurvivesOldProjection(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	defer j.Close()
+	parent, _, err := j.CreateExecution(ctx, sampleExecution(now), contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := sampleExecution(now)
+	child.ParentExecutionID = &parent.ID
+	child.AutoContinuationOf = &parent.ID
+	child, _, err = j.CreateExecution(ctx, child, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate an older supervisor dropping a new execution-envelope field.
+	err = j.db.Update(func(tx *bbolt.Tx) error {
+		child.AutoContinuationOf = nil
+		raw, err := json.Marshal(child)
+		if err != nil {
+			return err
+		}
+		if err := tx.Bucket(bExecutions).Put([]byte(child.ID.String()), raw); err != nil {
+			return err
+		}
+		// The pre-existing attribution snapshot must retain its exact old shape
+		// and digest; an old reader can still validate it.
+		raw = tx.Bucket(bIdempotency).Get([]byte(attributionBindingScope + "\x00" + child.ID.String()))
+		var record mutationRecord
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return err
+		}
+		if record.Attribution == nil || record.InputDigest != attributionDigest(record.Attribution) {
+			return errors.New("old attribution reader would reject automatic turn")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := j.GetExecution(ctx, child.ID)
+	if err != nil || recovered.AutoContinuationOf == nil || *recovered.AutoContinuationOf != parent.ID {
+		t.Fatalf("lost provenance: %+v %v", recovered, err)
+	}
+}

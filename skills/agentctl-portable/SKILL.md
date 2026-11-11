@@ -469,7 +469,7 @@ The declaration is stripped from inherited child environments; nested callers
 must identify themselves. `recent --caller unknown` finds unattributed records.
 
 Use `children` before ending a managed parent to discover its terminal
-uncollected children and active children without known durable waiters. It shares
+uncollected children and active children without known collectors. It shares
 `identity` resolution and never acknowledges results or contacts remote hosts.
 For an unmanaged Claude session, set `AGENTCTL_CALLER_PROVIDER=claude` and
 `AGENTCTL_CALLER_NATIVE_SESSION_ID` to that session on each launch invocation;
@@ -478,13 +478,29 @@ stripped from native child environments. Query that session with
 `children --provider claude --native-session-id <session-id>`; use `--summary`
 for counts. `children --execution <id>` selects one managed parent explicitly.
 Retain `collect_argv` for each result and execute it to collect the child.
-Unknown waiter status includes unregistered await processes; supported durable
-terminal subscriptions exclude active local children. Remote forwarding rows
-stay conservative and use local collection IDs. Coverage includes only newly
-attributed retained executions. A 1.5s processing budget, 50ms read-lock attempts,
-and bounded indexed reads fail with `children_query_incomplete` (exit 9) instead
-of partial success. Treat every error as unknown coverage, never an empty set.
-This query does not yet enforce parent exit or automatically continue a parent.
+On macOS/Linux, live `await`, terminal `await-any` without `--since`, and `delegate/continue --wait` hold kernel locks
+through delivery; process death releases them, so stale registration files never
+count. This covers local remote-forwarding IDs. Supported durable terminal
+subscriptions cover active local execution events only. External/old waiters
+remain unknown. A lock proves a live collector, not that its output is consumed.
+Coverage includes only newly attributed retained executions. A 1.5s processing
+budget, 50ms read-lock attempts, and bounded indexed reads fail with
+`children_query_incomplete` (exit 9) instead of partial success. Treat every error
+as unknown coverage, never an empty set.
+
+Native owners flag outstanding children on terminal execution/outcome with
+`uncollected_children`, exact `collect_argv`, and a warning. Completed parents
+with a frozen recipe and verified native resume route receive one automatic
+collection turn using ordinary keyed `continue` admission. The successor carries
+`auto_continuation_of`, preventing recursive automatic turns. OpenCode-backed
+models and other non-resumable routes stay flagged in `inbox`; Hermes remains
+unverified and Devin ACP must advertise session loading. Cancelled/timed-out
+parents never auto-continue; childless runs do not change. A profile's
+`delegation.child_exit_auto_continue: false` disables continuation while retaining
+warnings and inbox actions (default true). No fresh-session fallback occurs.
+The original parent stays terminal; collect the automatic turn using
+`child_exit_guard.continuation_id`. Inbox rechecks children and clears resolved
+ones even when the parent's own result was already collected.
 See [child work](https://github.com/Git-on-my-level/agentctl/blob/main/docs/child-work.md).
 
 Use `recent` to recover

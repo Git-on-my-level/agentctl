@@ -14,6 +14,9 @@
     "reused"
   ],
   "properties": {
+    "uncollected_children": {"$ref": "execution.schema.json#/properties/uncollected_children"},
+    "child_exit_guard": {"$ref": "execution.schema.json#/properties/child_exit_guard"},
+    "auto_continuation_of": {"$ref": "execution.schema.json#/properties/id"},
     "parent_execution_id": {"$ref": "execution.schema.json#/properties/id"},
     "caller_identity": {"$ref": "execution.schema.json#/properties/caller_identity"},
     "remote": {"type": "object", "additionalProperties": false, "description": "Frozen SSH provenance; use the local id for commands. The cross-host reference is agentctl://<origin_host_id>/<execution_id>.", "required": ["host", "ssh_destination", "execution_id", "origin_host_id"], "properties": {"host": {"type": "string", "minLength": 1, "maxLength": 256}, "ssh_destination": {"type": "string", "minLength": 1, "maxLength": 128}, "execution_id": {"$ref": "execution.schema.json#/properties/id"}, "origin_host_id": {"$ref": "execution.schema.json#/properties/origin_host_id"}}},

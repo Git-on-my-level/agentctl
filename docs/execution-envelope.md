@@ -422,3 +422,12 @@ modification times first, including uncollected diagnostics. An `output_ref`
 may subsequently be missing. Cleanup plans include sibling filename, size and
 SHA-256 in their digest; cleanup apply removes files before their records. `--no-store-result` disables this capture. Historical journal
 records are not rewritten or reconciled by these changes.
+
+## Child exit metadata
+
+Native terminal commits may include `uncollected_children` on both execution and
+outcome, plus `child_exit_guard` on the execution. `auto_continuation_of` marks
+the one automatic collection turn and is immutable launch provenance. These
+fields do not change the original terminal state, answer, replay key or native
+authority. See [child work](child-work.md#native-exit-safeguard) for the complete
+waiter, warning, inbox, kill-switch and continuation contract.

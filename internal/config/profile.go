@@ -209,6 +209,10 @@ func cloneProfile(in Profile) Profile {
 	}
 	if in.Delegation != nil {
 		grant := *in.Delegation
+		if grant.ChildExitAutoContinue != nil {
+			enabled := *grant.ChildExitAutoContinue
+			grant.ChildExitAutoContinue = &enabled
+		}
 		out.Delegation = &grant
 	}
 	out.Capacity = cloneCapacity(in.Capacity)

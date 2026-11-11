@@ -30,6 +30,7 @@ const (
 )
 
 type awaitAnyOptions struct {
+	watch               func(ids.ExecutionID) *output.Error
 	executionIDs        []ids.ExecutionID
 	labelPrefix         string
 	kinds               map[string]bool
@@ -285,6 +286,27 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 		}
 		return a.fail(renderer, problem)
 	}
+	// Only a terminal watcher with no timestamp exclusion proves that every
+	// currently running selected execution can wake this collector.
+	waiters := map[ids.ExecutionID]func(){}
+	defer func() {
+		for _, closeWaiter := range waiters {
+			closeWaiter()
+		}
+	}()
+	if options.kinds[awaitAnyKindTerminal] && options.since.IsZero() {
+		options.watch = func(id ids.ExecutionID) *output.Error {
+			if _, registered := waiters[id]; registered {
+				return nil
+			}
+			closeWaiter, problem := a.registerWaiter(c, id)
+			if problem != nil {
+				return problem
+			}
+			waiters[id] = closeWaiter
+			return nil
+		}
+	}
 	var deadline time.Time
 	if options.timeout > 0 {
 		deadline = a.now().Add(options.timeout)
@@ -399,6 +421,11 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 		for _, execution := range candidates {
 			if err := ctx.Err(); err != nil {
 				return output.Wrap(output.CodeTimeout, "await-any scan interrupted", true, err)
+			}
+			if options.watch != nil && !execution.State.Terminal() {
+				if problem := options.watch(execution.ID); problem != nil {
+					return problem
+				}
 			}
 			if execution.RemoteForwarded() && execution.Observation.Integrity != model.IntegrityConflicted {
 				refresh := !execution.State.Terminal()

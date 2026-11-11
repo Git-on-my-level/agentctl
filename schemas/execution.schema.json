@@ -28,6 +28,9 @@
     "observation"
   ],
   "properties": {
+    "auto_continuation_of": {"$ref": "#/properties/id", "description": "Immutable provenance on an automatic collection turn; suppresses recursive automatic continuation."},
+    "uncollected_children": {"$ref": "children-result.schema.json#/properties/executions", "description": "Historical child-collection snapshot at native exit."},
+    "child_exit_guard": {"type": "object", "additionalProperties": false, "required": ["checked_at", "auto_continue"], "properties": {"checked_at": {"type": "string", "format": "date-time"}, "check_error": {"const": "children_query_incomplete"}, "auto_continue": {"enum": ["pending", "attempted", "launched", "failed", "disabled", "unavailable", "parent_not_completed", "parent_interrupted", "suppressed_recursive"]}, "diagnostic": {"type": "string", "maxLength": 128}, "continuation_id": {"$ref": "#/properties/id"}}},
 	"owner_launch": {"$ref":"#/properties/launch", "description":"Kernel identity of the native child's collecting agentctl process, when observed. Missing on legacy rows."},
     "failure": {
       "type": "object",

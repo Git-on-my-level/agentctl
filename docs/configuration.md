@@ -128,6 +128,12 @@ entry and a supported native recipe. Claude Code supports effort values `low`,
 `medium`, `high`, `xhigh`, and `max` through its native `--effort` flag; other
 harnesses retain their own recipe limits. `delegation.cursor_workspace_trust`
 is a separate boolean grant for Cursor workspace trust.
+`delegation.child_exit_auto_continue` defaults to `true`. Set it to `false`
+to disable the single automatic child-collection follow-up for a native parent;
+exit snapshots, warnings and inbox visibility remain active. See
+[the exit safeguard](child-work.md#native-exit-safeguard) for harness routes,
+waiter evidence, and cancellation bounds.
+
 `delegation.unattended_coding_permissions` is a separate boolean grant that
 lets `delegate` add Cursor `--force`, Codex
 `--dangerously-bypass-approvals-and-sandbox`, Claude Code

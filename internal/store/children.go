@@ -21,27 +21,39 @@ type ChildrenScope struct {
 	Provider, NativeSessionID string
 }
 
-type ChildExecution struct {
-	ID           ids.ExecutionID             `json:"id"`
-	CreatedAt    time.Time                   `json:"created_at"`
-	State        model.State                 `json:"state"`
-	Authority    model.Authority             `json:"authority"`
-	Adapter      string                      `json:"adapter"`
-	Remote       *model.DelegationRemotePlan `json:"remote,omitempty"`
-	Reason       string                      `json:"reason"`
-	WaiterStatus string                      `json:"waiter_status"`
-	CollectArgv  []string                    `json:"collect_argv"`
-}
+type ChildExecution = model.UncollectedChild
 
 // Children only visits caller-indexed projections, attribution snapshots,
 // selected acknowledgements and bounded subscription metadata. Event/result history is
 // never scanned. Each page drops the shared flock so writers can progress.
-// A live await has no durable registration: unknown coverage remains actionable.
+// Live awaits are proven by process-held locks, never by stale registration files.
 func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Time) ([]ChildExecution, error) {
 	if scope.Parent == nil && (scope.Provider == "" || scope.NativeSessionID == "") {
 		return nil, ErrChildrenBounded
 	}
-	r := c.reader(ctx)
+	return children(c.reader(ctx), scope, now)
+}
+
+// Children reuses a borrowed journal handle during terminal commit preparation.
+func (j *Journal) Children(ctx context.Context, scope ChildrenScope, now time.Time) ([]ChildExecution, error) {
+	return children(j.cleanupReader(ctx), scope, now)
+}
+
+func children(r *cleanupReader, scope ChildrenScope, now time.Time) ([]ChildExecution, error) {
+	ctx := r.ctx
+	// An exact index seek keeps childless runs independent of subscription metadata.
+	prefix := childrenScopePrefix(scope)
+	hasChildren := false
+	if err := r.view(func(tx *bbolt.Tx) error {
+		key, _ := tx.Bucket(bIdempotency).Cursor().Seek(prefix)
+		hasChildren = bytes.HasPrefix(key, prefix)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if !hasChildren {
+		return []ChildExecution{}, nil
+	}
 	var subscriptions []SubscriptionRecord
 	if err := r.view(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bSubscriptions)
@@ -71,7 +83,6 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 		return nil, err
 	}
 	result := []ChildExecution{}
-	prefix := childrenScopePrefix(scope)
 	var after []byte
 	scanned, totalBytes := 0, 0
 	for {
@@ -145,21 +156,30 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 				if e.State.Terminal() {
 					item.Reason = "terminal_uncollected"
 					item.WaiterStatus = "not_applicable"
-				} else if !e.RemoteForwarded() {
-					// A terminal event filter covers every terminal state; progress-
-					// only subscriptions cannot prove a wake on completion/failure.
-					covered := false
-					state := model.StateCompleted
-					event := &model.Event{ExecutionID: e.ID, Authority: e.Authority, Kind: model.EventTerminal, State: &state}
-					for _, record := range subscriptions {
-						if matchesEvent(record.Subscription, event, now, func() []string { return e.Labels }) {
-							covered = true
-							break
-						}
+				} else {
+					live, err := hasLiveWaiter(ctx, r.path, e.ID)
+					if err != nil {
+						return err
 					}
-
-					if covered {
+					if live {
 						continue
+					}
+					if !e.RemoteForwarded() {
+						// A terminal event filter covers every terminal state; progress-
+						// only subscriptions cannot prove a wake on completion/failure.
+						covered := false
+						state := model.StateCompleted
+						event := &model.Event{ExecutionID: e.ID, Authority: e.Authority, Kind: model.EventTerminal, State: &state}
+						for _, record := range subscriptions {
+							if matchesEvent(record.Subscription, event, now, func() []string { return e.Labels }) {
+								covered = true
+								break
+							}
+						}
+
+						if covered {
+							continue
+						}
 					}
 				}
 				if len(result) >= 200 {

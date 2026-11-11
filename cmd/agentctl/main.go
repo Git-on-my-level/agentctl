@@ -1254,6 +1254,11 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 	if boolCount(timeoutSet, noTimeout, throughExecutionDeadline) > 1 {
 		return a.fail(renderer, output.NewError(output.CodeUsage, "--timeout, --no-timeout, and --through-execution-deadline are mutually exclusive", false))
 	}
+	closeWaiter, waiterProblem := a.registerWaiter(c, id)
+	if waiterProblem != nil {
+		return a.fail(renderer, waiterProblem)
+	}
+	defer closeWaiter()
 	deadline := time.Time{}
 	lastMulticaReprobe := time.Time{}
 	var poll time.Duration
@@ -1575,7 +1580,7 @@ func writeExecutionReported(renderer output.Renderer, e model.Execution, operati
 		fields = append(fields, output.Field{Name: "labels", Value: e.Labels})
 	}
 	actions := []output.NextAction{}
-	warnings := append([]output.Warning{}, extraWarnings...)
+	warnings := append(childExitWarnings(e), extraWarnings...)
 	if e.TaskContract != nil {
 		fields = append(fields, output.Field{Name: "task_contract", Value: "retained"}, output.Field{Name: "acceptance", Value: "external_required"})
 		warnings = append(warnings, taskContractAcceptanceWarning())
@@ -1680,7 +1685,7 @@ func writeExecutionOutcome(renderer output.Renderer, e model.Execution, outcome 
 	if outcome.Failure != nil {
 		fields = append(fields, output.Field{Name: "failure", Value: outcome.Failure.Message})
 	}
-	warnings := []output.Warning{}
+	warnings := childExitWarnings(e)
 	if e.TaskContract != nil {
 		fields = append(fields, output.Field{Name: "task_contract", Value: "retained"}, output.Field{Name: "acceptance", Value: "external_required"})
 		warnings = append(warnings, taskContractAcceptanceWarning())

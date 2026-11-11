@@ -88,8 +88,10 @@ type Profile struct {
 // It never rewrites expert `run` argv. Cursor workspace trust and unattended
 // coding permissions are separate grants. Neither is implied by a model alias.
 type DelegationPolicy struct {
-	CursorWorkspaceTrust        bool `json:"cursor_workspace_trust,omitempty"`
-	UnattendedCodingPermissions bool `json:"unattended_coding_permissions,omitempty"`
+	// Nil defaults to enabled. False disables automatic child-collection turns, not warnings.
+	ChildExitAutoContinue       *bool `json:"child_exit_auto_continue,omitempty"`
+	CursorWorkspaceTrust        bool  `json:"cursor_workspace_trust,omitempty"`
+	UnattendedCodingPermissions bool  `json:"unattended_coding_permissions,omitempty"`
 }
 
 type Adapter struct {

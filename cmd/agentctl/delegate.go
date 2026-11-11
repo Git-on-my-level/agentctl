@@ -507,7 +507,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	prompt.Delivery = recipe.PromptDelivery
 	admissionReused := false
 	admissionRecorded := false
-	run := runOptions{env: append([]string(nil), recipe.Env...), adapter: selected.Harness, cwd: cwd, argv: append([]string(nil), recipe.Argv...), preparedPrompt: prompt,
+	run := runOptions{collectionWaiter: opts.wait, env: append([]string(nil), recipe.Env...), adapter: selected.Harness, cwd: cwd, argv: append([]string(nil), recipe.Argv...), preparedPrompt: prompt,
 		plan: opts.plan, timeout: opts.timeout, labels: opts.labels, delegation: binding, mutationOverride: &mutation, admissionReused: &admissionReused, admissionRecorded: &admissionRecorded}
 	if opts.detach && !opts.plan {
 		detachedCommon := c
@@ -692,6 +692,13 @@ func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding
 }
 
 func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c common, execution model.Execution, opts delegateOptions, reused bool) (problem *output.Error) {
+	if opts.wait {
+		closeWaiter, waiterProblem := a.registerWaiter(c, execution.ID)
+		if waiterProblem != nil {
+			return waiterProblem
+		}
+		defer closeWaiter()
+	}
 	defer func() {
 		if problem != nil && failedResultReplay(execution, reused) {
 			problem.WithDetail("replayed", true).WithDetail("reused", true).WithActions(retryWithNewKeyAction(execution))
@@ -771,6 +778,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		}
 		outcome = &value
 	}
+	renderer = renderer.WithWarnings(childExitWarnings(execution)...)
 	binding := execution.Delegation
 	if binding == nil {
 		return delegateExecutionError(output.CodeInternal, "delegated execution has no resolution binding", execution)
@@ -788,6 +796,15 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		}
 		if execution.CallerIdentity != nil {
 			result["caller_identity"] = execution.CallerIdentity
+		}
+		if execution.ChildExitGuard != nil {
+			result["child_exit_guard"] = execution.ChildExitGuard
+			if len(execution.UncollectedChildren) > 0 {
+				result["uncollected_children"] = execution.UncollectedChildren
+			}
+		}
+		if execution.AutoContinuationOf != nil {
+			result["auto_continuation_of"] = execution.AutoContinuationOf
 		}
 		if binding.RemotePlan != nil {
 			result["remote"] = binding.RemotePlan

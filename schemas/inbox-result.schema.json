@@ -71,6 +71,8 @@
         "reasons"
       ],
       "properties": {
+    "uncollected_children": {"$ref": "execution.schema.json#/properties/uncollected_children"},
+    "child_exit_guard": {"$ref": "execution.schema.json#/properties/child_exit_guard"},
         "id": {
           "$ref": "#/$defs/execution_id"
         },
