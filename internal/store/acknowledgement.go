@@ -73,10 +73,13 @@ func (j *Journal) AcknowledgementIndex(ctx context.Context) (AcknowledgementInde
 		if bucket == nil {
 			return nil
 		}
-		return bucket.ForEach(func(_, raw []byte) error {
-			var value ExecutionAcknowledgement
-			if err := json.Unmarshal(raw, &value); err != nil {
-				return corrupt(err)
+		return bucket.ForEach(func(key, raw []byte) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			value, err := decodeCollectionAcknowledgement(key, raw)
+			if err != nil {
+				return err
 			}
 			index.ByID[value.ExecutionID] = value
 			return nil
@@ -239,4 +242,22 @@ func (j *Journal) AcknowledgementIndexFor(ctx context.Context, executions []mode
 		return nil
 	})
 	return index, err
+}
+
+// decodeCollectionAcknowledgement validates evidence used to retire child
+// obligations. Keep the global inbox snapshot and selected child reads in
+// agreement: a record's JSON identity cannot override its authoritative key.
+func decodeCollectionAcknowledgement(key, raw []byte) (ExecutionAcknowledgement, error) {
+	var value ExecutionAcknowledgement
+	id, err := ids.ParseExecutionID(string(key))
+	if err != nil {
+		return value, corrupt(fmt.Errorf("invalid collection acknowledgement key: %w", err))
+	}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return value, corrupt(err)
+	}
+	if value.ExecutionID != id || value.AcknowledgedAt.IsZero() || (value.Source != AcknowledgementResult && value.Source != AcknowledgementAwait && value.Source != AcknowledgementBulk) {
+		return value, corrupt(fmt.Errorf("invalid collection acknowledgement identity, time or source"))
+	}
+	return value, nil
 }

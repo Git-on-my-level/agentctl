@@ -394,6 +394,10 @@ func (r NativeRateLimit) Validate() error {
 var nativeRateLimitProviderErrorType = regexp.MustCompile(`^(?:unclassified|provider\.[a-z0-9][a-z0-9._-]{0,54})$`)
 
 type Execution struct {
+	UncollectedChildren  []UncollectedChild `json:"uncollected_children,omitempty"`
+	ChildExitRecheck     bool               `json:"child_exit_recheck,omitempty"`
+	ChildExitGuard       *ChildExitGuard    `json:"child_exit_guard,omitempty"`
+	AutoContinuationOf   *ids.ExecutionID   `json:"auto_continuation_of,omitempty"`
 	CallerIdentity       *CallerIdentity    `json:"caller_identity,omitempty"`
 	Caller               *ExecutionCaller   `json:"caller,omitempty"`
 	LastOperationFailure *OperationFailure  `json:"last_operation_failure,omitempty"`
@@ -448,6 +452,23 @@ var (
 )
 
 func (e Execution) Validate() error {
+	if err := validateUncollectedChildren(e.UncollectedChildren); err != nil {
+		return err
+	}
+	if e.ChildExitGuard != nil {
+		if err := e.ChildExitGuard.Validate(); err != nil {
+			return err
+		}
+	}
+	if e.AutoContinuationOf != nil {
+		if _, err := ids.ParseExecutionID(e.AutoContinuationOf.String()); err != nil {
+			return err
+		}
+		if *e.AutoContinuationOf == e.ID {
+			return errors.New("automatic continuation cannot reference itself")
+		}
+	}
+
 	if e.ParentExecutionID != nil {
 		if _, err := ids.ParseExecutionID(e.ParentExecutionID.String()); err != nil || *e.ParentExecutionID == e.ID {
 			return errors.New("invalid parent execution id")
@@ -602,6 +623,9 @@ func (e Execution) Validate() error {
 }
 
 func ValidateTransition(previous, next Execution) error {
+	if !reflect.DeepEqual(previous.AutoContinuationOf, next.AutoContinuationOf) {
+		return errors.New("automatic continuation provenance is immutable")
+	}
 	if !reflect.DeepEqual(previous.ParentExecutionID, next.ParentExecutionID) || !reflect.DeepEqual(previous.CallerIdentity, next.CallerIdentity) {
 		return errors.New("execution launch attribution is immutable")
 	}

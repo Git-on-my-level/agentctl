@@ -83,22 +83,9 @@ func (a *app) children(ctx context.Context, renderer output.Renderer, c common, 
 		return mapStoreError("query children", err)
 	}
 	for i := range children {
-		// Preserve explicit scope on copy-pasteable collection commands.
-		argv := []string{"agentctl"}
-		if c.journalPath != "" {
-			argv = append(argv, "--journal", c.journalPath)
-		}
-		if c.configPath != "" {
-			argv = append(argv, "--config", c.configPath)
-		}
-		if c.configBundle != "" {
-			argv = append(argv, "--config-bundle", c.configBundle)
-		}
-		if c.profile != "" {
-			argv = append(argv, "--profile", c.profile)
-		}
-		children[i].CollectArgv = append(argv, "await", children[i].ID.String(), "--content")
+		children[i].CollectArgv = childCollectArgv(c, children[i].ID)
 	}
+
 	terminal, running := 0, 0
 	for _, child := range children {
 		if child.State.Terminal() {

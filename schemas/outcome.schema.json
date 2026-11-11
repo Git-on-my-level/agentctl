@@ -7,6 +7,9 @@
   "additionalProperties": true,
   "required": ["schema_version", "execution_id", "revision", "state", "availability", "recorded_at", "source", "result_ref"],
   "properties": {
+    "child_exit_recheck": {"type": "boolean", "description": "Historical native-exit obligation to recheck indexed children until collection; does not assert present uncollected work or trigger continuation."},
+    "uncollected_children": {"$ref": "execution.schema.json#/properties/uncollected_children"},
+    "child_exit_check_error": {"const": "children_query_incomplete"},
     "schema_version": {"const": 1},
     "execution_id": {"type": "string", "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"},
     "revision": {"type": "integer", "minimum": 1},

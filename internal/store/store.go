@@ -342,6 +342,12 @@ func (j *Journal) CreateExecution(ctx context.Context, execution model.Execution
 		if err := putDelegationBinding(tx, execution); err != nil {
 			return err
 		}
+		if err := putChildExitRecheck(tx, execution); err != nil {
+			return err
+		}
+		if err := putAutomaticContinuationBinding(tx, execution); err != nil {
+			return err
+		}
 		if err := putAttributionBinding(tx, execution); err != nil {
 			return err
 		}
@@ -443,6 +449,10 @@ func (j *Journal) UpdateExecution(ctx context.Context, next model.Execution, exp
 		}
 		if err := model.ValidateTransition(previous, next); err != nil {
 			return fmt.Errorf("%w: %v", ErrConflict, err)
+		}
+		next.ChildExitRecheck = next.ChildExitRecheck || previous.ChildExitRecheck
+		if err := putChildExitRecheck(tx, next); err != nil {
+			return err
 		}
 		encoded, err := json.Marshal(next)
 		if err != nil {
@@ -727,6 +737,10 @@ func (j *Journal) CommitObservedEvent(ctx context.Context, next model.Execution,
 		if err := model.ValidateTransition(previous, next); err != nil {
 			return fmt.Errorf("%w: %v", ErrConflict, err)
 		}
+		next.ChildExitRecheck = next.ChildExitRecheck || previous.ChildExitRecheck
+		if err := putChildExitRecheck(tx, next); err != nil {
+			return err
+		}
 		encoded, err := json.Marshal(next)
 		if err != nil {
 			return err
@@ -809,6 +823,13 @@ func (j *Journal) CommitTerminalOutcome(ctx context.Context, next model.Executio
 		}
 		if err := outcome.Validate(); err != nil {
 			return fmt.Errorf("outcome validation: %w", err)
+		}
+		next.ChildExitRecheck = next.ChildExitRecheck || previous.ChildExitRecheck
+		if next.ChildExitRecheck != outcome.ChildExitRecheck {
+			return fmt.Errorf("%w: child recheck outcome mismatch", ErrConflict)
+		}
+		if err := putChildExitRecheck(tx, next); err != nil {
+			return err
 		}
 		encodedExecution, err := json.Marshal(next)
 		if err != nil {
@@ -1002,15 +1023,16 @@ type dedupeRecord struct {
 	ProjectionDigest string `json:"projection_digest"`
 }
 type mutationRecord struct {
-	Attribution *launchAttribution          `json:"launch_attribution,omitempty"`
-	Caller      *model.ExecutionCaller      `json:"caller,omitempty"`
-	NativePlan  *model.DelegationNativePlan `json:"native_plan,omitempty"`
-	Delegation  *model.DelegationBinding    `json:"delegation,omitempty"`
-	Scope       string                      `json:"scope"`
-	Key         string                      `json:"key"`
-	InputDigest string                      `json:"input_digest"`
-	ObjectType  string                      `json:"object_type"`
-	ObjectID    string                      `json:"object_id"`
+	AutomaticContinuationOf *ids.ExecutionID            `json:"auto_continuation_of,omitempty"`
+	Attribution             *launchAttribution          `json:"launch_attribution,omitempty"`
+	Caller                  *model.ExecutionCaller      `json:"caller,omitempty"`
+	NativePlan              *model.DelegationNativePlan `json:"native_plan,omitempty"`
+	Delegation              *model.DelegationBinding    `json:"delegation,omitempty"`
+	Scope                   string                      `json:"scope"`
+	Key                     string                      `json:"key"`
+	InputDigest             string                      `json:"input_digest"`
+	ObjectType              string                      `json:"object_type"`
+	ObjectID                string                      `json:"object_id"`
 }
 
 func lookupMutation(tx *bbolt.Tx, key contracts.MutationKey) (*mutationRecord, error) {

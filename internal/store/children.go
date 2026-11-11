@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/ids"
@@ -21,57 +22,47 @@ type ChildrenScope struct {
 	Provider, NativeSessionID string
 }
 
-type ChildExecution struct {
-	ID           ids.ExecutionID             `json:"id"`
-	CreatedAt    time.Time                   `json:"created_at"`
-	State        model.State                 `json:"state"`
-	Authority    model.Authority             `json:"authority"`
-	Adapter      string                      `json:"adapter"`
-	Remote       *model.DelegationRemotePlan `json:"remote,omitempty"`
-	Reason       string                      `json:"reason"`
-	WaiterStatus string                      `json:"waiter_status"`
-	CollectArgv  []string                    `json:"collect_argv"`
-}
+type ChildExecution = model.UncollectedChild
 
 // Children only visits caller-indexed projections, attribution snapshots,
 // selected acknowledgements and bounded subscription metadata. Event/result history is
 // never scanned. Each page drops the shared flock so writers can progress.
-// Exact-ID awaits supply process-held lock evidence; unknown coverage stays actionable.
+// Live awaits are proven by process-held locks, never by stale registration files.
 func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Time) ([]ChildExecution, error) {
 	if scope.Parent == nil && (scope.Provider == "" || scope.NativeSessionID == "") {
 		return nil, ErrChildrenBounded
 	}
-	r := c.reader(ctx)
-	var subscriptions []SubscriptionRecord
-	if err := r.view(func(tx *bbolt.Tx) error {
-		b := tx.Bucket(bSubscriptions)
-		if b == nil {
-			return nil
-		}
-		size, records := 0, 0
-		return b.ForEach(func(key, raw []byte) error {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			size += len(raw)
-			records++
-			if records > 1024 || size > 4<<20 {
-				return ErrChildrenBounded
-			}
-			record, understood, err := decodeFanoutSubscription(key, raw)
-			if err != nil {
-				return err
-			}
-			if understood {
-				subscriptions = append(subscriptions, record)
-			}
-			return nil
-		})
-	}); err != nil {
-		return nil, err
+	return children(c.reader(ctx), scope, now, nil)
+}
+
+// Children reuses a borrowed journal handle during terminal commit preparation.
+func (j *Journal) Children(ctx context.Context, scope ChildrenScope, now time.Time) ([]ChildExecution, error) {
+	return children(j.cleanupReader(ctx), scope, now, nil)
+}
+
+// CheckChildCollection also reports whether unacknowledged attributed children
+// exist, including currently covered children. Errors never establish settlement.
+type ChildCollectionCheck struct {
+	Children []ChildExecution
+	Recheck  bool
+}
+
+func (j *Journal) CheckChildCollection(ctx context.Context, scope ChildrenScope, now time.Time) (ChildCollectionCheck, error) {
+	var check ChildCollectionCheck
+	var err error
+	check.Children, err = children(j.cleanupReader(ctx), scope, now, &check.Recheck)
+	return check, err
+}
+
+func children(r *cleanupReader, scope ChildrenScope, now time.Time, recheck *bool) ([]ChildExecution, error) {
+	ctx := r.ctx
+	if scope.Parent == nil && (scope.Provider == "" || scope.NativeSessionID == "") {
+		return nil, ErrChildrenBounded
 	}
-	result := []ChildExecution{}
 	prefix := childrenScopePrefix(scope)
+	var subscriptions []SubscriptionRecord
+	subscriptionsLoaded := false
+	result := []ChildExecution{}
 	var membership *childrenMembership
 	var after []byte
 	scanned, totalBytes := 0, 0
@@ -112,24 +103,12 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 					return ErrChildrenBounded
 				}
 				last = bytes.Clone(key)
-				var index mutationRecord
-				if err := json.Unmarshal(raw, &index); err != nil {
-					return corrupt(err)
+				id, expired, err := decodeChildMembership(tx, prefix, key, raw)
+				if err != nil {
+					return err
 				}
-				id, err := ids.ParseExecutionID(string(key[len(prefix):]))
-				if err != nil || index.ObjectID != id.String() {
-					return corrupt(errors.New("invalid children index identity"))
-				}
-				// Older cleanup may omit Scope/Key in a compact tombstone, but
-				// it cannot revoke discovery of a still-retained execution.
-				if index.ObjectType == expiredExecutionObject {
-					if (index.Scope != "" && index.Scope != string(prefix[:len(prefix)-1])) || (index.Key != "" && index.Key != id.String()) || executions.Get([]byte(id.String())) != nil || executions.Bucket([]byte(id.String())) != nil {
-						return corrupt(errors.New("invalid children index tombstone"))
-					}
+				if expired {
 					continue
-				}
-				if index.Scope != string(prefix[:len(prefix)-1]) || index.Key != id.String() || index.ObjectType != "execution" {
-					return corrupt(errors.New("invalid children index"))
 				}
 				executionRaw := executions.Get([]byte(id.String()))
 				if executionRaw == nil || len(executionRaw) > 1<<20 {
@@ -163,16 +142,15 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 							if len(raw) > 1<<20 {
 								return ErrChildrenBounded
 							}
-							var ack ExecutionAcknowledgement
-							if err := json.Unmarshal(raw, &ack); err != nil {
-								return corrupt(err)
-							}
-							if ack.ExecutionID != e.ID || ack.AcknowledgedAt.IsZero() || (ack.Source != AcknowledgementResult && ack.Source != AcknowledgementAwait && ack.Source != AcknowledgementBulk) {
-								return corrupt(errors.New("invalid children acknowledgement"))
+							if _, err := decodeCollectionAcknowledgement([]byte(e.ID.String()), raw); err != nil {
+								return err
 							}
 							continue
 						}
 					}
+				}
+				if recheck != nil {
+					*recheck = true
 				}
 				item := ChildExecution{ID: e.ID, CreatedAt: e.CreatedAt, State: e.State, Authority: e.Authority, Adapter: e.Adapter, Reason: "running_without_known_waiter", WaiterStatus: "unknown", CollectArgv: []string{"agentctl", "await", e.ID.String(), "--content"}}
 				if e.RemoteForwarded() {
@@ -182,11 +160,7 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 					item.Reason = "terminal_uncollected"
 					item.WaiterStatus = "not_applicable"
 				} else if e.State != model.StateAttention {
-					// Attention always remains actionable: subscriptions only backfill
-					// terminal events, so a matching filter may have missed attention.
-					// A live await exits immediately on integrity conflicts.
 					covered := false
-					state, kind := model.StateCompleted, model.EventTerminal
 					if e.Observation.Integrity != model.IntegrityConflicted {
 						var err error
 						covered, err = hasLiveWaiter(ctx, r.path, e.ID)
@@ -194,10 +168,19 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 							return err
 						}
 					}
-					event := &model.Event{ExecutionID: e.ID, Authority: e.Authority, Kind: kind, State: &state}
-					// Local event subscriptions cannot prove a remote completion wake.
-					// Exact-ID await locks do prove an active local remote collector.
-					if !e.RemoteForwarded() {
+					// Local terminal subscriptions cannot observe a forwarded remote event.
+					if !covered && !e.RemoteForwarded() {
+						if !subscriptionsLoaded {
+							var err error
+							subscriptions, err = childrenSubscriptions(ctx, tx)
+							if err != nil {
+								return err
+							}
+							subscriptionsLoaded = true
+						}
+
+						state := model.StateCompleted
+						event := &model.Event{ExecutionID: e.ID, Authority: e.Authority, Kind: model.EventTerminal, State: &state}
 						for _, record := range subscriptions {
 							if matchesEvent(record.Subscription, event, now, func() []string { return e.Labels }) {
 								covered = true
@@ -205,7 +188,6 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 							}
 						}
 					}
-
 					if covered {
 						continue
 					}
@@ -225,4 +207,76 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 		}
 		after = last
 	}
+}
+
+// Called lazily inside the current page transaction. Acknowledged terminals,
+// attention, remote rows and exact-await-covered children never need this scan.
+func childrenSubscriptions(ctx context.Context, tx *bbolt.Tx) ([]SubscriptionRecord, error) {
+	var subscriptions []SubscriptionRecord
+	b := tx.Bucket(bSubscriptions)
+	if b == nil {
+		return nil, nil
+	}
+	size, records := 0, 0
+	err := b.ForEach(func(key, raw []byte) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		size += len(raw)
+		records++
+		if records > 1024 || size > 4<<20 {
+			return ErrChildrenBounded
+		}
+		record, understood, err := decodeFanoutSubscription(key, raw)
+		if err != nil {
+			return err
+		}
+		if understood {
+			subscriptions = append(subscriptions, record)
+		}
+		return nil
+	})
+	return subscriptions, err
+}
+
+// Attribution digests are SHA-256 in the representation emitted by
+// attributionDigest; replayTombstone preserves that input_digest verbatim.
+var childExpiryDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// decodeChildMembership shares the retained-index/expiry proof between the
+// authoritative query and inbox's negative-evidence shortcut.
+func decodeChildMembership(tx *bbolt.Tx, prefix, key, raw []byte) (ids.ExecutionID, bool, error) {
+	executions := tx.Bucket(bExecutions)
+	var index mutationRecord
+	if err := json.Unmarshal(raw, &index); err != nil {
+		return "", false, corrupt(err)
+	}
+	id, err := ids.ParseExecutionID(string(key[len(prefix):]))
+	if err != nil || index.ObjectID != id.String() {
+		return "", false, corrupt(errors.New("invalid children index identity"))
+	}
+	// Compact replay tombstones omit BOTH scope and key. Full records retain
+	// BOTH matching values. Presence matters: null/empty is not omission.
+	if index.ObjectType == expiredExecutionObject {
+		if err := validateChildExpiryJSON(raw); err != nil {
+			return "", false, err
+		}
+		var shape struct {
+			Scope json.RawMessage `json:"scope"`
+			Key   json.RawMessage `json:"key"`
+		}
+		if err := json.Unmarshal(raw, &shape); err != nil {
+			return "", false, corrupt(err)
+		}
+		compact := shape.Scope == nil && shape.Key == nil
+		full := shape.Scope != nil && shape.Key != nil && index.Scope == string(prefix[:len(prefix)-1]) && index.Key == id.String()
+		if (!compact && !full) || !childExpiryDigestPattern.MatchString(index.InputDigest) || executions.Get([]byte(id.String())) != nil || executions.Bucket([]byte(id.String())) != nil {
+			return "", false, corrupt(errors.New("invalid children index tombstone"))
+		}
+		return id, true, nil
+	}
+	if index.Scope != string(prefix[:len(prefix)-1]) || index.Key != id.String() || index.ObjectType != "execution" {
+		return "", false, corrupt(errors.New("invalid children index"))
+	}
+	return id, false, nil
 }

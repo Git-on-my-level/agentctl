@@ -31,6 +31,12 @@ func decodeExecution(tx *bbolt.Tx, raw []byte, execution *model.Execution) error
 	if err := json.Unmarshal(raw, execution); err != nil {
 		return err
 	}
+	if err := hydrateChildExitRecheck(tx.Bucket(bIdempotency).Get([]byte(childExitRecheckScope+"\x00"+execution.ID.String())), execution); err != nil {
+		return err
+	}
+	if err := hydrateAutomaticContinuationBinding(tx, execution); err != nil {
+		return err
+	}
 	if err := hydrateAttributionBinding(tx, execution); err != nil {
 		return err
 	}

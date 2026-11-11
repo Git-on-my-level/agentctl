@@ -479,7 +479,7 @@ The declaration is stripped from inherited child environments; nested callers
 must identify themselves. `recent --caller unknown` finds unattributed records.
 
 Use `children` before ending a managed parent to discover its terminal
-uncollected children and active children without known durable waiters. It shares
+uncollected children and active children without known collectors. It shares
 `identity` resolution and never acknowledges results or contacts remote hosts.
 For an unmanaged Claude session, set `AGENTCTL_CALLER_PROVIDER=claude` and
 `AGENTCTL_CALLER_NATIVE_SESSION_ID` to that session on each launch invocation;
@@ -488,21 +488,52 @@ stripped from native child environments. Query that session with
 `children --provider claude --native-session-id <session-id>`; use `--summary`
 for counts. `children --execution <id>` selects one managed parent explicitly.
 Retain `collect_argv` for each result and execute it to collect the child.
-Exact-ID await process locks exclude active native and remote forwarding rows;
-supported durable subscriptions cover only local rows. Attention always remains actionable: a late subscription may
-have missed its event. Waiter registration is best effort; failure preserves
-await polling and leaves coverage unknown, as with older awaits and await-any.
-Remote rows use local collection IDs and may have stale cached state. Coverage
-includes only newly attributed retained executions; complete is scoped to that
-index, not all attempted remote launches. Preserve an uncertain SSH admission
-error and retry the identical key after a lost receipt. Parent-graph retention
-protection is unchanged, including acknowledged terminal graphs. A 1.5s processing budget, 50ms read-lock attempts,
-and bounded indexed reads fail with `children_query_incomplete` (exit 9) instead
-of partial success. Membership changes between pages also fail closed;
-current outcome writes do not invalidate the scope. Uncertified older writes
-conservatively require a retry. Lifecycle state remains live per page.
-Treat every error as unknown coverage, never an empty set.
-This query does not yet enforce parent exit or automatically continue a parent.
+On macOS/Linux, live `await` and `delegate/continue --wait` hold kernel locks
+through delivery; process death releases them, so stale registration files never
+count. This covers local remote-forwarding IDs. Supported durable terminal
+subscriptions cover active local execution events only. Attention always remains actionable, since late subscriptions do not backfill
+attention. Live awaits do not cover conflicted evidence. Registration is best
+effort: unavailable sidecars never refuse native work or primary waiting. `await-any` is not per-child coverage: its first match releases the fan-in
+waiter while siblings can keep running. External/old waiters remain unknown. A lock proves a live collector, not that its output is consumed.
+Remote rows can have stale cached state. After a lost SSH receipt, preserve uncertain admission and retry the identical key; complete covers the retained index, not every attempted launch. Parent-graph retention still protects acknowledged terminal graphs. Coverage includes only newly attributed retained executions. A 1.5s processing
+budget, 50ms read-lock attempts, and bounded indexed reads fail with
+`children_query_incomplete` (exit 9) instead of partial success. Treat every error
+as unknown coverage, never an empty set. Membership changes between pages also fail closed; certified outcome writes do not invalidate the scope, while uncertified older writes conservatively require a retry. Lifecycle state remains live per page.
+
+Native owners flag outstanding children on terminal execution/outcome with
+`uncollected_children`, exact `collect_argv`, and a warning. Completed parents
+with a frozen recipe and verified native resume route receive one automatic
+collection turn using ordinary keyed `continue` admission. The successor carries
+`auto_continuation_of`, preventing recursive automatic turns. OpenCode 2.2.6 may use #150's verified background-service recipe with version
+and session-existence checks; other non-resumable routes stay flagged in `inbox`. Hermes remains
+unverified and Devin ACP must advertise session loading. Cancelled/timed-out
+parents never auto-continue; childless runs do not change. A profile's
+`delegation.child_exit_auto_continue: false` disables continuation while retaining
+warnings and inbox actions (default true). No fresh-session fallback occurs.
+The original parent stays terminal; collect the automatic turn using
+`child_exit_guard.continuation_id`. `child_exit_recheck` is a historical marker for indexed attributed children
+still requiring a complete collection check, including currently waiter-covered
+children. It is not an uncollected-work flag. Covered-only exits never warn or
+auto-continue. Inbox rechecks after waiter death/cancellation or subscription
+expiry/cancellation, even when the parent's own result was collected; terminal
+children clear only after collection acknowledgement. Incomplete checks stay
+actionable. Mixed-version immutable hydration preserves the marker; it neither
+adds replay retention nor changes existing parent-graph retention. Inbox selects active parent scopes from its complete hydrated execution and
+validated explicit-acknowledgement snapshots. Invalid acknowledgement key/identity,
+time or source fails inbox with `inbox_acknowledgement_corrupt` (exit 70), never
+clean settlement. Before skipping collected history, inbox proves selected
+parent-index membership against the complete snapshot or matching valid expiry
+tombstones. Compact expiry must omit both scope/key; full expiry must contain
+both matching the authoritative index. Present-null/empty, partial or mismatched
+metadata, and missing/invalid SHA-256 input digests stay incomplete. A tombstone
+cannot hide a retained execution. Missing rows alone never prove settlement, even with a collection
+stamp; incomplete membership retains a recheck guard/action. This bounded 1.5s
+metadata proof reads no subscriptions and precedes the separate 1.5s live child
+query budget. Validated collected/expired history creates no inbox items; the
+historical marker/outcome is retained.
+Covered nonterminal children remain active obligations. Subscription metadata is
+read lazily only for uncovered local nonterminal children that can use it; all
+existing bounds still fail closed when those reads are needed.
 See [child work](https://github.com/Git-on-my-level/agentctl/blob/main/docs/child-work.md).
 
 Use `recent` to recover

@@ -80,10 +80,10 @@ func TestChildrenPagedMembershipMutation(t *testing.T) {
 						t.Fatal("children requested writable handle")
 					}
 					opens++
-					// Open 1 loads subscriptions; open 2 reads the first page.
-					mutationOpen := 3
+					// Open 1 reads page one (subscriptions are lazy in that view).
+					mutationOpen := 2
 					if change == "final-insert" || change == "final-delete" {
-						mutationOpen = 4
+						mutationOpen = 3
 					}
 					if opens == mutationOpen {
 						writer, err := Open(path, Options{})
@@ -172,7 +172,7 @@ func TestChildrenPagedMembershipMutation(t *testing.T) {
 				} else if !errors.Is(err, ErrChildrenBounded) || got != nil {
 					t.Fatalf("mutation returned partial success: count=%d error=%v", len(got), err)
 				}
-				if opens < 3 {
+				if opens < 2 {
 					t.Fatal("probe did not cross the page boundary")
 				}
 				// A retry after the mutation must accept the now-stable index,
@@ -256,7 +256,7 @@ func TestChildrenPagedMembershipCleanup(t *testing.T) {
 			t.Fatal("query requested write lock")
 		}
 		opens++
-		if opens == 3 {
+		if opens == 2 {
 			progress, err := cleanupForPath(path).Maintain(ctx, now.Add(time.Hour))
 			if err != nil || progress.Executions != 1 {
 				t.Fatalf("cleanup=%+v error=%v", progress, err)

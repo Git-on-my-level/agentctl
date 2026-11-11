@@ -76,25 +76,35 @@ type OutcomeEvidence struct {
 }
 
 type Outcome struct {
-	SchemaVersion      int                 `json:"schema_version"`
-	ExecutionID        ids.ExecutionID     `json:"execution_id"`
-	Revision           uint64              `json:"revision"`
-	State              State               `json:"state"`
-	Availability       OutcomeAvailability `json:"availability"`
-	RecordedAt         time.Time           `json:"recorded_at"`
-	Source             string              `json:"source"`
-	ResultRef          string              `json:"result_ref"`
-	Evidence           []OutcomeEvidence   `json:"evidence,omitempty"`
-	Content            *OutcomeContent     `json:"content,omitempty"`
-	Failure            *OutcomeFailure     `json:"failure,omitempty"`
-	UnavailableReason  string              `json:"unavailable_reason,omitempty"`
-	OutputRef          string              `json:"output_ref,omitempty"`
-	OutputTruncated    bool                `json:"output_truncated,omitempty"`
-	OutputCaptureError string              `json:"output_capture_error,omitempty"`
-	NativeExitCode     *int                `json:"native_exit_code,omitempty"`
+	UncollectedChildren []UncollectedChild  `json:"uncollected_children,omitempty"`
+	ChildExitRecheck    bool                `json:"child_exit_recheck,omitempty"`
+	ChildExitCheckError string              `json:"child_exit_check_error,omitempty"`
+	SchemaVersion       int                 `json:"schema_version"`
+	ExecutionID         ids.ExecutionID     `json:"execution_id"`
+	Revision            uint64              `json:"revision"`
+	State               State               `json:"state"`
+	Availability        OutcomeAvailability `json:"availability"`
+	RecordedAt          time.Time           `json:"recorded_at"`
+	Source              string              `json:"source"`
+	ResultRef           string              `json:"result_ref"`
+	Evidence            []OutcomeEvidence   `json:"evidence,omitempty"`
+	Content             *OutcomeContent     `json:"content,omitempty"`
+	Failure             *OutcomeFailure     `json:"failure,omitempty"`
+	UnavailableReason   string              `json:"unavailable_reason,omitempty"`
+	OutputRef           string              `json:"output_ref,omitempty"`
+	OutputTruncated     bool                `json:"output_truncated,omitempty"`
+	OutputCaptureError  string              `json:"output_capture_error,omitempty"`
+	NativeExitCode      *int                `json:"native_exit_code,omitempty"`
 }
 
 func (o Outcome) Validate() error {
+	if err := validateUncollectedChildren(o.UncollectedChildren); err != nil {
+		return err
+	}
+	if o.ChildExitCheckError != "" && o.ChildExitCheckError != "children_query_incomplete" {
+		return errors.New("invalid child exit check error")
+	}
+
 	if o.SchemaVersion != SchemaVersion || o.ExecutionID.IsZero() || o.Revision < 1 {
 		return errors.New("invalid outcome identity or schema")
 	}

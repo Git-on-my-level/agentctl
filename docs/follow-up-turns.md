@@ -201,6 +201,11 @@ Rejected alternatives:
   introduce a second conversation store or model-dependent policy.
 - Relaunching FAILED/CANCELLED work under the same key would break retry safety.
 
+Native owners may also initiate a single bounded child-collection continuation
+when a completed parent leaves outstanding children. This uses the same native
+admission and frozen recipe, with no carry-forward fallback. See
+[the native exit safeguard](child-work.md#native-exit-safeguard).
+
 ## Verified native resume routes
 
 The `resume` capability is negotiated from the exact invocation when the

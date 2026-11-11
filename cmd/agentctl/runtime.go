@@ -31,11 +31,13 @@ import (
 )
 
 type runOptions struct {
-	detachNative      bool
-	reservedExecution ids.ExecutionID
-	env               []string
-	delegation        *model.DelegationBinding
-	supersedes        []ids.ExecutionID
+	automaticContinuationOf *ids.ExecutionID
+	collectionWaiter        bool
+	detachNative            bool
+	reservedExecution       ids.ExecutionID
+	env                     []string
+	delegation              *model.DelegationBinding
+	supersedes              []ids.ExecutionID
 	// admit runs after the execution is journaled and before anything is
 	// launched. A refusal terminalizes the execution without starting a
 	// native process; it closes check-then-launch races between invocations.
@@ -279,6 +281,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Labels: append([]string(nil), opts.labels...), CWD: launchCWD, Repository: repository, Workspace: workspace, Supersedes: append([]ids.ExecutionID{}, opts.supersedes...), TaskContract: taskContractValue(taskContract), DeadlineAt: deadlineAt, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
 	mutation := contracts.MutationKey{}
 	execution.Caller = caller
+	execution.AutoContinuationOf = opts.automaticContinuationOf
 	if opts.idempotencyKey != "" {
 		digest, dErr := mutationDigest(runtime.Name(), opts.cwd, opts.argv, opts.labels, opts.noStoreResult, prompt, taskContract)
 		if dErr != nil {
@@ -381,6 +384,11 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		}
 		return a.startReservedDetachedNative(ctx, renderer, c, opts, execution)
 	}
+	if opts.collectionWaiter {
+		closeWaiter := a.registerWaiter(operationCtx, c, execution.ID)
+		defer closeWaiter()
+	}
+
 	launchCtx, interruptLaunch := context.WithCancel(operationCtx)
 	defer interruptLaunch()
 	// A preallocated ID can be cancelled during launch, and the spool must outlive
@@ -549,7 +557,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			if launchCtx.Err() != nil && execution.State != model.StateCompleted {
 				return interruptedRunError(launchCtx.Err(), execution)
 			}
-			return writeExecution(renderer, execution, "run")
+			return a.finishNativeTurn(launchCtx, renderer, c, execution)
 		}
 		// Apply steering only after this tick's observation. A late message
 		// must not run on the loop before a completed result is recorded, and
@@ -596,7 +604,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			}
 			a.anxRegisterTerminal(c, execution.ID)
 			if execution.State == model.StateCompleted {
-				return writeExecution(renderer, execution, "run")
+				return a.finishNativeTurn(launchCtx, renderer, c, execution)
 			}
 			return interruptedRunError(launchCtx.Err(), execution)
 		case <-ticker.C:
@@ -1692,7 +1700,9 @@ func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c comm
 					return model.Execution{}, output.NewError(output.CodeConflict, "a native recovery turn is active; cancel that turn instead", false).WithDetail("running_execution_id", relative.ID.String())
 				}
 			}
-			cancelled, err := commitCancellation(ctx, journal, current, a.now().UTC())
+			cancelled, err := commitCancellation(ctx, journal, current, a.now().UTC(), func(next model.Execution) model.Execution {
+				return a.checkChildExit(context.Background(), c, journal, next, a.now().UTC())
+			})
 			if err != nil {
 				return model.Execution{}, mapStoreError("cancel parked execution", err)
 			}
@@ -1729,7 +1739,9 @@ func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c comm
 		}
 		defer journal.Close()
 		now := a.now().UTC()
-		execution, err = commitCancellation(ctx, journal, execution, now)
+		execution, err = commitCancellation(ctx, journal, execution, now, func(next model.Execution) model.Execution {
+			return a.checkChildExit(context.Background(), c, journal, next, now)
+		})
 		if err != nil {
 			return model.Execution{}, mapStoreError("record cancellation outcome", err)
 		}
@@ -1775,7 +1787,7 @@ func (a *app) cancelMulticaForward(ctx context.Context, renderer output.Renderer
 	return writeExecution(renderer, execution, "cancel", warnings...)
 }
 
-func commitCancellation(ctx context.Context, journal *store.Journal, execution model.Execution, now time.Time) (model.Execution, error) {
+func commitCancellation(ctx context.Context, journal *store.Journal, execution model.Execution, now time.Time, childCheck ...func(model.Execution) model.Execution) (model.Execution, error) {
 	for attempt := 0; attempt < 8; attempt++ {
 		current, err := journal.GetExecution(ctx, execution.ID)
 		if err != nil {
@@ -1791,7 +1803,15 @@ func commitCancellation(ctx context.Context, journal *store.Journal, execution m
 		next.TerminalAt = &now
 		next.UpdatedAt = now
 		next.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: now}
+		if len(childCheck) > 0 {
+			next = childCheck[0](next)
+		}
 		outcome := model.Outcome{SchemaVersion: model.SchemaVersion, ExecutionID: next.ID, Revision: 1, State: model.StateCancelled, Availability: model.OutcomeStored, RecordedAt: now, Source: next.Adapter, ResultRef: fmt.Sprintf("agentctl://%s/%s", next.OriginHostID, next.ID), Failure: &model.OutcomeFailure{Code: "execution_cancelled", Kind: "cancelled", Source: next.Adapter, Retryable: false, Message: "native execution cancelled"}}
+		outcome.ChildExitRecheck = next.ChildExitRecheck
+		outcome.UncollectedChildren = next.UncollectedChildren
+		if next.ChildExitGuard != nil {
+			outcome.ChildExitCheckError = next.ChildExitGuard.CheckError
+		}
 		payload := map[string]any{"result_available": true, "outcome_execution_id": next.ID.String(), "availability": outcome.Availability, "failure_code": outcome.Failure.Code}
 		event, canonical, err := syntheticEvent(next, model.EventTerminal, model.StateCancelled, payload, "cancel", now)
 		if err != nil {
@@ -2099,7 +2119,13 @@ func (a *app) finalizeResult(ctx context.Context, c common, journal *store.Journ
 	if result.TokenUsage != nil {
 		execution.TokenUsage = &model.TokenUsage{Input: result.TokenUsage.Input, Output: result.TokenUsage.Output, CacheRead: result.TokenUsage.CacheRead, CacheWrite: result.TokenUsage.CacheWrite, Reasoning: result.TokenUsage.Reasoning, Saturated: result.TokenUsage.Saturated}
 	}
+	execution = a.checkChildExit(ctx, c, journal, execution, now)
 	outcome := buildOutcome(execution, result, now, noStoreResult)
+	outcome.ChildExitRecheck = execution.ChildExitRecheck
+	outcome.UncollectedChildren = execution.UncollectedChildren
+	if execution.ChildExitGuard != nil {
+		outcome.ChildExitCheckError = execution.ChildExitGuard.CheckError
+	}
 	payload := map[string]any{"result_available": outcome.Availability == model.OutcomeStored, "outcome_execution_id": execution.ID.String(), "availability": outcome.Availability}
 	if outcome.Content != nil {
 		payload["content_available"] = true

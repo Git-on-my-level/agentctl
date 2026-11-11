@@ -1588,7 +1588,7 @@ func writeExecutionReported(renderer output.Renderer, e model.Execution, operati
 		fields = append(fields, output.Field{Name: "labels", Value: e.Labels})
 	}
 	actions := []output.NextAction{}
-	warnings := append([]output.Warning{}, extraWarnings...)
+	warnings := append(childExitWarnings(e), extraWarnings...)
 	if e.TaskContract != nil {
 		fields = append(fields, output.Field{Name: "task_contract", Value: "retained"}, output.Field{Name: "acceptance", Value: "external_required"})
 		warnings = append(warnings, taskContractAcceptanceWarning())
@@ -1693,7 +1693,7 @@ func writeExecutionOutcome(renderer output.Renderer, e model.Execution, outcome 
 	if outcome.Failure != nil {
 		fields = append(fields, output.Field{Name: "failure", Value: outcome.Failure.Message})
 	}
-	warnings := []output.Warning{}
+	warnings := childExitWarnings(e)
 	if e.TaskContract != nil {
 		fields = append(fields, output.Field{Name: "task_contract", Value: "retained"}, output.Field{Name: "acceptance", Value: "external_required"})
 		warnings = append(warnings, taskContractAcceptanceWarning())
