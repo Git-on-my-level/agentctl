@@ -521,8 +521,13 @@ actionable. Mixed-version immutable hydration preserves the marker; it neither
 adds replay retention nor changes existing parent-graph retention. Inbox selects active parent scopes from its complete hydrated execution and
 validated explicit-acknowledgement snapshots. Invalid acknowledgement key/identity,
 time or source fails inbox with `inbox_acknowledgement_corrupt` (exit 70), never
-clean settlement. Collected history does not spend the child
-query budget or create inbox items; the historical marker/outcome is retained.
+clean settlement. Before skipping collected history, inbox proves selected
+parent-index membership against the complete snapshot or matching valid expiry
+tombstones. Missing rows alone never prove settlement, even with a collection
+stamp; incomplete membership retains a recheck guard/action. This bounded 1.5s
+metadata proof reads no subscriptions and precedes the separate 1.5s live child
+query budget. Validated collected/expired history creates no inbox items; the
+historical marker/outcome is retained.
 Covered nonterminal children remain active obligations. Subscription metadata is
 read lazily only for uncovered local nonterminal children that can use it; all
 existing bounds still fail closed when those reads are needed.

@@ -251,8 +251,25 @@ validation. Corrupt acknowledgement evidence fails inbox with exit 70,
 `diagnostic_code: inbox_acknowledgement_corrupt` and `complete: false`; it never
 retires a parent from a falsely clean snapshot. The legacy acknowledgement epoch
 does not retire attributed children.
-A parent whose retained children are all collected spends no child-query budget
-and adds no child-collection inbox reason. This changes only the read projection;
+Before skipping a marked parent with no active execution rows, inbox also proves
+its retained membership from that parent's attribution index. Every live index
+must resolve to the same complete, hydrated snapshot; a missing execution row
+requires a matching valid expiry tombstone. Missing rows (even with collection
+stamps), malformed expiry evidence and incomplete proofs retain
+`children_query_incomplete` with a read-only recheck action. The authoritative
+query and this proof share the strict index/expiry decoder. Compact legacy expiry
+tombstones remain supported; a tombstone cannot hide a retained execution.
+
+These scoped membership proofs share a separate 1.5s processing budget,
+100,000 selected scopes/entries, 64 MiB index bytes and 1 MiB value bounds. They
+use one stable read transaction on the same held read-only handle, validate scope
+certification/generations, and read no subscription, waiter, event or result
+history. There is no global index walk, schema change, mutable settlement or
+read-side repair. The existing shared 1.5s live child-query budget starts after
+this proof phase, so validated collected history spends none of it. The two
+bounded phases can add up to 3s after the existing inbox snapshot loads.
+A parent whose retained children are all collected or validly expired adds no
+child-collection inbox reason. This changes only the read projection;
 immutable execution markers, exit guards and outcomes are not rewritten. An
 incomplete execution/acknowledgement listing fails the inbox read rather than
 retiring obligations from a partial snapshot. There is no new mutable settlement

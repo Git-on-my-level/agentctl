@@ -120,6 +120,18 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 	if err != nil {
 		return mapStoreError("select inbox child obligations", err)
 	}
+	// Absence from the execution snapshot is not proof that retained index
+	// membership settled. Validate only otherwise-settled marked scopes, using
+	// the same held read-only handle and strict expiry decoder as Children.
+	var settledCandidates []ids.ExecutionID
+	for _, execution := range executions {
+		if (execution.ChildExitRecheck || execution.ChildExitGuard != nil) && !execution.RemoteForwarded() && !activeParents[execution.ID] && inboxFilterMatches(execution, opts) {
+			settledCandidates = append(settledCandidates, execution.ID)
+		}
+	}
+	membershipCtx, cancelMembership := context.WithTimeout(ctx, 1500*time.Millisecond)
+	membershipErrors := journal.ChildMembershipErrors(membershipCtx, settledCandidates, executions)
+	cancelMembership()
 	now := a.now().UTC()
 	childQueryCtx, cancelChildQueries := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancelChildQueries()
@@ -131,13 +143,17 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 		if !inboxFilterMatches(execution, opts) {
 			continue
 		}
-		if (execution.ChildExitRecheck || execution.ChildExitGuard != nil) && !execution.RemoteForwarded() && !activeParents[execution.ID] {
+		if (execution.ChildExitRecheck || execution.ChildExitGuard != nil) && !execution.RemoteForwarded() && !activeParents[execution.ID] && membershipErrors[execution.ID] == nil {
 			// Clear only this read projection. Exit/outcome evidence stays immutable.
 			execution.UncollectedChildren = nil
 			execution.ChildExitGuard = nil
 		}
-		if (execution.ChildExitRecheck || execution.ChildExitGuard != nil) && !execution.RemoteForwarded() && activeParents[execution.ID] {
-			children, childErr := journal.Children(childQueryCtx, store.ChildrenScope{Parent: &execution.ID}, now)
+		if (execution.ChildExitRecheck || execution.ChildExitGuard != nil) && !execution.RemoteForwarded() && (activeParents[execution.ID] || membershipErrors[execution.ID] != nil) {
+			var children []store.ChildExecution
+			childErr := membershipErrors[execution.ID]
+			if childErr == nil {
+				children, childErr = journal.Children(childQueryCtx, store.ChildrenScope{Parent: &execution.ID}, now)
+			}
 			guard := model.ChildExitGuard{CheckedAt: now, AutoContinue: "unavailable"}
 			if execution.ChildExitGuard != nil {
 				guard = *execution.ChildExitGuard

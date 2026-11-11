@@ -102,24 +102,12 @@ func children(r *cleanupReader, scope ChildrenScope, now time.Time, recheck *boo
 					return ErrChildrenBounded
 				}
 				last = bytes.Clone(key)
-				var index mutationRecord
-				if err := json.Unmarshal(raw, &index); err != nil {
-					return corrupt(err)
+				id, expired, err := decodeChildMembership(tx, prefix, key, raw)
+				if err != nil {
+					return err
 				}
-				id, err := ids.ParseExecutionID(string(key[len(prefix):]))
-				if err != nil || index.ObjectID != id.String() {
-					return corrupt(errors.New("invalid children index identity"))
-				}
-				// Older cleanup may omit Scope/Key in a compact tombstone, but
-				// it cannot revoke discovery of a still-retained execution.
-				if index.ObjectType == expiredExecutionObject {
-					if (index.Scope != "" && index.Scope != string(prefix[:len(prefix)-1])) || (index.Key != "" && index.Key != id.String()) || executions.Get([]byte(id.String())) != nil || executions.Bucket([]byte(id.String())) != nil {
-						return corrupt(errors.New("invalid children index tombstone"))
-					}
+				if expired {
 					continue
-				}
-				if index.Scope != string(prefix[:len(prefix)-1]) || index.Key != id.String() || index.ObjectType != "execution" {
-					return corrupt(errors.New("invalid children index"))
 				}
 				executionRaw := executions.Get([]byte(id.String()))
 				if executionRaw == nil || len(executionRaw) > 1<<20 {
@@ -248,4 +236,30 @@ func childrenSubscriptions(ctx context.Context, tx *bbolt.Tx) ([]SubscriptionRec
 		return nil
 	})
 	return subscriptions, err
+}
+
+// decodeChildMembership shares the retained-index/expiry proof between the
+// authoritative query and inbox's negative-evidence shortcut.
+func decodeChildMembership(tx *bbolt.Tx, prefix, key, raw []byte) (ids.ExecutionID, bool, error) {
+	executions := tx.Bucket(bExecutions)
+	var index mutationRecord
+	if err := json.Unmarshal(raw, &index); err != nil {
+		return "", false, corrupt(err)
+	}
+	id, err := ids.ParseExecutionID(string(key[len(prefix):]))
+	if err != nil || index.ObjectID != id.String() {
+		return "", false, corrupt(errors.New("invalid children index identity"))
+	}
+	// Older cleanup may omit Scope/Key in a compact tombstone, but
+	// it cannot revoke discovery of a still-retained execution.
+	if index.ObjectType == expiredExecutionObject {
+		if (index.Scope != "" && index.Scope != string(prefix[:len(prefix)-1])) || (index.Key != "" && index.Key != id.String()) || executions.Get([]byte(id.String())) != nil || executions.Bucket([]byte(id.String())) != nil {
+			return "", false, corrupt(errors.New("invalid children index tombstone"))
+		}
+		return id, true, nil
+	}
+	if index.Scope != string(prefix[:len(prefix)-1]) || index.Key != id.String() || index.ObjectType != "execution" {
+		return "", false, corrupt(errors.New("invalid children index"))
+	}
+	return id, false, nil
 }
