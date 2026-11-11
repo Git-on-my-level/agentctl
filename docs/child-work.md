@@ -106,6 +106,12 @@ remain unknown. `await-any` also remains unknown: its first match releases the
 fan-in waiter, which cannot guarantee collection of the other selected children.
 A waiter on the parent itself does not cover its children.
 
+Collector registration requires writable private sidecars. Failure returns a
+structured `dependency_unavailable` with diagnostic `waiter_registration_failed`.
+A foreground `delegate/continue --wait` admission that has not launched a native
+process is terminalized with that same failure code. Repairing the registry does
+not relaunch a failed keyed admission; the existing replay rules still apply.
+
 Active local executions with a supported, unexpired durable terminal
 subscription are also excluded. This does not prove supervisor health or
 callback consumption. Local subscriptions do not exclude remote forwarding rows:
