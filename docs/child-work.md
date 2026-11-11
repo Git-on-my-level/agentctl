@@ -258,7 +258,12 @@ requires a matching valid expiry tombstone. Missing rows (even with collection
 stamps), malformed expiry evidence and incomplete proofs retain
 `children_query_incomplete` with a read-only recheck action. The authoritative
 query and this proof share the strict index/expiry decoder. Compact legacy expiry
-tombstones remain supported; a tombstone cannot hide a retained execution.
+tombstones remain supported only with both `scope` and `key` absent. A full
+expiry must contain both matching the authoritative index scope/key. Partial,
+null, empty or mismatched metadata is corrupt, not a compact expiry. Both forms
+require the attribution producer's `input_digest` representation (`sha256:` plus
+64 lowercase hex digits); absent/null/empty/invalid digests are corrupt. A
+tombstone cannot hide a retained execution.
 
 These scoped membership proofs share a separate 1.5s processing budget,
 100,000 selected scopes/entries, 64 MiB index bytes and 1 MiB value bounds. They

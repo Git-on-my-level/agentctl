@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/ids"
@@ -238,6 +239,10 @@ func childrenSubscriptions(ctx context.Context, tx *bbolt.Tx) ([]SubscriptionRec
 	return subscriptions, err
 }
 
+// Attribution digests are SHA-256 in the representation emitted by
+// attributionDigest; replayTombstone preserves that input_digest verbatim.
+var childExpiryDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
 // decodeChildMembership shares the retained-index/expiry proof between the
 // authoritative query and inbox's negative-evidence shortcut.
 func decodeChildMembership(tx *bbolt.Tx, prefix, key, raw []byte) (ids.ExecutionID, bool, error) {
@@ -250,10 +255,19 @@ func decodeChildMembership(tx *bbolt.Tx, prefix, key, raw []byte) (ids.Execution
 	if err != nil || index.ObjectID != id.String() {
 		return "", false, corrupt(errors.New("invalid children index identity"))
 	}
-	// Older cleanup may omit Scope/Key in a compact tombstone, but
-	// it cannot revoke discovery of a still-retained execution.
+	// Compact replay tombstones omit BOTH scope and key. Full records retain
+	// BOTH matching values. Presence matters: null/empty is not omission.
 	if index.ObjectType == expiredExecutionObject {
-		if (index.Scope != "" && index.Scope != string(prefix[:len(prefix)-1])) || (index.Key != "" && index.Key != id.String()) || executions.Get([]byte(id.String())) != nil || executions.Bucket([]byte(id.String())) != nil {
+		var shape struct {
+			Scope json.RawMessage `json:"scope"`
+			Key   json.RawMessage `json:"key"`
+		}
+		if err := json.Unmarshal(raw, &shape); err != nil {
+			return "", false, corrupt(err)
+		}
+		compact := shape.Scope == nil && shape.Key == nil
+		full := shape.Scope != nil && shape.Key != nil && index.Scope == string(prefix[:len(prefix)-1]) && index.Key == id.String()
+		if (!compact && !full) || !childExpiryDigestPattern.MatchString(index.InputDigest) || executions.Get([]byte(id.String())) != nil || executions.Bucket([]byte(id.String())) != nil {
 			return "", false, corrupt(errors.New("invalid children index tombstone"))
 		}
 		return id, true, nil

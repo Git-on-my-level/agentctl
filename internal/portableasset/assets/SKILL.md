@@ -523,7 +523,10 @@ validated explicit-acknowledgement snapshots. Invalid acknowledgement key/identi
 time or source fails inbox with `inbox_acknowledgement_corrupt` (exit 70), never
 clean settlement. Before skipping collected history, inbox proves selected
 parent-index membership against the complete snapshot or matching valid expiry
-tombstones. Missing rows alone never prove settlement, even with a collection
+tombstones. Compact expiry must omit both scope/key; full expiry must contain
+both matching the authoritative index. Present-null/empty, partial or mismatched
+metadata, and missing/invalid SHA-256 input digests stay incomplete. A tombstone
+cannot hide a retained execution. Missing rows alone never prove settlement, even with a collection
 stamp; incomplete membership retains a recheck guard/action. This bounded 1.5s
 metadata proof reads no subscriptions and precedes the separate 1.5s live child
 query budget. Validated collected/expired history creates no inbox items; the

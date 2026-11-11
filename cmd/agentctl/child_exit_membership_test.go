@@ -18,7 +18,16 @@ import (
 )
 
 func TestChildExitInboxRequiresCompleteRetainedMembership(t *testing.T) {
-	for _, variant := range []string{"retained-uncollected", "retained-collected", "missing", "missing-collected", "missing-covered-exit", "expired-compact", "expired-full", "expired-wrong-id", "expired-wrong-scope", "expired-retained"} {
+	for _, variant := range []string{
+		"retained-uncollected", "retained-collected", "missing", "missing-collected", "missing-covered-exit",
+		"expired-compact", "expired-full", "expired-wrong-id", "expired-wrong-scope", "expired-wrong-key", "expired-retained",
+		"expired-scope-only", "expired-key-only", "expired-scope-null", "expired-key-null", "expired-both-null",
+		"expired-scope-empty", "expired-key-empty", "expired-both-empty",
+		"expired-null-scope-only", "expired-null-key-only", "expired-empty-scope-only", "expired-empty-key-only",
+		"expired-missing-digest", "expired-empty-digest", "expired-null-digest", "expired-invalid-digest",
+		"expired-compact-missing-digest", "expired-compact-empty-digest", "expired-compact-null-digest", "expired-compact-invalid-digest",
+		"expired-short-digest", "expired-uppercase-digest", "expired-unprefixed-digest", "expired-nonstring-digest",
+	} {
 		t.Run(variant, func(t *testing.T) {
 			ctx := context.Background()
 			f := newDelegateFixture(t, continueAgent)
@@ -81,16 +90,69 @@ func TestChildExitInboxRequiresCompleteRetainedMembership(t *testing.T) {
 				}
 				if strings.HasPrefix(variant, "expired-") {
 					scope := "execution:children:parent:" + parent.ID.String()
-					record := map[string]string{"object_type": "expired", "object_id": child.ID.String()}
-					if variant == "expired-full" {
-						record["scope"] = scope
-						record["key"] = child.ID.String()
+					// Preserve the actual attribution producer's digest/metadata, rather
+					// than inventing a valid expiry record from zero-valued fields.
+					indexKey := []byte(scope + "\x00" + child.ID.String())
+					var record map[string]any
+					if err := json.Unmarshal(tx.Bucket([]byte("idempotency")).Get(indexKey), &record); err != nil {
+						return err
 					}
-					if variant == "expired-wrong-id" {
+					record["object_type"] = "expired"
+					if variant == "expired-compact" || variant == "expired-retained" || strings.HasPrefix(variant, "expired-compact-") {
+						delete(record, "scope")
+						delete(record, "key")
+					}
+					switch variant {
+					case "expired-wrong-id":
 						record["object_id"] = parent.ID.String()
-					}
-					if variant == "expired-wrong-scope" {
+					case "expired-wrong-scope":
 						record["scope"] = "execution:children:parent:" + child.ID.String()
+					case "expired-wrong-key":
+						record["key"] = parent.ID.String()
+					case "expired-null-scope-only", "expired-empty-scope-only":
+						delete(record, "key")
+						record["scope"] = nil
+						if variant == "expired-empty-scope-only" {
+							record["scope"] = ""
+						}
+					case "expired-null-key-only", "expired-empty-key-only":
+						delete(record, "scope")
+						record["key"] = nil
+						if variant == "expired-empty-key-only" {
+							record["key"] = ""
+						}
+					case "expired-scope-only":
+						delete(record, "key")
+					case "expired-key-only":
+						delete(record, "scope")
+					case "expired-scope-null":
+						record["scope"] = nil
+					case "expired-key-null":
+						record["key"] = nil
+					case "expired-both-null":
+						record["scope"], record["key"] = nil, nil
+					case "expired-scope-empty":
+						record["scope"] = ""
+					case "expired-key-empty":
+						record["key"] = ""
+					case "expired-both-empty":
+						record["scope"], record["key"] = "", ""
+					case "expired-missing-digest", "expired-compact-missing-digest":
+						delete(record, "input_digest")
+					case "expired-empty-digest", "expired-compact-empty-digest":
+						record["input_digest"] = ""
+					case "expired-null-digest", "expired-compact-null-digest":
+						record["input_digest"] = nil
+					case "expired-short-digest":
+						record["input_digest"] = "sha256:abcd"
+					case "expired-uppercase-digest":
+						record["input_digest"] = "sha256:" + strings.Repeat("A", 64)
+					case "expired-unprefixed-digest":
+						record["input_digest"] = strings.Repeat("a", 64)
+					case "expired-nonstring-digest":
+						record["input_digest"] = 42
+					case "expired-invalid-digest", "expired-compact-invalid-digest":
+						record["input_digest"] = "sha256:" + strings.Repeat("g", 64)
 					}
 					raw, err := json.Marshal(record)
 					if err != nil {
@@ -118,9 +180,12 @@ func TestChildExitInboxRequiresCompleteRetainedMembership(t *testing.T) {
 			reader.Close()
 			settled := variant == "retained-collected" || variant == "expired-compact" || variant == "expired-full"
 			incomplete := !settled && variant != "retained-uncollected"
+			if strings.HasPrefix(variant, "expired-") && !settled && !errors.Is(childErr, store.ErrCorrupt) {
+				t.Errorf("malformed expiry must be corruption: %v", childErr)
+			}
 			if incomplete {
 				if !errors.Is(childErr, store.ErrChildrenBounded) && !errors.Is(childErr, store.ErrCorrupt) {
-					t.Fatalf("query failed to expose missing membership: %+v %v", children, childErr)
+					t.Errorf("query failed to expose missing membership: %+v %v", children, childErr)
 				}
 			} else if childErr != nil {
 				t.Fatal(childErr)

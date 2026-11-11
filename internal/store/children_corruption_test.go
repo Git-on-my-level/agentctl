@@ -172,6 +172,22 @@ func TestChildrenCorruptTombstone(t *testing.T) {
 					if err != nil {
 						return err
 					}
+					// Compact replayTombstone output omits metadata rather than
+					// serializing mutationRecord's empty scope/key fields.
+					var fields map[string]json.RawMessage
+					if err := json.Unmarshal(raw, &fields); err != nil {
+						return err
+					}
+					if index.Scope == "" {
+						delete(fields, "scope")
+					}
+					if index.Key == "" {
+						delete(fields, "key")
+					}
+					raw, err = json.Marshal(fields)
+					if err != nil {
+						return err
+					}
 					if err := tx.Bucket(bIdempotency).Put(key, raw); err != nil {
 						return err
 					}
