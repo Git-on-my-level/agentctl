@@ -69,6 +69,7 @@ var steerRoutes = map[string]steerRoute{
 	"cursor":      {resume: cursorResumeArgv, unavailable: "cursor-agent does not persist the prompt of a turn that is interrupted, so resuming would continue without the task; cursor-agent acp is not mapped by this adapter"},
 	"omp":         {resume: ompResumeArgv, unavailable: "omp does not persist a session that is interrupted during its first turn, so interrupt_resume is unverified; its --mode rpc steer command is not mapped by this adapter"},
 	"zcode":       {resume: zcodeResumeArgv, unavailable: "ZCode has no verified steering route; only exited-turn continuation is supported"},
+	"opencode":    {resume: opencodeResumeArgv, unavailable: "OpenCode background turns can outlive the client; only exited-turn continuation is supported"},
 	"devin":       {resume: acpResumeArgv, unavailable: "devin ACP cancel plus reprompt steering has not been verified against the real CLI; print mode does not report its session id"},
 	"devin-cloud": {resume: acpResumeArgv, unavailable: "devin cloud ACP cancel plus reprompt steering has not been verified against the real service"},
 	"multica":     {unavailable: "Multica owns run input; no verified steering route exists for the current CLI", unresumable: "Multica owns issue and run continuation"},
@@ -226,13 +227,45 @@ func ContinuationArgv(adapterName string, base []string, promptDelivery, session
 	return argv, nil
 }
 
-// FailedContinuationArgv requires the stronger interrupted-turn persistence
-// contract. A resume route verified only after completion is insufficient.
+// FailedContinuationArgv requires verified failed-turn persistence, either for
+// interruption or specifically for exited clients. A route verified only after
+// successful completion is insufficient; exited recovery need not allow steer.
 func FailedContinuationArgv(adapterName string, base []string, promptDelivery, sessionID string) ([]string, error) {
-	if !steerRoutes[adapterName].interruptible && adapterName != "zcode" {
+	if !steerRoutes[adapterName].interruptible && adapterName != "zcode" && adapterName != "opencode" {
 		return nil, capabilityError(CapabilityResume, "adapter has no verified failed-turn session recovery route")
 	}
 	return ContinuationArgv(adapterName, base, promptDelivery, sessionID)
+}
+
+// opencodeResumeArgv is verified against OpenCode 2.2.6. Read-only inspection
+// of native history after client failure found recovered tool results and a
+// successful final turn. This proves exited-turn recovery, not interruption of
+// the background service. Only the caller's recorded binding selects a session.
+func opencodeResumeArgv(base []string, sessionID, delivery string) ([]string, error) {
+	if delivery != PromptDeliveryArgv || len(base) < 2 || base[1] != "run" {
+		return nil, fmt.Errorf("OpenCode resume requires run with argv prompt delivery")
+	}
+	format, _ := argvFlagValue(base, "--format")
+	if format != "json" {
+		return nil, fmt.Errorf("OpenCode resume requires --format json")
+	}
+	if argvHasFlag(base, "--session", "-s", "--continue", "-c", "--fork", "--no-session", "--worktree", "-w") {
+		return nil, fmt.Errorf("OpenCode resume requires a recipe without session selection")
+	}
+	if argvHasFlag(base, "--server", "--standalone") {
+		return nil, fmt.Errorf("OpenCode resume requires the verified background-service recipe")
+	}
+	return append(append([]string(nil), trimTrailingDelimiter(base)...), "--session", sessionID, "--"), nil
+}
+
+// OpenCodeResumeVersionSupported is the verified native-history recovery
+// contract, not a guess based on the presence of --session in CLI help.
+func OpenCodeResumeVersionSupported(version string) bool {
+	switch strings.TrimSpace(version) {
+	case "2.2.6", "v2.2.6", "opencode 2.2.6", "opencode v2.2.6":
+		return true
+	}
+	return false
 }
 
 func zcodeResumeArgv(base []string, sessionID, delivery string) ([]string, error) {

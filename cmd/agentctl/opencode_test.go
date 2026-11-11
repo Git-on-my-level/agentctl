@@ -383,3 +383,30 @@ printf '%s\n' '{"type":"retry","timestamp":1794251075486,"sessionID":"ses_rate_l
 		t.Fatalf("await rate-limit metadata/privacy = %s", stdout.String())
 	}
 }
+
+func TestOpenCodeDelegatedResumeCapabilityIsSeparateFromSteer(t *testing.T) {
+	f := opencodeRecoveryFixture(t, "", true)
+	code, out := f.invoke("original-private-task", "--wait")
+	if code != 0 {
+		t.Fatalf("delegate %d: %s", code, out)
+	}
+	_, out = f.command(t, "", "status", resultID(t, out))
+	var doc struct {
+		Result model.Execution `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	resume, steer := false, false
+	for _, item := range doc.Result.Capabilities.Items {
+		if item.Name == "resume" {
+			resume = item.Status == model.CapabilitySupported
+		}
+		if item.Name == "steer" {
+			steer = item.Status == model.CapabilityUnavailable
+		}
+	}
+	if !resume || !steer {
+		t.Fatalf("capabilities: %#v", doc.Result.Capabilities)
+	}
+}

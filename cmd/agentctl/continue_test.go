@@ -329,3 +329,46 @@ func TestContinueMissingRequestKeyNamesTheFlagAndSuggestsAKey(t *testing.T) {
 		t.Fatalf("actions=%#v", problem.NextActions)
 	}
 }
+
+func TestOpenCodeCompletedTurnsContinueFromFrozenRecipe(t *testing.T) {
+	f := opencodeRecoveryFixture(t, "", true)
+	code, out := f.invoke("original-private-task", "--wait")
+	if code != 0 || !strings.Contains(out, "first answer") {
+		t.Fatalf("delegate %d: %s", code, out)
+	}
+	first := resultID(t, out)
+	// Changing current defaults must not redirect a recorded native recipe.
+	f.configure(t, "changed-default")
+	source := first
+	for _, key := range []string{"second", "third"} {
+		code, out = f.command(t, "follow-up", "continue", source, "--request-key", key, "--prompt-stdin", "--wait")
+		if code != 0 || !strings.Contains(out, "resumed answer") || !strings.Contains(out, `"native_session_reused":true`) {
+			t.Fatalf("%s %d: %s", key, code, out)
+		}
+		source = resultID(t, out)
+		_, status := f.command(t, "", "status", source)
+		var doc struct {
+			Result struct {
+				Capabilities struct {
+					Items []struct{ Name, Status string }
+				}
+			}
+		}
+		if err := json.Unmarshal([]byte(status), &doc); err != nil {
+			t.Fatal(err)
+		}
+		resumable := false
+		for _, item := range doc.Result.Capabilities.Items {
+			if item.Name == "resume" {
+				resumable = item.Status == "supported"
+			}
+		}
+		if !resumable {
+			t.Fatalf("follow-up lost its frozen-recipe resume capability: %s", status)
+		}
+	}
+	code, out = f.command(t, "follow-up", "continue", first, "--request-key", "second", "--prompt-stdin", "--wait")
+	if code != 0 || !strings.Contains(out, `"reused":true`) || f.launches(t) != 3 {
+		t.Fatalf("replay %d: %s", code, out)
+	}
+}

@@ -346,6 +346,9 @@ func (a *app) continuePrepared(ctx context.Context, renderer output.Renderer, c 
 		if session == "" {
 			return continueError(output.CodeCapabilityUnavailable, "continue_session_unrecorded", "this execution recorded no native session id, so its exact session cannot be continued", source).WithDetail("adapter", source.Adapter)
 		}
+		if source.Adapter == "opencode" && !verifiedOpenCodeExecution(source) {
+			return continueError(output.CodeCapabilityUnavailable, "continue_opencode_version_unverified", "OpenCode session continuation is verified only for CLI 2.2.6", source)
+		}
 	}
 	if source.CWD == nil || *source.CWD == "" {
 		return continueError(output.CodeInvalidState, "continue_cwd_unrecorded", "the execution recorded no working directory", source)

@@ -235,6 +235,9 @@ func (j *Journal) validateSchema() error {
 		if bucket == nil || string(bucket.Get(keySchema)) != "1" {
 			return fmt.Errorf("%w: missing or unsupported journal schema", ErrCorrupt)
 		}
+		if tx.Bucket(bIdempotency) == nil || tx.Bucket(bExecutions) == nil {
+			return fmt.Errorf("%w: missing required index or execution bucket", ErrCorrupt)
+		}
 		return nil
 	})
 }

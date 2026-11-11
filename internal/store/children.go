@@ -68,6 +68,10 @@ func children(r *cleanupReader, scope ChildrenScope, now time.Time, recheck *boo
 	for {
 		var last []byte
 		err := r.view(func(tx *bbolt.Tx) error {
+			indexes, executions := tx.Bucket(bIdempotency), tx.Bucket(bExecutions)
+			if indexes == nil || executions == nil {
+				return corrupt(errors.New("missing required children index or execution bucket"))
+			}
 			current, err := childrenMembershipAt(tx, prefix)
 			if err != nil {
 				return err
@@ -77,7 +81,7 @@ func children(r *cleanupReader, scope ChildrenScope, now time.Time, recheck *boo
 			} else if *membership != current {
 				return ErrChildrenBounded
 			}
-			cursor := tx.Bucket(bIdempotency).Cursor()
+			cursor := indexes.Cursor()
 			key, raw := cursor.Seek(prefix)
 			if after != nil {
 				key, raw = cursor.Seek(after)
@@ -102,15 +106,22 @@ func children(r *cleanupReader, scope ChildrenScope, now time.Time, recheck *boo
 				if err := json.Unmarshal(raw, &index); err != nil {
 					return corrupt(err)
 				}
-				// An older manual cleanup may retain an expired-key tombstone.
+				id, err := ids.ParseExecutionID(string(key[len(prefix):]))
+				if err != nil || index.ObjectID != id.String() {
+					return corrupt(errors.New("invalid children index identity"))
+				}
+				// Older cleanup may omit Scope/Key in a compact tombstone, but
+				// it cannot revoke discovery of a still-retained execution.
 				if index.ObjectType == expiredExecutionObject {
+					if (index.Scope != "" && index.Scope != string(prefix[:len(prefix)-1])) || (index.Key != "" && index.Key != id.String()) || executions.Get([]byte(id.String())) != nil || executions.Bucket([]byte(id.String())) != nil {
+						return corrupt(errors.New("invalid children index tombstone"))
+					}
 					continue
 				}
-				id, err := ids.ParseExecutionID(string(key[len(prefix):]))
-				if err != nil || index.Scope != string(prefix[:len(prefix)-1]) || index.Key != id.String() || index.ObjectType != "execution" || index.ObjectID != id.String() {
+				if index.Scope != string(prefix[:len(prefix)-1]) || index.Key != id.String() || index.ObjectType != "execution" {
 					return corrupt(errors.New("invalid children index"))
 				}
-				executionRaw := tx.Bucket(bExecutions).Get([]byte(id.String()))
+				executionRaw := executions.Get([]byte(id.String()))
 				if executionRaw == nil || len(executionRaw) > 1<<20 {
 					return ErrChildrenBounded
 				}
@@ -134,8 +145,23 @@ func children(r *cleanupReader, scope ChildrenScope, now time.Time, recheck *boo
 				}
 				if e.State.Terminal() {
 					// Attributed rows are new and do not need the historical ack epoch.
-					if b := tx.Bucket(bAcknowledgements); b != nil && b.Get([]byte(e.ID.String())) != nil {
-						continue
+					if b := tx.Bucket(bAcknowledgements); b != nil {
+						if b.Bucket([]byte(e.ID.String())) != nil {
+							return corrupt(errors.New("invalid children acknowledgement bucket"))
+						}
+						if raw := b.Get([]byte(e.ID.String())); raw != nil {
+							if len(raw) > 1<<20 {
+								return ErrChildrenBounded
+							}
+							var ack ExecutionAcknowledgement
+							if err := json.Unmarshal(raw, &ack); err != nil {
+								return corrupt(err)
+							}
+							if ack.ExecutionID != e.ID || ack.AcknowledgedAt.IsZero() || (ack.Source != AcknowledgementResult && ack.Source != AcknowledgementAwait && ack.Source != AcknowledgementBulk) {
+								return corrupt(errors.New("invalid children acknowledgement"))
+							}
+							continue
+						}
 					}
 				}
 				if recheck != nil {
@@ -207,7 +233,7 @@ func childrenSubscriptions(ctx context.Context, tx *bbolt.Tx) ([]SubscriptionRec
 		return nil, nil
 	}
 	size, records := 0, 0
-	err := b.ForEach(func(_, raw []byte) error {
+	err := b.ForEach(func(key, raw []byte) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -216,11 +242,11 @@ func childrenSubscriptions(ctx context.Context, tx *bbolt.Tx) ([]SubscriptionRec
 		if records > 1024 || size > 4<<20 {
 			return ErrChildrenBounded
 		}
-		var record SubscriptionRecord
-		if err := json.Unmarshal(raw, &record); err != nil {
-			return corrupt(err)
+		record, understood, err := decodeFanoutSubscription(key, raw)
+		if err != nil {
+			return err
 		}
-		if fanoutUnderstands(raw, record.Subscription) {
+		if understood {
 			subscriptions = append(subscriptions, record)
 		}
 		return nil

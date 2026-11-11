@@ -61,14 +61,8 @@ func enqueueMatchingSubscriptionsTx(tx *bbolt.Tx, event *model.Event, canonicalP
 		return labels
 	}
 	err := subs.ForEach(func(key, raw []byte) error {
-		var record SubscriptionRecord
-		if err := json.Unmarshal(raw, &record); err != nil {
-			return corrupt(err)
-		}
-		if !fanoutUnderstands(raw, record.Subscription) {
-			return nil
-		}
-		if err := validateStoredSubscriptionIdentity(record.Subscription); err != nil {
+		record, understood, err := decodeFanoutSubscription(key, raw)
+		if err != nil || !understood {
 			return err
 		}
 		matchesScope := matchesEventScope(record.Subscription, event, now, executionLabels)
@@ -81,6 +75,26 @@ func enqueueMatchingSubscriptionsTx(tx *bbolt.Tx, event *model.Event, canonicalP
 		return err
 	}
 	return nil
+}
+
+// decodeFanoutSubscription is shared with children discovery: coverage cannot
+// rely on a record that would abort fanout, including an unrelated active one.
+// Keep compatibility filtering before identity validation, as in event fanout.
+func decodeFanoutSubscription(key, raw []byte) (SubscriptionRecord, bool, error) {
+	var record SubscriptionRecord
+	if err := json.Unmarshal(raw, &record); err != nil {
+		return record, false, corrupt(err)
+	}
+	if !fanoutUnderstands(raw, record.Subscription) {
+		return record, false, nil
+	}
+	if err := validateStoredSubscriptionIdentity(record.Subscription); err != nil {
+		return record, false, err
+	}
+	if string(key) != record.Subscription.ID {
+		return record, false, fmt.Errorf("%w: subscription key/record ID mismatch", ErrCorrupt)
+	}
+	return record, true, nil
 }
 
 // fanoutUnderstands reports whether this release can evaluate a stored
