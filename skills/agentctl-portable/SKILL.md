@@ -504,8 +504,8 @@ Native owners flag outstanding children on terminal execution/outcome with
 `uncollected_children`, exact `collect_argv`, and a warning. Completed parents
 with a frozen recipe and verified native resume route receive one automatic
 collection turn using ordinary keyed `continue` admission. The successor carries
-`auto_continuation_of`, preventing recursive automatic turns. OpenCode-backed
-models and other non-resumable routes stay flagged in `inbox`; Hermes remains
+`auto_continuation_of`, preventing recursive automatic turns. OpenCode 2.2.6 may use #150's verified background-service recipe with version
+and session-existence checks; other non-resumable routes stay flagged in `inbox`. Hermes remains
 unverified and Devin ACP must advertise session loading. Cancelled/timed-out
 parents never auto-continue; childless runs do not change. A profile's
 `delegation.child_exit_auto_continue: false` disables continuation while retaining
@@ -519,7 +519,9 @@ expiry/cancellation, even when the parent's own result was collected; terminal
 children clear only after collection acknowledgement. Incomplete checks stay
 actionable. Mixed-version immutable hydration preserves the marker; it neither
 adds replay retention nor changes existing parent-graph retention. Inbox selects active parent scopes from its complete hydrated execution and
-explicit-acknowledgement snapshots. Collected history does not spend the child
+validated explicit-acknowledgement snapshots. Invalid acknowledgement key/identity,
+time or source fails inbox with `inbox_acknowledgement_corrupt` (exit 70), never
+clean settlement. Collected history does not spend the child
 query budget or create inbox items; the historical marker/outcome is retained.
 Covered nonterminal children remain active obligations. Subscription metadata is
 read lazily only for uncovered local nonterminal children that can use it; all

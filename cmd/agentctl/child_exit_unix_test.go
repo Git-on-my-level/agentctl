@@ -23,10 +23,10 @@ func TestChildExitThroughBuiltBinary(t *testing.T) {
 	if out, err := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v %s", err, out)
 	}
-	for _, variant := range []string{"resume_once", "disabled", "without_children", "failed_turn", "timeout", "opencode", "codex_failed"} {
+	for _, variant := range []string{"resume_once", "disabled", "without_children", "failed_turn", "timeout", "opencode", "opencode_unverified", "codex_failed"} {
 		t.Run(variant, func(t *testing.T) {
 			f := newDelegateFixture(t, "")
-			if variant == "opencode" || variant == "codex_failed" {
+			if strings.HasPrefix(variant, "opencode") || variant == "codex_failed" {
 				harness := "opencode"
 				if variant == "codex_failed" {
 					harness = "codex"
@@ -45,8 +45,14 @@ func TestChildExitThroughBuiltBinary(t *testing.T) {
 			if variant != "without_children" {
 				script += remoteCommand(binary, "--journal", f.journal, "run", "--adapter", "generic-process", "--", "/bin/sh", "-c", `printf '%s\n' '{"type":"result","status":"completed","result":"child answer"}'`) + " > " + shellQuote(filepath.Join(f.root, "child-receipt")) + "\n"
 			}
-			if variant == "opencode" {
-				script = strings.Replace(script, "echo 2026.09.10", "echo 'opencode 2.2.6'", 1)
+			if strings.HasPrefix(variant, "opencode") {
+				version := "2.2.6"
+				if variant == "opencode_unverified" {
+					version = "2.2.7"
+				}
+				script = strings.Replace(script, "echo 2026.09.10", "echo 'opencode "+version+"'", 1)
+				// Session existence verification is a read, not a model turn.
+				script = strings.Replace(script, "echo launch >>", "if [ \"$1\" = session ]; then exit 0; fi\necho launch >>", 1)
 			}
 			if variant == "timeout" {
 				script += "sleep 2\n"
@@ -58,7 +64,7 @@ func TestChildExitThroughBuiltBinary(t *testing.T) {
 esac` + "\n"
 			} else if variant == "failed_turn" {
 				script += "printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"result\":\"parent stopped\"}'\nexit 1\n"
-			} else if variant == "opencode" {
+			} else if strings.HasPrefix(variant, "opencode") {
 				script += `printf '%s\n' '{"type":"step_start","sessionID":"s1","part":{"type":"step-start"}}' '{"type":"text","sessionID":"s1","part":{"type":"text","text":"parent answer","time":{"end":1}}}' '{"type":"step_finish","sessionID":"s1","part":{"type":"step-finish","reason":"stop"}}'` + "\n"
 			} else {
 				script += continueAgent + "\n"
@@ -113,7 +119,7 @@ esac` + "\n"
 				t.Fatalf("missing parent: %+v %s", executions, out)
 			}
 			wantLaunches := 1
-			if variant == "resume_once" || variant == "codex_failed" {
+			if variant == "resume_once" || variant == "codex_failed" || variant == "opencode" {
 				wantLaunches = 2
 			}
 			if f.launches(t) != wantLaunches {
@@ -132,7 +138,7 @@ esac` + "\n"
 			if err != nil || len(outcome.UncollectedChildren) != 1 {
 				t.Fatalf("outcome=%+v err=%v", outcome, err)
 			}
-			if variant == "resume_once" || variant == "codex_failed" {
+			if variant == "resume_once" || variant == "codex_failed" || variant == "opencode" {
 				if len(auto) != 1 || auto[0].ChildExitGuard == nil || auto[0].ChildExitGuard.AutoContinue != "suppressed_recursive" {
 					t.Fatalf("automatic lineage=%+v", auto)
 				}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sort"
 	"strconv"
@@ -102,7 +103,11 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 	}
 	acks, err := journal.AcknowledgementIndex(ctx)
 	if err != nil {
-		return mapStoreError("list execution acknowledgements", err)
+		problem := mapStoreError("list execution acknowledgements", err)
+		if errors.Is(err, store.ErrCorrupt) {
+			problem.WithDetail("diagnostic_code", "inbox_acknowledgement_corrupt").WithDetail("complete", false)
+		}
+		return problem
 	}
 	contacts, err := journal.StatusContactIndex(ctx)
 	if err != nil {

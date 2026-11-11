@@ -153,12 +153,8 @@ func children(r *cleanupReader, scope ChildrenScope, now time.Time, recheck *boo
 							if len(raw) > 1<<20 {
 								return ErrChildrenBounded
 							}
-							var ack ExecutionAcknowledgement
-							if err := json.Unmarshal(raw, &ack); err != nil {
-								return corrupt(err)
-							}
-							if ack.ExecutionID != e.ID || ack.AcknowledgedAt.IsZero() || (ack.Source != AcknowledgementResult && ack.Source != AcknowledgementAwait && ack.Source != AcknowledgementBulk) {
-								return corrupt(errors.New("invalid children acknowledgement"))
+							if _, err := decodeCollectionAcknowledgement([]byte(e.ID.String()), raw); err != nil {
+								return err
 							}
 							continue
 						}

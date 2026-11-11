@@ -229,7 +229,8 @@ automatic successor. Read `child_exit_guard.continuation_id` to collect that tur
 | Codex, Cursor, Claude Code, OMP | One native continuation when the recorded recipe and session meet the existing exact-invocation route. Expert `run` without a frozen delegation recipe is flagged only. |
 | ZCode | One native continuation for eligible coding recipes; the existing version check still requires CLI 0.17.0. Disposable read-only sessions cannot resume. |
 | Devin / Devin cloud ACP | One conditional session-load attempt; normal ACP initialization must advertise `loadSession` and verify the frozen configuration. Missing support fails closed, leaving the flag. Print mode has no continuation route. |
-| OpenCode-backed Morph models, OpenClaw, generic process | Flag and inbox actions; no verified native continuation route. |
+| OpenCode-backed Morph models | One conditional continuation for the verified OpenCode 2.2.6 background-service recipe, preserving #150's version and session-existence checks. Other recipes/versions remain flagged. |
+| OpenClaw, generic process | Flag and inbox actions; no verified native continuation route. |
 | Hermes | Flag and inbox actions; provider-backed continuation remains unverified. |
 | Multica | Multica retains task/run authority. Local native parents can track Multica children; agentctl does not introduce Multica auto-continuation. |
 
@@ -244,7 +245,12 @@ snapshots it already loads under its held read-only journal handle. Writers are
 excluded for that handle's lifetime. It selects active parent scopes from every
 retained child: nonterminal children remain obligations regardless of waiter
 coverage, and terminal children settle only when their explicit collection stamp
-exists. The legacy acknowledgement epoch does not retire attributed children.
+exists and its stored key agrees with its execution identity, nonzero timestamp
+and supported collection source. The selector and scoped child query share this
+validation. Corrupt acknowledgement evidence fails inbox with exit 70,
+`diagnostic_code: inbox_acknowledgement_corrupt` and `complete: false`; it never
+retires a parent from a falsely clean snapshot. The legacy acknowledgement epoch
+does not retire attributed children.
 A parent whose retained children are all collected spends no child-query budget
 and adds no child-collection inbox reason. This changes only the read projection;
 immutable execution markers, exit guards and outcomes are not rewritten. An
@@ -270,7 +276,8 @@ is loaded lazily once per child query, only for an uncovered local nonterminal
 child that can benefit from it. Collected children, terminal uncollected rows,
 attention, remote rows and exact-await-covered children do not scan subscriptions.
 When needed, the existing subscription count/byte/deadline limits still fail
-closed. Retained historical markers therefore cannot repeatedly scan historical
+closed, and the scan uses the same strict identity/key checks and compatibility
+filtering as terminal event fanout, including unrelated active subscriptions. Retained historical markers therefore cannot repeatedly scan historical
 subscription metadata, spend the shared recheck budget, or create incomplete
 coverage items that crowd an active parent off the page. Rechecks use only each
 parent's retained attribution index and cached metadata; there is no global child

@@ -127,6 +127,10 @@ func (a *app) checkChildExit(ctx context.Context, c common, journal *store.Journ
 			guard.Diagnostic = "continue_route_unavailable"
 			break
 		}
+		if execution.Adapter == "opencode" && !verifiedOpenCodeExecution(execution) {
+			guard.Diagnostic = "continue_opencode_version_unverified"
+			break
+		}
 		// Hermes remains provider-unverified. ACP Devin routes validate loadSession
 		// during the normal continuation launch and fail closed if it is absent.
 		if execution.Adapter == "hermes" {

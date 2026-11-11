@@ -79,11 +79,31 @@ func TestChildExitFlagAndContinuationExactlyOnce(t *testing.T) {
 	if !strings.Contains(prompt, child.ID.String()) || !strings.Contains(prompt, remoteCommand(parent.UncollectedChildren[0].CollectArgv...)) {
 		t.Fatal(prompt)
 	}
+	// Competing owner callbacks start from the same pending projection. The
+	// journal claim must admit only one native continuation, even under races.
+	start := make(chan struct{})
+	problems := make(chan *output.Error, 2)
 	for range 2 {
-		stdout.Reset()
-		if problem := a.finishNativeTurn(context.Background(), output.Renderer{Mode: output.JSON, Writer: &stdout}, c, parent); problem != nil {
-			t.Fatal(problem)
+		go func() {
+			var ownerOut, ownerErr bytes.Buffer
+			owner := testApp(&ownerOut, &ownerErr)
+			<-start
+			problems <- owner.finishNativeTurn(context.Background(), output.Renderer{Mode: output.JSON, Writer: &ownerOut}, c, parent)
+		}()
+	}
+	close(start)
+	for range 2 {
+		if problem := <-problems; problem != nil {
+			t.Error(problem)
 		}
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+	// A later replay of the stale callback cannot consume another turn either.
+	stdout.Reset()
+	if problem := a.finishNativeTurn(context.Background(), output.Renderer{Mode: output.JSON, Writer: &stdout}, c, parent); problem != nil {
+		t.Fatal(problem)
 	}
 	rawJournal, err := os.ReadFile(f.journal)
 	if err != nil {
