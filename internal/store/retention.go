@@ -246,6 +246,10 @@ func (snapshot *cleanupSnapshot) selectCleanup(before, now time.Time, options Cl
 		if err := json.Unmarshal(raw, &value); err != nil {
 			return corrupt(err)
 		}
+		binding := snapshot.Bucket(bIdempotency).Get([]byte(attributionBindingScope + "\x00" + value.ID.String()))
+		if err := hydrateAttributionRecord(binding, &value); err != nil {
+			return corrupt(err)
+		}
 		if err := value.Validate(); err != nil {
 			return corrupt(err)
 		}

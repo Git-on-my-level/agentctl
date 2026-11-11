@@ -485,7 +485,7 @@ subscriptions cover active local execution events only. Attention always remains
 attention. Live awaits do not cover conflicted evidence. Registration is best
 effort: unavailable sidecars never refuse native work or primary waiting. `await-any` is not per-child coverage: its first match releases the fan-in
 waiter while siblings can keep running. External/old waiters remain unknown. A lock proves a live collector, not that its output is consumed.
-Coverage includes only newly attributed retained executions. A 1.5s processing
+Remote rows can have stale cached state. After a lost SSH receipt, preserve uncertain admission and retry the identical key; complete covers the retained index, not every attempted launch. Parent-graph retention still protects acknowledged terminal graphs. Coverage includes only newly attributed retained executions. A 1.5s processing
 budget, 50ms read-lock attempts, and bounded indexed reads fail with
 `children_query_incomplete` (exit 9) instead of partial success. Treat every error
 as unknown coverage, never an empty set.

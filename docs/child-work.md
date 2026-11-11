@@ -132,7 +132,10 @@ only the selected caller's
 index and reads the referenced projections and acknowledgements. It never walks
 unrelated executions, event history, results, or all acknowledgement history.
 There is no new background index migration and old binaries need no schema
-upgrade to coexist with these records.
+upgrade to coexist with these records. Retention hydrates the immutable
+attribution snapshot before evaluating graph protection, so older supervisor
+projection rewrites cannot sever a live child from its retained parent. Corrupt
+or conflicting snapshots fail cleanup closed without rewriting projections.
 
 The query has a 1.5-second total processing budget. Every journal open is
 read-only with a 50 ms lock allowance; handles close between pages of at most
@@ -214,3 +217,21 @@ Remote forwarding parents remain excluded from host-local inbox as before; the
 native exit check runs at the actual owner host, and remote child collection uses
 the origin parent's local forwarding ID. Lost receipts before local admission
 retain the existing replay recovery limit described above.
+
+## Coverage and retention boundaries
+
+`complete: true` means the selected retained-attributed index was completely
+read within the safety bounds. It is not proof that every attempted launch has
+a local execution row. In particular, a lost SSH receipt remains uncertain:
+retry the identical request key to recover remote admission before relying on
+its local forwarding row. Never convert that transport error plus an empty
+retained index into a claim that no remote work launched. Adding a durable local
+pre-receipt intent requires a separate pending/uncertain-admission contract;
+this query does not invent remote IDs or own remote execution lifecycle.
+
+Parent links retain the existing execution-graph deletion guard, even after all
+linked rows are terminal and acknowledged. This protects lineage, replay and
+external references; it is not a new lifecycle-aware graph collection policy.
+Changing that policy requires a separate design and deletion safety review.
+See the [round2 review disposition](evidence/2026-11-11-pr147-round2.md) for
+published contract and base-branch code evidence.
