@@ -31,16 +31,33 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 	if scope.Parent == nil && (scope.Provider == "" || scope.NativeSessionID == "") {
 		return nil, ErrChildrenBounded
 	}
-	return children(c.reader(ctx), scope, now)
+	return children(c.reader(ctx), scope, now, nil)
 }
 
 // Children reuses a borrowed journal handle during terminal commit preparation.
 func (j *Journal) Children(ctx context.Context, scope ChildrenScope, now time.Time) ([]ChildExecution, error) {
-	return children(j.cleanupReader(ctx), scope, now)
+	return children(j.cleanupReader(ctx), scope, now, nil)
 }
 
-func children(r *cleanupReader, scope ChildrenScope, now time.Time) ([]ChildExecution, error) {
+// CheckChildCollection also reports whether unacknowledged attributed children
+// exist, including currently covered children. Errors never establish settlement.
+type ChildCollectionCheck struct {
+	Children []ChildExecution
+	Recheck  bool
+}
+
+func (j *Journal) CheckChildCollection(ctx context.Context, scope ChildrenScope, now time.Time) (ChildCollectionCheck, error) {
+	var check ChildCollectionCheck
+	var err error
+	check.Children, err = children(j.cleanupReader(ctx), scope, now, &check.Recheck)
+	return check, err
+}
+
+func children(r *cleanupReader, scope ChildrenScope, now time.Time, recheck *bool) ([]ChildExecution, error) {
 	ctx := r.ctx
+	if scope.Parent == nil && (scope.Provider == "" || scope.NativeSessionID == "") {
+		return nil, ErrChildrenBounded
+	}
 	// An exact index seek keeps childless runs independent of subscription metadata.
 	prefix := childrenScopePrefix(scope)
 	hasChildren := false
@@ -148,6 +165,9 @@ func children(r *cleanupReader, scope ChildrenScope, now time.Time) ([]ChildExec
 					if b := tx.Bucket(bAcknowledgements); b != nil && b.Get([]byte(e.ID.String())) != nil {
 						continue
 					}
+				}
+				if recheck != nil {
+					*recheck = true
 				}
 				item := ChildExecution{ID: e.ID, CreatedAt: e.CreatedAt, State: e.State, Authority: e.Authority, Adapter: e.Adapter, Reason: "running_without_known_waiter", WaiterStatus: "unknown", CollectArgv: []string{"agentctl", "await", e.ID.String(), "--content"}}
 				if e.RemoteForwarded() {

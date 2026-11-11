@@ -119,9 +119,12 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 		if !inboxFilterMatches(execution, opts) {
 			continue
 		}
-		if execution.ChildExitGuard != nil && !execution.RemoteForwarded() {
+		if (execution.ChildExitRecheck || execution.ChildExitGuard != nil) && !execution.RemoteForwarded() {
 			children, childErr := journal.Children(childQueryCtx, store.ChildrenScope{Parent: &execution.ID}, now)
-			guard := *execution.ChildExitGuard
+			guard := model.ChildExitGuard{CheckedAt: now, AutoContinue: "unavailable"}
+			if execution.ChildExitGuard != nil {
+				guard = *execution.ChildExitGuard
+			}
 			if childErr != nil {
 				guard.CheckError = "children_query_incomplete"
 				execution.ChildExitGuard = &guard
@@ -130,6 +133,8 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 					children[i].CollectArgv = childCollectArgv(c, children[i].ID)
 				}
 				execution.UncollectedChildren = children
+				guard.CheckError = ""
+				execution.ChildExitGuard = &guard
 				if len(children) == 0 {
 					execution.ChildExitGuard = nil
 				}

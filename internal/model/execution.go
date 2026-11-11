@@ -395,6 +395,7 @@ var nativeRateLimitProviderErrorType = regexp.MustCompile(`^(?:unclassified|prov
 
 type Execution struct {
 	UncollectedChildren  []UncollectedChild `json:"uncollected_children,omitempty"`
+	ChildExitRecheck     bool               `json:"child_exit_recheck,omitempty"`
 	ChildExitGuard       *ChildExitGuard    `json:"child_exit_guard,omitempty"`
 	AutoContinuationOf   *ids.ExecutionID   `json:"auto_continuation_of,omitempty"`
 	CallerIdentity       *CallerIdentity    `json:"caller_identity,omitempty"`

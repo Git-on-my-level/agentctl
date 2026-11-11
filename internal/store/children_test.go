@@ -286,6 +286,7 @@ func TestAutomaticCleanupRemovesUnkeyedCallerAttribution(t *testing.T) {
 	var created []model.Execution
 	for _, keyed := range []bool{false, true} {
 		e := sampleExecution(now)
+		e.ChildExitRecheck = true
 		e.CallerIdentity = &model.CallerIdentity{Provider: "codex", NativeSessionID: hash('a'), Provenance: "explicit"}
 		e.State, e.Liveness, e.TerminalAt = model.StateCompleted, model.LivenessExited, &now
 		key := contracts.MutationKey{}

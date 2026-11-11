@@ -167,6 +167,23 @@ status and result output warns with `uncollected_children`. Raw `--content`
 stays raw text; inspect structured output or inbox for coordination metadata.
 Childless runs have no extra result fields, warnings or continuation.
 
+A separate `child_exit_recheck: true` records a historical obligation when the
+bounded indexed check finds any attributed, unacknowledged children, including
+children currently covered by an exact await or supported subscription. An
+incomplete check also retains this obligation. This is **not** a claim that
+those children are presently uncollected: covered-only exits have no
+`uncollected_children`, warning, or automatic continuation. Childless and
+fully acknowledged child sets do not create the marker.
+
+The marker is committed atomically with the terminal execution/outcome and has
+its own execution-owned immutable binding. New readers hydrate it after an older
+supervisor drops the projection field; old hashed attribution shapes are not
+extended. It is not a request-key replay promise or an additional retention
+reference. Existing parent-graph retention remains in force, and cleanup removes
+the marker with its execution; corrupt bindings fail reads and cleanup closed.
+The field remains historical even after collection, so read it with live child
+metadata rather than as an outstanding-work count.
+
 `child_exit_guard` on the execution records `checked_at`, `auto_continue`, an
 optional bounded diagnostic, and the admitted `continuation_id`. Outcomes retain
 the exit-time snapshot; the execution carries later continuation status.
@@ -207,12 +224,23 @@ the config bundle. Omitted/true enables the safeguard. The switch suppresses
 continuation, **not** exit snapshots, warnings or inbox actions; it does not stop
 a follow-up that has already launched. Policy is read when the parent exits.
 
-`inbox` includes a parent with unresolved child work even after that parent's own
+`inbox` rechecks parents with this marker or an existing exit guard, even when
+all children were covered at exit. It includes a parent with unresolved child
+work even after that parent's own
 result was acknowledged. It rechecks live child metadata (no result reads, SSH,
 maintenance or writes) and offers each child's collect command. A shared 1.5s
 budget bounds these child rechecks; incomplete coverage stays actionable.
-Collected children and running children with new waiter evidence disappear from
-the live inbox projection; the stored historical exit snapshot is retained.
+Covered running children disappear from the live inbox projection without
+clearing the durable recheck obligation. Waiter cancellation/death or subscription
+expiry/cancellation can therefore make them actionable again immediately on the
+next inbox query, before the child's observation becomes stale. Terminal children
+remain actionable until actual collection acknowledgement. Complete checks with
+only covered or acknowledged children add no child-collection reason; incomplete
+checks remain explicitly actionable without inventing uncollected children.
+The shared query bounds apply even to covered children. Rechecks use only each
+parent's retained attribution index and cached metadata; there is no global child
+scan, new remote observation, or inbox-triggered automatic continuation. The
+historical exit snapshot and marker remain unchanged after collection.
 Remote forwarding parents remain excluded from host-local inbox as before; the
 native exit check runs at the actual owner host, and remote child collection uses
 the origin parent's local forwarding ID. Lost receipts before local admission

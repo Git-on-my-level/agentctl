@@ -77,6 +77,7 @@ type OutcomeEvidence struct {
 
 type Outcome struct {
 	UncollectedChildren []UncollectedChild  `json:"uncollected_children,omitempty"`
+	ChildExitRecheck    bool                `json:"child_exit_recheck,omitempty"`
 	ChildExitCheckError string              `json:"child_exit_check_error,omitempty"`
 	SchemaVersion       int                 `json:"schema_version"`
 	ExecutionID         ids.ExecutionID     `json:"execution_id"`

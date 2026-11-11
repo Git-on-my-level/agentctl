@@ -250,6 +250,9 @@ func (snapshot *cleanupSnapshot) selectCleanup(before, now time.Time, options Cl
 		if err := hydrateAttributionRecord(binding, &value); err != nil {
 			return corrupt(err)
 		}
+		if err := hydrateChildExitRecheck(snapshot.Bucket(bIdempotency).Get([]byte(childExitRecheckScope+"\x00"+value.ID.String())), &value); err != nil {
+			return corrupt(err)
+		}
 		if err := value.Validate(); err != nil {
 			return corrupt(err)
 		}
@@ -297,7 +300,7 @@ func (snapshot *cleanupSnapshot) selectCleanup(before, now time.Time, options Cl
 			}
 			// Launch snapshots and caller indexes are execution-owned metadata,
 			// not request-key replay promises (including existing PR records).
-			if record.ObjectType == "execution" && record.Scope != automaticContinuationScope && record.Scope != attributionBindingScope && !strings.HasPrefix(record.Scope, childrenIndexScope) {
+			if record.ObjectType == "execution" && record.Scope != childExitRecheckScope && record.Scope != automaticContinuationScope && record.Scope != attributionBindingScope && !strings.HasPrefix(record.Scope, childrenIndexScope) {
 				protect(record.ObjectID, "request_key_replay")
 			}
 			return nil

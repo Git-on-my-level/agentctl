@@ -501,8 +501,14 @@ parents never auto-continue; childless runs do not change. A profile's
 `delegation.child_exit_auto_continue: false` disables continuation while retaining
 warnings and inbox actions (default true). No fresh-session fallback occurs.
 The original parent stays terminal; collect the automatic turn using
-`child_exit_guard.continuation_id`. Inbox rechecks children and clears resolved
-ones even when the parent's own result was already collected.
+`child_exit_guard.continuation_id`. `child_exit_recheck` is a historical marker for indexed attributed children
+still requiring a complete collection check, including currently waiter-covered
+children. It is not an uncollected-work flag. Covered-only exits never warn or
+auto-continue. Inbox rechecks after waiter death/cancellation or subscription
+expiry/cancellation, even when the parent's own result was collected; terminal
+children clear only after collection acknowledgement. Incomplete checks stay
+actionable. Mixed-version immutable hydration preserves the marker; it neither
+adds replay retention nor changes existing parent-graph retention.
 See [child work](https://github.com/Git-on-my-level/agentctl/blob/main/docs/child-work.md).
 
 Use `recent` to recover

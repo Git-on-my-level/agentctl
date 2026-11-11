@@ -805,6 +805,9 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		if execution.CallerIdentity != nil {
 			result["caller_identity"] = execution.CallerIdentity
 		}
+		if execution.ChildExitRecheck {
+			result["child_exit_recheck"] = true
+		}
 		if execution.ChildExitGuard != nil {
 			result["child_exit_guard"] = execution.ChildExitGuard
 			if len(execution.UncollectedChildren) > 0 {

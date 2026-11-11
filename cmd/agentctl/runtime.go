@@ -1787,6 +1787,7 @@ func commitCancellation(ctx context.Context, journal *store.Journal, execution m
 			next = childCheck[0](next)
 		}
 		outcome := model.Outcome{SchemaVersion: model.SchemaVersion, ExecutionID: next.ID, Revision: 1, State: model.StateCancelled, Availability: model.OutcomeStored, RecordedAt: now, Source: next.Adapter, ResultRef: fmt.Sprintf("agentctl://%s/%s", next.OriginHostID, next.ID), Failure: &model.OutcomeFailure{Code: "execution_cancelled", Kind: "cancelled", Source: next.Adapter, Retryable: false, Message: "native execution cancelled"}}
+		outcome.ChildExitRecheck = next.ChildExitRecheck
 		outcome.UncollectedChildren = next.UncollectedChildren
 		if next.ChildExitGuard != nil {
 			outcome.ChildExitCheckError = next.ChildExitGuard.CheckError
@@ -2100,6 +2101,7 @@ func (a *app) finalizeResult(ctx context.Context, c common, journal *store.Journ
 	}
 	execution = a.checkChildExit(ctx, c, journal, execution, now)
 	outcome := buildOutcome(execution, result, now, noStoreResult)
+	outcome.ChildExitRecheck = execution.ChildExitRecheck
 	outcome.UncollectedChildren = execution.UncollectedChildren
 	if execution.ChildExitGuard != nil {
 		outcome.ChildExitCheckError = execution.ChildExitGuard.CheckError

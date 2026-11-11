@@ -64,7 +64,9 @@ func (a *app) checkChildExit(ctx context.Context, c common, journal *store.Journ
 	}
 	queryCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
-	children, err := journal.Children(queryCtx, store.ChildrenScope{Parent: &execution.ID}, now)
+	check, err := journal.CheckChildCollection(queryCtx, store.ChildrenScope{Parent: &execution.ID}, now)
+	children := check.Children
+	execution.ChildExitRecheck = check.Recheck || err != nil
 	if err == nil && len(children) == 0 {
 		return execution
 	}

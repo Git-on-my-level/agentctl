@@ -35,6 +35,7 @@ func addExitChild(t *testing.T, j *store.Journal, parent model.Execution, termin
 	child.AutoContinuationOf = nil
 	child.UncollectedChildren = nil
 	child.ChildExitGuard = nil
+	child.ChildExitRecheck = false
 	child.State = model.StateRunning
 	child.TerminalAt = nil
 	if terminal {
@@ -118,7 +119,7 @@ func TestChildExitFlagAndContinuationExactlyOnce(t *testing.T) {
 }
 
 func TestChildExitPolicyStates(t *testing.T) {
-	for _, variant := range []string{"no_children", "disabled", "opencode", "cancelled", "failed", "query_failure"} {
+	for _, variant := range []string{"no_children", "covered", "disabled", "opencode", "cancelled", "failed", "query_failure"} {
 		t.Run(variant, func(t *testing.T) {
 			f := newDelegateFixture(t, continueAgent)
 			code, out := f.invoke("parent task")
@@ -133,7 +134,14 @@ func TestChildExitPolicyStates(t *testing.T) {
 			defer j.Close()
 			parent, _ := j.GetExecution(context.Background(), id)
 			if variant != "no_children" {
-				addExitChild(t, j, parent, false)
+				child := addExitChild(t, j, parent, false)
+				if variant == "covered" {
+					waiter, err := store.RegisterWaiter(context.Background(), f.journal, child.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer waiter.Close()
+				}
 			}
 			if variant == "disabled" {
 				cfg, err := config.Load(f.config)
@@ -168,8 +176,20 @@ func TestChildExitPolicyStates(t *testing.T) {
 			}
 			checked := a.checkChildExit(ctx, c, j, parent, time.Now().UTC())
 			if variant == "no_children" {
-				if checked.ChildExitGuard != nil {
+				if checked.ChildExitGuard != nil || checked.ChildExitRecheck {
 					t.Fatal("childless run changed")
+				}
+				return
+			}
+			if variant == "covered" {
+				if !checked.ChildExitRecheck || checked.ChildExitGuard != nil || len(checked.UncollectedChildren) != 0 || len(childExitWarnings(checked)) != 0 {
+					t.Fatalf("covered child exit: %+v", checked)
+				}
+				if problem := a.finishNativeTurn(ctx, output.Renderer{Mode: output.JSON, Writer: &stdout}, c, checked); problem != nil {
+					t.Fatal(problem)
+				}
+				if f.launches(t) != 1 {
+					t.Fatal("covered children caused an automatic launch")
 				}
 				return
 			}

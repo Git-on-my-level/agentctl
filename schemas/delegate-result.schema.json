@@ -14,6 +14,7 @@
     "reused"
   ],
   "properties": {
+    "child_exit_recheck": {"type": "boolean", "description": "Historical native-exit obligation to recheck indexed children until collection; does not assert present uncollected work or trigger continuation."},
     "uncollected_children": {"$ref": "execution.schema.json#/properties/uncollected_children"},
     "child_exit_guard": {"$ref": "execution.schema.json#/properties/child_exit_guard"},
     "auto_continuation_of": {"$ref": "execution.schema.json#/properties/id"},

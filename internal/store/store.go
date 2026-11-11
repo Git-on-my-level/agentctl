@@ -339,6 +339,9 @@ func (j *Journal) CreateExecution(ctx context.Context, execution model.Execution
 		if err := putDelegationBinding(tx, execution); err != nil {
 			return err
 		}
+		if err := putChildExitRecheck(tx, execution); err != nil {
+			return err
+		}
 		if err := putAutomaticContinuationBinding(tx, execution); err != nil {
 			return err
 		}
@@ -443,6 +446,10 @@ func (j *Journal) UpdateExecution(ctx context.Context, next model.Execution, exp
 		}
 		if err := model.ValidateTransition(previous, next); err != nil {
 			return fmt.Errorf("%w: %v", ErrConflict, err)
+		}
+		next.ChildExitRecheck = next.ChildExitRecheck || previous.ChildExitRecheck
+		if err := putChildExitRecheck(tx, next); err != nil {
+			return err
 		}
 		encoded, err := json.Marshal(next)
 		if err != nil {
@@ -727,6 +734,10 @@ func (j *Journal) CommitObservedEvent(ctx context.Context, next model.Execution,
 		if err := model.ValidateTransition(previous, next); err != nil {
 			return fmt.Errorf("%w: %v", ErrConflict, err)
 		}
+		next.ChildExitRecheck = next.ChildExitRecheck || previous.ChildExitRecheck
+		if err := putChildExitRecheck(tx, next); err != nil {
+			return err
+		}
 		encoded, err := json.Marshal(next)
 		if err != nil {
 			return err
@@ -809,6 +820,13 @@ func (j *Journal) CommitTerminalOutcome(ctx context.Context, next model.Executio
 		}
 		if err := outcome.Validate(); err != nil {
 			return fmt.Errorf("outcome validation: %w", err)
+		}
+		next.ChildExitRecheck = next.ChildExitRecheck || previous.ChildExitRecheck
+		if next.ChildExitRecheck != outcome.ChildExitRecheck {
+			return fmt.Errorf("%w: child recheck outcome mismatch", ErrConflict)
+		}
+		if err := putChildExitRecheck(tx, next); err != nil {
+			return err
 		}
 		encodedExecution, err := json.Marshal(next)
 		if err != nil {
