@@ -125,6 +125,7 @@
         },
         "work_health": {
           "enum": [
+            "child_collection_required",
             "active",
             "attention_required",
             "failed",

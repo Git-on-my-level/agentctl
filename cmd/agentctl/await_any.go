@@ -30,7 +30,6 @@ const (
 )
 
 type awaitAnyOptions struct {
-	watch               func(ids.ExecutionID) *output.Error
 	executionIDs        []ids.ExecutionID
 	labelPrefix         string
 	kinds               map[string]bool
@@ -286,27 +285,6 @@ func (a *app) awaitAny(ctx context.Context, renderer output.Renderer, c common, 
 		}
 		return a.fail(renderer, problem)
 	}
-	// Only a terminal watcher with no timestamp exclusion proves that every
-	// currently running selected execution can wake this collector.
-	waiters := map[ids.ExecutionID]func(){}
-	defer func() {
-		for _, closeWaiter := range waiters {
-			closeWaiter()
-		}
-	}()
-	if options.kinds[awaitAnyKindTerminal] && options.since.IsZero() {
-		options.watch = func(id ids.ExecutionID) *output.Error {
-			if _, registered := waiters[id]; registered {
-				return nil
-			}
-			closeWaiter, problem := a.registerWaiter(c, id)
-			if problem != nil {
-				return problem
-			}
-			waiters[id] = closeWaiter
-			return nil
-		}
-	}
 	var deadline time.Time
 	if options.timeout > 0 {
 		deadline = a.now().Add(options.timeout)
@@ -403,7 +381,6 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 	matches := []awaitAnyMatch{}
 	watched := 0
 	remoteCandidates := []model.Execution{}
-	waiterCandidates := []ids.ExecutionID{}
 	skipReconciled := options.labelPrefix != "" && !options.includeAcknowledged
 	visit := func(journal *store.Journal, candidates []model.Execution) error {
 		watched += len(candidates)
@@ -422,9 +399,6 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 		for _, execution := range candidates {
 			if err := ctx.Err(); err != nil {
 				return output.Wrap(output.CodeTimeout, "await-any scan interrupted", true, err)
-			}
-			if options.watch != nil && !execution.State.Terminal() {
-				waiterCandidates = append(waiterCandidates, execution.ID)
 			}
 			if execution.RemoteForwarded() && execution.Observation.Integrity != model.IntegrityConflicted {
 				refresh := !execution.State.Terminal()
@@ -493,17 +467,6 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 		}
 	}
 
-	// Validate the entire selector before publishing waiter evidence. Registration
-	// performs filesystem I/O only after all journal handles close, preserving the
-	// candidate bound's error precedence and short shared-lock holds.
-	for _, id := range waiterCandidates {
-		if err := ctx.Err(); err != nil {
-			return nil, watched, output.Wrap(output.CodeTimeout, "await-any waiter registration interrupted", true, err)
-		}
-		if problem := options.watch(id); problem != nil {
-			return nil, watched, problem
-		}
-	}
 	// All journal handles are closed before SSH. Status is observational: only
 	// the eventual winner is collected or acknowledged, including remotely.
 	results, next := awaitAnyProbeRemote(ctx, remoteCandidates, remoteScan.next, func(probeCtx context.Context, execution model.Execution) (remoteReceipt, *output.Error) {

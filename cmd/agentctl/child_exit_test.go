@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -376,9 +377,40 @@ func TestChildExitInboxClearsAfterCollection(t *testing.T) {
 		t.Fatal(err)
 	}
 	j.Close()
-	if code, out := f.command(t, "", "inbox"); code != 0 || !strings.Contains(out, "uncollected_children") {
-		t.Fatalf("inbox=%d %s", code, out)
+	inboxCode, inboxOut := f.command(t, "", "inbox")
+	if inboxCode != 0 || !strings.Contains(inboxOut, "uncollected_children") {
+		t.Fatalf("inbox=%d %s", inboxCode, inboxOut)
 	}
+	// Validate the emitted work_health against the normative schema enum.
+	schemaRaw, err := os.ReadFile(filepath.Join(schemaRepositoryRoot(t), "schemas", "inbox-result.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(schemaRaw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	allowed := schema["$defs"].(map[string]any)["inbox_execution"].(map[string]any)["properties"].(map[string]any)["work_health"].(map[string]any)["enum"].([]any)
+	var doc struct {
+		Result struct {
+			Executions []inboxExecution `json:"executions"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(inboxOut), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range doc.Result.Executions {
+		valid := false
+		for _, value := range allowed {
+			if value == item.WorkHealth {
+				valid = true
+			}
+		}
+		if !valid {
+			t.Fatalf("inbox work_health %q violates schema", item.WorkHealth)
+		}
+	}
+
 	j, err = store.Open(f.journal, store.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -393,11 +425,10 @@ func TestChildExitInboxClearsAfterCollection(t *testing.T) {
 	}
 }
 
-func TestAwaitAnyWaiterCoverage(t *testing.T) {
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skip("kernel waiter evidence")
-	}
-	for _, selector := range []string{"explicit", "label", "attention_only", "timestamp_exclusion"} {
+// A one-shot fan-in collector cannot cover all siblings at parent exit: the
+// first terminal match releases it while the remaining children keep running.
+func TestAwaitAnyDoesNotHideUncollectedSiblings(t *testing.T) {
+	for _, selector := range []string{"explicit", "label"} {
 		t.Run(selector, func(t *testing.T) {
 			f := newDelegateFixture(t, continueAgent)
 			code, out := f.invoke("parent")
@@ -410,60 +441,59 @@ func TestAwaitAnyWaiterCoverage(t *testing.T) {
 			}
 			id, _ := ids.ParseExecutionID(resultID(t, out))
 			parent, _ := j.GetExecution(context.Background(), id)
-			parent.Labels = []string{"exitwait.child"}
-			child := addExitChild(t, j, parent, false)
+			template := parent
+			template.Labels = []string{"exitwait.child"}
+			first := addExitChild(t, j, template, false)
+			remaining := addExitChild(t, j, template, false)
 			j.Close()
-			args := []string{"--execution", child.ID.String(), "--kind", "terminal", "--timeout", "2s"}
+			args := []string{"--execution", first.ID.String(), "--execution", remaining.ID.String(), "--kind", "terminal", "--timeout", "3s"}
 			if selector == "label" {
-				args = []string{"--label-prefix", "exitwait.", "--kind", "terminal", "--timeout", "2s"}
+				args = []string{"--label-prefix", "exitwait.", "--kind", "terminal", "--timeout", "3s"}
 			}
-			if selector == "attention_only" {
-				args = []string{"--execution", child.ID.String(), "--kind", "attention", "--timeout", "150ms"}
-			}
-			if selector == "timestamp_exclusion" {
-				args = []string{"--execution", child.ID.String(), "--kind", "terminal", "--timeout", "150ms", "--since", time.Now().UTC().Format(time.RFC3339Nano)}
-			}
-
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			done := make(chan int, 1)
+			entered, done := make(chan struct{}), make(chan int, 1)
 			go func() {
 				var out, stderr bytes.Buffer
 				a := testApp(&out, &stderr)
+				var once sync.Once
+				a.now = func() time.Time { once.Do(func() { close(entered) }); return time.Now() }
 				done <- a.awaitAny(ctx, output.Renderer{Mode: output.JSON, Writer: &out}, common{journalPath: f.journal, configPath: f.config}, args)
 			}()
-			expectCovered := selector == "explicit" || selector == "label"
-			reader := store.Reader{Open: func(context.Context, bool) (*store.Journal, error) {
-				return store.Open(f.journal, store.Options{ReadOnly: true, LockTimeout: time.Millisecond})
-			}}
-			if expectCovered {
-				deadline := time.Now().Add(time.Second)
-				for {
-					children, err := reader.Children(context.Background(), store.ChildrenScope{Parent: &id}, time.Now())
-					if err != nil {
-						t.Fatal(err)
-					}
-					if len(children) == 0 {
-						break
-					}
-					if time.Now().After(deadline) {
-						t.Fatalf("no await-any waiter: %v", args)
-					}
-					time.Sleep(10 * time.Millisecond)
-				}
-				cancel()
+			<-entered
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			c := common{journalPath: f.journal, configPath: f.config}
+			j, err = store.Open(f.journal, store.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			checked := a.checkChildExit(context.Background(), c, j, parent, time.Now().UTC())
+			if len(checked.UncollectedChildren) != 2 {
+				j.Close()
+				t.Fatalf("fan-in hid siblings at exit: %+v", checked.UncollectedChildren)
+			}
+			first, err = a.finalizeResult(context.Background(), c, j, first, adapter.Result{Success: true, State: adapter.StateCompleted, Content: "first child answer"}, time.Now().UTC(), false)
+			j.Close()
+			if err != nil {
+				t.Fatal(err)
 			}
 			select {
 			case code := <-done:
-				if code == 0 {
-					t.Fatal("unexpected terminal match")
+				if code != 0 {
+					t.Fatalf("await-any exit=%d", code)
 				}
-			case <-time.After(3 * time.Second):
-				t.Fatal("await-any did not stop")
+			case <-time.After(4 * time.Second):
+				t.Fatal("fan-in did not finish after first child")
 			}
-			children, err := reader.Children(context.Background(), store.ChildrenScope{Parent: &id}, time.Now())
-			if err != nil || len(children) != 1 {
-				t.Fatalf("coverage survived exit: %+v %v", children, err)
+			j, err = store.Open(f.journal, store.Options{ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer j.Close()
+			children, err := j.Children(context.Background(), store.ChildrenScope{Parent: &id}, time.Now().UTC())
+			if err != nil || len(children) != 1 || children[0].ID != remaining.ID {
+				t.Fatalf("remaining sibling lost: %+v %v", children, err)
 			}
 		})
 	}

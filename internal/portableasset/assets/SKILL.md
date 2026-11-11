@@ -478,11 +478,11 @@ stripped from native child environments. Query that session with
 `children --provider claude --native-session-id <session-id>`; use `--summary`
 for counts. `children --execution <id>` selects one managed parent explicitly.
 Retain `collect_argv` for each result and execute it to collect the child.
-On macOS/Linux, live `await`, terminal `await-any` without `--since`, and `delegate/continue --wait` hold kernel locks
+On macOS/Linux, live `await` and `delegate/continue --wait` hold kernel locks
 through delivery; process death releases them, so stale registration files never
 count. This covers local remote-forwarding IDs. Supported durable terminal
-subscriptions cover active local execution events only. External/old waiters
-remain unknown. A lock proves a live collector, not that its output is consumed.
+subscriptions cover active local execution events only. `await-any` is not per-child coverage: its first match releases the fan-in
+waiter while siblings can keep running. External/old waiters remain unknown. A lock proves a live collector, not that its output is consumed.
 Coverage includes only newly attributed retained executions. A 1.5s processing
 budget, 50ms read-lock attempts, and bounded indexed reads fail with
 `children_query_incomplete` (exit 9) instead of partial success. Treat every error

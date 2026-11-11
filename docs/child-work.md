@@ -84,8 +84,8 @@ never acknowledges collection or reads a result. These newly attributed rows
 do not depend on the legacy acknowledgement epoch.
 
 Nonterminal children have reason `running_without_known_waiter` and
-`waiter_status: unknown`. On macOS and Linux, an active `agentctl await`, or a
-terminal `await-any` (without `--since`), or structured `delegate/continue --wait`, excludes its exact child while that
+`waiter_status: unknown`. On macOS and Linux, an active `agentctl await` or
+structured `delegate/continue --wait` excludes its exact child while that
 collector holds a kernel waiter lock. This includes an await of a local remote
 forwarding ID. Ordinary native owner/runner heartbeats do **not** count: a
 detached owner is running the work, not collecting it for a caller.
@@ -102,8 +102,9 @@ a collector is delivering their outcome: only successful acknowledgement clears
 them. The waiter is evidence of a live agentctl collector, not a guarantee that
 its stdout destination or an outer harness will consume the answer. Arbitrary
 shell waits, older binaries and platforms without this lock implementation
-remain unknown. `await-any` with a timestamp exclusion or without terminal
-watching also remains unknown; it cannot prove a wake for every child terminal.
+remain unknown. `await-any` also remains unknown: its first match releases the
+fan-in waiter, which cannot guarantee collection of the other selected children.
+A waiter on the parent itself does not cover its children.
 
 Active local executions with a supported, unexpired durable terminal
 subscription are also excluded. This does not prove supervisor health or
