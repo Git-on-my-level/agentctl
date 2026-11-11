@@ -529,3 +529,94 @@ func TestChildExitExplicitCancellationSnapshot(t *testing.T) {
 		t.Fatalf("cancelled outcome=%+v err=%v", outcome, err)
 	}
 }
+
+func TestChildExitCompletedParentSurvivesInterruption(t *testing.T) {
+	for _, interrupt := range []string{"cancelled_context", "elapsed_deadline"} {
+		t.Run(interrupt, func(t *testing.T) {
+			f := newDelegateFixture(t, continueAgent)
+			code, out := f.invoke("parent")
+			if code != 0 {
+				t.Fatalf("%d %s", code, out)
+			}
+			id, _ := ids.ParseExecutionID(resultID(t, out))
+			j, err := store.Open(f.journal, store.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			parent, _ := j.GetExecution(context.Background(), id)
+			addExitChild(t, j, parent, true)
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			c := common{journalPath: f.journal, configPath: f.config}
+			parent = a.checkChildExit(context.Background(), c, j, parent, time.Now().UTC())
+			if parent.ChildExitGuard == nil || parent.ChildExitGuard.AutoContinue != "pending" {
+				t.Fatalf("guard=%+v", parent.ChildExitGuard)
+			}
+			if interrupt == "elapsed_deadline" {
+				past := time.Now().Add(-time.Second)
+				parent.DeadlineAt = &past
+			}
+			parent, err = j.UpdateExecution(context.Background(), parent, parent.Revision)
+			j.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if interrupt == "cancelled_context" {
+				cancel()
+			}
+			if problem := a.finishNativeTurn(ctx, output.Renderer{Mode: output.JSON, Writer: &stdout}, c, parent); problem != nil {
+				t.Fatal(problem)
+			}
+			if f.launches(t) != 1 || !strings.Contains(stdout.String(), `"auto_continue":"parent_interrupted"`) || !strings.Contains(stdout.String(), `"state":"completed"`) {
+				t.Fatalf("lost completion or resumed: %s", stdout.String())
+			}
+			j, err = store.Open(f.journal, store.Options{ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer j.Close()
+			outcome, err := j.GetOutcome(context.Background(), id)
+			if err != nil || outcome.State != model.StateCompleted || outcome.Content == nil || outcome.Content.Text != "first answer" {
+				t.Fatalf("outcome=%+v err=%v", outcome, err)
+			}
+		})
+	}
+}
+
+func TestForegroundWaiterFailureRecordsMatchingDiagnostic(t *testing.T) {
+	f := newDelegateFixture(t, continueAgent)
+	if err := os.MkdirAll(filepath.Dir(f.journal), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.journal+".waiters", []byte("block waiter registration"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out := f.invoke("parent", "--wait")
+	if code == 0 || !strings.Contains(out, `"diagnostic_code":"waiter_registration_failed"`) || !strings.Contains(out, `"terminal_recorded":true`) {
+		t.Fatalf("waiter failure=%d %s", code, out)
+	}
+	var doc struct {
+		Error struct {
+			Details struct {
+				ID ids.ExecutionID `json:"execution_id"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	j, err := store.Open(f.journal, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	outcome, err := j.GetOutcome(context.Background(), doc.Error.Details.ID)
+	if err != nil || outcome.Failure == nil || outcome.Failure.Code != "waiter_registration_failed" || !outcome.Failure.Retryable {
+		t.Fatalf("stored failure disagrees: %+v %v", outcome, err)
+	}
+	if _, err := os.Stat(f.count); !os.IsNotExist(err) {
+		t.Fatal("native process launched after waiter failure")
+	}
+}

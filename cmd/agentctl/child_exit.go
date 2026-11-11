@@ -141,7 +141,9 @@ func (a *app) finishNativeTurn(ctx context.Context, renderer output.Renderer, c 
 	if execution.ChildExitGuard == nil || execution.ChildExitGuard.AutoContinue != "pending" {
 		return writeExecution(renderer, execution, "run")
 	}
-	journal, current, problem := a.openExecutionWrite(ctx, c, execution.ID)
+	// The native result is already committed. Local settlement must still run
+	// after cancellation; the original context below forbids a new native turn.
+	journal, current, problem := a.openExecutionWrite(context.Background(), c, execution.ID)
 	if problem != nil {
 		return problem
 	}

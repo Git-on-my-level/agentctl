@@ -367,7 +367,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	if opts.collectionWaiter {
 		closeWaiter, problem := a.registerWaiter(c, execution.ID)
 		if problem != nil {
-			a.settleDetachedAdmission(c, execution.ID, problem)
+			a.settleNativeAdmission(c, execution.ID, problem, "waiter_registration_failed")
 			return problem
 		}
 		defer closeWaiter()
@@ -2278,6 +2278,8 @@ func allowlistedFailureMessage(failure model.OutcomeFailure) string {
 		return failureMessageOpenCode
 	case "detached_worker_start_failed":
 		return failureMessageDetached
+	case "waiter_registration_failed":
+		return "The live collector could not be registered; no native process was launched."
 	case "native_version_probe_failed":
 		return failureMessageProbe
 	case "native_version_probe_timeout":
@@ -2368,7 +2370,7 @@ func classifyOutcomeFailure(message, diagnosticCode, nativeCode, harness, provid
 		return diagnosticCode, "provider", "provider", false
 	case "native_event_write_failed", "native_owner_failed", "detached_worker_start_failed":
 		return diagnosticCode, "observation", "", false
-	case "native_version_probe_failed", "journal_busy":
+	case "native_version_probe_failed", "journal_busy", "waiter_registration_failed":
 		return diagnosticCode, "observation", "", true
 	case "native_version_probe_timeout":
 		return diagnosticCode, "timeout", "", true
