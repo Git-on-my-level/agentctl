@@ -119,7 +119,7 @@ func (j *Journal) AcknowledgeExecution(ctx context.Context, id ids.ExecutionID, 
 	}
 	var result ExecutionAcknowledgement
 	var reused bool
-	err := j.db.Update(func(tx *bbolt.Tx) error {
+	err := j.update(func(tx *bbolt.Tx) error {
 		raw := tx.Bucket(bExecutions).Get([]byte(id.String()))
 		if raw == nil {
 			return ErrNotFound

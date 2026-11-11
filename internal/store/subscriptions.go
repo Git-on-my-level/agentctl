@@ -53,7 +53,7 @@ func (j *Journal) PutSubscription(ctx context.Context, value subscription.Subscr
 	}
 	var result subscription.Subscription
 	var reused bool
-	err := j.db.Update(func(tx *bbolt.Tx) error {
+	err := j.update(func(tx *bbolt.Tx) error {
 		bucket, err := ensureJournalBucket(tx, bSubscriptions)
 		if err != nil {
 			return err
@@ -197,7 +197,7 @@ func (j *Journal) UpdateSubscription(ctx context.Context, value subscription.Sub
 		return subscription.Subscription{}, fmt.Errorf("%w: expected revision must be positive", ErrSubscriptionConflict)
 	}
 	var result subscription.Subscription
-	err := j.db.Update(func(tx *bbolt.Tx) error {
+	err := j.update(func(tx *bbolt.Tx) error {
 		bucket, err := ensureJournalBucket(tx, bSubscriptions)
 		if err != nil {
 			return err

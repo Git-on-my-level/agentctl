@@ -137,13 +137,28 @@ and 1,024 subscription records / 4 MiB subscription metadata. It never takes
 the write lock or triggers updates, bootstrap, ANX flushing, or other maintenance.
 Normal OS scheduling and output delivery are outside the processing budget.
 
-Contention, deadline, or a bound returns exit 9, `ok: false`, diagnostic
+Contention, deadline, a bound, or membership mutation between pages returns
+exit 9, `ok: false`, diagnostic
 `children_query_incomplete`, `complete: false`, and `retryable: true`; no partial
 success is emitted. Other journal/identity errors also return nonzero structured
 errors. A consumer must not interpret any error as an empty child set.
-Coverage is `retained_attributed_executions_only`, with live state per page,
-not a transactionally frozen snapshot. New launches from an older binary and
-pre-upgrade launches are outside coverage. Hook integrations should retain
+Membership is stable from the first index page through the final page check.
+Each page reads the selected scope's transaction stamp, an empty-scope pruning
+fence, and a mixed-version writer fence. Admission and index removal update
+stamps atomically with the index. Current journal transactions certify their
+transaction sequence: outcome updates and admissions in other scopes do not
+invalidate membership. An uncertified transaction from an older writer fails
+closed, even if a current writer commits afterward. Older outcome-only writes
+also cause this conservative failure; empty-scope stamp pruning can invalidate
+unrelated queries. A stable retry works with or without the optional metadata,
+without a write or backfill. Empty-scope stamps are reclaimed by current cleanup;
+legacy cleanup can leave a small stamp until that scope is next mutated.
+
+Coverage is `retained_attributed_executions_only`, with live projections,
+acknowledgements and waiter evidence per page, not a frozen lifecycle snapshot.
+A new admission after the final checked page is outside that observation.
+Launches from binaries predating attribution and pre-upgrade launches are
+outside coverage. Hook integrations should retain
 existing explicit-label coverage for that history during rollout.
 
 ## Scope of this change
@@ -159,7 +174,7 @@ Structured Multica delegate remains unavailable under its existing contract.
 ## Coverage and retention boundaries
 
 `complete: true` means the selected retained-attributed index was completely
-read within the safety bounds. It is not proof that every attempted launch has
+read with stable membership within the safety bounds. It is not proof that every attempted launch has
 a local execution row. In particular, a lost SSH receipt remains uncertain:
 retry the identical request key to recover remote admission before relying on
 its local forwarding row. Never convert that transport error plus an empty

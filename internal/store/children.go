@@ -12,9 +12,9 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-// ErrChildrenBounded means no complete answer was produced. Consumers must
+// ErrChildrenBounded means no bounded, membership-stable answer was produced. Consumers must
 // treat it as unknown, never as an empty list that permits a parent to exit.
-var ErrChildrenBounded = errors.New("children query exceeded safety bound")
+var ErrChildrenBounded = errors.New("children query exceeded safety bound or membership changed")
 
 type ChildrenScope struct {
 	Parent                    *ids.ExecutionID
@@ -72,11 +72,21 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 	}
 	result := []ChildExecution{}
 	prefix := childrenScopePrefix(scope)
+	var membership *childrenMembership
 	var after []byte
 	scanned, totalBytes := 0, 0
 	for {
 		var last []byte
 		err := r.view(func(tx *bbolt.Tx) error {
+			current, err := childrenMembershipAt(tx, prefix)
+			if err != nil {
+				return err
+			}
+			if membership == nil {
+				membership = &current
+			} else if *membership != current {
+				return ErrChildrenBounded
+			}
 			cursor := tx.Bucket(bIdempotency).Cursor()
 			key, raw := cursor.Seek(prefix)
 			if after != nil {

@@ -488,7 +488,10 @@ index, not all attempted remote launches. Preserve an uncertain SSH admission
 error and retry the identical key after a lost receipt. Parent-graph retention
 protection is unchanged, including acknowledged terminal graphs. A 1.5s processing budget, 50ms read-lock attempts,
 and bounded indexed reads fail with `children_query_incomplete` (exit 9) instead
-of partial success. Treat every error as unknown coverage, never an empty set.
+of partial success. Membership changes between pages also fail closed;
+current outcome writes do not invalidate the scope. Uncertified older writes
+conservatively require a retry. Lifecycle state remains live per page.
+Treat every error as unknown coverage, never an empty set.
 This query does not yet enforce parent exit or automatically continue a parent.
 See [child work](https://github.com/Git-on-my-level/agentctl/blob/main/docs/child-work.md).
 
