@@ -86,14 +86,19 @@ do not depend on the legacy acknowledgement epoch.
 Nonterminal children have reason `running_without_known_waiter` and
 `waiter_status: unknown` when no supported waiter evidence exists. Active local
 executions are excluded when an exact-ID `await` holds its process lock, or a
-supported, unexpired durable subscription covers the relevant event. A child in
-`attention` requires an attention subscription; neither a terminal subscription
-nor a live await (including `--ignore-attention`) suppresses that blocked child.
+supported, unexpired durable terminal subscription covers completion. A child in
+`attention` always remains actionable, even with an attention subscription or a
+live await (including `--ignore-attention`). Subscription creation only backfills
+terminal events, so a matching attention filter may have missed the event that
+blocked this child.
 Terminal uncollected children are never suppressed by waiters.
 
 On Linux and macOS, `await <id>` holds an exclusive lock in its unique private
 `<journal>.waiters/<execution-id>/await-*` sidecar. Multiple awaits can coexist;
-exit, timeout, cancellation, and process death release their locks. Normal exit
+exit, timeout, cancellation, and process death release their locks. Registration
+is best effort and attempted once: sidecar creation/locking failure leaves
+coverage unknown while the original await polling and cancellation continue.
+Normal exit
 removes its file; a crash can leave an empty file. Queries use
 shared probes that cannot mistake concurrent queries for waiters, open only
 selected files read-only, never create a waiter directory or file, and ignore

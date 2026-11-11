@@ -145,15 +145,13 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 				if e.State.Terminal() {
 					item.Reason = "terminal_uncollected"
 					item.WaiterStatus = "not_applicable"
-				} else if !e.RemoteForwarded() {
-					// Attention needs an attention wake; a terminal-only waiter cannot
-					// unblock permission/input. A live await is not coverage for
-					// conflicted evidence: it exits immediately on integrity conflicts.
+				} else if !e.RemoteForwarded() && e.State != model.StateAttention {
+					// Attention always remains actionable: subscriptions only backfill
+					// terminal events, so a matching filter may have missed attention.
+					// A live await exits immediately on integrity conflicts.
 					covered := false
 					state, kind := model.StateCompleted, model.EventTerminal
-					if e.State == model.StateAttention {
-						state, kind = e.State, model.EventAttention
-					} else if e.Observation.Integrity != model.IntegrityConflicted {
+					if e.Observation.Integrity != model.IntegrityConflicted {
 						var err error
 						covered, err = hasLiveWaiter(ctx, r.path, e.ID)
 						if err != nil {

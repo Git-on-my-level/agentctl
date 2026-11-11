@@ -1263,6 +1263,7 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		deadline = a.now().Add(timeout)
 	}
 	var waiter *store.Waiter
+	waiterAttempted := false
 	defer func() {
 		if waiter != nil {
 			_ = waiter.Close()
@@ -1292,11 +1293,11 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		if err != nil {
 			return a.fail(renderer, mapStoreError("read awaited execution", err))
 		}
-		if waiter == nil && !execution.State.Terminal() && !execution.RemoteForwarded() && execution.Observation.Integrity != model.IntegrityConflicted {
-			waiter, err = store.RegisterWaiter(ctx, journal.Path(), id)
-			if err != nil {
-				return a.fail(renderer, mapStoreError("register awaited execution", err))
-			}
+		if !waiterAttempted && !execution.State.Terminal() && !execution.RemoteForwarded() && execution.Observation.Integrity != model.IntegrityConflicted {
+			// Coverage evidence is best effort; a read-only/full state volume
+			// must not break the primary wait. Unknown coverage stays actionable.
+			waiterAttempted = true
+			waiter, _ = store.RegisterWaiter(ctx, journal.Path(), id)
 		}
 		poll = nextAwaitPoll(poll, execution.Revision != lastRevision)
 		lastRevision = execution.Revision
