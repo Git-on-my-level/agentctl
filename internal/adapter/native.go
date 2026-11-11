@@ -918,6 +918,9 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 			if a.Name() == "zcode" && backendVersion != "0.17.0" {
 				resume.Status, resume.Reason = CapabilityUnavailable, "ZCode continuation is verified only for CLI 0.17.0"
 			}
+			if a.Name() == "opencode" && !OpenCodeResumeVersionSupported(backendVersion) {
+				resume.Status, resume.Reason = CapabilityUnavailable, "OpenCode continuation is verified only for CLI 2.2.6"
+			}
 			capabilities = append(capabilities, resume)
 			continue
 		}

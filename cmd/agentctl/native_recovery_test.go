@@ -152,3 +152,138 @@ func TestTransportClassificationPreservesAuthAndQuota(t *testing.T) {
 		}
 	}
 }
+
+// The fake native store belongs to the CLI. Tests can publish a final answer
+// after the client exits without a real service, model call, or background job.
+func opencodeRecoveryFixture(t *testing.T, failure string, session bool) delegateFixture {
+	t.Helper()
+	f := carryFixture(t, "opencode")
+	t.Setenv("OPENCODE_TEST_HISTORY", filepath.Join(f.root, "native-final"))
+	t.Setenv("OPENCODE_TEST_EFFECTS", filepath.Join(f.root, "effects"))
+	start := `printf '%s\n' '{"type":"step_start","sessionID":"s1","part":{"type":"step-start"}}'`
+	if !session {
+		start = ":"
+	}
+	script := "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'opencode 2.2.6'; exit 0; fi\n" + `if [ "$1" = session ]; then
+ [ "$#" = 5 ] && [ "$2" = export ] && [ "$3" = --sanitize ] && [ "$4" = -- ] && [ "$5" = s1 ] || exit 21
+ echo check >> "` + filepath.Join(f.root, "exports") + `"
+ echo private-native-export >&2
+ [ "${OPENCODE_TEST_EXPORT_MISSING:-0}" != 1 ] || exit 1
+ [ "${OPENCODE_TEST_EXPORT_STALL:-0}" != 1 ] || exec sleep 30
+ echo private-native-export
+ exit 0
+fi
+` + "echo launch >> '" + f.count + "'\n" + `
+case " $* " in
+*" --session s1 -- "*)
+ for arg do last="$arg"; done
+ [ "$last" != original-private-task ] || exit 22
+ answer='resumed answer'
+ if [ -f "$OPENCODE_TEST_HISTORY" ]; then answer=$(cat "$OPENCODE_TEST_HISTORY"); fi
+ printf '%s\n' '{"type":"step_start","sessionID":"s1","part":{"type":"step-start"}}' "{\"type\":\"text\",\"sessionID\":\"s1\",\"part\":{\"type\":\"text\",\"text\":\"$answer\",\"time\":{\"end\":1}}}" '{"type":"step_finish","sessionID":"s1","part":{"type":"step-finish","reason":"stop"}}';;
+*" --session "*) exit 23;;
+*)
+ echo effect >> "$OPENCODE_TEST_EFFECTS"
+ ` + start + "\n"
+	if failure == "" {
+		script += `printf '%s\n' '{"type":"text","sessionID":"s1","part":{"type":"text","text":"first answer","time":{"end":1}}}' '{"type":"step_finish","sessionID":"s1","part":{"type":"step-finish","reason":"stop"}}'`
+	} else {
+		script += "printf '%s\\n' '" + failure + "'\nexit 1"
+	}
+	script += "\n;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(f.root, "cursor-agent"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func TestOpenCodeTransientFailuresParkAndCollectLateAnswer(t *testing.T) {
+	for _, tc := range []struct{ name, event, state string }{
+		{"network", `{"type":"error","sessionID":"s1","error":{"message":"connection reset by peer"}}`, "paused_network"},
+		{"capacity", `{"type":"error","sessionID":"s1","error":{"type":"provider.rate-limit","message":"busy","status":429}}`, "paused_capacity"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := opencodeRecoveryFixture(t, tc.event, true)
+			code, out := f.invoke("original-private-task", "--wait")
+			if code != 10 || !strings.Contains(out, tc.state) || !strings.Contains(out, `"retryable":true`) {
+				t.Fatalf("park %d: %s", code, out)
+			}
+			id := failureExecutionIDFromOutput(t, out)
+			code, replay := f.invoke("original-private-task", "--wait")
+			if code != 10 || f.launches(t) != 1 {
+				t.Fatalf("replay %d: %s", code, replay)
+			}
+			_, events := f.command(t, "", "events", id)
+			if strings.Contains(events, "original-private-task") || strings.Contains(events, `"sessionID"`) || strings.Contains(events, `"session_id"`) {
+				t.Fatalf("private event data: %s", events)
+			}
+			code, plan := f.command(t, "inspect history; return previous final answer if complete; otherwise reconcile effects", "continue", id, "--request-key", "recover", "--prompt-stdin", "--plan")
+			if code != 0 || !strings.Contains(plan, `"--session","<native-session>","--"`) || strings.Contains(plan, `"s1"`) || f.launches(t) != 1 {
+				t.Fatalf("plan %d: %s", code, plan)
+			}
+			// Native completion happens after agentctl parked the exited client.
+			if err := os.WriteFile(filepath.Join(f.root, "native-final"), []byte("late final answer"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			code, resumed := f.command(t, "inspect history; return previous final answer if complete; otherwise reconcile effects", "continue", id, "--request-key", "recover", "--prompt-stdin", "--wait")
+			if code != 0 || !strings.Contains(resumed, "late final answer") || f.launches(t) != 2 {
+				t.Fatalf("recovery %d: %s", code, resumed)
+			}
+			effects, err := os.ReadFile(filepath.Join(f.root, "effects"))
+			if err != nil || string(effects) != "effect\n" {
+				t.Fatalf("repeated tool effect: %q %v", effects, err)
+			}
+			_, status := f.command(t, "", "status", id)
+			if !strings.Contains(status, `"state":"cancelled"`) || !strings.Contains(status, "superseded_by") {
+				t.Fatalf("unsettled source: %s", status)
+			}
+		})
+	}
+}
+
+func TestOpenCodeUnknownFailureCanContinueButMissingCheckpointCannot(t *testing.T) {
+	for _, session := range []bool{true, false} {
+		f := opencodeRecoveryFixture(t, `{"type":"error","error":{"message":"unknown native error"}}`, session)
+		code, out := f.invoke("original-private-task", "--wait")
+		if code != 11 {
+			t.Fatalf("failure %d: %s", code, out)
+		}
+		id := failureExecutionIDFromOutput(t, out)
+		code, out = f.command(t, "reconcile effects", "continue", id, "--request-key", "recover", "--prompt-stdin", "--wait")
+		if session {
+			if code != 0 || !strings.Contains(out, "resumed answer") {
+				t.Fatalf("recovery %d: %s", code, out)
+			}
+		} else if code != 5 || !strings.Contains(out, "continue_session_unrecorded") || f.launches(t) != 1 {
+			t.Fatalf("missing checkpoint %d: %s", code, out)
+		}
+	}
+}
+
+func TestOpenCodeDoesNotParkWithoutCheckpointOrForAuthAndQuota(t *testing.T) {
+	for _, tc := range []struct {
+		message string
+		session bool
+	}{
+		{"connection reset by peer", false},
+		{"authentication required: ECONNRESET", true},
+		{"quota exhausted", true},
+	} {
+		event, err := json.Marshal(map[string]any{"type": "error", "error": map[string]string{"message": tc.message}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := opencodeRecoveryFixture(t, string(event), tc.session)
+		code, out := f.invoke("original-private-task", "--wait")
+		if code != 11 || strings.Contains(out, "paused_network") || strings.Contains(out, "paused_capacity") {
+			t.Fatalf("unexpected park %d: %s", code, out)
+		}
+		if !tc.session {
+			id := failureExecutionIDFromOutput(t, out)
+			code, out = f.command(t, "recover", "continue", id, "--request-key", "missing-checkpoint", "--prompt-stdin", "--plan")
+			if code != 5 || !strings.Contains(out, "continue_session_unrecorded") || f.launches(t) != 1 {
+				t.Fatalf("unknown session resumed %d: %s", code, out)
+			}
+		}
+	}
+}
