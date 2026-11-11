@@ -16,7 +16,10 @@ func (a *app) launchAttribution(ctx context.Context, c common, borrowed ...*stor
 	}
 	report, problem := a.resolveCallerIdentity(ctx, c, "", "", "", option)
 	if problem != nil {
-		return nil, nil, problem.WithDetail("diagnostic_code", "caller_identity_unavailable")
+		if _, present := problem.Details["diagnostic_code"]; !present {
+			problem.WithDetail("diagnostic_code", "caller_identity_unavailable")
+		}
+		return nil, nil, problem
 	}
 	var parent *ids.ExecutionID
 	// Only journal-observed execution evidence binds a local parent. Inherited

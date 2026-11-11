@@ -103,6 +103,15 @@ func TestChildrenExplicitSessionEnvironmentAndPrivacy(t *testing.T) {
 	if len(filtered) != 1 || filtered[0] != "PATH=keep" {
 		t.Fatalf("inherited session=%v", filtered)
 	}
+	env[adapter.CallerSessionEnv] = "private-invalid-session\n"
+	_, _, problem = a.launchAttribution(context.Background(), common{})
+	if problem == nil || problem.Code != output.CodeUsage || problem.Details["diagnostic_code"] != "caller_identity_invalid" {
+		t.Fatalf("invalid declaration lost diagnostic: %v", problem)
+	}
+	encoded, _ := json.Marshal(problem)
+	if bytes.Contains(encoded, []byte("private-invalid-session")) {
+		t.Fatalf("invalid declaration leaked: %s", encoded)
+	}
 }
 
 func TestChildrenReadLockFailsFast(t *testing.T) {
