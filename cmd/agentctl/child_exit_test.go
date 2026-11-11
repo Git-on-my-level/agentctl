@@ -335,7 +335,7 @@ func TestChildExitFlagsRemoteForwardingWithoutSSH(t *testing.T) {
 	}
 	// Awaiting the local forwarding ID is valid waiter evidence; unlike a
 	// local subscription, the await actually observes the remote authority.
-	waiter, err := store.RegisterWaiter(f.journal, childID)
+	waiter, err := store.RegisterWaiter(context.Background(), f.journal, childID)
 	if err != nil {
 		t.Fatal(err)
 	}

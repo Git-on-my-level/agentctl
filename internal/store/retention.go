@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"go.etcd.io/bbolt"
@@ -290,7 +291,9 @@ func (snapshot *cleanupSnapshot) selectCleanup(before, now time.Time, options Cl
 			if err := json.Unmarshal(raw, &record); err != nil {
 				return corrupt(err)
 			}
-			if record.ObjectType == "execution" {
+			// Launch snapshots and caller indexes are execution-owned metadata,
+			// not request-key replay promises (including existing PR records).
+			if record.ObjectType == "execution" && record.Scope != automaticContinuationScope && record.Scope != attributionBindingScope && !strings.HasPrefix(record.Scope, childrenIndexScope) {
 				protect(record.ObjectID, "request_key_replay")
 			}
 			return nil

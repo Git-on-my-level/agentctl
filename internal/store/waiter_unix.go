@@ -8,77 +8,96 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
+	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"golang.org/x/sys/unix"
 )
 
-// Waiter is process-local evidence, independent of the journal writer lock.
-// Normal exits unlink their own inode; crashes leave an unlocked, inert file.
-type Waiter struct {
-	file *os.File
-	path string
-}
+// Waiter owns a unique sidecar lock, so concurrent probes never lock each other
+// out. Only this owner removes its file; a crash leaves unlocked residue.
+type Waiter struct{ file *os.File }
 
 func (w *Waiter) Close() error {
-	if w == nil {
+	if w == nil || w.file == nil {
 		return nil
 	}
-	_ = os.Remove(w.path)
-	return w.file.Close()
+	file := w.file
+	w.file = nil
+	err := file.Close()
+	removeErr := os.Remove(file.Name())
+	if err != nil {
+		return err
+	}
+	return removeErr
 }
 
-// RegisterWaiter publishes an exclusively locked, unique inode only after its
-// lock is held. Descriptors are close-on-exec. SIGKILL/exit releases the lock.
-func RegisterWaiter(path string, id ids.ExecutionID) (*Waiter, error) {
+// RegisterWaiter records an exact-ID await using a process-held exclusive lock.
+// Exit (including process death) releases it. Multiple awaits may coexist.
+func RegisterWaiter(ctx context.Context, journalPath string, id ids.ExecutionID) (*Waiter, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	path, err := waiterDirectory(journalPath, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return nil, err
+	}
+	if err := verifyOwnerDirectory(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
+	if err := verifyOwnerDirectory(path); err != nil {
+		return nil, err
+	}
+	file, err := os.CreateTemp(path, "await-")
+	if err != nil {
+		return nil, err
+	}
+	waiter := &Waiter{file: file}
+	// A read-only query can briefly hold a shared probe between file creation
+	// and registration. Retry within a bounded budget instead of failing await.
+	lockCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	for {
+		err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return waiter, nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) && !errors.Is(err, unix.EINTR) {
+			_ = waiter.Close()
+			return nil, err
+		}
+		select {
+		case <-lockCtx.Done():
+			_ = waiter.Close()
+			return nil, ErrBusy
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+func waiterDirectory(journalPath string, id ids.ExecutionID) (string, error) {
 	if _, err := ids.ParseExecutionID(id.String()); err != nil {
-		return nil, err
+		return "", err
 	}
-	dir, err := filepath.Abs(filepath.Join(path+".waiters", id.String()))
+	path, err := filepath.Abs(journalPath + ".waiters/" + id.String())
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	if err := rejectSymlinks(dir); err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, err
-	}
-	info, err := os.Lstat(dir)
-	if err != nil {
-		return nil, err
-	}
-	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-		return nil, ErrPermission
-	}
-	file, err := os.CreateTemp(dir, ".pending-")
-	if err != nil {
-		return nil, err
-	}
-	pending := file.Name()
-	fail := func(err error) (*Waiter, error) { file.Close(); os.Remove(pending); return nil, err }
-	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		return fail(err)
-	}
-	published := filepath.Join(dir, strings.TrimPrefix(filepath.Base(pending), ".pending-"))
-	if err := os.Rename(pending, published); err != nil {
-		return fail(err)
-	}
-	return &Waiter{file: file, path: published}, nil
+	return path, rejectSymlinks(path)
 }
 
-// Queries never create files or take a journal write lock. Shared probes cannot
-// mistake another query for a waiter: only an exclusive collector lock blocks.
-func hasLiveWaiter(ctx context.Context, path string, id ids.ExecutionID) (bool, error) {
-	dirPath, err := filepath.Abs(filepath.Join(path+".waiters", id.String()))
+// hasLiveWaiter never creates files or changes journal state. Shared probes
+// coexist; only a registered waiter's exclusive lock proves coverage. Unlocked
+// files left by SIGKILL do not count. Bounds fail closed on excessive residue.
+func hasLiveWaiter(ctx context.Context, journalPath string, id ids.ExecutionID) (bool, error) {
+	path, err := waiterDirectory(journalPath, id)
 	if err != nil {
 		return false, err
 	}
-	if err := rejectSymlinks(dirPath); err != nil {
-		return false, err
-	}
-	dir, err := os.Open(dirPath)
+	dir, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
@@ -86,45 +105,42 @@ func hasLiveWaiter(ctx context.Context, path string, id ids.ExecutionID) (bool, 
 		return false, err
 	}
 	defer dir.Close()
-	entries, err := dir.ReadDir(129)
+	if err := verifyOwnerDirectory(path); err != nil {
+		return false, err
+	}
+	names, err := dir.Readdirnames(129)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return false, err
 	}
-	if len(entries) > 128 {
+	if len(names) > 128 {
 		return false, ErrChildrenBounded
 	}
-	for _, entry := range entries {
+	live := false
+	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		if strings.HasPrefix(entry.Name(), ".") {
-			continue
+		filePath := filepath.Join(path, name)
+		if err := verifyOwnerFile(filePath); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			} // waiter just exited
+			return false, err
 		}
-		filePath := filepath.Join(dir.Name(), entry.Name())
-		fd, err := unix.Open(filePath, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		file, err := os.OpenFile(filePath, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {
 			return false, err
 		}
-		file := os.NewFile(uintptr(fd), filePath)
-		info, statErr := file.Stat()
-		if statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-			file.Close()
-			if statErr != nil {
-				return false, statErr
-			}
-			return false, ErrPermission
-		}
-		err = unix.Flock(fd, unix.LOCK_SH|unix.LOCK_NB)
-		file.Close()
+		err = unix.Flock(int(file.Fd()), unix.LOCK_SH|unix.LOCK_NB)
+		_ = file.Close()
 		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-			return true, nil
-		}
-		if err != nil {
+			live = true
+		} else if err != nil {
 			return false, err
 		}
 	}
-	return false, nil
+	return live, nil
 }

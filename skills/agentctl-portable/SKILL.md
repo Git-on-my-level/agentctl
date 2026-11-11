@@ -481,7 +481,9 @@ Retain `collect_argv` for each result and execute it to collect the child.
 On macOS/Linux, live `await` and `delegate/continue --wait` hold kernel locks
 through delivery; process death releases them, so stale registration files never
 count. This covers local remote-forwarding IDs. Supported durable terminal
-subscriptions cover active local execution events only. `await-any` is not per-child coverage: its first match releases the fan-in
+subscriptions cover active local execution events only. Attention requires an
+attention subscription; terminal waiters and live awaits cannot suppress it, and
+live awaits do not cover conflicted evidence. `await-any` is not per-child coverage: its first match releases the fan-in
 waiter while siblings can keep running. External/old waiters remain unknown. A lock proves a live collector, not that its output is consumed.
 Coverage includes only newly attributed retained executions. A 1.5s processing
 budget, 50ms read-lock attempts, and bounded indexed reads fail with

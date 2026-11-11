@@ -58,7 +58,7 @@
       "minimum": 0
     },
     "waiter_evidence": {
-      "const": "live_await_locks_and_durable_terminal_subscriptions"
+      "const": "live_exact_await_and_state_subscriptions"
     },
     "executions": {
       "type": "array",

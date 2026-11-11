@@ -91,8 +91,8 @@ forwarding ID. Ordinary native owner/runner heartbeats do **not** count: a
 detached owner is running the work, not collecting it for a caller.
 
 Each collector publishes a unique, exclusively locked file under
-`<journal>.waiters/<execution-id>/`. It acquires the lock before publishing the
-file, holds the descriptor through waiting and delivery, and closes/unlinks it
+`<journal>.waiters/<execution-id>/`. Registration has a bounded 50 ms lock allowance; unlocked files do not prove
+coverage. The collector holds the descriptor through waiting and delivery, and closes/unlinks it
 on every normal exit (including timeout, attention, cancellation and errors).
 Process death releases the kernel lock, so stale files are not evidence.
 Read-only queries use nonblocking shared probes; concurrent queries cannot
@@ -112,8 +112,10 @@ A foreground `delegate/continue --wait` admission that has not launched a native
 process is terminalized with that same failure code. Repairing the registry does
 not relaunch a failed keyed admission; the existing replay rules still apply.
 
-Active local executions with a supported, unexpired durable terminal
-subscription are also excluded. This does not prove supervisor health or
+Active local executions with a supported, unexpired durable subscription
+covering the relevant event are also excluded. Attention requires an attention
+subscription; a terminal waiter or live await cannot suppress a blocked child.
+Conflicted evidence is not covered by a live await. This does not prove supervisor health or
 callback consumption. Local subscriptions do not exclude remote forwarding rows:
 local terminal event fanout does not observe remote completion. A live local
 `await` of that forwarding row does count because it observes the remote
@@ -125,7 +127,10 @@ that local row exists.
 ## Bounds and failure behavior
 
 Admission atomically writes parent and provider/session indexes into the existing
-execution-owned idempotency graph. Discovery seeks only the selected caller's
+execution-owned idempotency graph. Attribution metadata does not create a
+request-key replay promise: an acknowledged, unkeyed caller-attributed execution
+without other references remains eligible for automatic cleanup. Discovery seeks
+only the selected caller's
 index and reads the referenced projections and acknowledgements. It never walks
 unrelated executions, event history, results, or all acknowledgement history.
 There is no new background index migration and old binaries need no schema

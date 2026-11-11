@@ -157,29 +157,30 @@ func children(r *cleanupReader, scope ChildrenScope, now time.Time) ([]ChildExec
 					item.Reason = "terminal_uncollected"
 					item.WaiterStatus = "not_applicable"
 				} else {
-					live, err := hasLiveWaiter(ctx, r.path, e.ID)
-					if err != nil {
-						return err
+					covered := false
+					state, kind := model.StateCompleted, model.EventTerminal
+					if e.State == model.StateAttention {
+						state, kind = e.State, model.EventAttention
+					} else if e.Observation.Integrity != model.IntegrityConflicted {
+						var err error
+						covered, err = hasLiveWaiter(ctx, r.path, e.ID)
+						if err != nil {
+							return err
+						}
 					}
-					if live {
-						continue
-					}
+					// Exact local collectors can observe remote forwarding IDs; local
+					// subscription fanout still cannot observe remote terminal/attention events.
 					if !e.RemoteForwarded() {
-						// A terminal event filter covers every terminal state; progress-
-						// only subscriptions cannot prove a wake on completion/failure.
-						covered := false
-						state := model.StateCompleted
-						event := &model.Event{ExecutionID: e.ID, Authority: e.Authority, Kind: model.EventTerminal, State: &state}
+						event := &model.Event{ExecutionID: e.ID, Authority: e.Authority, Kind: kind, State: &state}
 						for _, record := range subscriptions {
 							if matchesEvent(record.Subscription, event, now, func() []string { return e.Labels }) {
 								covered = true
 								break
 							}
 						}
-
-						if covered {
-							continue
-						}
+					}
+					if covered {
+						continue
 					}
 				}
 				if len(result) >= 200 {

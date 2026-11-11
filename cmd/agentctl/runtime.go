@@ -365,7 +365,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		return a.startReservedDetachedNative(ctx, renderer, c, opts, execution)
 	}
 	if opts.collectionWaiter {
-		closeWaiter, problem := a.registerWaiter(c, execution.ID)
+		closeWaiter, problem := a.registerWaiter(operationCtx, c, execution.ID)
 		if problem != nil {
 			a.settleNativeAdmission(c, execution.ID, problem, "waiter_registration_failed")
 			return problem

@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
+	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
@@ -227,5 +229,101 @@ func TestNativeAdmissionPreservesParentAfterContendedJournal(t *testing.T) {
 	}
 	if doc.Result.ParentExecutionID == nil || *doc.Result.ParentExecutionID != parent.ID {
 		t.Fatalf("lost parent after lock recovery: %+v", doc.Result)
+	}
+}
+
+func TestChildrenAwaitRegistrationLifecycle(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("process-held waiter locks unavailable")
+	}
+	for _, exit := range []string{"cancel", "timeout", "attention"} {
+		t.Run(exit, func(t *testing.T) {
+			path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
+			j, err := store.Open(path, store.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture := identityFixture(t, j, "codex", "")
+			fixture.ID = ""
+			fixture.Revision = 0
+			fixture.CallerIdentity = &model.CallerIdentity{Provider: "codex", NativeSessionID: *sessionIdentity("codex", "waiter-test", "explicit", "self_reported").ID, Provenance: "explicit"}
+			child, _, err := j.CreateExecution(context.Background(), fixture, contracts.MutationKey{})
+			j.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			args := []string{"--journal", path, "await", child.ID.String()}
+			if exit == "timeout" {
+				args = append(args, "--timeout", "1s")
+			}
+			done := make(chan int, 1)
+			finished := make(chan struct{})
+			go func() { defer close(finished); done <- a.run(ctx, args) }()
+			defer func() { cancel(); <-finished }()
+			query := func() int {
+				t.Helper()
+				var out, errs bytes.Buffer
+				q := testApp(&out, &errs)
+				if code := q.run(context.Background(), []string{"--journal", path, "children", "--provider", "codex", "--native-session-id", "waiter-test", "--summary"}); code != 0 {
+					t.Fatalf("query=%d %s", code, out.String())
+				}
+				var doc struct {
+					Result struct {
+						Count   int `json:"count"`
+						Running int `json:"running_without_known_waiter"`
+					} `json:"result"`
+				}
+				if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+					t.Fatal(err)
+				}
+				if doc.Result.Count != doc.Result.Running {
+					t.Fatalf("summary running mismatch: %s", out.String())
+				}
+				return doc.Result.Count
+			}
+			registered := false
+			for until := time.Now().Add(800 * time.Millisecond); time.Now().Before(until); {
+				if query() == 0 {
+					registered = true
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			if !registered {
+				t.Fatal("active await was counted as running without a waiter")
+			}
+			switch exit {
+			case "cancel":
+				cancel()
+			case "attention":
+				write, err := store.Open(path, store.Options{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				current, err := write.GetExecution(context.Background(), child.ID)
+				if err != nil {
+					write.Close()
+					t.Fatal(err)
+				}
+				current.State = model.StateAttention
+				_, err = write.UpdateExecution(context.Background(), current, current.Revision)
+				write.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			code := <-done
+			want := map[string]int{"cancel": 12, "timeout": 9, "attention": 10}[exit]
+			if code != want {
+				t.Fatalf("await exit=%d want=%d %s", code, want, stdout.String())
+			}
+			if query() != 1 {
+				t.Fatal("exited waiter hid the child")
+			}
+		})
 	}
 }

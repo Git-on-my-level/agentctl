@@ -1254,11 +1254,13 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 	if boolCount(timeoutSet, noTimeout, throughExecutionDeadline) > 1 {
 		return a.fail(renderer, output.NewError(output.CodeUsage, "--timeout, --no-timeout, and --through-execution-deadline are mutually exclusive", false))
 	}
-	closeWaiter, waiterProblem := a.registerWaiter(c, id)
-	if waiterProblem != nil {
-		return a.fail(renderer, waiterProblem)
-	}
-	defer closeWaiter()
+	var closeWaiter func()
+	defer func() {
+		if closeWaiter != nil {
+			closeWaiter()
+		}
+	}()
+
 	deadline := time.Time{}
 	lastMulticaReprobe := time.Time{}
 	var poll time.Duration
@@ -1291,6 +1293,14 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		if err != nil {
 			return a.fail(renderer, mapStoreError("read awaited execution", err))
 		}
+		if closeWaiter == nil && !execution.State.Terminal() && execution.Observation.Integrity != model.IntegrityConflicted {
+			var waiterProblem *output.Error
+			closeWaiter, waiterProblem = a.registerWaiter(ctx, c, id)
+			if waiterProblem != nil {
+				return a.fail(renderer, waiterProblem)
+			}
+		}
+
 		poll = nextAwaitPoll(poll, execution.Revision != lastRevision)
 		lastRevision = execution.Revision
 		if throughExecutionDeadline && deadline.IsZero() {

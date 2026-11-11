@@ -703,7 +703,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 			return nil
 		}
 		var problem *output.Error
-		closeWaiter, problem = a.registerWaiter(c, execution.ID)
+		closeWaiter, problem = a.registerWaiter(ctx, c, execution.ID)
 		return problem
 	}
 
