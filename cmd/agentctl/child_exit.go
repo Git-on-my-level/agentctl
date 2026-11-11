@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,23 +18,18 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
-func (a *app) registerWaiter(ctx context.Context, c common, id ids.ExecutionID) (func(), *output.Error) {
+// Registration is best effort and attempted once by the owner. A sidecar
+// failure cannot refuse the primary native operation; query coverage stays unknown.
+func (a *app) registerWaiter(ctx context.Context, c common, id ids.ExecutionID) func() {
 	path, err := a.journalPath(c)
 	if err != nil {
-		return nil, output.Wrap(output.CodeDependencyUnavailable, "resolve waiter journal", false, err)
+		return func() {}
 	}
 	waiter, err := store.RegisterWaiter(ctx, path, id)
 	if err != nil {
-		if ctx.Err() != nil {
-			code := output.CodeExecutionCancelled
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				code = output.CodeTimeout
-			}
-			return nil, output.Wrap(code, "collector registration interrupted", false, ctx.Err()).WithDetail("execution_id", id.String())
-		}
-		return nil, output.Wrap(output.CodeDependencyUnavailable, "register live collector", true, err).WithDetail("diagnostic_code", "waiter_registration_failed")
+		return func() {}
 	}
-	return func() { _ = waiter.Close() }, nil
+	return func() { _ = waiter.Close() }
 }
 
 func childCollectArgv(c common, id ids.ExecutionID) []string {

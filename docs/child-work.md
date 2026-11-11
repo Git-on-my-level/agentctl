@@ -106,15 +106,13 @@ remain unknown. `await-any` also remains unknown: its first match releases the
 fan-in waiter, which cannot guarantee collection of the other selected children.
 A waiter on the parent itself does not cover its children.
 
-Collector registration requires writable private sidecars. Failure returns a
-structured `dependency_unavailable` with diagnostic `waiter_registration_failed`.
-A foreground `delegate/continue --wait` admission that has not launched a native
-process is terminalized with that same failure code. Repairing the registry does
-not relaunch a failed keyed admission; the existing replay rules still apply.
+Registration is best effort and attempted once. Sidecar creation/locking failure
+leaves coverage unknown while original awaiting and foreground native execution
+continue; this coordination metadata never becomes an admission prerequisite.
 
 Active local executions with a supported, unexpired durable subscription
-covering the relevant event are also excluded. Attention requires an attention
-subscription; a terminal waiter or live await cannot suppress a blocked child.
+covering the relevant event are also excluded. Attention always remains actionable, including with an attention subscription:
+late subscriptions do not backfill the already-emitted attention event.
 Conflicted evidence is not covered by a live await. This does not prove supervisor health or
 callback consumption. Local subscriptions do not exclude remote forwarding rows:
 local terminal event fanout does not observe remote completion. A live local

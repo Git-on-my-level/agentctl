@@ -327,3 +327,46 @@ func TestChildrenAwaitRegistrationLifecycle(t *testing.T) {
 		})
 	}
 }
+
+func TestAwaitContinuesWhenWaiterRegistrationFails(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("process-held waiter locks unavailable")
+	}
+	for _, mode := range []string{"timeout", "cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			path := filepath.Join(testutil.TempDir(t), "state", "journal.db")
+			j, err := store.Open(path, store.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			e := identityFixture(t, j, "codex", "")
+			j.Close()
+			// Deterministically prevent sidecar directory creation while keeping
+			// the journal readable, regardless of the test user's privileges.
+			if err := os.WriteFile(path+".waiters", nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			budget := 3 * time.Second
+			if mode == "cancel" {
+				budget = 120 * time.Millisecond
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), budget)
+			defer cancel()
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			args := []string{"--journal", path, "await", e.ID.String()}
+			if mode == "timeout" {
+				args = append(args, "--timeout", "120ms")
+			}
+			start := time.Now()
+			code := a.run(ctx, args)
+			want := 9
+			if mode == "cancel" {
+				want = 12
+			}
+			if code != want || time.Since(start) < 100*time.Millisecond {
+				t.Fatalf("sidecar failure broke primary wait: exit=%d want=%d elapsed=%s %s", code, want, time.Since(start), stdout.String())
+			}
+		})
+	}
+}

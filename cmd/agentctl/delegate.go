@@ -698,13 +698,10 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 			closeWaiter()
 		}
 	}()
-	armWaiter := func() *output.Error {
-		if closeWaiter != nil {
-			return nil
+	armWaiter := func() {
+		if closeWaiter == nil {
+			closeWaiter = a.registerWaiter(ctx, c, execution.ID)
 		}
-		var problem *output.Error
-		closeWaiter, problem = a.registerWaiter(ctx, c, execution.ID)
-		return problem
 	}
 
 	defer func() {
@@ -716,9 +713,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		}
 	}()
 	if execution.RemoteForwarded() && opts.wait {
-		if problem := armWaiter(); problem != nil {
-			return problem
-		}
+		armWaiter()
 		var remoteProblem *output.Error
 		var deadline time.Time
 		if execution.DeadlineAt != nil && !execution.State.Terminal() {
@@ -743,9 +738,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		if execution.DeadlineAt != nil && a.now().After(execution.DeadlineAt.Add(10*time.Second)) {
 			return delegateExecutionError(output.CodeTimeout, "delegated execution deadline elapsed without a terminal outcome", execution)
 		}
-		if problem := armWaiter(); problem != nil {
-			return problem
-		}
+		armWaiter()
 		select {
 		case <-ctx.Done():
 			return delegateExecutionError(output.CodeTimeout, "stopped waiting for delegated execution", execution)
@@ -767,9 +760,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 	}
 	var outcome *model.Outcome
 	if opts.wait {
-		if problem := armWaiter(); problem != nil {
-			return problem
-		}
+		armWaiter()
 		if execution.Observation.Integrity == model.IntegrityConflicted {
 			return delegateExecutionError(output.CodeExecutionUnknown, "delegated outcome has conflicting evidence", execution)
 		}

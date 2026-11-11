@@ -585,38 +585,26 @@ func TestChildExitCompletedParentSurvivesInterruption(t *testing.T) {
 	}
 }
 
-func TestForegroundWaiterFailureRecordsMatchingDiagnostic(t *testing.T) {
+func TestForegroundWaiterFailureDoesNotRefuseNativeLaunch(t *testing.T) {
 	f := newDelegateFixture(t, continueAgent)
 	if err := os.MkdirAll(filepath.Dir(f.journal), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(f.journal+".waiters", []byte("block waiter registration"), 0600); err != nil {
+	if err := os.WriteFile(f.journal+".waiters", nil, 0600); err != nil {
 		t.Fatal(err)
 	}
 	code, out := f.invoke("parent", "--wait")
-	if code == 0 || !strings.Contains(out, `"diagnostic_code":"waiter_registration_failed"`) || !strings.Contains(out, `"terminal_recorded":true`) {
-		t.Fatalf("waiter failure=%d %s", code, out)
+	if code != 0 || !strings.Contains(out, "first answer") || f.launches(t) != 1 {
+		t.Fatalf("sidecar failure refused primary work: %d %s", code, out)
 	}
-	var doc struct {
-		Error struct {
-			Details struct {
-				ID ids.ExecutionID `json:"execution_id"`
-			} `json:"details"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(out), &doc); err != nil {
-		t.Fatal(err)
-	}
+	id, _ := ids.ParseExecutionID(resultID(t, out))
 	j, err := store.Open(f.journal, store.Options{ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer j.Close()
-	outcome, err := j.GetOutcome(context.Background(), doc.Error.Details.ID)
-	if err != nil || outcome.Failure == nil || outcome.Failure.Code != "waiter_registration_failed" || !outcome.Failure.Retryable {
-		t.Fatalf("stored failure disagrees: %+v %v", outcome, err)
-	}
-	if _, err := os.Stat(f.count); !os.IsNotExist(err) {
-		t.Fatal("native process launched after waiter failure")
+	outcome, err := j.GetOutcome(context.Background(), id)
+	if err != nil || outcome.State != model.StateCompleted || outcome.Failure != nil {
+		t.Fatalf("unexpected failure: %+v %v", outcome, err)
 	}
 }

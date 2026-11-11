@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"slices"
 	"testing"
 	"time"
 
@@ -236,53 +235,7 @@ func TestChildrenSkipsRefusedReservationsButKeepsLaunchedCancellation(t *testing
 	}
 }
 
-func TestAutomaticContinuationProvenanceSurvivesOldProjection(t *testing.T) {
-	ctx := context.Background()
-	j, _, now := openTestJournal(t)
-	defer j.Close()
-	parent, _, err := j.CreateExecution(ctx, sampleExecution(now), contracts.MutationKey{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	child := sampleExecution(now)
-	child.ParentExecutionID = &parent.ID
-	child.AutoContinuationOf = &parent.ID
-	child, _, err = j.CreateExecution(ctx, child, contracts.MutationKey{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Simulate an older supervisor dropping a new execution-envelope field.
-	err = j.db.Update(func(tx *bbolt.Tx) error {
-		child.AutoContinuationOf = nil
-		raw, err := json.Marshal(child)
-		if err != nil {
-			return err
-		}
-		if err := tx.Bucket(bExecutions).Put([]byte(child.ID.String()), raw); err != nil {
-			return err
-		}
-		// The pre-existing attribution snapshot must retain its exact old shape
-		// and digest; an old reader can still validate it.
-		raw = tx.Bucket(bIdempotency).Get([]byte(attributionBindingScope + "\x00" + child.ID.String()))
-		var record mutationRecord
-		if err := json.Unmarshal(raw, &record); err != nil {
-			return err
-		}
-		if record.Attribution == nil || record.InputDigest != attributionDigest(record.Attribution) {
-			return errors.New("old attribution reader would reject automatic turn")
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	recovered, err := j.GetExecution(ctx, child.ID)
-	if err != nil || recovered.AutoContinuationOf == nil || *recovered.AutoContinuationOf != parent.ID {
-		t.Fatalf("lost provenance: %+v %v", recovered, err)
-	}
-}
-
-func TestChildrenAttentionRequiresAttentionSubscription(t *testing.T) {
+func TestChildrenAttentionRemainsActionableWithLateSubscription(t *testing.T) {
 	for _, kinds := range [][]string{{"terminal"}, {"progress"}, {"attention"}, {"terminal", "attention"}, nil} {
 		t.Run(fmt.Sprint(kinds), func(t *testing.T) {
 			ctx := context.Background()
@@ -294,21 +247,29 @@ func TestChildrenAttentionRequiresAttentionSubscription(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// The attention event precedes subscription creation. PutSubscription
+			// does not backfill it, so a matching filter is not delivery evidence.
+			key, canonical := semanticEvent(t, e.Adapter, map[string]any{"blocked": true})
+			event := model.Event{ExecutionID: e.ID, Authority: e.Authority, Adapter: e.Adapter, Ordering: model.OrderingObservation, Kind: model.EventAttention, State: &e.State, ObservedAt: now, DedupeKey: key, DedupeVersion: 1, Payload: map[string]any{"blocked": true}}
+			if _, _, err := j.AppendEvent(ctx, event, canonical); err != nil {
+				t.Fatal(err)
+			}
+			j.clock = func() time.Time { return now.Add(time.Minute) }
 			sub := durableTestSubscription(durableTestID(ids.TypeSubscription, 1))
 			sub.Filter.ExecutionIDs, sub.Filter.Kinds = []string{e.ID.String()}, kinds
 			sub.ExpiresAt = now.Add(time.Hour)
 			if _, _, err := j.PutSubscription(ctx, sub); err != nil {
 				t.Fatal(err)
 			}
+			pending, err := j.ListPendingDeliveries(ctx)
+			if err != nil || len(pending) != 0 {
+				t.Fatalf("late attention was unexpectedly backfilled: %+v %v", pending, err)
+			}
 			path := j.path
 			j.Close()
 			scope := ChildrenScope{Provider: "codex", NativeSessionID: hash('a')}
-			got, err := cleanupForPath(path).Children(ctx, scope, now)
-			want := 1
-			if len(kinds) == 0 || slices.Contains(kinds, "attention") {
-				want = 0
-			}
-			if err != nil || len(got) != want {
+			got, err := cleanupForPath(path).Children(ctx, scope, now.Add(2*time.Minute))
+			if err != nil || len(got) != 1 {
 				t.Fatalf("attention coverage: %+v %v", got, err)
 			}
 			got, err = cleanupForPath(path).Children(ctx, scope, now.Add(2*time.Hour))
@@ -373,5 +334,51 @@ func TestAutomaticCleanupRemovesUnkeyedCallerAttribution(t *testing.T) {
 		})
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAutomaticContinuationProvenanceSurvivesOldProjection(t *testing.T) {
+	ctx := context.Background()
+	j, _, now := openTestJournal(t)
+	defer j.Close()
+	parent, _, err := j.CreateExecution(ctx, sampleExecution(now), contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := sampleExecution(now)
+	child.ParentExecutionID = &parent.ID
+	child.AutoContinuationOf = &parent.ID
+	child, _, err = j.CreateExecution(ctx, child, contracts.MutationKey{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate an older supervisor dropping a new execution-envelope field.
+	err = j.db.Update(func(tx *bbolt.Tx) error {
+		child.AutoContinuationOf = nil
+		raw, err := json.Marshal(child)
+		if err != nil {
+			return err
+		}
+		if err := tx.Bucket(bExecutions).Put([]byte(child.ID.String()), raw); err != nil {
+			return err
+		}
+		// The pre-existing attribution snapshot must retain its exact old shape
+		// and digest; an old reader can still validate it.
+		raw = tx.Bucket(bIdempotency).Get([]byte(attributionBindingScope + "\x00" + child.ID.String()))
+		var record mutationRecord
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return err
+		}
+		if record.Attribution == nil || record.InputDigest != attributionDigest(record.Attribution) {
+			return errors.New("old attribution reader would reject automatic turn")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := j.GetExecution(ctx, child.ID)
+	if err != nil || recovered.AutoContinuationOf == nil || *recovered.AutoContinuationOf != parent.ID {
+		t.Fatalf("lost provenance: %+v %v", recovered, err)
 	}
 }

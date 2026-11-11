@@ -227,12 +227,6 @@ func (a *app) detachedNativeWorker(ctx context.Context) int {
 }
 
 func (a *app) settleDetachedAdmission(c common, id ids.ExecutionID, problem *output.Error) {
-	a.settleNativeAdmission(c, id, problem, "detached_worker_start_failed")
-}
-
-// Settle an admission only before any native process has been accepted. The
-// caller supplies the local failure category rather than inventing a provider error.
-func (a *app) settleNativeAdmission(c common, id ids.ExecutionID, problem *output.Error, fallbackDiagnostic string) {
 	problem.WithDetail("execution_id", id.String())
 	journal, current, openProblem := a.openExecutionWriteOwned(c, id)
 	if openProblem != nil {
@@ -244,7 +238,7 @@ func (a *app) settleNativeAdmission(c common, id ids.ExecutionID, problem *outpu
 		problem.WithDetail("terminal_recorded", true)
 		return
 	}
-	// Never settle an accepted native process from this pre-launch path.
+	// Never settle another worker's accepted native process from this path.
 	if current.State != model.StateStarting || len(current.SourceBindings) != 0 || problem.Code == output.CodeConflict {
 		return
 	}
@@ -252,7 +246,7 @@ func (a *app) settleNativeAdmission(c common, id ids.ExecutionID, problem *outpu
 	if problem.Code == output.CodeTimeout || problem.Code == output.CodeExecutionCancelled {
 		state = adapter.StateCancelled
 	}
-	result := adapter.Result{Success: false, State: state, Error: problem.Message, Data: map[string]any{"diagnostic_code": fallbackDiagnostic}}
+	result := adapter.Result{Success: false, State: state, Error: problem.Message, Data: map[string]any{"diagnostic_code": "detached_worker_start_failed"}}
 	if code, _ := problem.Details["diagnostic_code"].(string); code == "native_version_probe_failed" || code == "native_version_probe_timeout" || code == "macos_login_keychain_locked" || code == "journal_busy" {
 		result.Data["diagnostic_code"] = code
 	}
