@@ -141,6 +141,11 @@ func TestChildrenPagedMembershipMutation(t *testing.T) {
 									}
 									record.ObjectType = expiredExecutionObject
 									raw, _ = json.Marshal(record)
+									// Model a real legacy cleanup: the tombstone may
+									// skip only an execution removed in the same commit.
+									if err := tx.Bucket(bExecutions).Delete([]byte(first.ID.String())); err != nil {
+										return err
+									}
 								} else {
 									raw = append(raw, ' ')
 								}

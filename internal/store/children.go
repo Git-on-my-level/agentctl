@@ -78,6 +78,10 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 	for {
 		var last []byte
 		err := r.view(func(tx *bbolt.Tx) error {
+			indexes, executions := tx.Bucket(bIdempotency), tx.Bucket(bExecutions)
+			if indexes == nil || executions == nil {
+				return corrupt(errors.New("missing required children index or execution bucket"))
+			}
 			current, err := childrenMembershipAt(tx, prefix)
 			if err != nil {
 				return err
@@ -87,7 +91,7 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 			} else if *membership != current {
 				return ErrChildrenBounded
 			}
-			cursor := tx.Bucket(bIdempotency).Cursor()
+			cursor := indexes.Cursor()
 			key, raw := cursor.Seek(prefix)
 			if after != nil {
 				key, raw = cursor.Seek(after)
@@ -112,15 +116,22 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 				if err := json.Unmarshal(raw, &index); err != nil {
 					return corrupt(err)
 				}
-				// An older manual cleanup may retain an expired-key tombstone.
+				id, err := ids.ParseExecutionID(string(key[len(prefix):]))
+				if err != nil || index.ObjectID != id.String() {
+					return corrupt(errors.New("invalid children index identity"))
+				}
+				// Older cleanup may omit Scope/Key in a compact tombstone, but
+				// it cannot revoke discovery of a still-retained execution.
 				if index.ObjectType == expiredExecutionObject {
+					if (index.Scope != "" && index.Scope != string(prefix[:len(prefix)-1])) || (index.Key != "" && index.Key != id.String()) || executions.Get([]byte(id.String())) != nil || executions.Bucket([]byte(id.String())) != nil {
+						return corrupt(errors.New("invalid children index tombstone"))
+					}
 					continue
 				}
-				id, err := ids.ParseExecutionID(string(key[len(prefix):]))
-				if err != nil || index.Scope != string(prefix[:len(prefix)-1]) || index.Key != id.String() || index.ObjectType != "execution" || index.ObjectID != id.String() {
+				if index.Scope != string(prefix[:len(prefix)-1]) || index.Key != id.String() || index.ObjectType != "execution" {
 					return corrupt(errors.New("invalid children index"))
 				}
-				executionRaw := tx.Bucket(bExecutions).Get([]byte(id.String()))
+				executionRaw := executions.Get([]byte(id.String()))
 				if executionRaw == nil || len(executionRaw) > 1<<20 {
 					return ErrChildrenBounded
 				}
@@ -144,8 +155,23 @@ func (c Cleanup) Children(ctx context.Context, scope ChildrenScope, now time.Tim
 				}
 				if e.State.Terminal() {
 					// Attributed rows are new and do not need the historical ack epoch.
-					if b := tx.Bucket(bAcknowledgements); b != nil && b.Get([]byte(e.ID.String())) != nil {
-						continue
+					if b := tx.Bucket(bAcknowledgements); b != nil {
+						if b.Bucket([]byte(e.ID.String())) != nil {
+							return corrupt(errors.New("invalid children acknowledgement bucket"))
+						}
+						if raw := b.Get([]byte(e.ID.String())); raw != nil {
+							if len(raw) > 1<<20 {
+								return ErrChildrenBounded
+							}
+							var ack ExecutionAcknowledgement
+							if err := json.Unmarshal(raw, &ack); err != nil {
+								return corrupt(err)
+							}
+							if ack.ExecutionID != e.ID || ack.AcknowledgedAt.IsZero() || (ack.Source != AcknowledgementResult && ack.Source != AcknowledgementAwait && ack.Source != AcknowledgementBulk) {
+								return corrupt(errors.New("invalid children acknowledgement"))
+							}
+							continue
+						}
 					}
 				}
 				item := ChildExecution{ID: e.ID, CreatedAt: e.CreatedAt, State: e.State, Authority: e.Authority, Adapter: e.Adapter, Reason: "running_without_known_waiter", WaiterStatus: "unknown", CollectArgv: []string{"agentctl", "await", e.ID.String(), "--content"}}

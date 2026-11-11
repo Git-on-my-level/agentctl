@@ -132,7 +132,8 @@ or conflicting snapshots fail cleanup closed without rewriting projections.
 The query has a 1.5-second total processing budget. Every journal open is
 read-only with a 50 ms lock allowance; handles close between pages of at most
 128 index records or 256 KiB. Additional bounds are 100,000 index entries,
-64 MiB index bytes, 1 MiB per execution projection, 200 actionable children,
+64 MiB index bytes, 1 MiB per execution projection or selected acknowledgement,
+200 actionable children,
 and 1,024 subscription records / 4 MiB subscription metadata. It never takes
 the write lock or triggers updates, bootstrap, ANX flushing, or other maintenance.
 Normal OS scheduling and output delivery are outside the processing budget.
@@ -142,6 +143,12 @@ exit 9, `ok: false`, diagnostic
 `children_query_incomplete`, `complete: false`, and `retryable: true`; no partial
 success is emitted. Other journal/identity errors also return nonzero structured
 errors. A consumer must not interpret any error as an empty child set.
+Selected acknowledgements must decode to the matching execution ID, a nonzero
+collection timestamp and an allowed collection source. Legacy expired indexes
+are skipped only for a matching typed ID whose execution is absent. Invalid
+records, retained targets behind tombstones, and missing required index or
+execution buckets fail with journal corruption; read-only queries never repair
+or migrate them. Optional historical metadata still requires no upgrade write.
 Membership is stable from the first index page through the final page check.
 Each page reads the selected scope's transaction stamp, an empty-scope pruning
 fence, and a mixed-version writer fence. Admission and index removal update
