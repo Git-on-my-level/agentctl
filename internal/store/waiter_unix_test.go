@@ -57,6 +57,9 @@ func TestChildrenLiveWaiterReleaseCrashAndState(t *testing.T) {
 		if err != nil || len(got) != want {
 			t.Fatalf("children: %+v %v, want %d", got, err, want)
 		}
+		if want == 1 && (got[0].ID != e.ID || got[0].State != e.State) {
+			t.Fatalf("child query changed execution identity/state: %+v, want %s/%s", got, e.ID, e.State)
+		}
 	}
 	query(1)
 	first, err := RegisterWaiter(ctx, path, e.ID)

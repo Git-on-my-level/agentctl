@@ -233,6 +233,109 @@ func TestChildExitOutcomeCommitCarriesSnapshot(t *testing.T) {
 	}
 }
 
+func TestChildExitAttentionWithLiveAwaiter(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("kernel waiter evidence")
+	}
+	f := newDelegateFixture(t, continueAgent)
+	j, err := store.Open(f.journal, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := identityFixture(t, j, "codex", "attention-parent")
+	child := addExitChild(t, j, parent, false)
+	j.Close()
+	c := common{configPath: f.config, journalPath: f.journal}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	var awaitCode int
+	go func() {
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		awaitCode = a.await(ctx, output.Renderer{Mode: output.JSON, Writer: &stdout}, c, []string{child.ID.String(), "--no-timeout"})
+		close(done)
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("await failed to stop")
+		}
+	}()
+	reader := store.Reader{Open: func(context.Context, bool) (*store.Journal, error) {
+		return store.Open(f.journal, store.Options{ReadOnly: true, LockTimeout: time.Millisecond})
+	}}
+	scope := store.ChildrenScope{Parent: &parent.ID}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		items, err := reader.Children(ctx, scope, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) == 0 {
+			break // The actual public await now holds the child's waiter lock.
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("await never registered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	j, err = store.Open(f.journal, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Holding the writer prevents await from observing attention and releasing
+	// its lock until after the parent's real terminal commit checks children.
+	defer j.Close()
+	child.State = model.StateAttention
+	child, err = j.UpdateExecution(ctx, child, child.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := j.Children(ctx, scope, time.Now())
+	if err != nil || len(items) != 1 || items[0].ID != child.ID || items[0].State != model.StateAttention {
+		t.Fatalf("attention query hid live-awaited child: %+v %v", items, err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	parent, err = a.finalizeResult(ctx, c, j, parent, adapter.Result{Success: true, State: adapter.StateCompleted, Content: "parent answer"}, time.Now().UTC(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := j.GetOutcome(ctx, parent.ID)
+	if err != nil || parent.ChildExitGuard == nil || len(parent.UncollectedChildren) != 1 || parent.UncollectedChildren[0].ID != child.ID || len(outcome.UncollectedChildren) != 1 || outcome.UncollectedChildren[0].State != model.StateAttention || len(childExitWarnings(parent)) == 0 {
+		t.Fatalf("parent exit lost attention evidence: parent=%+v outcome=%+v err=%v", parent, outcome, err)
+	}
+	select {
+	case <-done:
+		t.Fatalf("await escaped the held writer: %d", awaitCode)
+	default:
+	}
+	j.Close()
+	select {
+	case <-done:
+		if awaitCode != 10 {
+			t.Fatalf("attention await exit=%d, want 10", awaitCode)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("await did not return attention")
+	}
+	j, err = store.Open(f.journal, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	acks, err := j.AcknowledgementIndexFor(ctx, []model.Execution{child})
+	if err != nil || len(acks.ByID) != 0 {
+		t.Fatalf("attention was acknowledged: %+v %v", acks, err)
+	}
+	item, actionable := projectInbox(parent, time.Now().UTC(), time.Hour, acks, output.JSON)
+	if !actionable || len(item.UncollectedChildren) != 1 || item.UncollectedChildren[0].State != model.StateAttention {
+		t.Fatalf("attention missing from parent inbox: %+v", item)
+	}
+}
+
 // The public await registers before blocking, including remote forwarding, and
 // releases on timeout/cancellation. Reading children never supplies a waiter.
 func TestAwaitRegistersLiveWaiter(t *testing.T) {
