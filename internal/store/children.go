@@ -58,47 +58,9 @@ func children(r *cleanupReader, scope ChildrenScope, now time.Time, recheck *boo
 	if scope.Parent == nil && (scope.Provider == "" || scope.NativeSessionID == "") {
 		return nil, ErrChildrenBounded
 	}
-	// An exact index seek keeps childless runs independent of subscription metadata.
 	prefix := childrenScopePrefix(scope)
-	hasChildren := false
-	if err := r.view(func(tx *bbolt.Tx) error {
-		key, _ := tx.Bucket(bIdempotency).Cursor().Seek(prefix)
-		hasChildren = bytes.HasPrefix(key, prefix)
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	if !hasChildren {
-		return []ChildExecution{}, nil
-	}
 	var subscriptions []SubscriptionRecord
-	if err := r.view(func(tx *bbolt.Tx) error {
-		b := tx.Bucket(bSubscriptions)
-		if b == nil {
-			return nil
-		}
-		size, records := 0, 0
-		return b.ForEach(func(_, raw []byte) error {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			size += len(raw)
-			records++
-			if records > 1024 || size > 4<<20 {
-				return ErrChildrenBounded
-			}
-			var record SubscriptionRecord
-			if err := json.Unmarshal(raw, &record); err != nil {
-				return corrupt(err)
-			}
-			if fanoutUnderstands(raw, record.Subscription) {
-				subscriptions = append(subscriptions, record)
-			}
-			return nil
-		})
-	}); err != nil {
-		return nil, err
-	}
+	subscriptionsLoaded := false
 	result := []ChildExecution{}
 	var membership *childrenMembership
 	var after []byte
@@ -196,7 +158,16 @@ func children(r *cleanupReader, scope ChildrenScope, now time.Time, recheck *boo
 						}
 					}
 					// Local terminal subscriptions cannot observe a forwarded remote event.
-					if !e.RemoteForwarded() {
+					if !covered && !e.RemoteForwarded() {
+						if !subscriptionsLoaded {
+							var err error
+							subscriptions, err = childrenSubscriptions(ctx, tx)
+							if err != nil {
+								return err
+							}
+							subscriptionsLoaded = true
+						}
+
 						state := model.StateCompleted
 						event := &model.Event{ExecutionID: e.ID, Authority: e.Authority, Kind: model.EventTerminal, State: &state}
 						for _, record := range subscriptions {
@@ -225,4 +196,34 @@ func children(r *cleanupReader, scope ChildrenScope, now time.Time, recheck *boo
 		}
 		after = last
 	}
+}
+
+// Called lazily inside the current page transaction. Acknowledged terminals,
+// attention, remote rows and exact-await-covered children never need this scan.
+func childrenSubscriptions(ctx context.Context, tx *bbolt.Tx) ([]SubscriptionRecord, error) {
+	var subscriptions []SubscriptionRecord
+	b := tx.Bucket(bSubscriptions)
+	if b == nil {
+		return nil, nil
+	}
+	size, records := 0, 0
+	err := b.ForEach(func(_, raw []byte) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		size += len(raw)
+		records++
+		if records > 1024 || size > 4<<20 {
+			return ErrChildrenBounded
+		}
+		var record SubscriptionRecord
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return corrupt(err)
+		}
+		if fanoutUnderstands(raw, record.Subscription) {
+			subscriptions = append(subscriptions, record)
+		}
+		return nil
+	})
+	return subscriptions, err
 }

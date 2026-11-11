@@ -239,7 +239,20 @@ the config bundle. Omitted/true enables the safeguard. The switch suppresses
 continuation, **not** exit snapshots, warnings or inbox actions; it does not stop
 a follow-up that has already launched. Policy is read when the parent exits.
 
-`inbox` rechecks parents with this marker or an existing exit guard, even when
+`inbox` first uses the complete, hydrated execution and explicit acknowledgement
+snapshots it already loads under its held read-only journal handle. Writers are
+excluded for that handle's lifetime. It selects active parent scopes from every
+retained child: nonterminal children remain obligations regardless of waiter
+coverage, and terminal children settle only when their explicit collection stamp
+exists. The legacy acknowledgement epoch does not retire attributed children.
+A parent whose retained children are all collected spends no child-query budget
+and adds no child-collection inbox reason. This changes only the read projection;
+immutable execution markers, exit guards and outcomes are not rewritten. An
+incomplete execution/acknowledgement listing fails the inbox read rather than
+retiring obligations from a partial snapshot. There is no new mutable settlement
+state, read-side write or additional global child scan.
+
+`inbox` rechecks selected active parents with this marker or an existing exit guard, even when
 all children were covered at exit. It includes a parent with unresolved child
 work even after that parent's own
 result was acknowledged. It rechecks live child metadata (no result reads, SSH,
@@ -252,7 +265,14 @@ next inbox query, before the child's observation becomes stale. Terminal childre
 remain actionable until actual collection acknowledgement. Complete checks with
 only covered or acknowledged children add no child-collection reason; incomplete
 checks remain explicitly actionable without inventing uncollected children.
-The shared query bounds apply even to covered children. Rechecks use only each
+The shared query bounds apply even to covered children. Subscription metadata
+is loaded lazily once per child query, only for an uncovered local nonterminal
+child that can benefit from it. Collected children, terminal uncollected rows,
+attention, remote rows and exact-await-covered children do not scan subscriptions.
+When needed, the existing subscription count/byte/deadline limits still fail
+closed. Retained historical markers therefore cannot repeatedly scan historical
+subscription metadata, spend the shared recheck budget, or create incomplete
+coverage items that crowd an active parent off the page. Rechecks use only each
 parent's retained attribution index and cached metadata; there is no global child
 scan, new remote observation, or inbox-triggered automatic continuation. The
 historical exit snapshot and marker remain unchanged after collection.

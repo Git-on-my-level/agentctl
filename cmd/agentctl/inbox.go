@@ -108,6 +108,13 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 	if err != nil {
 		return mapStoreError("list status contacts", err)
 	}
+	// The read-only journal handle is held for the complete listing and ack
+	// reads, excluding writers. Select obligations from those hydrated snapshots,
+	// not the immutable historical marker or current waiter/subscription coverage.
+	activeParents, err := inboxActiveChildParents(ctx, executions, acks)
+	if err != nil {
+		return mapStoreError("select inbox child obligations", err)
+	}
 	now := a.now().UTC()
 	childQueryCtx, cancelChildQueries := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancelChildQueries()
@@ -119,7 +126,12 @@ func (a *app) inbox(ctx context.Context, renderer output.Renderer, c common, arg
 		if !inboxFilterMatches(execution, opts) {
 			continue
 		}
-		if (execution.ChildExitRecheck || execution.ChildExitGuard != nil) && !execution.RemoteForwarded() {
+		if (execution.ChildExitRecheck || execution.ChildExitGuard != nil) && !execution.RemoteForwarded() && !activeParents[execution.ID] {
+			// Clear only this read projection. Exit/outcome evidence stays immutable.
+			execution.UncollectedChildren = nil
+			execution.ChildExitGuard = nil
+		}
+		if (execution.ChildExitRecheck || execution.ChildExitGuard != nil) && !execution.RemoteForwarded() && activeParents[execution.ID] {
 			children, childErr := journal.Children(childQueryCtx, store.ChildrenScope{Parent: &execution.ID}, now)
 			guard := model.ChildExitGuard{CheckedAt: now, AutoContinue: "unavailable"}
 			if execution.ChildExitGuard != nil {
@@ -487,4 +499,26 @@ func scopeInboxAction(action output.NextAction, c common) output.NextAction {
 	}
 	action.Argv = append(scoped, argv[1:]...)
 	return action
+}
+
+// A nonterminal child remains an obligation even if a collector currently covers
+// it. Terminal children settle only through an explicit acknowledgement; the
+// legacy acknowledgement epoch must not silently retire attributed children.
+func inboxActiveChildParents(ctx context.Context, executions []model.Execution, acks store.AcknowledgementIndex) (map[ids.ExecutionID]bool, error) {
+	active := make(map[ids.ExecutionID]bool)
+	for _, child := range executions {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if child.ParentExecutionID == nil || refusedAdmission(child) {
+			continue
+		}
+		if child.State.Terminal() {
+			if _, collected := acks.ByID[child.ID]; collected {
+				continue
+			}
+		}
+		active[*child.ParentExecutionID] = true
+	}
+	return active, nil
 }

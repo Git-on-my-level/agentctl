@@ -508,7 +508,12 @@ auto-continue. Inbox rechecks after waiter death/cancellation or subscription
 expiry/cancellation, even when the parent's own result was collected; terminal
 children clear only after collection acknowledgement. Incomplete checks stay
 actionable. Mixed-version immutable hydration preserves the marker; it neither
-adds replay retention nor changes existing parent-graph retention.
+adds replay retention nor changes existing parent-graph retention. Inbox selects active parent scopes from its complete hydrated execution and
+explicit-acknowledgement snapshots. Collected history does not spend the child
+query budget or create inbox items; the historical marker/outcome is retained.
+Covered nonterminal children remain active obligations. Subscription metadata is
+read lazily only for uncovered local nonterminal children that can use it; all
+existing bounds still fail closed when those reads are needed.
 See [child work](https://github.com/Git-on-my-level/agentctl/blob/main/docs/child-work.md).
 
 Use `recent` to recover
