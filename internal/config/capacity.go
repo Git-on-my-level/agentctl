@@ -19,7 +19,8 @@ const (
 	// DefaultCapacityMaxAgeSeconds is how long published facts stay usable.
 	DefaultCapacityMaxAgeSeconds = 3600
 	// DefaultLaunchDebit is the used ratio one recent launch is assumed to cost
-	// when choosing, so a fan-out spreads while facts lag.
+	// while work is running or its completion is newer than a usage observation,
+	// so a fan-out spreads while facts lag without counting measured work twice.
 	DefaultLaunchDebit = 0.02
 
 	maxCapacityPools      = 32

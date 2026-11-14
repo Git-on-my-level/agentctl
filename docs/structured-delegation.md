@@ -259,14 +259,21 @@ selects that account's launcher, which owns its authentication:
 ```
 
 - A candidate is eligible when its pressure, the used ratio plus `launch_debit`
-  (default 0.02) for each launch this journal still has running or started within
-  `max_age_seconds`, is below its threshold by at least 5%. The threshold is its own
+  (default 0.02) for each launch this journal still has running or completed after
+  that window's `observed_at` (falling back to the facts' `generated_at`), is below
+  its threshold by at least 5%, including exactly 5%. Completed work already
+  measured by the provider is not debited again. Without a usable observation,
+  only completions within `max_age_seconds` and running work count. Completion
+  time keeps a long-running job reserved even if it started before that interval.
+  Each window computes its own pressure and the highest pressure limits the
+  candidate; equal pressures prefer the sooner known reset. The threshold is its own
   `switch_threshold`, else the profile's, else 0.95, so the default stops new work
-  at 0.90. `cutoff_exempt` keeps it eligible at any usage, for an account meant to
+  above 0.90. `cutoff_exempt` keeps it eligible at any usage, for an account meant to
   run past its allowance.
 - `windows` names the windows that limit a candidate; absent means all of them. A
   window past its `resets_at` counts as empty with no known next reset, and one
-  whose `observed_at` is older than `max_age_seconds` is ignored.
+  whose observation is older than `max_age_seconds` or more than five minutes in
+  the future is ignored. A reset also retires debits for work completed before it.
 - Among eligible candidates, the one whose limiting window resets soonest runs
   first, because unused quota is lost at reset. Candidates with known usage but no
   known reset come next, then candidates with unknown usage. Ties keep configured

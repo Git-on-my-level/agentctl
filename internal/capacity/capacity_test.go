@@ -95,7 +95,7 @@ func TestAllOverThresholdRunsLeastUsed(t *testing.T) {
 
 func TestLaunchDebitSpreadsFanOutWhenFactsLag(t *testing.T) {
 	in := input(factsWith(weekly("a", 0.1), weekly("b", 0.1)), Candidate{Account: "a", Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95})
-	in.RecentLaunches = map[string]int{"a": 1}
+	in.Launches = []Launch{{Account: "a"}}
 	if got := Select(in).Index; got != 1 {
 		t.Fatalf("got %d", got)
 	}
@@ -107,7 +107,7 @@ func TestNoFactsKeepsConfiguredOrder(t *testing.T) {
 		t.Fatalf("choice=%+v", got)
 	}
 	in := input(nil, a, b)
-	in.RecentLaunches = map[string]int{"a": 2, "b": 1}
+	in.Launches = []Launch{{Account: "a"}, {Account: "a"}, {Account: "b"}}
 	if got := Select(in).Index; got != 1 {
 		t.Fatalf("got %d", got)
 	}
@@ -179,5 +179,133 @@ func TestLoadReportsEveryStatus(t *testing.T) {
 				t.Fatalf("got %s want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestLaunchDebitsRetireAtObservation(t *testing.T) {
+	for _, account := range []string{"codex-2", "claude-2", "cursor-2"} {
+		t.Run(account, func(t *testing.T) {
+			observed := testNow.Add(-10 * time.Minute)
+			soon := testNow.Add(14 * time.Hour)
+			facts := factsWith(weekly("primary", .29), Account{ID: account, Windows: []Window{
+				{Name: "weekly", UsedRatio: .68, ResetsAt: &soon, ObservedAt: &observed},
+			}})
+			in := input(facts, Candidate{Account: "primary", Threshold: .95}, Candidate{Account: account, Threshold: .95})
+			for i := 0; i < 11; i++ {
+				// Includes equality: an observation already includes that completion.
+				ended := observed.Add(-time.Duration(i) * time.Minute)
+				in.Launches = append(in.Launches, Launch{Account: account, TerminalAt: &ended})
+			}
+			got := Select(in)
+			if got.Index != 1 || got.Evaluations[1].RecentLaunches != 0 || !got.Evaluations[1].Eligible {
+				t.Fatalf("measured work debited again: %+v", got)
+			}
+			// Retain both running work and work finished after the observation.
+			ended := observed.Add(time.Minute)
+			in.Launches = append(in.Launches, Launch{Account: account}, Launch{Account: account, TerminalAt: &ended})
+			if got := Select(in); got.Index != 1 || got.Evaluations[1].RecentLaunches != 2 {
+				t.Fatalf("unobserved work lost its debit: %+v", got)
+			}
+		})
+	}
+}
+
+func TestEachWindowUsesItsOwnObservationAndPressure(t *testing.T) {
+	old, fresh := testNow.Add(-50*time.Minute), testNow.Add(-time.Minute)
+	ended := testNow.Add(-10 * time.Minute)
+	soon, late := testNow.Add(time.Hour), testNow.Add(6*24*time.Hour)
+	facts := factsWith(Account{ID: "a", Windows: []Window{
+		{Name: "weekly", UsedRatio: .80, ObservedAt: &fresh, ResetsAt: &late},
+		{Name: "5h", UsedRatio: .79, ObservedAt: &old, ResetsAt: &soon},
+	}})
+	in := input(facts, Candidate{Account: "a", Threshold: .95})
+	in.Launches = []Launch{{Account: "a", TerminalAt: &ended}}
+	got := Select(in).Evaluations[0]
+	if got.Window != "5h" || got.RecentLaunches != 1 || got.UsedRatio != .79 {
+		t.Fatalf("limiting pressure ignored window observation: %+v", got)
+	}
+	in.Candidates[0].Windows = []string{"weekly"}
+	got = Select(in).Evaluations[0]
+	if got.Window != "weekly" || got.RecentLaunches != 0 {
+		t.Fatalf("filtered window changed debit: %+v", got)
+	}
+}
+
+func TestGeneratedAtIsFallbackObservation(t *testing.T) {
+	ended := testNow.Add(-time.Minute)
+	in := input(factsWith(weekly("a", .68)), Candidate{Account: "a", Threshold: .95})
+	in.Launches = []Launch{{Account: "a", TerminalAt: &ended}}
+	if got := Select(in).Evaluations[0]; got.RecentLaunches != 0 {
+		t.Fatalf("generated_at did not retire debit: %+v", got)
+	}
+}
+
+func TestResetRetiresPriorWindowDebits(t *testing.T) {
+	observed, reset, ended := testNow.Add(-30*time.Minute), testNow.Add(-10*time.Minute), testNow.Add(-20*time.Minute)
+	in := input(factsWith(Account{ID: "a", Windows: []Window{{Name: "w", UsedRatio: .99, ObservedAt: &observed, ResetsAt: &reset}}}), Candidate{Account: "a", Threshold: .95})
+	in.Launches = []Launch{{Account: "a", TerminalAt: &ended}, {Account: "a"}}
+	if got := Select(in).Evaluations[0]; got.UsedRatio != 0 || got.RecentLaunches != 1 || !got.Eligible {
+		t.Fatalf("reset retained old-window debits: %+v", got)
+	}
+}
+
+func TestUnknownUsageBoundsCompletedHistoryAndKeepsRunningWork(t *testing.T) {
+	old, fresh := testNow.Add(-2*time.Hour), testNow.Add(-time.Minute)
+	in := input(nil, Candidate{Account: "a", Threshold: .95})
+	in.Launches = []Launch{{Account: "a", TerminalAt: &old}, {Account: "a", TerminalAt: &fresh}, {Account: "a"}, {Account: "other"}}
+	if got := Select(in).Evaluations[0]; got.RecentLaunches != 2 || got.UsageKnown {
+		t.Fatalf("fallback debit: %+v", got)
+	}
+}
+
+func TestHeadroomBoundaryIsInclusive(t *testing.T) {
+	for _, tc := range []struct {
+		ratio    float64
+		eligible bool
+	}{{.899999, true}, {.90, true}, {.900001, false}, {.95, false}} {
+		got := Select(input(factsWith(weekly("a", tc.ratio)), Candidate{Account: "a", Threshold: .95})).Evaluations[0]
+		if got.Eligible != tc.eligible {
+			t.Fatalf("ratio=%v eligible=%v want=%v", tc.ratio, got.Eligible, tc.eligible)
+		}
+	}
+	in := input(factsWith(weekly("a", .68)), Candidate{Account: "a", Threshold: .95})
+	for i := 0; i < 11; i++ {
+		in.Launches = append(in.Launches, Launch{Account: "a"})
+	}
+	if got := Select(in).Evaluations[0]; !got.Eligible {
+		t.Fatalf("exact .90 launch pressure rejected: %+v", got)
+	}
+}
+
+func TestEqualPressureWindowsPreferSoonestResetRegardlessOfOrder(t *testing.T) {
+	soon, late := testNow.Add(time.Hour), testNow.Add(72*time.Hour)
+	windows := []Window{{Name: "weekly", UsedRatio: .3, ResetsAt: &late}, {Name: "5h", UsedRatio: .3, ResetsAt: &soon}}
+	for i := 0; i < 2; i++ {
+		got := Select(input(factsWith(Account{ID: "a", Windows: windows}), Candidate{Account: "a", Threshold: .95})).Evaluations[0]
+		if got.Window != "5h" {
+			t.Fatalf("window order changed limiting reset: %+v", got)
+		}
+		windows[0], windows[1] = windows[1], windows[0]
+	}
+}
+
+func TestFutureObservationCannotHidePressure(t *testing.T) {
+	future := testNow.Add(time.Hour)
+	in := input(factsWith(Account{ID: "a", Windows: []Window{{Name: "w", UsedRatio: .1, ObservedAt: &future}}}), Candidate{Account: "a", Threshold: .95})
+	if got := Select(in).Evaluations[0]; got.UsageKnown {
+		t.Fatalf("future observation trusted: %+v", got)
+	}
+}
+
+func TestConfiguredHeadroomBoundary(t *testing.T) {
+	for _, tc := range []struct{ threshold, ratio float64 }{{.06, .01}, {.07, .02}, {.10, .05}, {.15, .10}, {.95, .90}} {
+		in := input(factsWith(weekly("a", tc.ratio)), Candidate{Account: "a", Threshold: tc.threshold})
+		if got := Select(in).Evaluations[0]; !got.Eligible {
+			t.Fatalf("exact headroom rejected at threshold=%v pressure=%v", tc.threshold, tc.ratio)
+		}
+		in.Facts.Accounts[0].Windows[0].UsedRatio += .000001
+		if got := Select(in).Evaluations[0]; got.Eligible {
+			t.Fatalf("insufficient headroom accepted at threshold=%v", tc.threshold)
+		}
 	}
 }

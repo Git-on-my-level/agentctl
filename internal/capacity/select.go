@@ -1,6 +1,7 @@
 package capacity
 
 import (
+	"math"
 	"sort"
 	"time"
 )
@@ -29,15 +30,22 @@ type Candidate struct {
 	Exempt    bool
 }
 
+// Launch is one local pool execution. A nil TerminalAt means work is still in
+// flight. Completed work needs a debit only until a usage observation includes it.
+type Launch struct {
+	Account    string
+	TerminalAt *time.Time
+}
+
 // Input is everything one choice depends on, so a choice is reproducible from
 // it. Facts is nil when the file is unusable; then no account has known usage.
 type Input struct {
-	Candidates     []Candidate
-	Facts          *Facts
-	RecentLaunches map[string]int
-	LaunchDebit    float64
-	MaxAge         time.Duration
-	Now            time.Time
+	Candidates  []Candidate
+	Facts       *Facts
+	Launches    []Launch
+	LaunchDebit float64
+	MaxAge      time.Duration
+	Now         time.Time
 }
 
 // Evaluation explains how one candidate looked at selection time. Pressure is
@@ -99,39 +107,74 @@ func Select(input Input) Choice {
 // empty with no known next reset, and one observed longer ago than MaxAge says
 // nothing about now.
 func evaluate(candidate Candidate, input Input) Evaluation {
-	evaluation := Evaluation{Account: candidate.Account, Threshold: candidate.Threshold, Exempt: candidate.Exempt, RecentLaunches: input.RecentLaunches[candidate.Account]}
+	evaluation := Evaluation{Account: candidate.Account, Threshold: candidate.Threshold, Exempt: candidate.Exempt}
+	// Without usable observations, retain only the bounded fallback history.
+	evaluation.RecentLaunches = pendingLaunches(input, candidate.Account, input.Now.Add(-input.MaxAge))
+	evaluation.pressure = input.LaunchDebit * float64(evaluation.RecentLaunches)
 	if input.Facts != nil {
 		for _, account := range input.Facts.Accounts {
 			if account.ID != candidate.Account {
 				continue
 			}
-			for i := range account.Windows {
-				window := account.Windows[i]
+			for _, window := range account.Windows {
 				if !limits(candidate.Windows, window.Name) {
 					continue
 				}
-				if window.ObservedAt != nil && input.Now.Sub(*window.ObservedAt) > input.MaxAge {
+				observed := input.Facts.GeneratedAt
+				if window.ObservedAt != nil {
+					observed = *window.ObservedAt
+				}
+				if input.Now.Sub(observed) > input.MaxAge || observed.After(input.Now.Add(maxClockSkew)) {
 					continue
 				}
 				ratio, resets := window.UsedRatio, window.ResetsAt
 				if resets != nil && !resets.After(input.Now) {
-					ratio, resets = 0, nil
+					ratio = 0
+					if resets.After(observed) {
+						observed = *resets
+					}
+					resets = nil
 				}
-				if !evaluation.UsageKnown || ratio > evaluation.UsedRatio {
+				// A small tolerated clock skew must not erase reservations for
+				// launches that have not happened at selection time.
+				if observed.After(input.Now) {
+					observed = input.Now
+				}
+				recent := pendingLaunches(input, candidate.Account, observed)
+				pressure := ratio + input.LaunchDebit*float64(recent)
+				if !evaluation.UsageKnown || pressure > evaluation.pressure ||
+					(pressure == evaluation.pressure && earlierReset(resets, evaluation.ResetsAt)) {
 					evaluation.UsageKnown, evaluation.UsedRatio, evaluation.Window, evaluation.ResetsAt = true, ratio, window.Name, resets
+					evaluation.RecentLaunches, evaluation.pressure = recent, pressure
 				}
 			}
 			break
 		}
 	}
-	evaluation.pressure = evaluation.UsedRatio + input.LaunchDebit*float64(evaluation.RecentLaunches)
 	switch {
 	case candidate.Exempt || !evaluation.UsageKnown:
 		evaluation.Eligible = true
 	default:
-		evaluation.Eligible = evaluation.pressure < candidate.Threshold && candidate.Threshold-evaluation.pressure >= HeadroomFloor
+		// Add the headroom before comparing, avoiding cancellation at small
+		// thresholds. One ULP covers rounding at the inclusive boundary.
+		limit := math.Nextafter(candidate.Threshold, math.Inf(1))
+		evaluation.Eligible = evaluation.pressure < candidate.Threshold && evaluation.pressure+HeadroomFloor <= limit
 	}
 	return evaluation
+}
+
+func pendingLaunches(input Input, account string, observed time.Time) int {
+	count := 0
+	for _, launch := range input.Launches {
+		if launch.Account == account && (launch.TerminalAt == nil || launch.TerminalAt.After(observed)) {
+			count++
+		}
+	}
+	return count
+}
+
+func earlierReset(a, b *time.Time) bool {
+	return a != nil && (b == nil || a.Before(*b))
 }
 
 func limits(names []string, window string) bool {

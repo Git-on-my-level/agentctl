@@ -57,7 +57,8 @@ type DelegationCapacity struct {
 }
 
 // CapacityEvaluation is one candidate as it looked at selection time. UsedRatio
-// is absent when usage was unknown.
+// is absent when usage was unknown. RecentLaunches counts running work and
+// completions not yet included in the limiting window's observation.
 type CapacityEvaluation struct {
 	Account        string   `json:"account"`
 	Model          string   `json:"model"`
