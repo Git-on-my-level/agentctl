@@ -1,0 +1,383 @@
+{
+  "recorded_at": "2026-11-14T20:47:51.24511Z",
+  "host": "m5-mbp",
+  "version": "v0.21.11",
+  "facts": {
+    "schema_version": 1,
+    "generated_at": "2026-11-14T20:44:06Z",
+    "accounts": [
+      {
+        "id": "claude-1",
+        "windows": [
+          {
+            "name": "weekly",
+            "used_ratio": 0.35,
+            "resets_at": "2026-11-18T21:00:00Z",
+            "observed_at": "2026-11-14T20:21:29Z"
+          }
+        ]
+      },
+      {
+        "id": "claude-2",
+        "windows": [
+          {
+            "name": "5h",
+            "used_ratio": 0.09,
+            "resets_at": "2026-11-14T22:30:00Z",
+            "observed_at": "2026-11-14T20:21:29Z"
+          },
+          {
+            "name": "weekly",
+            "used_ratio": 0.03,
+            "resets_at": "2026-11-21T05:00:00Z",
+            "observed_at": "2026-11-14T20:21:29Z"
+          }
+        ]
+      },
+      {
+        "id": "codex",
+        "windows": [
+          {
+            "name": "weekly",
+            "used_ratio": 0.29,
+            "resets_at": "2026-11-19T07:43:14Z",
+            "observed_at": "2026-11-14T20:21:36Z"
+          }
+        ]
+      },
+      {
+        "id": "codex-2",
+        "windows": [
+          {
+            "name": "weekly",
+            "used_ratio": 0.68,
+            "resets_at": "2026-11-15T11:08:51Z",
+            "observed_at": "2026-11-14T20:21:26Z"
+          }
+        ]
+      },
+      {
+        "id": "cursor-2",
+        "windows": [
+          {
+            "name": "cursor",
+            "used_ratio": 0.0099,
+            "resets_at": "2026-12-13T17:20:07Z",
+            "observed_at": "2026-11-14T20:21:34Z"
+          },
+          {
+            "name": "third-party",
+            "used_ratio": 0.0,
+            "resets_at": "2026-12-13T17:20:07Z",
+            "observed_at": "2026-11-14T20:21:34Z"
+          },
+          {
+            "name": "total",
+            "used_ratio": 0.0096,
+            "resets_at": "2026-12-13T17:20:07Z",
+            "observed_at": "2026-11-14T20:21:34Z"
+          }
+        ]
+      },
+      {
+        "id": "devin",
+        "windows": [
+          {
+            "name": "weekly",
+            "used_ratio": 0.0,
+            "resets_at": "2026-11-15T08:00:00Z",
+            "observed_at": "2026-11-14T20:26:22Z"
+          }
+        ]
+      },
+      {
+        "id": "xai",
+        "windows": [
+          {
+            "name": "weekly",
+            "used_ratio": 0.21,
+            "resets_at": "2026-11-15T02:45:38Z",
+            "observed_at": "2026-11-14T20:26:25Z"
+          }
+        ]
+      },
+      {
+        "id": "zai",
+        "windows": [
+          {
+            "name": "5h",
+            "used_ratio": 0.07,
+            "resets_at": "2026-11-14T22:05:36Z",
+            "observed_at": "2026-11-14T20:26:26Z"
+          }
+        ]
+      }
+    ]
+  },
+  "decisions": [
+    {
+      "id": "exec-trust-jeans-canal-scrap-suit-fossil",
+      "state": "running",
+      "created_at": "2026-11-14T20:40:01.332552Z",
+      "terminal_at": null,
+      "capacity": {
+        "pool": "review",
+        "mode": "soonest_reset",
+        "account": "codex",
+        "reason": "soonest_reset",
+        "facts_status": "ok",
+        "facts_age_seconds": 57,
+        "considered": [
+          {
+            "account": "codex",
+            "model": "gpt-6-luna",
+            "used_ratio": 0.29,
+            "window": "weekly",
+            "threshold": 0.95,
+            "eligible": true,
+            "recent_launches": 4
+          },
+          {
+            "account": "codex-2",
+            "model": "gpt-6-luna",
+            "used_ratio": 0.68,
+            "window": "weekly",
+            "threshold": 0.95,
+            "eligible": false,
+            "recent_launches": 11
+          }
+        ]
+      }
+    },
+    {
+      "id": "exec-clog-dignity-pull-verb-pelican-ripple",
+      "state": "completed",
+      "created_at": "2026-11-14T20:34:55.894952Z",
+      "terminal_at": "2026-11-14T20:42:16.294397Z",
+      "capacity": {
+        "pool": "review",
+        "mode": "soonest_reset",
+        "account": "codex-2",
+        "reason": "soonest_reset",
+        "facts_status": "ok",
+        "facts_age_seconds": 53,
+        "considered": [
+          {
+            "account": "codex",
+            "model": "gpt-6-luna",
+            "used_ratio": 0.28,
+            "window": "weekly",
+            "threshold": 0.95,
+            "eligible": true,
+            "recent_launches": 4
+          },
+          {
+            "account": "codex-2",
+            "model": "gpt-6-luna",
+            "used_ratio": 0.68,
+            "window": "weekly",
+            "threshold": 0.95,
+            "eligible": true,
+            "recent_launches": 8
+          }
+        ]
+      }
+    },
+    {
+      "id": "exec-group-cabin-dolphin-harvest-uniform-fury",
+      "state": "completed",
+      "created_at": "2026-11-14T20:24:33.93104Z",
+      "terminal_at": "2026-11-14T20:26:03.992824Z",
+      "capacity": {
+        "pool": "review",
+        "mode": "soonest_reset",
+        "account": "codex-2",
+        "reason": "soonest_reset",
+        "facts_status": "ok",
+        "facts_age_seconds": 53,
+        "considered": [
+          {
+            "account": "codex",
+            "model": "gpt-6-luna",
+            "used_ratio": 0.28,
+            "window": "weekly",
+            "threshold": 0.95,
+            "eligible": true,
+            "recent_launches": 4
+          },
+          {
+            "account": "codex-2",
+            "model": "gpt-6-luna",
+            "used_ratio": 0.68,
+            "window": "weekly",
+            "threshold": 0.95,
+            "eligible": true,
+            "recent_launches": 8
+          }
+        ]
+      }
+    },
+    {
+      "id": "exec-mirror-drum-material-search-palm-joke",
+      "state": "completed",
+      "created_at": "2026-11-14T20:07:48.621925Z",
+      "terminal_at": "2026-11-14T20:16:17.955551Z",
+      "capacity": {
+        "pool": "review",
+        "mode": "soonest_reset",
+        "account": "codex-2",
+        "reason": "soonest_reset",
+        "facts_status": "ok",
+        "facts_age_seconds": 53,
+        "considered": [
+          {
+            "account": "codex",
+            "model": "gpt-6-luna",
+            "used_ratio": 0.28,
+            "window": "weekly",
+            "threshold": 0.95,
+            "eligible": true,
+            "recent_launches": 4
+          },
+          {
+            "account": "codex-2",
+            "model": "gpt-6-luna",
+            "used_ratio": 0.68,
+            "window": "weekly",
+            "threshold": 0.95,
+            "eligible": true,
+            "recent_launches": 8
+          }
+        ]
+      }
+    },
+    {
+      "id": "exec-trim-sister-injury-control-machine-adapt",
+      "state": "completed",
+      "created_at": "2026-11-14T19:38:04.051265Z",
+      "terminal_at": "2026-11-14T19:39:33.181577Z",
+      "capacity": {
+        "pool": "review",
+        "mode": "soonest_reset",
+        "account": "codex-2",
+        "reason": "soonest_reset",
+        "facts_status": "ok",
+        "facts_age_seconds": 227,
+        "considered": [
+          {
+            "account": "codex",
+            "model": "gpt-6-luna",
+            "threshold": 0.95,
+            "eligible": true,
+            "recent_launches": 4
+          },
+          {
+            "account": "codex-2",
+            "model": "gpt-6-luna",
+            "used_ratio": 0.65,
+            "window": "weekly",
+            "threshold": 0.95,
+            "eligible": true,
+            "recent_launches": 5
+          }
+        ]
+      }
+    },
+    {
+      "id": "exec-asthma-bless-sport-parent-world-keep",
+      "state": "completed",
+      "created_at": "2026-11-14T19:27:59.655524Z",
+      "terminal_at": "2026-11-14T19:35:16.220284Z",
+      "capacity": {
+        "pool": "review",
+        "mode": "soonest_reset",
+        "account": "codex-2",
+        "reason": "soonest_reset",
+        "facts_status": "ok",
+        "facts_age_seconds": 227,
+        "considered": [
+          {
+            "account": "codex",
+            "model": "gpt-6-luna",
+            "threshold": 0.95,
+            "eligible": true,
+            "recent_launches": 4
+          },
+          {
+            "account": "codex-2",
+            "model": "gpt-6-luna",
+            "used_ratio": 0.65,
+            "window": "weekly",
+            "threshold": 0.95,
+            "eligible": true,
+            "recent_launches": 5
+          }
+        ]
+      }
+    },
+    {
+      "id": "exec-engage-replace-possible-loop-clutch-bike",
+      "state": "completed",
+      "created_at": "2026-11-14T19:20:07.313672Z",
+      "terminal_at": "2026-11-14T19:24:13.793837Z",
+      "capacity": {
+        "pool": "review",
+        "mode": "soonest_reset",
+        "account": "codex-2",
+        "reason": "soonest_reset",
+        "facts_status": "ok",
+        "facts_age_seconds": 227,
+        "considered": [
+          {
+            "account": "codex",
+            "model": "gpt-6-luna",
+            "threshold": 0.95,
+            "eligible": true,
+            "recent_launches": 4
+          },
+          {
+            "account": "codex-2",
+            "model": "gpt-6-luna",
+            "used_ratio": 0.65,
+            "window": "weekly",
+            "threshold": 0.95,
+            "eligible": true,
+            "recent_launches": 5
+          }
+        ]
+      }
+    },
+    {
+      "id": "exec-rib-hub-toilet-reason-verify-tray",
+      "state": "completed",
+      "created_at": "2026-11-14T18:59:50.717913Z",
+      "terminal_at": "2026-11-14T19:16:51.081096Z",
+      "capacity": {
+        "pool": "review",
+        "mode": "soonest_reset",
+        "account": "codex-2",
+        "reason": "soonest_reset",
+        "facts_status": "ok",
+        "facts_age_seconds": 227,
+        "considered": [
+          {
+            "account": "codex",
+            "model": "gpt-6-luna",
+            "threshold": 0.95,
+            "eligible": true,
+            "recent_launches": 4
+          },
+          {
+            "account": "codex-2",
+            "model": "gpt-6-luna",
+            "used_ratio": 0.65,
+            "window": "weekly",
+            "threshold": 0.95,
+            "eligible": true,
+            "recent_launches": 5
+          }
+        ]
+      }
+    }
+  ]
+}

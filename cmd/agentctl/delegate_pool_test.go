@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,8 +12,12 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/config"
+	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/delegation"
+	"github.com/Git-on-my-level/agentctl/internal/ids"
+	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
+	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
 // poolFixture has two accounts on one model, each with its own launcher, so a
@@ -325,5 +331,106 @@ func TestPoolDoesNotAddCapacityToNamedModelResults(t *testing.T) {
 	}
 	if strings.Contains(out, `"capacity"`) {
 		t.Fatalf("named model result gained capacity: %s", out)
+	}
+}
+
+func TestPoolFreshObservationRestoresSoonestResetAccount(t *testing.T) {
+	f := newPoolFixture(t)
+	now := time.Now().UTC()
+	publish := func(ratio float64, observed time.Time) {
+		t.Helper()
+		body := fmt.Sprintf(`{"schema_version":1,"generated_at":%q,"accounts":[`+
+			`{"id":"account-a","windows":[{"name":"weekly","used_ratio":%v,"resets_at":%q,"observed_at":%q}]},`+
+			`{"id":"account-b","windows":[{"name":"weekly","used_ratio":0.29,"resets_at":%q}]}]}`,
+			time.Now().UTC().Format(time.RFC3339Nano), ratio, now.Add(14*time.Hour).Format(time.RFC3339Nano), observed.Format(time.RFC3339Nano), now.Add(5*24*time.Hour).Format(time.RFC3339Nano))
+		if err := os.WriteFile(f.facts, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish(.1, now)
+	for i := 0; i < 11; i++ {
+		if err := os.WriteFile(f.request, []byte(fmt.Sprintf(`{"schema_version":1,"request_key":"completed-%d","selector":{"pool":"work"}}`, i)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if code, out := f.invoke("work", "--wait"); code != 0 {
+			t.Fatalf("exit=%d %s", code, out)
+		}
+	}
+	// The provider has measured the completed work. Republishing without a
+	// newer observation must not retire it; an actual observation must.
+	if err := os.WriteFile(f.request, []byte(`{"schema_version":1,"request_key":"after-observation","selector":{"pool":"work"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	publish(.69, now)
+	if got, _ := f.plan(t); got["account"] != "account-b" {
+		t.Fatalf("unobserved work was not reserved: %v", got)
+	}
+	publish(.69, time.Now().UTC())
+	got, _ := f.plan(t)
+	if got["account"] != "account-a" || got["reason"] != "soonest_reset" {
+		t.Fatalf("observation did not restore soonest reset: %v", got)
+	}
+	first := got["considered"].([]any)[0].(map[string]any)
+	if first["recent_launches"] != float64(0) || first["eligible"] != true {
+		t.Fatalf("completed work debited again: %v", first)
+	}
+}
+
+func TestPoolLaunchScanUsesCompletionTimeAndKeepsOldRunningWork(t *testing.T) {
+	f := newPoolFixture(t)
+	f.writeFacts(t, map[string]float64{"account-a": .1})
+	code, out := f.invoke("seed", "--wait")
+	if code != 0 {
+		t.Fatalf("seed: %d %s", code, out)
+	}
+	ctx := context.Background()
+	j, err := store.Open(f.journal, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := ids.ParseExecutionID(resultID(t, out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed, err := j.GetExecution(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	old, ended := now.Add(-3*time.Hour), now.Add(-time.Minute)
+	for _, account := range []string{"long-completed", "long-running", "old-completed"} {
+		e := seed
+		e.ID = ids.ExecutionID("")
+		e.CreatedAt, e.StartedAt, e.TerminalAt = old, &old, &ended
+		e.SourceBindings = nil
+		binding, capacity := *seed.Delegation, *seed.Delegation.Capacity
+		capacity.Account = account
+		binding.Capacity = &capacity
+		e.Delegation = &binding
+		if account == "long-running" {
+			e.State, e.Liveness, e.TerminalAt = model.StateRunning, model.LivenessAlive, nil
+		}
+		if account == "old-completed" {
+			e.TerminalAt = &old
+		}
+		if _, _, err := j.CreateExecution(ctx, e, contracts.MutationKey{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	launches, err := a.recentPoolLaunches(ctx, common{journalPath: f.journal}, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, launch := range launches {
+		counts[launch.Account]++
+	}
+	if counts["long-completed"] != 1 || counts["long-running"] != 1 || counts["old-completed"] != 0 {
+		t.Fatalf("launches=%v", counts)
 	}
 }

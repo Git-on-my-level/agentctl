@@ -139,8 +139,13 @@ slug from memory. Add explicit speed/effort inside the selector, under
 compaction window for that launch; other harnesses refuse it.
 When a profile configures capacity pools and the user named no model, request
 `{"pool":"<name>"}` instead of a family or model. agentctl picks an account from
-published usage, stops sending new work at `switch_threshold` (default 0.95), and
-reports its choice as `capacity`. Never combine a pool with harness, family,
+published usage, keeps at least 5% headroom below `switch_threshold` (default
+0.95, so exactly 0.90 pressure remains eligible), and reports its choice as
+`capacity`. Pressure adds a per-launch debit only for running work or work
+completed after each usage window's observation (`observed_at`, else
+`generated_at`); fresh observations retire completed-work debits. Each window
+uses its own observation, and the highest pressure limits the candidate. Without
+usable observations, completed-work debits expire after `max_age_seconds`. Never combine a pool with harness, family,
 version, model, speed or effort, and never use a pool when the user named a model.
 Labels are command metadata: pass `--label <value>` (repeatable) to `delegate`,
 never as request fields. Accounts are not selectable; a request that names one is

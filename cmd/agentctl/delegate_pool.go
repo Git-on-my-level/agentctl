@@ -89,7 +89,7 @@ func (a *app) selectDelegatePool(ctx context.Context, c common, profile config.P
 			Message: "recent launches could not be read, so the choice ignored them", Details: map[string]any{"pool": selector.Pool}})
 	}
 
-	input := capacity.Input{Facts: facts, RecentLaunches: recent, LaunchDebit: settings.Debit(), MaxAge: maxAge, Now: now}
+	input := capacity.Input{Facts: facts, Launches: recent, LaunchDebit: settings.Debit(), MaxAge: maxAge, Now: now}
 	for _, item := range viable {
 		input.Candidates = append(input.Candidates, capacity.Candidate{Account: item.candidate.Account, Windows: item.candidate.Windows, Threshold: settings.Threshold(item.candidate), Exempt: item.candidate.CutoffExempt})
 	}
@@ -141,9 +141,11 @@ func resolvePoolCandidate(candidate config.CapacityCandidate, entries []delegati
 	return resolution, nil
 }
 
-// recentPoolLaunches counts this journal's pool launches per account. Running
-// work always counts, and finished work counts for as long as facts may lag.
-func (a *app) recentPoolLaunches(ctx context.Context, c common, now time.Time, window time.Duration) (map[string]int, error) {
+// recentPoolLaunches reads local pool work. Selection compares completion times
+// to each window's observation, so usage already measured is not debited again.
+// Running work always reserves room; long-running work is retained by completion
+// time rather than creation time.
+func (a *app) recentPoolLaunches(ctx context.Context, c common, now time.Time, window time.Duration) ([]capacity.Launch, error) {
 	ctx, cancel := context.WithTimeout(ctx, recentLaunchScanLimit)
 	defer cancel()
 	path, err := a.journalPath(c)
@@ -162,16 +164,16 @@ func (a *app) recentPoolLaunches(ctx context.Context, c common, now time.Time, w
 	if err != nil {
 		return nil, fmt.Errorf("list executions: %w", err)
 	}
-	counts := map[string]int{}
+	var launches []capacity.Launch
 	for _, execution := range executions {
 		if execution.RemoteForwarded() || execution.Delegation == nil || execution.Delegation.Capacity == nil {
 			continue
 		}
-		if !execution.State.Terminal() || now.Sub(execution.CreatedAt) <= window {
-			counts[execution.Delegation.Capacity.Account]++
+		if execution.TerminalAt == nil || !execution.TerminalAt.Before(now.Add(-window)) {
+			launches = append(launches, capacity.Launch{Account: execution.Delegation.Capacity.Account, TerminalAt: execution.TerminalAt})
 		}
 	}
-	return counts, nil
+	return launches, nil
 }
 
 // pooledJournalSelector stores the resolved harness and model in place of the
