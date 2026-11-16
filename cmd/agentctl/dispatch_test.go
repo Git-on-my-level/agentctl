@@ -569,7 +569,7 @@ func TestMulticaAwaitTimeoutBoundsInflightReprobe(t *testing.T) {
 		t.Fatalf("await timeout lost execution outcome: %s", stdout.String())
 	}
 	if _, err := os.Stat(capture + ".issue.get.started"); err != nil {
-		t.Fatalf("Multica event reprobe did not start: %v", err)
+		t.Fatalf("Multica issue.get reprobe did not start: %v", err)
 	}
 }
 

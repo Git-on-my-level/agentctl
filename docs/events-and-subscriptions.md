@@ -326,6 +326,8 @@ otherwise.
 Retired: the Multica workspace event stream is retired (ruling R24, 2026-11-16; capture disabled 2026-09-13 by fork migration 9015). agentctl never runs `multica event list|watch`; its Multica
 adapter answers event reads with `capability_unavailable`. `await` and the
 supervisor refresh an issue-bound Multica execution from `multica issue get`,
-including rows recorded before the issue snapshot route existed. Issue/run
+including rows recorded before the issue snapshot route existed. Snapshot
+refreshes update the execution envelope; like every snapshot-refreshed row they
+do not append journal events, so event subscriptions do not fire for them. Issue/run
 mutation and review remain native Multica operations rather than
 adapter-invented commands.

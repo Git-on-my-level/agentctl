@@ -767,12 +767,18 @@ func TestReprobePromotedMulticaRefreshesFromIssueNotRetiredEvents(t *testing.T) 
 		t.Fatalf("reprobe consulted workspace events: %#v %#v", fake.pageRequests, fake.eventRequests)
 	}
 
-	// A failed issue read leaves the row unreachable; it never falls back to events.
+	// An unavailable issue read leaves the row unreachable, and a failed issue
+	// get (the real adapter's ErrExecutionFailed) is a retryable error. Neither
+	// falls back to events.
 	fresh := createPromotedIssueExecution(t, engine, journal, spec)
 	fake.snapshotErr = &adapter.AdapterError{Code: adapter.ErrCapabilityUnavailable, Message: "issue read unavailable"}
 	unreachable, err := bridge.Reprobe(context.Background(), supervisor.Execution{ID: fresh.ID.String()})
 	if err != nil || unreachable.Liveness != string(model.LivenessUnreachable) {
-		t.Fatalf("failed issue read reprobe=%#v err=%v", unreachable, err)
+		t.Fatalf("unavailable issue read reprobe=%#v err=%v", unreachable, err)
+	}
+	fake.snapshotErr = &adapter.AdapterError{Code: adapter.ErrExecutionFailed, Message: "Multica issue get did not return a JSON object", Retryable: true}
+	if _, err := bridge.Reprobe(context.Background(), supervisor.Execution{ID: fresh.ID.String()}); err == nil {
+		t.Fatal("failed issue get reprobe returned no error")
 	}
 	if len(fake.pageRequests) != 0 || len(fake.eventRequests) != 0 {
 		t.Fatalf("failed issue read fell back to workspace events: %#v %#v", fake.pageRequests, fake.eventRequests)

@@ -478,17 +478,6 @@ func inboxRecoveryGuidance(execution model.Execution, mode output.Mode) (*inboxR
 	return recovery, actions
 }
 
-// Match the runtime's first negotiated capability and semantics version;
-// a later duplicate cannot make an unavailable route usable.
-func inboxUsableCapability(snapshot model.CapabilitySnapshot, name string) (model.CapabilityItem, bool) {
-	for _, capability := range snapshot.Items {
-		if capability.Name == name {
-			return capability, capability.SemanticsVersion == adapter.SemanticsVersion && (capability.Status == model.CapabilitySupported || capability.Status == model.CapabilityDegraded)
-		}
-	}
-	return model.CapabilityItem{}, false
-}
-
 // Execution inspection must keep the journal/profile selected by this inbox.
 // Supervisor status is state-directory scoped; an explicit journal requires
 // discovery because --journal does not select a supervisor socket.

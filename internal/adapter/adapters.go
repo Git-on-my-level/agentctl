@@ -368,9 +368,11 @@ func NewMultica(config MulticaConfig) Adapter {
 	return &multicaAdapter{NativeAdapter: base, config: config}
 }
 
-// multicaAdapter exposes only the verified workspace event observer. Issue/run
-// lifecycle commands remain capability_unavailable until their current CLI
-// grammar and authority semantics are explicitly mapped.
+// multicaAdapter exposes the verified bound-issue snapshot (`issue get`) and
+// task cancellation. The workspace event stream is retired (R24), so event
+// reads answer capability_unavailable; other issue/run lifecycle commands stay
+// capability_unavailable until their CLI grammar and authority semantics are
+// explicitly mapped.
 type multicaAdapter struct {
 	*NativeAdapter
 	config MulticaConfig

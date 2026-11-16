@@ -716,10 +716,12 @@ transcripts or credentials are added to the journal or exported.
 
 Stale/unreachable and integrity-conflicted inbox entries include structured
 `recovery` guidance and read-only inspection actions. The route is derived from
-recorded capability scopes and exact authority bindings, never an adapter name.
+recorded capability scopes and exact authority bindings, never an adapter name;
+for Multica it needs only an exact issue binding (no run binding) and complete
+profile, endpoint and workspace configuration.
 `owner_process_only` says native process ownership is required; after the owner
 exits it does not promise cancellation, resume or result recovery.
-`bound_multica_authority` identifies typed bound issue/run aliases and points to
+`bound_multica_authority` identifies the typed bound issue alias and points to
 explicit refresh discovery or an already configured supervisor's status.
 Otherwise the route is `unverified`.
 
@@ -752,8 +754,10 @@ successful answer collection.
 
 Multica executions are refreshed only from the bound issue (`issue get`). The
 Multica workspace event stream is retired (R24); agentctl never requests an
-event page, and an issue read that fails leaves the row unreachable rather than
-falling back to events.
+event page. An issue read that is unavailable (capability, dependency,
+authentication, not found, timeout) leaves the row unreachable; a failed
+`issue get` (nonzero exit or malformed output) is returned as a retryable error,
+as for every Multica row. Neither falls back to events.
 
 Duplicate events whose state/source-state is already applied are envelope no-ops.
 An older nonterminal event cannot replace a newer observation during CAS retry;

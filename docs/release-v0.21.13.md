@@ -8,8 +8,9 @@ were always empty.
 - `await` and the supervisor refresh an issue-bound Multica execution from
   `multica issue get`. That now includes rows recorded before the issue snapshot
   route existed, which previously polled `event list` and never advanced.
-- If the issue read fails, the execution is reported unreachable; it never falls
-  back to events.
+- An unavailable issue read leaves the execution unreachable, and a failed
+  `issue get` is a retryable error, as for every Multica row; neither falls back
+  to events.
 - The Multica adapter answers `Events`/`EventsPage` with a typed
   `capability_unavailable` error without launching the CLI, and `MulticaArgv`
   no longer builds `event list` or `event watch`.
