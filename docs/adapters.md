@@ -509,8 +509,8 @@ authentication; a local run can fail with an OAuth refresh error.
 ### Multica (optional)
 
 - Bind to exact workspace, issue, and run IDs.
-- Prefer the companion fork's durable Multica workspace event outbox.
-- Until then, compare exact run state and issue state through bounded polling.
+- Read exact issue state through bounded polling (`issue get`). Never read the
+  Multica workspace event stream: the Multica workspace event stream is retired (ruling R24, 2026-11-16; capture disabled 2026-09-13 by fork migration 9015).
 - Treat run state as primary liveness and issue state as secondary workflow.
 - Re-fetch authoritative state before emitting a terminal success package.
 - Never create a Multica issue unless the caller explicitly selects Multica or

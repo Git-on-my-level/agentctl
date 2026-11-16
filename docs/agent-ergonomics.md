@@ -745,19 +745,15 @@ source-state transitions also record it; runner lease heartbeats do not. It is m
 paths that have not recorded such evidence return null; never substitute
 `created_at`, `updated_at` or a probe timestamp for unknown progress.
 
-Supervisor probe results carry `probed_at` separately as attempt metadata. Empty
-Multica event pages do not update execution timestamps or revisions. Duplicate
-events do not advance `progress_at`; existing state-replay semantics are preserved.
-An advancing workspace cursor may still be checkpointed for pagination, without
-advancing execution progress. Event ingestion already commits new evidence; the
-supervisor does not apply a second envelope update. These fields remain metadata
-and do not prove task acceptance or successful answer collection.
+Supervisor probe results carry `probed_at` separately as attempt metadata.
+Duplicate events do not advance `progress_at`; existing state-replay semantics
+are preserved. These fields remain metadata and do not prove task acceptance or
+successful answer collection.
 
-An empty workspace event response proves only that the workspace API answered.
-It does not observe the exact bound issue/run, restore its cached liveness, or
-refresh task observation age for inbox/reconcile. A durable per-execution API
-contact diagnostic would be separate from task evidence and requires a future
-storage/consumer contract; empty probes remain non-journaled in this landing.
+Multica executions are refreshed only from the bound issue (`issue get`). The
+Multica workspace event stream is retired (R24); agentctl never requests an
+event page, and an issue read that fails leaves the row unreachable rather than
+falling back to events.
 
 Duplicate events whose state/source-state is already applied are envelope no-ops.
 An older nonterminal event cannot replace a newer observation during CAS retry;

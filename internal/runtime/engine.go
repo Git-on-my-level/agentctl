@@ -417,33 +417,6 @@ func (e *Engine) recordScopeCheckpoint(ctx context.Context, execution model.Exec
 	return &stored, nil
 }
 
-func (e *Engine) recordWorkspaceCursor(ctx context.Context, executionID ids.ExecutionID, nextCursor string, scanned, filtered int) (*model.Event, error) {
-	if nextCursor == "" {
-		return nil, nil
-	}
-	execution, err := e.journal.GetExecution(ctx, executionID)
-	if err != nil {
-		return nil, wrapError("get_execution", "multica", err)
-	}
-	checkpoint := adapter.Event{
-		Cursor: nextCursor, Kind: string(model.EventHealth), SourceState: "workspace_cursor_advanced",
-		ObservedAt: e.now(), Ordering: string(model.OrderingSource),
-		DedupeKey: adapter.Fingerprint(execution.ID.String(), "multica_workspace_cursor", nextCursor),
-		Payload: map[string]any{
-			"cursor_advanced": true, "scanned": scanned, "filtered": filtered,
-		},
-	}
-	normalized, projection, err := normalizeEvent(execution, checkpoint, e.now())
-	if err != nil {
-		return nil, err
-	}
-	stored, _, err := e.journal.AppendEvent(ctx, normalized, projection)
-	if err != nil {
-		return nil, &Error{Code: CodeConflict, Operation: "events", Adapter: execution.Adapter, Message: "journal rejected Multica workspace cursor", Cause: err}
-	}
-	return &stored, nil
-}
-
 // Result obtains the adapter's bounded result projection, journals a terminal
 // event when authoritative, and returns the updated normalized execution.
 func (e *Engine) Result(ctx context.Context, executionID ids.ExecutionID, poll adapter.PollOptions) (model.Execution, error) {

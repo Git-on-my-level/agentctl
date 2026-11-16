@@ -452,17 +452,13 @@ func inboxRecoveryGuidance(execution model.Execution, mode output.Mode) (*inboxR
 	workspace, _ := dispatchBindingOpaque(execution.SourceBindings, "multica_workspace")
 	multicaSpec := agentruntime.AdapterSpec{Name: "multica", Multica: &adapter.MulticaConfig{Profile: profile, Endpoint: endpoint, Workspace: workspace}}
 	configurationComplete := multicaSpec.Validate() == nil
-	snapshot, snapshotUsable := inboxUsableCapability(execution.Capabilities, "snapshot")
-	events, eventsUsable := inboxUsableCapability(execution.Capabilities, "events")
-	// Runtime binding reconstruction selects a bound run before an issue.
-	// Multica's snapshot accepts only the issue source, and that usage error
-	// does not take the runtime's events fallback. Follow the actual precedence.
-	snapshotMismatch := boundRun && snapshotUsable
-	snapshotRefresh := snapshotUsable && snapshot.Constraints["cross_restart"] == true && snapshot.Constraints["scope"] == "bound_issue" && boundIssue && !boundRun
-	eventsRefresh := eventsUsable && events.Constraints["cross_restart"] == true && (boundIssue || boundRun) && !snapshotMismatch
-	refreshSupported := configurationComplete && (snapshotRefresh || eventsRefresh)
-	if snapshotMismatch {
-		recovery.Limitations = append(recovery.Limitations, "the bound run is selected as the refresh source, but the recorded snapshot route requires an issue source; this snapshot error does not fall back to events")
+	// Runtime binding reconstruction selects a bound run before an issue, and
+	// Multica's snapshot accepts only the issue source. The workspace event
+	// stream is retired (R24), so a bound issue without a run is the only
+	// refresh route, whatever capabilities an older row recorded.
+	refreshSupported := configurationComplete && boundIssue && !boundRun
+	if boundRun {
+		recovery.Limitations = append(recovery.Limitations, "the bound run is selected as the refresh source, but the issue snapshot route requires an issue source and the Multica event stream is retired")
 	}
 	if boundIssue || boundRun || len(recovery.AuthorityAliases) != 0 {
 		recovery.Summary = "inspect the exact bound issue or run in Multica; Multica remains the work authority"

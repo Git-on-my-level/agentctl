@@ -27,7 +27,7 @@ version may use a screened list; v1 order and membership will not change.
 - Label-prefix subscriptions and bounded internal journal-busy retry; stall
   attention, `delegate --fallback-selector`, and `--retry-of` are specified in
   [lane fan-in](design/lane-fan-in.md) but not yet implemented.
-- Codex, Cursor, Claude Code, OMP, generic-process, and Multica event adapters.
+- Codex, Cursor, Claude Code, OMP, generic-process, and Multica issue adapters.
 - Owner-only journal, normalized source bindings, terminal conflict handling,
   context handles, JSON-first output, and explicit compact text.
 - Known executable names infer adapters; `run` has explicit optional timeout
@@ -57,7 +57,7 @@ session unless that CLI exposes a reviewed durable attach/status API.
 - Authority-owned `sha256:` client key, semantic conflict detection, exact
   remote replay, one local target envelope, source/target promotion links, and
   optional supersession.
-- Workspace event observation with bounded polling.
+- Bound-issue observation with bounded polling (workspace event observation retired by R24).
 - Issue-only promotion remains issue-authoritative: nested task/run terminal
   events are evidence until an exact run binding exists.
 
@@ -98,7 +98,11 @@ does not modify an operator's network tools or fetch during a read.
 The supervisor is host-local. Remote callback receivers are separate trusted
 services; agentctl does not install them or infer credentials.
 
-## Phase 5 — Optional Multica durable events: implemented in a companion fork
+## Phase 5 — Optional Multica durable events: retired
+
+Retired 2026-11-16 (ruling R24): the fork disabled event capture on 2026-09-13
+(migration 9015) to stop write deadlocks, and the stream is not restored.
+agentctl reads issue state directly. The list below is historical.
 
 - Transactional workspace event outbox with monotonic sequence.
 - Authenticated workspace-isolated cursor API.

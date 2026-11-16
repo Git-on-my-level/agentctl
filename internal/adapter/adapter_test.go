@@ -559,12 +559,12 @@ esac
 }
 
 func TestMulticaExplicitDefaultProfileNeverInventsNamedProfile(t *testing.T) {
-	argv := MulticaArgv(MulticaConfig{Binary: "/bin/multica", Profile: MulticaDefaultProfile, Workspace: "workspace-test", Endpoint: "https://multica.example.test"}, "event list", "--cursor", "0", "--limit", "1")
+	argv := MulticaArgv(MulticaConfig{Binary: "/bin/multica", Profile: MulticaDefaultProfile, Workspace: "workspace-test", Endpoint: "https://multica.example.test"}, "issue get", "issue-1", "--output", "json")
 	got := strings.Join(argv, " ")
 	if strings.Contains(got, "--profile") {
 		t.Fatalf("explicit native default emitted a named profile: %q", got)
 	}
-	for _, required := range []string{"--workspace-id workspace-test", "--server-url https://multica.example.test", "event list", "--cursor 0", "--limit 1"} {
+	for _, required := range []string{"--workspace-id workspace-test", "--server-url https://multica.example.test", "issue get issue-1", "--output json"} {
 		if !strings.Contains(got, required) {
 			t.Fatalf("default-profile argv %q missing %q", got, required)
 		}
@@ -770,62 +770,24 @@ func TestBoundedPollFallbackUsesObservationOrdering(t *testing.T) {
 
 func TestMulticaArgvBindsAllAuthoritySelectors(t *testing.T) {
 	config := MulticaConfig{Binary: "/tmp/multica", Profile: "profile-fixture", Workspace: "workspace-fixture", Issue: "issue-fixture", Run: "run-fixture"}
-	argv := MulticaArgv(config, "event list", "--output", "json")
-	expected := []string{"/tmp/multica", "--profile", "profile-fixture", "--workspace-id", "workspace-fixture", "event", "list", "--output", "json"}
+	argv := MulticaArgv(config, "issue get", config.Issue, "--output", "json")
+	expected := []string{"/tmp/multica", "--profile", "profile-fixture", "--workspace-id", "workspace-fixture", "issue", "get", config.Issue, "--output", "json"}
 	if strings.Join(argv, "\x00") != strings.Join(expected, "\x00") {
 		t.Fatalf("argv = %#v", argv)
 	}
 	if got := MulticaArgv(config, "status"); got != nil {
 		t.Fatalf("unverified status command was built: %#v", got)
 	}
-	watch := MulticaArgv(config, "event watch", "--cursor", "evt1.abc", "--limit", "100", "--interval", "15s")
-	if strings.Join(watch, "\x00") != strings.Join([]string{"/tmp/multica", "--profile", "profile-fixture", "--workspace-id", "workspace-fixture", "event", "watch", "--cursor", "evt1.abc", "--limit", "100", "--interval", "15s"}, "\x00") {
-		t.Fatalf("watch argv = %#v", watch)
+	// R24: the workspace event stream is retired; no argv may be built for it.
+	for _, retired := range []string{"event list", "event watch"} {
+		if got := MulticaArgv(config, retired, "--cursor", "0"); got != nil {
+			t.Fatalf("retired %q command was built: %#v", retired, got)
+		}
 	}
 	cancel := MulticaArgv(config, "issue cancel-task", config.Run, "--issue", config.Issue, "--output", "json")
 	expectedCancel := []string{"/tmp/multica", "--profile", "profile-fixture", "--workspace-id", "workspace-fixture", "issue", "cancel-task", config.Run, "--issue", config.Issue, "--output", "json"}
 	if strings.Join(cancel, "\x00") != strings.Join(expectedCancel, "\x00") {
 		t.Fatalf("cancel argv = %#v", cancel)
-	}
-}
-
-func TestMulticaBoundedEventPageFiltersAndAdvancesCursor(t *testing.T) {
-	argvPath := filepath.Join(t.TempDir(), "argv")
-	path := fixtureExecutable(t, `printf '%s\n' "$@" > "`+argvPath+`"; printf '%s\n' '{"events":[{"type":"issue.progress","issue_id":"unrelated-issue","run_id":"unrelated-run","sequence":4},{"type":"run.completed","run_id":"run-fixture","sequence":7,"state":"completed"}],"next_cursor":"evt-next"}'`)
-	config := MulticaConfig{Binary: path, Profile: "profile-fixture", Workspace: "workspace-fixture", Issue: "issue-fixture", Run: "run-fixture", EventPageLimit: 42}
-	adapter := NewMultica(config)
-	paged, ok := adapter.(PagedEvents)
-	if !ok {
-		t.Fatal("Multica adapter does not expose bounded event pages")
-	}
-	page, err := paged.EventsPage(context.Background(), EventsRequest{Ref: SourceRef{Adapter: "multica", Kind: "multica_event", Profile: config.Profile, Workspace: config.Workspace}, Cursor: "evt-prev"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if page.NextCursor != "evt-next" || page.Scanned != 2 || page.Filtered != 1 || len(page.Events) != 1 {
-		t.Fatalf("page = %#v", page)
-	}
-	if page.Events[0].State != StateCompleted || page.Events[0].Payload["run_id"] != config.Run {
-		t.Fatalf("terminal event = %#v", page.Events[0])
-	}
-	argvBytes, err := os.ReadFile(argvPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	argv := strings.Fields(string(argvBytes))
-	joined := strings.Join(argv, " ")
-	if strings.Contains(joined, "event watch") || strings.Contains(joined, "watch") {
-		t.Fatalf("bounded page invoked watch: %q", joined)
-	}
-	for _, expected := range []string{"--profile", config.Profile, "--workspace-id", config.Workspace, "event", "list", "--cursor", "evt-prev", "--limit", "42"} {
-		if !strings.Contains(joined, expected) {
-			t.Fatalf("argv %q missing %q", joined, expected)
-		}
-	}
-	filteredAdapter := NewMultica(MulticaConfig{Binary: path, Profile: config.Profile, Workspace: config.Workspace, Issue: "missing-issue", Run: "missing-run", EventPageLimit: 42})
-	observed, err := filteredAdapter.Events(context.Background(), EventsRequest{Ref: SourceRef{Adapter: "multica", Kind: "multica_event", Profile: config.Profile, Workspace: config.Workspace}, Cursor: "evt-prev"})
-	if err != nil || len(observed) != 1 || observed[0].Kind != "health" || observed[0].Cursor != "evt-next" {
-		t.Fatalf("cursor-only observation = %#v, err=%v", observed, err)
 	}
 }
 
@@ -859,69 +821,37 @@ func TestMulticaCancelRequiresBoundIssueAndTask(t *testing.T) {
 	}
 }
 
-func TestMulticaIssueBindingMatchesNestedTaskAndUsesAuthorityCursors(t *testing.T) {
-	path := fixtureExecutable(t, `printf '%s\n' '{"events":[{"type":"issue.created","aggregate_kind":"issue","aggregate_id":"issue-fixture","sequence":101,"occurred_at":"2026-08-10T00:00:01Z"},{"type":"task.updated","aggregate_kind":"task","aggregate_id":"task-fixture","sequence":102,"payload":{"issue_id":"issue-fixture","run_id":"run-fixture","status":"completed"}},{"type":"issue.created","aggregate_kind":"issue","aggregate_id":"other-issue","sequence":103}],"next_cursor":"evt-next"}'`)
-	config := MulticaConfig{Binary: path, Profile: "profile-fixture", Workspace: "workspace-fixture", Issue: "issue-fixture", EventPageLimit: 3}
-	adapter := NewMultica(config)
-	paged, ok := adapter.(PagedEvents)
+// R24: Multica event reads answer with a typed capability error and never
+// launch the CLI, so a stale journal row cannot poll the retired stream.
+func TestMulticaEventReadsAreRetiredWithoutLaunchingCLI(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched")
+	path := fixtureExecutable(t, `touch "`+marker+`"; printf '%s\n' '{"events":[],"next_cursor":"evt-next"}'`)
+	config := MulticaConfig{Binary: path, Profile: "profile-fixture", Workspace: "workspace-fixture", Issue: "issue-fixture"}
+	value := NewMultica(config)
+	request := EventsRequest{Ref: SourceRef{Adapter: "multica", Kind: "multica_issue", OpaqueID: config.Issue, Profile: config.Profile, Workspace: config.Workspace, Issue: config.Issue}, Cursor: "0"}
+	assertRetired := func(name string, err error) {
+		t.Helper()
+		var adapterErr *AdapterError
+		if !errors.As(err, &adapterErr) || adapterErr.Code != ErrCapabilityUnavailable || adapterErr.Retryable || adapterErr.Details["capability"] != string(CapabilityEvents) {
+			t.Fatalf("%s error = %#v", name, err)
+		}
+	}
+	events, err := value.Events(context.Background(), request)
+	if len(events) != 0 {
+		t.Fatalf("retired events returned %#v", events)
+	}
+	assertRetired("Events", err)
+	paged, ok := value.(PagedEvents)
 	if !ok {
-		t.Fatal("Multica adapter does not expose bounded event pages")
+		t.Fatal("Multica adapter no longer satisfies PagedEvents")
 	}
-	ref := SourceRef{Adapter: "multica", Kind: "multica_event", Profile: config.Profile, Workspace: config.Workspace}
-	page, err := paged.EventsPage(context.Background(), EventsRequest{Ref: ref, Cursor: "evt-prev"})
-	if err != nil {
-		t.Fatal(err)
+	page, err := paged.EventsPage(context.Background(), request)
+	if len(page.Events) != 0 || page.NextCursor != "" {
+		t.Fatalf("retired page = %#v", page)
 	}
-	if page.Scanned != 3 || page.Filtered != 1 || len(page.Events) != 2 || page.NextCursor != "evt-next" {
-		t.Fatalf("issue-scoped page = %#v", page)
-	}
-	if page.Events[0].Cursor != "101" || page.Events[1].Cursor != "102" || page.Events[0].OccurredAt == nil {
-		t.Fatalf("events did not retain authority cursors: %#v", page.Events)
-	}
-	if page.Events[1].Kind != "progress" || page.Events[1].State != StateWaiting || page.Events[1].Payload["issue_id"] != config.Issue || page.Events[1].Payload["run_id"] != "run-fixture" {
-		t.Fatalf("nested task event was not correlated: %#v", page.Events[1])
-	}
-	observed, err := adapter.Events(context.Background(), EventsRequest{Ref: ref, Cursor: "evt-prev"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(observed) != 3 {
-		t.Fatalf("expected matching events plus page checkpoint, got %#v", observed)
-	}
-	checkpoint := observed[len(observed)-1]
-	if checkpoint.Kind != "health" || checkpoint.Cursor != "evt-next" || checkpoint.Payload["page_checkpoint"] != true {
-		t.Fatalf("missing page checkpoint: %#v", checkpoint)
-	}
-}
-
-func TestMulticaEventPageAcceptsPrettyPrintedJSON(t *testing.T) {
-	path := fixtureExecutable(t, `printf '%s\n' '{' '  "events": [' '    {' '      "type": "issue:updated",' '      "aggregate_kind": "issue",' '      "aggregate_id": "issue-fixture",' '      "sequence": 2,' '      "payload": {"status": "done"}' '    }' '  ],' '  "next_cursor": "2",' '  "has_more": false' '}'`)
-	config := MulticaConfig{Binary: path, Profile: "profile-fixture", Workspace: "workspace-fixture", Issue: "issue-fixture"}
-	paged := NewMultica(config).(PagedEvents)
-	page, err := paged.EventsPage(context.Background(), EventsRequest{Ref: SourceRef{Adapter: "multica", Kind: "multica_issue", Profile: config.Profile, Workspace: config.Workspace, Issue: config.Issue}, Cursor: "0"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if page.NextCursor != "2" || page.Scanned != 1 || len(page.Events) != 1 {
-		t.Fatalf("pretty page = %#v", page)
-	}
-	event := page.Events[0]
-	if event.Kind != "terminal" || event.State != StateCompleted || event.Payload["aggregate_id"] != config.Issue {
-		t.Fatalf("pretty terminal event = %#v", event)
-	}
-}
-
-func TestMulticaEventPageProcessFailureIsRetryableObservationError(t *testing.T) {
-	path := fixtureExecutable(t, `printf '%s\n' 'temporary event service failure' >&2; exit 19`)
-	config := MulticaConfig{Binary: path, Profile: "profile-fixture", Workspace: "workspace-fixture", Issue: "issue-fixture"}
-	paged := NewMultica(config).(PagedEvents)
-	_, err := paged.EventsPage(context.Background(), EventsRequest{Ref: SourceRef{Adapter: "multica", Kind: "multica_issue", Profile: config.Profile, Workspace: config.Workspace, Issue: config.Issue}, Cursor: "0"})
-	var adapterErr *AdapterError
-	if !errors.As(err, &adapterErr) {
-		t.Fatalf("event failure type=%T err=%v", err, err)
-	}
-	if adapterErr.Code != ErrExecutionFailed || !adapterErr.Retryable || adapterErr.Message != "Multica event list did not return a structured page" {
-		t.Fatalf("event failure=%#v", adapterErr)
+	assertRetired("EventsPage", err)
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("retired event read launched the Multica CLI: %v", statErr)
 	}
 }
 

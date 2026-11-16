@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -337,10 +336,6 @@ func MulticaArgv(config MulticaConfig, operation string, extra ...string) []stri
 	}
 	var command []string
 	switch operation {
-	case "event list":
-		command = []string{"event", "list"}
-	case "event watch":
-		command = []string{"event", "watch"}
 	case "issue get":
 		command = []string{"issue", "get"}
 	case "issue cancel-task":
@@ -577,178 +572,23 @@ func (m *multicaAdapter) readMulticaJSON(ctx context.Context, operation string, 
 	}
 	return document, nil
 }
+
+// multicaEventsRetired is the typed answer for every Multica event read. The
+// fork disabled workspace event capture on 2026-09-13 (migration 9015) and
+// ruling R24 retired the stream, so agentctl never runs `multica event` and
+// reads the bound issue with `issue get` instead.
+const multicaEventsRetired = "Multica workspace event stream is retired; agentctl reads the bound issue with issue get"
+
 func (m *multicaAdapter) Events(ctx context.Context, req EventsRequest) ([]Event, error) {
-	page, err := m.EventsPage(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	requestCursor := req.Cursor
-	if requestCursor == "" {
-		requestCursor = "0"
-	}
-	if page.NextCursor != "" && page.NextCursor != requestCursor {
-		// Preserve authority cursor advancement without exposing unrelated
-		// workspace events. The checkpoint is metadata-only and is emitted even
-		// when this page also contains matching events, so a caller can advance
-		// past an unmatched tail without replaying it on the next poll.
-		sequence := int64(len(page.Events) + 1)
-		checkpoint := Event{Sequence: sequence, Cursor: page.NextCursor, Kind: "health", ObservedAt: time.Now().UTC(), Ordering: "observation", Payload: map[string]any{
-			"cursor_advanced": true,
-			"filtered":        page.Filtered,
-			"scanned":         page.Scanned,
-			"page_checkpoint": true,
-		}}
-		checkpoint.DedupeKey = Fingerprint(m.config.Workspace, "multica_cursor", page.NextCursor)
-		page.Events = append(page.Events, checkpoint)
-	}
-	return page.Events, nil
+	return nil, capabilityError(CapabilityEvents, multicaEventsRetired)
 }
 
-// EventsPage polls one bounded workspace event-list page. It never invokes
-// event watch: a daemonless adapter call must have a finite child lifetime.
+// EventsPage is kept for the PagedEvents interface; it never launches a
+// process.
 func (m *multicaAdapter) EventsPage(ctx context.Context, req EventsRequest) (MulticaEventPage, error) {
-	if m.config.Profile == "" || m.config.Workspace == "" {
-		return MulticaEventPage{}, invalidRequest("Multica event observation requires exact profile and workspace-id")
-	}
-	if req.Ref.Profile != "" && req.Ref.Profile != m.config.Profile {
-		return MulticaEventPage{}, invalidRequest("Multica event profile does not match configured authority")
-	}
-	if req.Ref.Workspace != "" && req.Ref.Workspace != m.config.Workspace {
-		return MulticaEventPage{}, invalidRequest("Multica event workspace does not match configured authority")
-	}
-	if req.Ref.Issue != "" && req.Ref.Issue != m.config.Issue {
-		return MulticaEventPage{}, invalidRequest("Multica event issue does not match configured binding")
-	}
-	if req.Ref.Run != "" && req.Ref.Run != m.config.Run {
-		return MulticaEventPage{}, invalidRequest("Multica event run does not match configured binding")
-	}
-	if req.Ref.Empty() {
-		req.Ref = SourceRef{Adapter: "multica", Kind: "multica_event", Profile: m.config.Profile, Workspace: m.config.Workspace}
-	}
-	if req.Ref.Kind == "" {
-		req.Ref.Kind = "multica_event"
-	}
-	limit := m.config.EventPageLimit
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 500 {
-		limit = 500
-	}
-	cursor := req.Cursor
-	if cursor == "" {
-		cursor = "0"
-	}
-	argv := MulticaArgv(m.config, "event list", "--cursor", cursor, "--limit", strconv.Itoa(limit))
-	if argv == nil {
-		return MulticaEventPage{}, capabilityError(CapabilityEvents, "Multica event command grammar is unavailable")
-	}
-	launch, err := m.NativeAdapter.runOneShot(ctx, argv, req.Ref)
-	if err != nil {
-		return MulticaEventPage{}, err
-	}
-	record := m.NativeAdapter.recordFor(launch.Session.Ref)
-	if record == nil {
-		return MulticaEventPage{}, &AdapterError{Code: ErrExecutionUnknown, Message: "Multica event page process was not retained", Retryable: true}
-	}
-	record.mu.Lock()
-	pageData := record.page
-	events := append([]Event(nil), record.events...)
-	record.mu.Unlock()
-	if pageData == nil {
-		if launch.Result != nil && launch.Result.Error != "" {
-			return MulticaEventPage{}, &AdapterError{Code: ErrExecutionFailed, Message: "Multica event list did not return a structured page", Retryable: true, Details: map[string]any{"reason": launch.Result.Error}}
-		}
-		return MulticaEventPage{}, &AdapterError{Code: ErrExecutionUnknown, Message: "Multica event list returned no structured page", Retryable: true}
-	}
-	page := MulticaEventPage{Events: make([]Event, 0, len(events)), PageLimit: limit}
-	page.NextCursor = pageData.NextCursor
-	page.Scanned = pageData.Scanned
-	for _, event := range events {
-		if multicaEventMatches(event, m.config) {
-			page.Events = append(page.Events, constrainMulticaAuthority(event, m.config))
-		} else {
-			page.Filtered++
-		}
-	}
-	if page.Scanned == 0 {
-		page.Scanned = len(events)
-	}
-	return page, nil
+	return MulticaEventPage{}, capabilityError(CapabilityEvents, multicaEventsRetired)
 }
 
-func constrainMulticaAuthority(event Event, config MulticaConfig) Event {
-	if config.Run != "" || event.Kind != "terminal" {
-		return event
-	}
-	aggregate := strings.ToLower(strings.TrimSpace(fmt.Sprint(event.Payload["aggregate_kind"])))
-	if aggregate == "" {
-		aggregate = strings.ToLower(strings.TrimSpace(fmt.Sprint(event.Payload["aggregate_type"])))
-	}
-	if aggregate == "issue" {
-		return event
-	}
-	// An issue-only promotion has no authoritative run binding. Nested task or
-	// run terminal events are useful evidence, but Multica may retry, rerun, or
-	// execute several tasks under one issue. Only the issue aggregate may close
-	// the agentctl lifecycle until an exact run is durably bound.
-	if event.State == StateFailed || event.State == StateCancelled || event.State == StateOrphaned {
-		event.Kind = "attention"
-	} else {
-		event.Kind = "progress"
-	}
-	event.State = StateWaiting
-	return event
-}
-
-func multicaEventMatches(event Event, config MulticaConfig) bool {
-	aggregateID, ok := event.Payload["aggregate_id"]
-	aggregate := strings.ToLower(strings.TrimSpace(fmt.Sprint(event.Payload["aggregate_kind"])))
-	if aggregate == "" {
-		aggregate = strings.ToLower(strings.TrimSpace(fmt.Sprint(event.Payload["aggregate_type"])))
-	}
-	issueMatches := config.Issue != "" && scalarEquals(event.Payload, "issue_id", config.Issue)
-	runMatches := config.Run != "" && scalarMatchesAny(event.Payload, config.Run, "run_id", "task_id", "execution_id", "entity_id")
-	switch aggregate {
-	case "issue":
-		// An explicit issue aggregate is authoritative. Do not let a nested
-		// selector on an event for another issue promote it into this binding.
-		if ok {
-			return config.Issue != "" && fmt.Sprint(aggregateID) == config.Issue
-		}
-		return issueMatches
-	case "run", "execution":
-		// Run/execution aggregates are authoritative when present. A nested
-		// issue selector is useful only for an unscoped event lacking that id.
-		if ok {
-			return config.Run != "" && fmt.Sprint(aggregateID) == config.Run
-		}
-		return runMatches || issueMatches
-	case "task", "task_run", "agent_task":
-		// Task aggregate ids are not necessarily run ids; correlate these by
-		// the bounded nested run/issue selectors when available.
-		return runMatches || issueMatches || (ok && config.Run != "" && fmt.Sprint(aggregateID) == config.Run)
-	default:
-		// Events without a recognized aggregate kind are correlated only by
-		// explicit nested selectors or an exact aggregate id. A known kind is
-		// handled above so an issue cannot match a run via a coincidental field.
-		return runMatches || issueMatches || (ok && ((config.Run != "" && fmt.Sprint(aggregateID) == config.Run) || (config.Issue != "" && fmt.Sprint(aggregateID) == config.Issue)))
-	}
-}
-
-func scalarMatchesAny(payload map[string]any, expected string, keys ...string) bool {
-	for _, key := range keys {
-		if scalarEquals(payload, key, expected) {
-			return true
-		}
-	}
-	return false
-}
-
-func scalarEquals(payload map[string]any, key, expected string) bool {
-	value, ok := payload[key]
-	return ok && expected != "" && fmt.Sprint(value) == expected
-}
 func (m *multicaAdapter) Result(ctx context.Context, req ResultRequest) (Result, error) {
 	return Result{}, capabilityError(CapabilityResult, "Multica issue/run result route is not verified for the current CLI")
 }

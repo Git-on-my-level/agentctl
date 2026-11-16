@@ -214,7 +214,8 @@ status update, so concurrent external status changes remain an authority-level
 race. A local `starting` execution reserves the exact assignee/runtime before the
 remote call; semantic replay recovers that reservation instead of depending on
 mutable fleet discovery. `await` may
-reconcile durable Multica events into that handle;
+refresh that handle from the bound Multica issue (`issue get`; the workspace
+event stream is retired);
 `status`, `events`, and `recent` remain cached local reads.
 
 The host-local `inbox` is also a journal projection, not a new authority. It
