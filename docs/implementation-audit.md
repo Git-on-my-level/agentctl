@@ -31,7 +31,7 @@ them.
 | Callbacks | Atomic event fanout; file, acknowledged Unix, command, and HMAC webhook transports; TTL, retry, pause, receipt, and dead-letter state; SSRF, DNS rebinding, redirect, expiry, and replay controls. |
 | Supervisor | Real journal/runtime/outbox bridges; restart reprobe; owner-only Unix status RPC; one-shot or long-running cycle; launchd/systemd plans. |
 | Portability | Allowlisted skill and Multica runtime bundle; detected-harness bootstrap reconciliation plus installer/status/doctor preserve unmanaged harness state and never copy auth, memories, sessions, settings, caches, prompts, or worktrees. |
-| Optional Multica events | Transactional event outbox; workspace monotonic sequence; authenticated membership; exact filters; bounded cursor API; list/watch CLI; issue-create client-key idempotency; preview-first, bounded contiguous-prefix retention pruning in the companion integration. |
+| Optional Multica events (retired 2026-11-16, R24; agentctl reads issue state) | Historical: transactional event outbox; workspace monotonic sequence; authenticated membership; exact filters; bounded cursor API; list/watch CLI; issue-create client-key idempotency; preview-first, bounded contiguous-prefix retention pruning in the companion integration. |
 
 ## Authority invariants
 
@@ -122,8 +122,8 @@ These are explicit limits, not silently degraded promises:
   metadata destinations unless the exact host was explicitly allowlisted.
 - Git fetch is explicit and noninteractive; URLs with credentials, query, or
   fragments are rejected and diagnostics are redacted.
-- Multica event payloads omit comment bodies, prompts, task results,
-  transcripts, and storage URLs.
+- Multica issue reads keep only status fields; agentctl journals no comment
+  bodies, prompts, task results, transcripts, or storage URLs.
 
 ## Standalone public-preview release gates
 
@@ -154,7 +154,6 @@ support, but its capability must be reported accurately.
 3. Evaluate physical journal compaction only
    after the explicit inventory and digest-bound cleanup workflow has
    operational evidence.
-4. Expand golden schemas for subscriptions, deliveries, context results, and
-   Multica cursor pages.
+4. Expand golden schemas for subscriptions, deliveries, and context results.
 5. Add an independent canonical-event fixture reader alongside the implemented
    independent v1 ID codec and golden corpus.

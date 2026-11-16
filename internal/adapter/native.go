@@ -46,8 +46,7 @@ type parsedObservation struct {
 	BackendVersion string
 	Cursor         string
 	// CursorAuthority marks a cursor supplied by the native authority rather
-	// than the adapter's local observation counter. Multica event pages use
-	// this to preserve event sequence/source positions across polling calls.
+	// than the adapter's local observation counter.
 	CursorAuthority  bool
 	SourcePosition   string
 	Kind             string

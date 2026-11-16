@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
-	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/supervisor"
@@ -68,13 +67,11 @@ func (b SupervisorExecutions) Reprobe(ctx context.Context, minimal supervisor.Ex
 	if activeNativeRunnerLease(execution, now) {
 		return supervisor.ProbeResult{State: string(execution.State), Liveness: string(execution.Liveness), Revision: execution.Revision, ObservedAt: execution.Observation.ObservedAt, Source: string(execution.Observation.Source)}, nil
 	}
-	if !capabilityUsable(execution.Capabilities, adapter.CapabilitySnapshot) {
-		if result, ok, eventsErr := b.reprobeFromEvents(ctx, execution, value, ref); ok {
-			if eventsErr == nil {
-				return result, nil
-			}
-			return b.unreachableOrError(execution, now, value.Name(), eventsErr)
-		}
+	// The Multica workspace event stream is retired (R24, 2026-11-16): its
+	// capture was disabled server-side, so pages stay empty. A Multica row is
+	// refreshed only from the bound issue's own state, even when its stored
+	// capabilities predate the issue snapshot route.
+	if !capabilityUsable(execution.Capabilities, adapter.CapabilitySnapshot) && !multicaIssueRefreshable(execution, ref) {
 		return unreachableProbe(execution, now), nil
 	}
 	snapshot, err := value.Snapshot(ctx, adapter.SnapshotRequest{Ref: ref, Poll: adapter.PollOptions{Attempts: 1, Fresh: true}})
@@ -84,12 +81,6 @@ func (b SupervisorExecutions) Reprobe(ctx context.Context, minimal supervisor.Ex
 		if errors.As(mapped, &runtimeErr) {
 			switch runtimeErr.Code {
 			case CodeCapabilityUnavailable, CodeDependencyUnavailable, CodeAuthenticationRequired, CodeNotFound, CodeTimeout, CodeUnknownState:
-				if result, ok, eventsErr := b.reprobeFromEvents(ctx, execution, value, ref); ok {
-					if eventsErr == nil {
-						return result, nil
-					}
-					return b.unreachableOrError(execution, now, value.Name(), eventsErr)
-				}
 				return unreachableProbe(execution, now), nil
 			}
 		}
@@ -100,57 +91,6 @@ func (b SupervisorExecutions) Reprobe(ctx context.Context, minimal supervisor.Ex
 		observedAt = now
 	}
 	return supervisor.ProbeResult{State: string(snapshot.Session.State), Liveness: string(snapshot.Session.Liveness), Revision: execution.Revision, ObservedAt: observedAt, Source: snapshot.Session.Observation.Source}, nil
-}
-
-func (b SupervisorExecutions) reprobeFromEvents(ctx context.Context, execution model.Execution, value adapter.Adapter, ref adapter.SourceRef) (supervisor.ProbeResult, bool, error) {
-	if execution.Authority != model.AuthorityMultica || !crossRestartEventsUsable(execution.Capabilities) {
-		return supervisor.ProbeResult{}, false, nil
-	}
-	cursor, err := b.latestSourceCursor(ctx, execution.ID)
-	if err != nil {
-		return supervisor.ProbeResult{}, true, err
-	}
-	request := adapter.EventsRequest{Ref: ref, Cursor: cursor, Poll: adapter.PollOptions{Attempts: 1, Fresh: true}}
-	if paged, ok := value.(adapter.PagedEvents); ok {
-		page, pageErr := paged.EventsPage(ctx, request)
-		if pageErr != nil {
-			return supervisor.ProbeResult{}, true, wrapError("reprobe_events", value.Name(), pageErr)
-		}
-		_, ingestErr := b.Engine.ingestEvents(ctx, execution.ID, value.Name(), ref, page.Events)
-		if ingestErr != nil {
-			return supervisor.ProbeResult{}, true, ingestErr
-		}
-		if page.Scanned > 0 && page.NextCursor != "" && page.NextCursor != cursor {
-			current, currentErr := b.Engine.journal.GetExecution(ctx, execution.ID)
-			if currentErr != nil {
-				return supervisor.ProbeResult{}, true, wrapError("get_execution", execution.Adapter, currentErr)
-			}
-			// A terminal authority event is already a complete recovery boundary.
-			// Appending a later health checkpoint would violate the journal's
-			// terminal-event invariant, and no future page is needed for this
-			// execution anyway.
-			if !current.State.Terminal() {
-				_, checkpointErr := b.Engine.recordWorkspaceCursor(ctx, execution.ID, page.NextCursor, page.Scanned, page.Filtered)
-				if checkpointErr != nil {
-					return supervisor.ProbeResult{}, true, checkpointErr
-				}
-			}
-		}
-	} else {
-		_, eventsErr := b.Engine.Events(ctx, execution.ID, cursor, request.Poll)
-		if eventsErr != nil {
-			return supervisor.ProbeResult{}, true, eventsErr
-		}
-	}
-	refreshed, err := b.Engine.journal.GetExecution(ctx, execution.ID)
-	if err != nil {
-		return supervisor.ProbeResult{}, true, wrapError("get_execution", execution.Adapter, err)
-	}
-	return supervisor.ProbeResult{
-		State: string(refreshed.State), Liveness: string(refreshed.Liveness), Revision: refreshed.Revision,
-		ObservedAt: refreshed.Observation.ObservedAt, Source: string(refreshed.Observation.Source),
-		AlreadyApplied: true,
-	}, true, nil
 }
 
 func crossRestartEventsUsable(snapshot model.CapabilitySnapshot) bool {
@@ -167,45 +107,10 @@ func crossRestartEventsUsable(snapshot model.CapabilitySnapshot) bool {
 	return false
 }
 
-func (b SupervisorExecutions) latestSourceCursor(ctx context.Context, executionID ids.ExecutionID) (string, error) {
-	const pageSize = 1000
-	var after uint64
-	var cursor string
-	for {
-		events, err := b.Engine.journal.ListEvents(ctx, executionID, contracts.EventQuery{AfterSequence: after, Limit: pageSize})
-		if err != nil {
-			return "", wrapError("list_events", "", err)
-		}
-		if len(events) == 0 {
-			return cursor, nil
-		}
-		for _, event := range events {
-			if event.SourcePosition == nil {
-				continue
-			}
-			switch event.SourcePosition.Kind {
-			case "multica_workspace_cursor":
-				cursor = event.SourcePosition.Value
-			}
-		}
-		next := events[len(events)-1].Sequence
-		if next <= after || len(events) < pageSize {
-			return cursor, nil
-		}
-		after = next
-	}
-}
-
-func (b SupervisorExecutions) unreachableOrError(execution model.Execution, now time.Time, adapterName string, err error) (supervisor.ProbeResult, error) {
-	mapped := wrapError("reprobe_events", adapterName, err)
-	var runtimeErr *Error
-	if errors.As(mapped, &runtimeErr) {
-		switch runtimeErr.Code {
-		case CodeCapabilityUnavailable, CodeDependencyUnavailable, CodeAuthenticationRequired, CodeNotFound, CodeTimeout, CodeUnknownState:
-			return unreachableProbe(execution, now), nil
-		}
-	}
-	return supervisor.ProbeResult{}, mapped
+// multicaIssueRefreshable reports whether a Multica row names exactly one
+// issue and no run, which is the only source the issue snapshot accepts.
+func multicaIssueRefreshable(execution model.Execution, ref adapter.SourceRef) bool {
+	return execution.Authority == model.AuthorityMultica && ref.Kind == "multica_issue" && ref.Issue != "" && ref.Run == ""
 }
 
 func unreachableProbe(execution model.Execution, now time.Time) supervisor.ProbeResult {

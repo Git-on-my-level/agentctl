@@ -462,7 +462,7 @@ func TestInboxNativeRecoveryUsesRecordedOwnerScope(t *testing.T) {
 	}
 }
 
-func TestInboxMulticaRecoveryRequiresExactBoundRefreshCapability(t *testing.T) {
+func TestInboxMulticaRecoveryRequiresExactBoundIssue(t *testing.T) {
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
 	execution := staleInboxExecution(now)
 	execution.Authority, execution.Mode, execution.Adapter = model.AuthorityMultica, model.ModeMultica, "multica"
@@ -494,7 +494,28 @@ func TestInboxMulticaRecoveryRequiresExactBoundRefreshCapability(t *testing.T) {
 	if strings.Contains(string(encoded), opaque) {
 		t.Fatalf("recovery leaked native identity: %s", encoded)
 	}
-	for _, condition := range []string{"missing_opaque_binding", "snapshot_unavailable", "run_only", "missing_cross_restart", "missing_configuration", "issue_and_run", "unsupported_semantics"} {
+	// R24: the runtime refreshes any exactly issue-bound row through issue get,
+	// whatever capabilities an older row recorded, so stale capability records
+	// still advertise the bound-issue route.
+	for _, condition := range []string{"snapshot_unavailable", "missing_cross_restart", "unsupported_semantics"} {
+		t.Run("advertised_"+condition, func(t *testing.T) {
+			candidate := execution
+			candidate.Capabilities.Items = append([]model.CapabilityItem{}, execution.Capabilities.Items...)
+			switch condition {
+			case "snapshot_unavailable":
+				candidate.Capabilities.Items[0].Status = model.CapabilityUnavailable
+			case "unsupported_semantics":
+				candidate.Capabilities.Items[0].SemanticsVersion = 999
+			case "missing_cross_restart":
+				candidate.Capabilities.Items[0].Constraints = map[string]any{"scope": "bound_issue"}
+			}
+			projected, _ := projectInbox(candidate, now, time.Hour, store.AcknowledgementIndex{}, output.JSON)
+			if projected.Recovery.Route != "bound_multica_authority" || len(projected.NextActions) != 4 {
+				t.Fatalf("bound-issue refresh was not advertised: %+v", projected)
+			}
+		})
+	}
+	for _, condition := range []string{"missing_opaque_binding", "run_only", "missing_configuration", "issue_and_run"} {
 		t.Run(condition, func(t *testing.T) {
 			candidate := execution
 			candidate.SourceBindings = append([]model.SourceBinding{}, execution.SourceBindings...)
@@ -502,19 +523,13 @@ func TestInboxMulticaRecoveryRequiresExactBoundRefreshCapability(t *testing.T) {
 			switch condition {
 			case "missing_opaque_binding":
 				candidate.SourceBindings[0].OpaqueID = nil
-			case "snapshot_unavailable":
-				candidate.Capabilities.Items[0].Status = model.CapabilityUnavailable
 			case "run_only":
 				candidate.SourceBindings[0].Kind = "multica_run"
 			case "issue_and_run":
 				runID := "PRIVATE_MULTICA_RUN_ID"
 				candidate.SourceBindings = append(candidate.SourceBindings, model.SourceBinding{Kind: "multica_run", OpaqueID: &runID})
-			case "unsupported_semantics":
-				candidate.Capabilities.Items[0].SemanticsVersion = 999
 			case "missing_configuration":
 				candidate.SourceBindings = candidate.SourceBindings[:1]
-			case "missing_cross_restart":
-				candidate.Capabilities.Items[0].Constraints = map[string]any{"scope": "bound_issue"}
 			}
 			projected, _ := projectInbox(candidate, now, time.Hour, store.AcknowledgementIndex{}, output.JSON)
 			if projected.Recovery.Route != "unverified" || len(projected.NextActions) != 2 {
@@ -529,8 +544,10 @@ func TestInboxMulticaRecoveryRequiresExactBoundRefreshCapability(t *testing.T) {
 		wantRoute      string
 		wantActions    int
 	}{
-		{"snapshot_blocks_events_fallback", model.CapabilitySupported, model.CapabilitySupported, "unverified", 2},
-		{"independent_events_route", model.CapabilityUnavailable, model.CapabilitySupported, "bound_multica_authority", 4},
+		// A bound run selects the run source, which issue get cannot read, and
+		// the retired event stream is never a fallback.
+		{"snapshot_supported", model.CapabilitySupported, model.CapabilitySupported, "unverified", 2},
+		{"retired_events_route", model.CapabilityUnavailable, model.CapabilitySupported, "unverified", 2},
 		{"neither_route_usable", model.CapabilityUnavailable, model.CapabilityUnavailable, "unverified", 2},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -545,7 +562,7 @@ func TestInboxMulticaRecoveryRequiresExactBoundRefreshCapability(t *testing.T) {
 				t.Fatalf("run-source refresh precedence mismatch: %+v", projected)
 			}
 			assertInboxRecoveryReadOnly(t, projected.NextActions)
-			if scenario.snapshotStatus == model.CapabilitySupported && !strings.Contains(strings.Join(projected.Recovery.Limitations, " "), "does not fall back to events") {
+			if !strings.Contains(strings.Join(projected.Recovery.Limitations, " "), "event stream is retired") {
 				t.Fatalf("missing run-source limitation: %+v", projected.Recovery)
 			}
 		})

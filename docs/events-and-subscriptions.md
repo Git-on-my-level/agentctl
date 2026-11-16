@@ -148,9 +148,9 @@ A cursor word ID names a local immutable checkpoint containing:
 The cursor value is not the checkpoint itself and cannot be fabricated by a
 client. A cursor is valid only for the same origin and exact filter digest.
 The local v0.1 CLI resumes with `--after-sequence <n>` on one exact execution.
-The Multica authority API separately returns filter-bound opaque cursors and
-rejects changed filters, ahead-of-stream positions, and expired retained
-prefixes. A universal cross-authority cursor is a future extension.
+Multica executions have no event cursor: the Multica workspace event stream is
+retired, and agentctl reads the bound issue directly. A universal
+cross-authority cursor is a future extension.
 
 Retention that removes the checkpoint returns `cursor_expired` and the earliest
 available cursor; it never silently resumes at the current tail. Pagination
@@ -323,8 +323,11 @@ otherwise.
 
 ## Optional Multica integration
 
-The companion Multica fork exposes a server-side durable workspace event outbox
-with monotonic source positions and filter-bound cursors. The adapter uses its
-bounded `event list|watch` CLI. WebSocket delivery may reduce latency but is not
-treated as the durable record. Issue/run mutation and review remain native
-Multica operations rather than adapter-invented commands.
+Retired: the Multica workspace event stream is retired (ruling R24, 2026-11-16; capture disabled 2026-09-13 by fork migration 9015). agentctl never runs `multica event list|watch`; its Multica
+adapter answers event reads with `capability_unavailable`. `await` and the
+supervisor refresh an issue-bound Multica execution from `multica issue get`,
+including rows recorded before the issue snapshot route existed. Snapshot
+refreshes update the execution envelope; like every snapshot-refreshed row they
+do not append journal events, so event subscriptions do not fire for them. Issue/run
+mutation and review remain native Multica operations rather than
+adapter-invented commands.

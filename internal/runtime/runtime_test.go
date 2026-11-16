@@ -718,7 +718,10 @@ func TestProbeTerminalizationRacePreservesMulticaTerminalEvidence(t *testing.T) 
 	}
 }
 
-func TestReprobePromotedMulticaUsesDurableEventsAndAdvancesScopedCursor(t *testing.T) {
+// R24: a row promoted before the issue snapshot route recorded the workspace
+// event stream as its cross-restart source. That stream is retired, so the row
+// must refresh from its bound issue and never request an event page.
+func TestReprobePromotedMulticaRefreshesFromIssueNotRetiredEvents(t *testing.T) {
 	config := adapter.MulticaConfig{Binary: "/opt/multica", Profile: "private", Endpoint: "https://multica.internal", Workspace: "workspace-1", Issue: "issue-2"}
 	spec := AdapterSpec{Name: "multica", Executable: config.Binary, Multica: &config}
 	fake := &fakeAdapter{
@@ -726,19 +729,9 @@ func TestReprobePromotedMulticaUsesDurableEventsAndAdvancesScopedCursor(t *testi
 		unavailable: map[adapter.CapabilityName]bool{adapter.CapabilitySnapshot: true},
 		constraints: map[adapter.CapabilityName]map[string]any{adapter.CapabilityEvents: {"cross_restart": true}},
 	}
-	fake.eventsPageFn = func(request adapter.EventsRequest) (adapter.MulticaEventPage, error) {
-		switch len(fake.pageRequests) {
-		case 1:
-			return adapter.MulticaEventPage{Events: []adapter.Event{{Sequence: 1, Cursor: "1", SourcePosition: "api-seq-1", Kind: "progress", State: adapter.StateWaiting, SourceState: "issue.created", ObservedAt: fixtureNow.Add(time.Second), Ordering: "source", DedupeKey: "issue-created", Payload: map[string]any{"workspace_id": config.Workspace, "issue_id": config.Issue}}}, NextCursor: "evt1.1", Scanned: 1}, nil
-		case 2:
-			return adapter.MulticaEventPage{Events: []adapter.Event{{Sequence: 1, Cursor: "1", SourcePosition: "api-seq-2", Kind: "terminal", State: adapter.StateCompleted, SourceState: "task.completed", ObservedAt: fixtureNow.Add(2 * time.Second), Ordering: "source", DedupeKey: "related-nested-terminal", Payload: map[string]any{"workspace_id": config.Workspace, "issue_id": config.Issue, "run_id": "run-created-after-promotion", "aggregate_kind": "task"}}}, NextCursor: "evt1.2", Scanned: 1}, nil
-		case 3:
-			return adapter.MulticaEventPage{Events: []adapter.Event{{Sequence: 1, Cursor: "1", SourcePosition: "api-seq-3", Kind: "terminal", State: adapter.StateCompleted, SourceState: "task.completed", ObservedAt: fixtureNow.Add(3 * time.Second), Ordering: "source", DedupeKey: "unrelated-terminal", Payload: map[string]any{"workspace_id": "other-workspace", "issue_id": "other-issue", "run_id": "other-run"}}}, NextCursor: "evt1.3", Scanned: 1, Filtered: 1}, nil
-		case 4:
-			return adapter.MulticaEventPage{Events: []adapter.Event{{Sequence: 1, Cursor: "1", SourcePosition: "api-seq-4", Kind: "terminal", State: adapter.StateCompleted, SourceState: "issue:updated", ObservedAt: fixtureNow.Add(4 * time.Second), Ordering: "source", DedupeKey: "issue-terminal", Payload: map[string]any{"workspace_id": config.Workspace, "issue_id": config.Issue, "aggregate_kind": "issue"}}}, NextCursor: "evt1.4", Scanned: 1}, nil
-		default:
-			return adapter.MulticaEventPage{}, nil
-		}
+	fake.eventsPageFn = func(adapter.EventsRequest) (adapter.MulticaEventPage, error) {
+		t.Fatal("reprobe requested a retired Multica event page")
+		return adapter.MulticaEventPage{}, nil
 	}
 	registry := NewRegistry()
 	if err := registry.Register("multica", func(resolved AdapterSpec) (adapter.Adapter, error) {
@@ -751,54 +744,44 @@ func TestReprobePromotedMulticaUsesDurableEventsAndAdvancesScopedCursor(t *testi
 	}
 	engine, journal, _ := testEngine(t, registry)
 	execution := createPromotedIssueExecution(t, engine, journal, spec)
+	if capabilityUsable(execution.Capabilities, adapter.CapabilitySnapshot) || !crossRestartEventsUsable(execution.Capabilities) {
+		t.Fatalf("fixture must look like a pre-snapshot row: %#v", execution.Capabilities)
+	}
 	bridge := SupervisorExecutions{Engine: engine}
+	fake.snapshot = adapter.Snapshot{Session: adapter.Session{Ref: adapter.SourceRef{Adapter: "multica", Kind: "multica_issue", OpaqueID: "issue-2"}, State: adapter.StateCompleted, Liveness: adapter.LivenessExited, Observation: adapter.Observation{Source: "status_api", Integrity: "verified", ObservedAt: fixtureNow.Add(time.Second)}}}
+	probe, err := bridge.Reprobe(context.Background(), supervisor.Execution{ID: execution.ID.String()})
+	if err != nil || probe.Source != string(model.ObservationStatusAPI) || probe.AlreadyApplied {
+		t.Fatalf("reprobe=%#v err=%v", probe, err)
+	}
+	if fake.lastSnapshotRef.Kind != "multica_issue" || fake.lastSnapshotRef.Issue != config.Issue || fake.lastSnapshotRef.Run != "" {
+		t.Fatalf("snapshot ref=%#v", fake.lastSnapshotRef)
+	}
+	if err := bridge.ApplyProbe(context.Background(), execution.ID.String(), probe); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := journal.GetExecution(context.Background(), execution.ID)
+	if err != nil || stored.State != model.StateCompleted || stored.Observation.Source != model.ObservationStatusAPI {
+		t.Fatalf("stored=%#v err=%v", stored, err)
+	}
+	if len(fake.pageRequests) != 0 || len(fake.eventRequests) != 0 {
+		t.Fatalf("reprobe consulted workspace events: %#v %#v", fake.pageRequests, fake.eventRequests)
+	}
 
-	waiting, err := bridge.Reprobe(context.Background(), supervisor.Execution{ID: execution.ID.String()})
-	if err != nil || waiting.State != string(model.StateWaiting) || waiting.Liveness != string(model.LivenessBlocked) || waiting.Source != string(model.ObservationDurableOutbox) {
-		t.Fatalf("waiting reprobe=%#v err=%v", waiting, err)
+	// An unavailable issue read leaves the row unreachable, and a failed issue
+	// get (the real adapter's ErrExecutionFailed) is a retryable error. Neither
+	// falls back to events.
+	fresh := createPromotedIssueExecution(t, engine, journal, spec)
+	fake.snapshotErr = &adapter.AdapterError{Code: adapter.ErrCapabilityUnavailable, Message: "issue read unavailable"}
+	unreachable, err := bridge.Reprobe(context.Background(), supervisor.Execution{ID: fresh.ID.String()})
+	if err != nil || unreachable.Liveness != string(model.LivenessUnreachable) {
+		t.Fatalf("unavailable issue read reprobe=%#v err=%v", unreachable, err)
 	}
-	storedWaiting, _ := journal.GetExecution(context.Background(), execution.ID)
-	if storedWaiting.Observation.Source != model.ObservationDurableOutbox {
-		t.Fatalf("stored waiting observation = %#v", storedWaiting.Observation)
+	fake.snapshotErr = &adapter.AdapterError{Code: adapter.ErrExecutionFailed, Message: "Multica issue get did not return a JSON object", Retryable: true}
+	if _, err := bridge.Reprobe(context.Background(), supervisor.Execution{ID: fresh.ID.String()}); err == nil {
+		t.Fatal("failed issue get reprobe returned no error")
 	}
-	nested, err := bridge.Reprobe(context.Background(), supervisor.Execution{ID: execution.ID.String()})
-	if err != nil || nested.State != string(model.StateWaiting) || nested.Liveness != string(model.LivenessBlocked) {
-		t.Fatalf("nested task terminalized issue-only execution: reprobe=%#v err=%v", nested, err)
-	}
-	unrelated, err := bridge.Reprobe(context.Background(), supervisor.Execution{ID: execution.ID.String()})
-	if err != nil || unrelated.State != string(model.StateWaiting) || unrelated.Liveness != string(model.LivenessBlocked) {
-		t.Fatalf("unrelated event changed execution: reprobe=%#v err=%v", unrelated, err)
-	}
-	completed, err := bridge.Reprobe(context.Background(), supervisor.Execution{ID: execution.ID.String()})
-	if err != nil || completed.State != string(model.StateCompleted) || completed.Liveness != string(model.LivenessExited) {
-		t.Fatalf("terminal reprobe=%#v err=%v", completed, err)
-	}
-	if len(fake.pageRequests) != 4 {
-		t.Fatalf("event page requests = %#v", fake.pageRequests)
-	}
-	wantCursors := []string{"", "evt1.1", "evt1.2", "evt1.3"}
-	for index, request := range fake.pageRequests {
-		if request.Cursor != wantCursors[index] {
-			t.Fatalf("request %d cursor=%q want=%q", index, request.Cursor, wantCursors[index])
-		}
-		if request.Ref.Profile != config.Profile || request.Ref.Endpoint != config.Endpoint || request.Ref.Workspace != config.Workspace || request.Ref.Issue != config.Issue || request.Ref.Run != "" {
-			t.Fatalf("request %d ref=%#v", index, request.Ref)
-		}
-	}
-	storedEvents, err := journal.ListEvents(context.Background(), execution.ID, contracts.EventQuery{})
-	if err != nil || len(storedEvents) != 7 || storedEvents[2].Kind != model.EventProgress || storedEvents[2].State == nil || *storedEvents[2].State != model.StateWaiting || storedEvents[4].Kind != model.EventHealth || storedEvents[4].Payload["reason"] != "out_of_scope_event" || storedEvents[6].Kind != model.EventTerminal {
-		t.Fatalf("stored events=%#v err=%v", storedEvents, err)
-	}
-	if storedEvents[0].SourcePosition == nil || storedEvents[0].SourcePosition.Kind != "native_sequence" || storedEvents[0].SourcePosition.Value != "api-seq-1" {
-		t.Fatalf("matching event source position = %#v", storedEvents[0].SourcePosition)
-	}
-	for _, index := range []int{1, 3, 5} {
-		if storedEvents[index].SourcePosition == nil || storedEvents[index].SourcePosition.Kind != "multica_workspace_cursor" {
-			t.Fatalf("event %d missing workspace cursor checkpoint: %#v", index, storedEvents[index])
-		}
-	}
-	if storedEvents[6].Kind != model.EventTerminal {
-		t.Fatalf("terminal authority event was not the recovery boundary: %#v", storedEvents[6])
+	if len(fake.pageRequests) != 0 || len(fake.eventRequests) != 0 {
+		t.Fatalf("failed issue read fell back to workspace events: %#v %#v", fake.pageRequests, fake.eventRequests)
 	}
 }
 
