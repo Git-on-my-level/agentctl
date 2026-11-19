@@ -303,6 +303,8 @@ func TestDispatchExecuteReplayTracksOneExecutionWithoutPromptRetention(t *testin
 		if index == 1 {
 			t.Setenv("AGENTCTL_TEST_AGENTS", `[]`)
 			t.Setenv("AGENTCTL_TEST_RUNTIMES", `[]`)
+			t.Setenv("AGENTCTL_TEST_ISSUE_STATUS", "backlog")
+			t.Setenv("AGENTCTL_TEST_HELP_ERROR", "unknown flag: --help")
 		}
 		a.stdin = strings.NewReader(prompt)
 		stdout.Reset()

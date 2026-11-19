@@ -264,7 +264,8 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 	if currentStatus == "" {
 		return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_read", &operationDiagnostic{Category: "invalid_json", ExitCode: 0, Retryable: true})
 	}
-	if currentStatus == "backlog" && dispatchStatus != "backlog" {
+	// A finalized dispatch may have been moved back to backlog by an operator.
+	if prepared.State == model.StateStarting && currentStatus == "backlog" && dispatchStatus != "backlog" {
 		updateArgv := multicaBaseArgv(m, "issue", "update", issueID, "--status", dispatchStatus, "--output", "json")
 		if _, err := runMulticaIssueUpdate(ctx, updateArgv); err != nil {
 			return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_activate", err)
