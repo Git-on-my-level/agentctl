@@ -162,6 +162,10 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 	if problem != nil {
 		return problem.WithDetail("client_key", clientKey)
 	}
+	if err := store.CheckDispatchJournal(initialJournal.Path()); err != nil {
+		initialJournal.Close()
+		return mapStoreError("dispatch requires a regular journal with a single filesystem link", err).WithDetail("client_key", clientKey)
+	}
 	prepared, found, err := initialJournal.GetExecutionByMutation(ctx, mutation)
 	if err != nil {
 		initialJournal.Close()

@@ -1230,6 +1230,45 @@ func TestConcurrentDispatchPreservesOperatorBacklog(t *testing.T) {
 	}
 }
 
+func TestDispatchRejectsHardLinkedJournalBeforeMulticaWrite(t *testing.T) {
+	root := testutil.TempDir(t)
+	fake, capture := writeDispatchFixture(t, root,
+		`[{"id":"agent-sol","name":"M5 Codex","model":"gpt-5.6-sol","runtime_id":"runtime-m5","status":"idle"}]`,
+		`[{"id":"runtime-m5","custom_name":"M5 MBP","provider":"codex","status":"online"}]`)
+	configPath := filepath.Join(root, "config.json")
+	statePath := filepath.Join(root, "state")
+	journalPath, aliasPath := filepath.Join(statePath, "journal.db"), filepath.Join(statePath, "alias.db")
+	writeDispatchConfig(t, configPath, fake,
+		[]any{map[string]any{"agent": "codex", "model": "gpt-5.6-sol", "speed": "regular", "use_for": "alias:sol"}},
+		map[string]any{"m5": "m5-mbp"})
+	journal, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(journalPath, aliasPath); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{journalPath, aliasPath} {
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		a.stdin = strings.NewReader("Review")
+		a.stdinIsTerminal = func() bool { return false }
+		code := a.run(context.Background(), []string{"--journal", path, "--config", configPath, "dispatch", "--route", "m5 sol",
+			"--title", "Review", "--prompt-stdin", "--idempotency-key", "same-key"})
+		if code != output.ExitCodeFor(output.CodeAuthorizationDenied) || !strings.Contains(stdout.String(), "single filesystem link") {
+			t.Fatalf("dispatch with hard-linked journal exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+		}
+	}
+	for _, suffix := range []string{".argv", ".update.argv"} {
+		if _, err := os.Stat(capture + suffix); !os.IsNotExist(err) {
+			t.Fatalf("hard-linked dispatch attempted a Multica write: %v", err)
+		}
+	}
+}
+
 func TestDispatchFailureStagesRecoverWithOriginalKey(t *testing.T) {
 	for _, tc := range []struct {
 		variable, value, stage string

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -10,6 +11,18 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"golang.org/x/sys/unix"
 )
+
+// CheckDispatchJournal requires one pathname for the journal's activation locks.
+func CheckDispatchJournal(path string) error {
+	var info unix.Stat_t
+	if err := unix.Lstat(path, &info); err != nil {
+		return err
+	}
+	if info.Mode&unix.S_IFMT != unix.S_IFREG || info.Nlink != 1 {
+		return fmt.Errorf("%w: dispatch requires a regular journal with a single filesystem link", ErrPermission)
+	}
+	return nil
+}
 
 // LockDispatchActivation serializes replays of a bound dispatch in one journal.
 // The caller can hold this lock across Multica I/O without holding the database
@@ -51,6 +64,15 @@ func LockDispatchActivation(ctx context.Context, journalPath string, id ids.Exec
 	for {
 		err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {
+			// A poll may win its select just as the deadline expires.
+			if err := ctx.Err(); err != nil {
+				file.Close()
+				return nil, err
+			}
+			if err := CheckDispatchJournal(journalPath); err != nil {
+				file.Close()
+				return nil, err
+			}
 			return file, nil
 		}
 		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EINTR) {
