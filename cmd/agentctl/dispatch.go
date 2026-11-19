@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -658,15 +659,11 @@ func checkMulticaDispatchClient(ctx context.Context, m *config.Multica) *output.
 	if err := cmd.Run(); err != nil {
 		diagnostic := classifyOperation(ctx, err, stderr.String())
 		return output.Wrap(output.CodeCapabilityUnavailable, "could not inspect Multica issue creation capabilities", diagnostic.Retryable, diagnostic).
-			WithDetail("readiness_class", "client_compatibility_unknown")
+			WithDetail("readiness_class", "client_compatibility_unknown").
+			WithDetail("category", diagnostic.Category).
+			WithDetail("upstream_exit_code", diagnostic.ExitCode)
 	}
-	flags := make(map[string]bool)
-	for _, line := range strings.Split(stdout.String(), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) > 0 {
-			flags[fields[0]] = true
-		}
-	}
+	flags := multicaHelpFlags(stdout.String())
 	var missing []string
 	for _, flag := range []string{"--client-key", "--description-stdin"} {
 		if !flags[flag] {
@@ -678,6 +675,28 @@ func checkMulticaDispatchClient(ctx context.Context, m *config.Multica) *output.
 			WithDetail("readiness_class", "client_incompatible").WithDetail("missing_flags", missing)
 	}
 	return nil
+}
+
+// Cobra uses pflag's fixed columns for long-only and shorthand declarations.
+var multicaHelpFlag = regexp.MustCompile(`^(?: {6}| {2}-[[:alnum:]], )(--[a-z][a-z0-9-]*)(?:[ \t]|$)`)
+
+func multicaHelpFlags(help string) map[string]bool {
+	flags := make(map[string]bool)
+	inFlags := false
+	for _, line := range strings.Split(help, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		switch {
+		case line == "FLAGS" || line == "Flags:":
+			inFlags = true
+		case line == "" || !strings.HasPrefix(line, " "):
+			inFlags = false
+		case inFlags:
+			if declaration := multicaHelpFlag.FindStringSubmatch(line); declaration != nil {
+				flags[declaration[1]] = true
+			}
+		}
+	}
+	return flags
 }
 
 func runMulticaJSON(ctx context.Context, argv []string, destination any) error {

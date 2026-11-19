@@ -55,10 +55,17 @@ case "$*" in
     printf '%s\n' "$AGENTCTL_TEST_EVENTS"
     ;;
   *"issue create --help"*)
+    if [ -n "${AGENTCTL_TEST_HELP_ERROR:-}" ]; then
+      printf '%s\n' "$AGENTCTL_TEST_HELP_ERROR" >&2
+      exit 23
+    fi
+    printf '%s\n' 'Examples:' '      --client-key string'
+    printf '\n%s\n' 'FLAGS'
     if [ "${AGENTCTL_TEST_OLD_MULTICA:-}" != "1" ]; then
-      printf '%s\n' '      --client-key string'
+      printf '%s\n' '  -k, --client-key string'
     fi
     printf '%s\n' '      --description-stdin   Read issue description from stdin; use --client-key if supported'
+    printf '%s\n' '                             --client-key is optional on older clients'
     ;;
   *"issue create"*)
     printf '%s\n' "$*" >> "$AGENTCTL_TEST_CAPTURE.argv"
@@ -223,6 +230,46 @@ func TestDispatchRejectsClientWithoutReplaySafeIssueCreate(t *testing.T) {
 			}
 			if _, err := os.Stat(capture + ".argv"); !os.IsNotExist(err) {
 				t.Fatalf("incompatible client called issue create: %v", err)
+			}
+		})
+	}
+}
+
+func TestDispatchReportsSanitizedClientProbeFailure(t *testing.T) {
+	root := testutil.TempDir(t)
+	fake, capture := writeDispatchFixture(t, root, "[]", "[]")
+	t.Setenv("AGENTCTL_TEST_HELP_ERROR", "not authenticated: private-upstream-marker")
+	configPath := filepath.Join(root, "config.json")
+	writeDispatchConfig(t, configPath, fake,
+		[]any{map[string]any{"agent": "codex", "model": "gpt-5.6-sol", "speed": "regular", "use_for": "alias:sol"}},
+		map[string]any{"m5": "m5-mbp"})
+
+	for _, tc := range []struct {
+		mode     string
+		category string
+		exitCode string
+	}{
+		{"json", `"category":"authentication_required"`, `"upstream_exit_code":23`},
+		{"text", "category=authentication_required", "upstream_exit_code=23"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			a.stdin = strings.NewReader("Private prompt")
+			a.stdinIsTerminal = func() bool { return false }
+			code := a.run(context.Background(), []string{"--config", configPath, "--output", tc.mode,
+				"dispatch", "--route", "m5 sol", "--title", "Readiness test", "--prompt-stdin",
+				"--idempotency-key", "readiness-test", "--plan"})
+			if code != output.ExitCodeFor(output.CodeCapabilityUnavailable) ||
+				!strings.Contains(stdout.String(), tc.category) ||
+				!strings.Contains(stdout.String(), tc.exitCode) {
+				t.Fatalf("probe exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+			}
+			if strings.Contains(stdout.String()+stderr.String(), "private-upstream-marker") {
+				t.Fatal("probe leaked raw upstream stderr")
+			}
+			if _, err := os.Stat(capture + ".argv"); !os.IsNotExist(err) {
+				t.Fatalf("failed client probe called issue create: %v", err)
 			}
 		})
 	}
