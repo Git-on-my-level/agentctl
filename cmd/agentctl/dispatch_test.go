@@ -54,6 +54,12 @@ case "$*" in
 	fi
     printf '%s\n' "$AGENTCTL_TEST_EVENTS"
     ;;
+  *"issue create --help"*)
+    if [ "${AGENTCTL_TEST_OLD_MULTICA:-}" != "1" ]; then
+      printf '%s\n' '      --client-key string'
+    fi
+    printf '%s\n' '      --description-stdin   Read issue description from stdin; use --client-key if supported'
+    ;;
   *"issue create"*)
     printf '%s\n' "$*" >> "$AGENTCTL_TEST_CAPTURE.argv"
     cat > "$AGENTCTL_TEST_CAPTURE.stdin"
@@ -178,7 +184,7 @@ func TestDispatchPlanResolvesLiveTargetWithoutWriting(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("dispatch plan exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), `"runtime_verified":true`) || !strings.Contains(stdout.String(), `"tracked_execution":false`) || !strings.Contains(stdout.String(), `"side_effect_class":"read_only"`) || !strings.Contains(stdout.String(), `"agent_name":"M5 MBP Codex (Sol)"`) {
+	if !strings.Contains(stdout.String(), `"runtime_verified":false`) || !strings.Contains(stdout.String(), `"route_online":true`) || !strings.Contains(stdout.String(), `"tracked_execution":false`) || !strings.Contains(stdout.String(), `"side_effect_class":"read_only"`) || !strings.Contains(stdout.String(), `"agent_name":"M5 MBP Codex (Sol)"`) {
 		t.Fatalf("plan output=%s", stdout.String())
 	}
 	if _, err := os.Stat(journalPath); !os.IsNotExist(err) {
@@ -186,6 +192,39 @@ func TestDispatchPlanResolvesLiveTargetWithoutWriting(t *testing.T) {
 	}
 	if _, err := os.Stat(capture + ".argv"); !os.IsNotExist(err) {
 		t.Fatalf("plan created Multica issue: %v", err)
+	}
+}
+
+func TestDispatchRejectsClientWithoutReplaySafeIssueCreate(t *testing.T) {
+	root := testutil.TempDir(t)
+	fake, capture := writeDispatchFixture(t, root, "[]", "[]")
+	t.Setenv("AGENTCTL_TEST_OLD_MULTICA", "1")
+	configPath := filepath.Join(root, "config.json")
+	journalPath := filepath.Join(root, "journal.db")
+	writeDispatchConfig(t, configPath, fake,
+		[]any{map[string]any{"agent": "codex", "model": "gpt-5.6-sol", "speed": "regular", "use_for": "alias:sol"}},
+		map[string]any{"m5": "m5-mbp"})
+	args := []string{"--config", configPath, "--journal", journalPath, "dispatch", "--route", "m5 sol",
+		"--title", "Readiness test", "--prompt-stdin", "--idempotency-key", "readiness-test"}
+	for _, mode := range []string{"plan", "execute"} {
+		t.Run(mode, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			a.stdin = strings.NewReader("Private prompt")
+			a.stdinIsTerminal = func() bool { return false }
+			argv := append([]string(nil), args...)
+			if mode == "plan" {
+				argv = append(argv, "--plan")
+			}
+			code := a.run(context.Background(), argv)
+			if code == 0 || !strings.Contains(stdout.String(), `"readiness_class":"client_incompatible"`) ||
+				!strings.Contains(stdout.String(), `"missing_flags":["--client-key"]`) {
+				t.Fatalf("old client exit=%d output=%s", code, stdout.String())
+			}
+			if _, err := os.Stat(capture + ".argv"); !os.IsNotExist(err) {
+				t.Fatalf("incompatible client called issue create: %v", err)
+			}
+		})
 	}
 }
 
@@ -705,7 +744,7 @@ func TestDispatchPlanAcceptsInTableGrok(t *testing.T) {
 	a.stdin = strings.NewReader("Do the reviewed grok work.")
 	a.stdinIsTerminal = func() bool { return false }
 	code := a.run(context.Background(), []string{"--config", configPath, "dispatch", "--route", "mini grok", "--title", "In-table grok", "--prompt-stdin", "--idempotency-key", "in-table-grok", "--plan"})
-	if code != 0 || !strings.Contains(stdout.String(), `"runtime_verified":true`) || !strings.Contains(stdout.String(), `"model":"cursor-grok-4.6-high"`) || !strings.Contains(stdout.String(), `"adapter":"cursor"`) {
+	if code != 0 || !strings.Contains(stdout.String(), `"runtime_verified":false`) || !strings.Contains(stdout.String(), `"route_online":true`) || !strings.Contains(stdout.String(), `"model":"cursor-grok-4.6-high"`) || !strings.Contains(stdout.String(), `"adapter":"cursor"`) {
 		t.Fatalf("in-table grok dispatch exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	if _, err := os.Stat(capture + ".argv"); !os.IsNotExist(err) {

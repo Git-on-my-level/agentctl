@@ -137,6 +137,9 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 	inputDigest := sha256Digest(semanticBytes)
 	mutation := contracts.MutationKey{Scope: "dispatch:create", Key: clientKey, InputDigest: inputDigest}
 	if opts.plan {
+		if problem := checkMulticaDispatchClient(ctx, m); problem != nil {
+			return problem.WithDetail("profile", profileName)
+		}
 		target, problem := resolveMulticaDispatchTarget(ctx, m, catalog, selected)
 		if problem != nil {
 			return problem.WithDetail("profile", profileName)
@@ -144,10 +147,11 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 		publicTarget := publicDispatchTarget(target)
 		result := map[string]any{
 			"authority": "multica", "profile": profileName, "target": publicTarget,
-			"client_key": clientKey, "prompt_digest": prompt.Digest, "runtime_verified": true,
-			"dispatch_status": dispatchStatus, "tracked_execution": false, "side_effect_class": output.ReadOnly,
+			"client_key": clientKey, "prompt_digest": prompt.Digest, "runtime_verified": false, "route_online": true,
+			"client_capability": "replay_safe_issue_create",
+			"dispatch_status":   dispatchStatus, "tracked_execution": false, "side_effect_class": output.ReadOnly,
 		}
-		lines := []output.Line{{Lead: "dispatch.plan", Fields: []output.Field{{Name: "host", Value: selected.Host}, {Name: "adapter", Value: selected.Adapter}, {Name: "model", Value: selected.Model}, {Name: "agent", Value: target.AgentName}, {Name: "runtime_verified", Value: true}}}}
+		lines := []output.Line{{Lead: "dispatch.plan", Fields: []output.Field{{Name: "host", Value: selected.Host}, {Name: "adapter", Value: selected.Adapter}, {Name: "model", Value: selected.Model}, {Name: "agent", Value: target.AgentName}, {Name: "route_online", Value: true}, {Name: "runtime_verified", Value: false}}}}
 		if err := renderer.Success(output.Success{Result: result, Warnings: warnings, Lines: lines}); err != nil {
 			return output.Wrap(output.CodeInternal, "write output", false, err)
 		}
@@ -174,7 +178,13 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 	journal := scopedJournal{path: initialJournal.Path(), busyBudget: c.journalBusyBudget}
 	initialJournal.Close()
 	reused := found
-	runtimeVerifiedNow := false
+	routeOnlineCheckedNow := false
+	_, issueAlreadyBound := dispatchBindingOpaque(prepared.SourceBindings, "multica_issue")
+	if !issueAlreadyBound {
+		if problem := checkMulticaDispatchClient(ctx, m); problem != nil {
+			return problem.WithDetail("profile", profileName).WithDetail("client_key", clientKey)
+		}
+	}
 	target := dispatchTarget{Route: selected}
 	if found {
 		target, err = dispatchTargetFromBindings(prepared, selected)
@@ -186,7 +196,7 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 		if problem != nil {
 			return problem.WithDetail("profile", profileName)
 		}
-		runtimeVerifiedNow = true
+		routeOnlineCheckedNow = true
 		now := a.now().UTC()
 		bindings, bindingErr := dispatchPreparedBindings(m, target)
 		if bindingErr != nil {
@@ -282,8 +292,9 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 	result := map[string]any{
 		"execution": redactedExecution(created), "issue_alias": issueAlias, "assignee_alias": agentAlias,
 		"identifier": identifier, "app_url": m.AppURL, "client_key": clientKey,
-		"prompt_digest": prompt.Digest, "target": publicTarget, "runtime_verified_now": runtimeVerifiedNow, "runtime_verified_at_prepare": true,
-		"dispatch_status": dispatchStatus, "tracked_execution": true, "reused": reused,
+		"prompt_digest": prompt.Digest, "target": publicTarget, "runtime_verified_now": false, "runtime_verified_at_prepare": false,
+		"route_online_checked_now": routeOnlineCheckedNow,
+		"dispatch_status":          dispatchStatus, "tracked_execution": true, "reused": reused,
 	}
 	lines := []output.Line{{Lead: created.ID.String(), Fields: []output.Field{{Name: "authority", Value: "multica"}, {Name: "state", Value: created.State}, {Name: "host", Value: selected.Host}, {Name: "agent", Value: target.AgentName}, {Name: "issue", Value: issueAlias}, {Name: "identifier", Value: identifier}, {Name: "reused", Value: reused}}}}
 	actions := []output.NextAction{
@@ -631,6 +642,42 @@ func multicaBaseArgv(m *config.Multica, command ...string) []string {
 		argv = append(argv, "--server-url", m.ServerURL)
 	}
 	return append(argv, command...)
+}
+
+// Inspect the installed client without sending a prompt or creating an issue.
+func checkMulticaDispatchClient(ctx context.Context, m *config.Multica) *output.Error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	argv := multicaBaseArgv(m, "issue", "create", "--help")
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.WaitDelay = time.Second
+	cmd.Env = adapter.WithoutCallerDeclaration(os.Environ())
+	var stdout, stderr boundedBuffer
+	stdout.limit, stderr.limit = 64<<10, 64<<10
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		diagnostic := classifyOperation(ctx, err, stderr.String())
+		return output.Wrap(output.CodeCapabilityUnavailable, "could not inspect Multica issue creation capabilities", diagnostic.Retryable, diagnostic).
+			WithDetail("readiness_class", "client_compatibility_unknown")
+	}
+	flags := make(map[string]bool)
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 {
+			flags[fields[0]] = true
+		}
+	}
+	var missing []string
+	for _, flag := range []string{"--client-key", "--description-stdin"} {
+		if !flags[flag] {
+			missing = append(missing, flag)
+		}
+	}
+	if len(missing) != 0 {
+		return output.NewError(output.CodeCapabilityUnavailable, "configured Multica CLI lacks replay-safe issue creation capabilities", false).
+			WithDetail("readiness_class", "client_incompatible").WithDetail("missing_flags", missing)
+	}
+	return nil
 }
 
 func runMulticaJSON(ctx context.Context, argv []string, destination any) error {
