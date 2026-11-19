@@ -200,7 +200,7 @@ func TestDispatchRejectsClientWithoutReplaySafeIssueCreate(t *testing.T) {
 	fake, capture := writeDispatchFixture(t, root, "[]", "[]")
 	t.Setenv("AGENTCTL_TEST_OLD_MULTICA", "1")
 	configPath := filepath.Join(root, "config.json")
-	journalPath := filepath.Join(root, "journal.db")
+	journalPath := filepath.Join(root, "state", "journal.db")
 	writeDispatchConfig(t, configPath, fake,
 		[]any{map[string]any{"agent": "codex", "model": "gpt-5.6-sol", "speed": "regular", "use_for": "alias:sol"}},
 		map[string]any{"m5": "m5-mbp"})
