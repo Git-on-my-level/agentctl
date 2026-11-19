@@ -54,6 +54,19 @@ case "$*" in
 	fi
     printf '%s\n' "$AGENTCTL_TEST_EVENTS"
     ;;
+  *"issue create --help"*)
+    if [ -n "${AGENTCTL_TEST_HELP_ERROR:-}" ]; then
+      printf '%s\n' "$AGENTCTL_TEST_HELP_ERROR" >&2
+      exit 23
+    fi
+    printf '%s\n' 'Examples:' '      --client-key string'
+    printf '\n%s\n' 'FLAGS'
+    if [ "${AGENTCTL_TEST_OLD_MULTICA:-}" != "1" ]; then
+      printf '%s\n' '  -k, --client-key string'
+    fi
+    printf '%s\n' '      --description-stdin   Read issue description from stdin; use --client-key if supported'
+    printf '%s\n' '                             --client-key is optional on older clients'
+    ;;
   *"issue create"*)
     printf '%s\n' "$*" >> "$AGENTCTL_TEST_CAPTURE.argv"
     cat > "$AGENTCTL_TEST_CAPTURE.stdin"
@@ -89,6 +102,9 @@ case "$*" in
 	printf '%s\n' '{"id":"opaque-multica-issue","identifier":"SCA-932","status":"todo"}'
     ;;
   *"issue get"*)
+    if [ -f "$AGENTCTL_TEST_CAPTURE.hold-next-issue-get" ] && mkdir "$AGENTCTL_TEST_CAPTURE.issue-get-held" 2>/dev/null; then
+      while [ ! -f "$AGENTCTL_TEST_CAPTURE.release-issue-get" ]; do sleep 0.01; done
+    fi
     if [ -n "${AGENTCTL_TEST_ISSUE_GET_DELAY:-}" ]; then
       : > "$AGENTCTL_TEST_CAPTURE.issue.get.started"
       if [ "${AGENTCTL_TEST_ISSUE_GET_IGNORE_TERM:-}" = "1" ]; then
@@ -178,7 +194,7 @@ func TestDispatchPlanResolvesLiveTargetWithoutWriting(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("dispatch plan exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), `"runtime_verified":true`) || !strings.Contains(stdout.String(), `"tracked_execution":false`) || !strings.Contains(stdout.String(), `"side_effect_class":"read_only"`) || !strings.Contains(stdout.String(), `"agent_name":"M5 MBP Codex (Sol)"`) {
+	if !strings.Contains(stdout.String(), `"runtime_verified":false`) || !strings.Contains(stdout.String(), `"route_online":true`) || !strings.Contains(stdout.String(), `"tracked_execution":false`) || !strings.Contains(stdout.String(), `"side_effect_class":"read_only"`) || !strings.Contains(stdout.String(), `"agent_name":"M5 MBP Codex (Sol)"`) {
 		t.Fatalf("plan output=%s", stdout.String())
 	}
 	if _, err := os.Stat(journalPath); !os.IsNotExist(err) {
@@ -186,6 +202,79 @@ func TestDispatchPlanResolvesLiveTargetWithoutWriting(t *testing.T) {
 	}
 	if _, err := os.Stat(capture + ".argv"); !os.IsNotExist(err) {
 		t.Fatalf("plan created Multica issue: %v", err)
+	}
+}
+
+func TestDispatchRejectsClientWithoutReplaySafeIssueCreate(t *testing.T) {
+	root := testutil.TempDir(t)
+	fake, capture := writeDispatchFixture(t, root, "[]", "[]")
+	t.Setenv("AGENTCTL_TEST_OLD_MULTICA", "1")
+	configPath := filepath.Join(root, "config.json")
+	journalPath := filepath.Join(root, "state", "journal.db")
+	writeDispatchConfig(t, configPath, fake,
+		[]any{map[string]any{"agent": "codex", "model": "gpt-5.6-sol", "speed": "regular", "use_for": "alias:sol"}},
+		map[string]any{"m5": "m5-mbp"})
+	args := []string{"--config", configPath, "--journal", journalPath, "dispatch", "--route", "m5 sol",
+		"--title", "Readiness test", "--prompt-stdin", "--idempotency-key", "readiness-test"}
+	for _, mode := range []string{"plan", "execute"} {
+		t.Run(mode, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			a.stdin = strings.NewReader("Private prompt")
+			a.stdinIsTerminal = func() bool { return false }
+			argv := append([]string(nil), args...)
+			if mode == "plan" {
+				argv = append(argv, "--plan")
+			}
+			code := a.run(context.Background(), argv)
+			if code == 0 || !strings.Contains(stdout.String(), `"readiness_class":"client_incompatible"`) ||
+				!strings.Contains(stdout.String(), `"missing_flags":["--client-key"]`) {
+				t.Fatalf("old client exit=%d output=%s", code, stdout.String())
+			}
+			if _, err := os.Stat(capture + ".argv"); !os.IsNotExist(err) {
+				t.Fatalf("incompatible client called issue create: %v", err)
+			}
+		})
+	}
+}
+
+func TestDispatchReportsSanitizedClientProbeFailure(t *testing.T) {
+	root := testutil.TempDir(t)
+	fake, capture := writeDispatchFixture(t, root, "[]", "[]")
+	t.Setenv("AGENTCTL_TEST_HELP_ERROR", "not authenticated: private-upstream-marker")
+	configPath := filepath.Join(root, "config.json")
+	writeDispatchConfig(t, configPath, fake,
+		[]any{map[string]any{"agent": "codex", "model": "gpt-5.6-sol", "speed": "regular", "use_for": "alias:sol"}},
+		map[string]any{"m5": "m5-mbp"})
+
+	for _, tc := range []struct {
+		mode     string
+		category string
+		exitCode string
+	}{
+		{"json", `"category":"authentication_required"`, `"upstream_exit_code":23`},
+		{"text", "category=authentication_required", "upstream_exit_code=23"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			a.stdin = strings.NewReader("Private prompt")
+			a.stdinIsTerminal = func() bool { return false }
+			code := a.run(context.Background(), []string{"--config", configPath, "--output", tc.mode,
+				"dispatch", "--route", "m5 sol", "--title", "Readiness test", "--prompt-stdin",
+				"--idempotency-key", "readiness-test", "--plan"})
+			if code != output.ExitCodeFor(output.CodeCapabilityUnavailable) ||
+				!strings.Contains(stdout.String(), tc.category) ||
+				!strings.Contains(stdout.String(), tc.exitCode) {
+				t.Fatalf("probe exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+			}
+			if strings.Contains(stdout.String()+stderr.String(), "private-upstream-marker") {
+				t.Fatal("probe leaked raw upstream stderr")
+			}
+			if _, err := os.Stat(capture + ".argv"); !os.IsNotExist(err) {
+				t.Fatalf("failed client probe called issue create: %v", err)
+			}
+		})
 	}
 }
 
@@ -217,6 +306,8 @@ func TestDispatchExecuteReplayTracksOneExecutionWithoutPromptRetention(t *testin
 		if index == 1 {
 			t.Setenv("AGENTCTL_TEST_AGENTS", `[]`)
 			t.Setenv("AGENTCTL_TEST_RUNTIMES", `[]`)
+			t.Setenv("AGENTCTL_TEST_ISSUE_STATUS", "backlog")
+			t.Setenv("AGENTCTL_TEST_HELP_ERROR", "unknown flag: --help")
 		}
 		a.stdin = strings.NewReader(prompt)
 		stdout.Reset()
@@ -705,7 +796,7 @@ func TestDispatchPlanAcceptsInTableGrok(t *testing.T) {
 	a.stdin = strings.NewReader("Do the reviewed grok work.")
 	a.stdinIsTerminal = func() bool { return false }
 	code := a.run(context.Background(), []string{"--config", configPath, "dispatch", "--route", "mini grok", "--title", "In-table grok", "--prompt-stdin", "--idempotency-key", "in-table-grok", "--plan"})
-	if code != 0 || !strings.Contains(stdout.String(), `"runtime_verified":true`) || !strings.Contains(stdout.String(), `"model":"cursor-grok-4.6-high"`) || !strings.Contains(stdout.String(), `"adapter":"cursor"`) {
+	if code != 0 || !strings.Contains(stdout.String(), `"runtime_verified":false`) || !strings.Contains(stdout.String(), `"route_online":true`) || !strings.Contains(stdout.String(), `"model":"cursor-grok-4.6-high"`) || !strings.Contains(stdout.String(), `"adapter":"cursor"`) {
 		t.Fatalf("in-table grok dispatch exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	if _, err := os.Stat(capture + ".argv"); !os.IsNotExist(err) {
@@ -1054,6 +1145,10 @@ func TestConcurrentDispatchReplaysPreserveOneExecutionAndBinding(t *testing.T) {
 			t.Fatalf("replay failed: %+v", result)
 		}
 	}
+	updates, err := os.ReadFile(capture + ".update.argv")
+	if err != nil || bytes.Count(updates, []byte("\n")) != 1 {
+		t.Fatalf("expected a single activation across concurrent replays, got %q, err=%v", updates, err)
+	}
 	journal, err = store.Open(journalPath, store.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -1071,6 +1166,106 @@ func TestConcurrentDispatchReplaysPreserveOneExecutionAndBinding(t *testing.T) {
 	}
 	if bindings != 1 || items[0].LastOperationFailure == nil || items[0].State != model.StateWaiting {
 		t.Fatalf("lost concurrent metadata or duplicated binding: %#v", items[0])
+	}
+}
+
+func TestConcurrentDispatchPreservesOperatorBacklog(t *testing.T) {
+	root := testutil.TempDir(t)
+	fake, capture := writeDispatchFixture(t, root,
+		`[{"id":"agent-sol","name":"M5 Codex","model":"gpt-5.6-sol","runtime_id":"runtime-m5","status":"idle"}]`,
+		`[{"id":"runtime-m5","custom_name":"M5 MBP","provider":"codex","status":"online"}]`)
+	configPath, journalPath := filepath.Join(root, "config.json"), filepath.Join(root, "state", "journal.db")
+	writeDispatchConfig(t, configPath, fake,
+		[]any{map[string]any{"agent": "codex", "model": "gpt-5.6-sol", "speed": "regular", "use_for": "alias:sol"}},
+		map[string]any{"m5": "m5-mbp"})
+	t.Setenv("AGENTCTL_TEST_FAIL_UPDATE_ONCE", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	run := func() int {
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		a.stdin = strings.NewReader("Review")
+		a.stdinIsTerminal = func() bool { return false }
+		return a.run(ctx, []string{"--journal", journalPath, "--config", configPath, "dispatch", "--route", "m5 sol",
+			"--title", "Review", "--prompt-stdin", "--idempotency-key", "same-key"})
+	}
+	mark := func(suffix string) {
+		t.Helper()
+		if err := os.WriteFile(capture+suffix, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code := run(); code != output.ExitCodeFor(output.CodeRemoteFailure) {
+		t.Fatalf("expected the seeded activation failure, got exit %d", code)
+	}
+	mark(".hold-next-issue-get")
+	done := make(chan int, 1)
+	go func() { done <- run() }()
+	defer os.WriteFile(capture+".release-issue-get", nil, 0o600)
+	for {
+		if _, err := os.Stat(capture + ".issue-get-held"); err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatal("first replay did not reach issue get")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if code := run(); code != 0 {
+		t.Fatalf("second replay did not activate and finalize: exit %d", code)
+	}
+	if err := os.Remove(capture + ".updated"); err != nil {
+		t.Fatal(err)
+	}
+	mark(".release-issue-get")
+	if code := <-done; code != 0 {
+		t.Fatalf("first replay did not finish: exit %d", code)
+	}
+	updates, err := os.ReadFile(capture + ".update.argv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := bytes.Count(updates, []byte("\n")); count != 2 {
+		t.Fatalf("got %d activation attempts; expected seed failure and one activation", count)
+	}
+}
+
+func TestDispatchRejectsHardLinkedJournalBeforeMulticaWrite(t *testing.T) {
+	root := testutil.TempDir(t)
+	fake, capture := writeDispatchFixture(t, root,
+		`[{"id":"agent-sol","name":"M5 Codex","model":"gpt-5.6-sol","runtime_id":"runtime-m5","status":"idle"}]`,
+		`[{"id":"runtime-m5","custom_name":"M5 MBP","provider":"codex","status":"online"}]`)
+	configPath := filepath.Join(root, "config.json")
+	statePath := filepath.Join(root, "state")
+	journalPath, aliasPath := filepath.Join(statePath, "journal.db"), filepath.Join(statePath, "alias.db")
+	writeDispatchConfig(t, configPath, fake,
+		[]any{map[string]any{"agent": "codex", "model": "gpt-5.6-sol", "speed": "regular", "use_for": "alias:sol"}},
+		map[string]any{"m5": "m5-mbp"})
+	journal, err := store.Open(journalPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(journalPath, aliasPath); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{journalPath, aliasPath} {
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		a.stdin = strings.NewReader("Review")
+		a.stdinIsTerminal = func() bool { return false }
+		code := a.run(context.Background(), []string{"--journal", path, "--config", configPath, "dispatch", "--route", "m5 sol",
+			"--title", "Review", "--prompt-stdin", "--idempotency-key", "same-key"})
+		if code != output.ExitCodeFor(output.CodeAuthorizationDenied) || !strings.Contains(stdout.String(), "single filesystem link") {
+			t.Fatalf("dispatch with hard-linked journal exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+		}
+	}
+	for _, suffix := range []string{".argv", ".update.argv"} {
+		if _, err := os.Stat(capture + suffix); !os.IsNotExist(err) {
+			t.Fatalf("hard-linked dispatch attempted a Multica write: %v", err)
+		}
 	}
 }
 

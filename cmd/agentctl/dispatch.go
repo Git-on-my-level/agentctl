@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -137,6 +138,9 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 	inputDigest := sha256Digest(semanticBytes)
 	mutation := contracts.MutationKey{Scope: "dispatch:create", Key: clientKey, InputDigest: inputDigest}
 	if opts.plan {
+		if problem := checkMulticaDispatchClient(ctx, m); problem != nil {
+			return problem.WithDetail("profile", profileName)
+		}
 		target, problem := resolveMulticaDispatchTarget(ctx, m, catalog, selected)
 		if problem != nil {
 			return problem.WithDetail("profile", profileName)
@@ -144,10 +148,11 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 		publicTarget := publicDispatchTarget(target)
 		result := map[string]any{
 			"authority": "multica", "profile": profileName, "target": publicTarget,
-			"client_key": clientKey, "prompt_digest": prompt.Digest, "runtime_verified": true,
-			"dispatch_status": dispatchStatus, "tracked_execution": false, "side_effect_class": output.ReadOnly,
+			"client_key": clientKey, "prompt_digest": prompt.Digest, "runtime_verified": false, "route_online": true,
+			"client_capability": "replay_safe_issue_create",
+			"dispatch_status":   dispatchStatus, "tracked_execution": false, "side_effect_class": output.ReadOnly,
 		}
-		lines := []output.Line{{Lead: "dispatch.plan", Fields: []output.Field{{Name: "host", Value: selected.Host}, {Name: "adapter", Value: selected.Adapter}, {Name: "model", Value: selected.Model}, {Name: "agent", Value: target.AgentName}, {Name: "runtime_verified", Value: true}}}}
+		lines := []output.Line{{Lead: "dispatch.plan", Fields: []output.Field{{Name: "host", Value: selected.Host}, {Name: "adapter", Value: selected.Adapter}, {Name: "model", Value: selected.Model}, {Name: "agent", Value: target.AgentName}, {Name: "route_online", Value: true}, {Name: "runtime_verified", Value: false}}}}
 		if err := renderer.Success(output.Success{Result: result, Warnings: warnings, Lines: lines}); err != nil {
 			return output.Wrap(output.CodeInternal, "write output", false, err)
 		}
@@ -156,6 +161,10 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 	initialJournal, problem := a.openWrite(c)
 	if problem != nil {
 		return problem.WithDetail("client_key", clientKey)
+	}
+	if err := store.CheckDispatchJournal(initialJournal.Path()); err != nil {
+		initialJournal.Close()
+		return mapStoreError("dispatch requires a regular journal with a single filesystem link", err).WithDetail("client_key", clientKey)
 	}
 	prepared, found, err := initialJournal.GetExecutionByMutation(ctx, mutation)
 	if err != nil {
@@ -174,7 +183,13 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 	journal := scopedJournal{path: initialJournal.Path(), busyBudget: c.journalBusyBudget}
 	initialJournal.Close()
 	reused := found
-	runtimeVerifiedNow := false
+	routeOnlineCheckedNow := false
+	_, issueAlreadyBound := dispatchBindingOpaque(prepared.SourceBindings, "multica_issue")
+	if !issueAlreadyBound {
+		if problem := checkMulticaDispatchClient(ctx, m); problem != nil {
+			return problem.WithDetail("profile", profileName).WithDetail("client_key", clientKey)
+		}
+	}
 	target := dispatchTarget{Route: selected}
 	if found {
 		target, err = dispatchTargetFromBindings(prepared, selected)
@@ -186,7 +201,7 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 		if problem != nil {
 			return problem.WithDetail("profile", profileName)
 		}
-		runtimeVerifiedNow = true
+		routeOnlineCheckedNow = true
 		now := a.now().UTC()
 		bindings, bindingErr := dispatchPreparedBindings(m, target)
 		if bindingErr != nil {
@@ -238,32 +253,37 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 		}
 		prepared = bound
 	}
-	var currentIssue map[string]any
-	if err := runMulticaJSON(ctx, multicaBaseArgv(m, "issue", "get", issueID, "--output", "json"), &currentIssue); err != nil {
+	currentIdentifier, currentStatus, err := readDispatchIssue(ctx, m, issueID)
+	if err != nil {
 		return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_read", err)
 	}
-	if !multicaIDMatches(currentIssue["id"], issueID) || !multicaIDMatches(currentIssue["workspace_id"], m.WorkspaceID) {
-		return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_read", &operationDiagnostic{Category: "identity_mismatch", ExitCode: 0, Retryable: true})
-	}
-	if currentIdentifier, _ := currentIssue["identifier"].(string); currentIdentifier != "" {
+	if currentIdentifier != "" {
 		identifier = currentIdentifier
 	}
-	currentStatus, _ := currentIssue["status"].(string)
-	currentStatus = strings.ToLower(strings.TrimSpace(currentStatus))
-	if currentStatus == "" {
-		return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_read", &operationDiagnostic{Category: "invalid_json", ExitCode: 0, Retryable: true})
-	}
-	if currentStatus == "backlog" && dispatchStatus != "backlog" {
-		updateArgv := multicaBaseArgv(m, "issue", "update", issueID, "--status", dispatchStatus, "--output", "json")
-		if _, err := runMulticaIssueUpdate(ctx, updateArgv); err != nil {
-			return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_activate", err)
+	if prepared.State == model.StateStarting {
+		var activate func() *output.Error
+		if currentStatus == "backlog" && dispatchStatus != "backlog" {
+			activate = func() *output.Error {
+				// Another replay may have changed the remote issue while we waited.
+				_, status, err := readDispatchIssue(ctx, m, issueID)
+				if err != nil {
+					return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_read", err)
+				}
+				if status == "backlog" {
+					argv := multicaBaseArgv(m, "issue", "update", issueID, "--status", dispatchStatus, "--output", "json")
+					if _, err := runMulticaIssueUpdate(ctx, argv); err != nil {
+						return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_activate", err)
+					}
+				}
+				return nil
+			}
 		}
+		finalized, problem := a.completeDispatch(ctx, journal, prepared.ID, activate)
+		if problem != nil {
+			return problem.WithDetail("client_key", clientKey).WithDetail("execution_id", prepared.ID.String()).WithDetail("multica_identifier", identifier)
+		}
+		prepared = finalized
 	}
-	finalized, finalizeErr := finalizeDispatch(ctx, journal, prepared.ID, a.now().UTC())
-	if finalizeErr != nil {
-		return mapStoreError("finalize dispatched execution", finalizeErr).WithDetail("client_key", clientKey).WithDetail("execution_id", prepared.ID.String()).WithDetail("multica_identifier", identifier)
-	}
-	prepared = finalized
 	created := prepared
 	if created.State.Terminal() {
 		a.anxRegisterTerminal(c, created.ID)
@@ -282,8 +302,9 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 	result := map[string]any{
 		"execution": redactedExecution(created), "issue_alias": issueAlias, "assignee_alias": agentAlias,
 		"identifier": identifier, "app_url": m.AppURL, "client_key": clientKey,
-		"prompt_digest": prompt.Digest, "target": publicTarget, "runtime_verified_now": runtimeVerifiedNow, "runtime_verified_at_prepare": true,
-		"dispatch_status": dispatchStatus, "tracked_execution": true, "reused": reused,
+		"prompt_digest": prompt.Digest, "target": publicTarget, "runtime_verified_now": false, "runtime_verified_at_prepare": false,
+		"route_online_checked_now": routeOnlineCheckedNow,
+		"dispatch_status":          dispatchStatus, "tracked_execution": true, "reused": reused,
 	}
 	lines := []output.Line{{Lead: created.ID.String(), Fields: []output.Field{{Name: "authority", Value: "multica"}, {Name: "state", Value: created.State}, {Name: "host", Value: selected.Host}, {Name: "agent", Value: target.AgentName}, {Name: "issue", Value: issueAlias}, {Name: "identifier", Value: identifier}, {Name: "reused", Value: reused}}}}
 	actions := []output.NextAction{
@@ -350,6 +371,58 @@ func bindDispatchIssue(ctx context.Context, journal scopedJournal, id ids.Execut
 		return err
 	})
 	return
+}
+
+func readDispatchIssue(ctx context.Context, m *config.Multica, issueID string) (identifier, status string, err error) {
+	var issue map[string]any
+	if err := runMulticaJSON(ctx, multicaBaseArgv(m, "issue", "get", issueID, "--output", "json"), &issue); err != nil {
+		return "", "", err
+	}
+	if !multicaIDMatches(issue["id"], issueID) || !multicaIDMatches(issue["workspace_id"], m.WorkspaceID) {
+		return "", "", &operationDiagnostic{Category: "identity_mismatch", ExitCode: 0, Retryable: true}
+	}
+	status, _ = issue["status"].(string)
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status == "" {
+		return "", "", &operationDiagnostic{Category: "invalid_json", ExitCode: 0, Retryable: true}
+	}
+	identifier, _ = issue["identifier"].(string)
+	return identifier, status, nil
+}
+
+func (a *app) completeDispatch(ctx context.Context, journal scopedJournal, id ids.ExecutionID, activate func() *output.Error) (model.Execution, *output.Error) {
+	budget := journal.busyBudget
+	if budget <= 0 {
+		budget = time.Second
+	}
+	lockCtx, cancel := context.WithTimeout(ctx, budget)
+	lock, err := store.LockDispatchActivation(lockCtx, journal.path, id)
+	cancel()
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		err = store.ErrBusy
+	}
+	if err != nil {
+		return model.Execution{}, mapStoreError("lock dispatch activation", err)
+	}
+	defer lock.Close()
+
+	current, err := journal.GetExecution(ctx, id)
+	if err != nil {
+		return model.Execution{}, mapStoreError("read dispatch state before activation", err)
+	}
+	if current.State != model.StateStarting {
+		return current, nil
+	}
+	if activate != nil {
+		if problem := activate(); problem != nil {
+			return model.Execution{}, problem
+		}
+	}
+	current, err = finalizeDispatch(ctx, journal, id, a.now().UTC())
+	if err != nil {
+		return model.Execution{}, mapStoreError("finalize dispatched execution", err)
+	}
+	return current, nil
 }
 
 func finalizeDispatch(ctx context.Context, journal scopedJournal, id ids.ExecutionID, now time.Time) (result model.Execution, err error) {
@@ -631,6 +704,60 @@ func multicaBaseArgv(m *config.Multica, command ...string) []string {
 		argv = append(argv, "--server-url", m.ServerURL)
 	}
 	return append(argv, command...)
+}
+
+// Inspect the installed client without sending a prompt or creating an issue.
+func checkMulticaDispatchClient(ctx context.Context, m *config.Multica) *output.Error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	argv := multicaBaseArgv(m, "issue", "create", "--help")
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.WaitDelay = time.Second
+	cmd.Env = adapter.WithoutCallerDeclaration(os.Environ())
+	var stdout, stderr boundedBuffer
+	stdout.limit, stderr.limit = 64<<10, 64<<10
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		diagnostic := classifyOperation(ctx, err, stderr.String())
+		return output.Wrap(output.CodeCapabilityUnavailable, "could not inspect Multica issue creation capabilities", diagnostic.Retryable, diagnostic).
+			WithDetail("readiness_class", "client_compatibility_unknown").
+			WithDetail("category", diagnostic.Category).
+			WithDetail("upstream_exit_code", diagnostic.ExitCode)
+	}
+	flags := multicaHelpFlags(stdout.String())
+	var missing []string
+	for _, flag := range []string{"--client-key", "--description-stdin"} {
+		if !flags[flag] {
+			missing = append(missing, flag)
+		}
+	}
+	if len(missing) != 0 {
+		return output.NewError(output.CodeCapabilityUnavailable, "configured Multica CLI lacks replay-safe issue creation capabilities", false).
+			WithDetail("readiness_class", "client_incompatible").WithDetail("missing_flags", missing)
+	}
+	return nil
+}
+
+// Cobra uses pflag's fixed columns for long-only and shorthand declarations.
+var multicaHelpFlag = regexp.MustCompile(`^(?: {6}| {2}-[[:alnum:]], )(--[a-z][a-z0-9-]*)(?:[ \t]|$)`)
+
+func multicaHelpFlags(help string) map[string]bool {
+	flags := make(map[string]bool)
+	inFlags := false
+	for _, line := range strings.Split(help, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		switch {
+		case line == "FLAGS" || line == "Flags:":
+			inFlags = true
+		case line == "" || !strings.HasPrefix(line, " "):
+			inFlags = false
+		case inFlags:
+			if declaration := multicaHelpFlag.FindStringSubmatch(line); declaration != nil {
+				flags[declaration[1]] = true
+			}
+		}
+	}
+	return flags
 }
 
 func runMulticaJSON(ctx context.Context, argv []string, destination any) error {

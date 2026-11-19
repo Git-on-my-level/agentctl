@@ -560,7 +560,11 @@ agentctl dispatch --route "m5 sol" --title "Review the release" --prompt-file "$
 
 `dispatch` resolves live Multica agents against their authoritative runtime,
 not their display name, and requires exactly one online host/adapter/model
-match. It never falls back locally. The caller key is required so a remote
+match. The plan checks the installed client's issue-create flags without sending
+a prompt. Its `route_online: true` reports the online match and
+`runtime_verified: false` indicates that worker readiness remains unverified.
+An incompatible client reports `client_incompatible` before issue creation,
+including the missing flags. It never falls back locally. The caller key is required so a remote
 success followed by a lost local response can be replayed without creating a
 second issue. Agentctl creates or recovers the exact assigned issue in backlog,
 persists its issue binding while the local execution is still `starting`, reads
