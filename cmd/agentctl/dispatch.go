@@ -249,33 +249,37 @@ func (a *app) dispatchCommand(ctx context.Context, renderer output.Renderer, c c
 		}
 		prepared = bound
 	}
-	var currentIssue map[string]any
-	if err := runMulticaJSON(ctx, multicaBaseArgv(m, "issue", "get", issueID, "--output", "json"), &currentIssue); err != nil {
+	currentIdentifier, currentStatus, err := readDispatchIssue(ctx, m, issueID)
+	if err != nil {
 		return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_read", err)
 	}
-	if !multicaIDMatches(currentIssue["id"], issueID) || !multicaIDMatches(currentIssue["workspace_id"], m.WorkspaceID) {
-		return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_read", &operationDiagnostic{Category: "identity_mismatch", ExitCode: 0, Retryable: true})
-	}
-	if currentIdentifier, _ := currentIssue["identifier"].(string); currentIdentifier != "" {
+	if currentIdentifier != "" {
 		identifier = currentIdentifier
 	}
-	currentStatus, _ := currentIssue["status"].(string)
-	currentStatus = strings.ToLower(strings.TrimSpace(currentStatus))
-	if currentStatus == "" {
-		return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_read", &operationDiagnostic{Category: "invalid_json", ExitCode: 0, Retryable: true})
-	}
-	// A finalized dispatch may have been moved back to backlog by an operator.
-	if prepared.State == model.StateStarting && currentStatus == "backlog" && dispatchStatus != "backlog" {
-		updateArgv := multicaBaseArgv(m, "issue", "update", issueID, "--status", dispatchStatus, "--output", "json")
-		if _, err := runMulticaIssueUpdate(ctx, updateArgv); err != nil {
-			return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_activate", err)
+	if prepared.State == model.StateStarting {
+		var activate func() *output.Error
+		if currentStatus == "backlog" && dispatchStatus != "backlog" {
+			activate = func() *output.Error {
+				// Another replay may have changed the remote issue while we waited.
+				_, status, err := readDispatchIssue(ctx, m, issueID)
+				if err != nil {
+					return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_read", err)
+				}
+				if status == "backlog" {
+					argv := multicaBaseArgv(m, "issue", "update", issueID, "--status", dispatchStatus, "--output", "json")
+					if _, err := runMulticaIssueUpdate(ctx, argv); err != nil {
+						return a.dispatchFailure(ctx, c, prepared.ID, clientKey, profileName, "issue_activate", err)
+					}
+				}
+				return nil
+			}
 		}
+		finalized, problem := a.completeDispatch(ctx, journal, prepared.ID, activate)
+		if problem != nil {
+			return problem.WithDetail("client_key", clientKey).WithDetail("execution_id", prepared.ID.String()).WithDetail("multica_identifier", identifier)
+		}
+		prepared = finalized
 	}
-	finalized, finalizeErr := finalizeDispatch(ctx, journal, prepared.ID, a.now().UTC())
-	if finalizeErr != nil {
-		return mapStoreError("finalize dispatched execution", finalizeErr).WithDetail("client_key", clientKey).WithDetail("execution_id", prepared.ID.String()).WithDetail("multica_identifier", identifier)
-	}
-	prepared = finalized
 	created := prepared
 	if created.State.Terminal() {
 		a.anxRegisterTerminal(c, created.ID)
@@ -363,6 +367,58 @@ func bindDispatchIssue(ctx context.Context, journal scopedJournal, id ids.Execut
 		return err
 	})
 	return
+}
+
+func readDispatchIssue(ctx context.Context, m *config.Multica, issueID string) (identifier, status string, err error) {
+	var issue map[string]any
+	if err := runMulticaJSON(ctx, multicaBaseArgv(m, "issue", "get", issueID, "--output", "json"), &issue); err != nil {
+		return "", "", err
+	}
+	if !multicaIDMatches(issue["id"], issueID) || !multicaIDMatches(issue["workspace_id"], m.WorkspaceID) {
+		return "", "", &operationDiagnostic{Category: "identity_mismatch", ExitCode: 0, Retryable: true}
+	}
+	status, _ = issue["status"].(string)
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status == "" {
+		return "", "", &operationDiagnostic{Category: "invalid_json", ExitCode: 0, Retryable: true}
+	}
+	identifier, _ = issue["identifier"].(string)
+	return identifier, status, nil
+}
+
+func (a *app) completeDispatch(ctx context.Context, journal scopedJournal, id ids.ExecutionID, activate func() *output.Error) (model.Execution, *output.Error) {
+	budget := journal.busyBudget
+	if budget <= 0 {
+		budget = time.Second
+	}
+	lockCtx, cancel := context.WithTimeout(ctx, budget)
+	lock, err := store.LockDispatchActivation(lockCtx, journal.path, id)
+	cancel()
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		err = store.ErrBusy
+	}
+	if err != nil {
+		return model.Execution{}, mapStoreError("lock dispatch activation", err)
+	}
+	defer lock.Close()
+
+	current, err := journal.GetExecution(ctx, id)
+	if err != nil {
+		return model.Execution{}, mapStoreError("read dispatch state before activation", err)
+	}
+	if current.State != model.StateStarting {
+		return current, nil
+	}
+	if activate != nil {
+		if problem := activate(); problem != nil {
+			return model.Execution{}, problem
+		}
+	}
+	current, err = finalizeDispatch(ctx, journal, id, a.now().UTC())
+	if err != nil {
+		return model.Execution{}, mapStoreError("finalize dispatched execution", err)
+	}
+	return current, nil
 }
 
 func finalizeDispatch(ctx context.Context, journal scopedJournal, id ids.ExecutionID, now time.Time) (result model.Execution, err error) {

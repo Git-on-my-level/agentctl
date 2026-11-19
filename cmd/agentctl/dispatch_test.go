@@ -102,6 +102,9 @@ case "$*" in
 	printf '%s\n' '{"id":"opaque-multica-issue","identifier":"SCA-932","status":"todo"}'
     ;;
   *"issue get"*)
+    if [ -f "$AGENTCTL_TEST_CAPTURE.hold-next-issue-get" ] && mkdir "$AGENTCTL_TEST_CAPTURE.issue-get-held" 2>/dev/null; then
+      while [ ! -f "$AGENTCTL_TEST_CAPTURE.release-issue-get" ]; do sleep 0.01; done
+    fi
     if [ -n "${AGENTCTL_TEST_ISSUE_GET_DELAY:-}" ]; then
       : > "$AGENTCTL_TEST_CAPTURE.issue.get.started"
       if [ "${AGENTCTL_TEST_ISSUE_GET_IGNORE_TERM:-}" = "1" ]; then
@@ -1142,6 +1145,10 @@ func TestConcurrentDispatchReplaysPreserveOneExecutionAndBinding(t *testing.T) {
 			t.Fatalf("replay failed: %+v", result)
 		}
 	}
+	updates, err := os.ReadFile(capture + ".update.argv")
+	if err != nil || bytes.Count(updates, []byte("\n")) != 1 {
+		t.Fatalf("expected a single activation across concurrent replays, got %q, err=%v", updates, err)
+	}
 	journal, err = store.Open(journalPath, store.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -1159,6 +1166,67 @@ func TestConcurrentDispatchReplaysPreserveOneExecutionAndBinding(t *testing.T) {
 	}
 	if bindings != 1 || items[0].LastOperationFailure == nil || items[0].State != model.StateWaiting {
 		t.Fatalf("lost concurrent metadata or duplicated binding: %#v", items[0])
+	}
+}
+
+func TestConcurrentDispatchPreservesOperatorBacklog(t *testing.T) {
+	root := testutil.TempDir(t)
+	fake, capture := writeDispatchFixture(t, root,
+		`[{"id":"agent-sol","name":"M5 Codex","model":"gpt-5.6-sol","runtime_id":"runtime-m5","status":"idle"}]`,
+		`[{"id":"runtime-m5","custom_name":"M5 MBP","provider":"codex","status":"online"}]`)
+	configPath, journalPath := filepath.Join(root, "config.json"), filepath.Join(root, "state", "journal.db")
+	writeDispatchConfig(t, configPath, fake,
+		[]any{map[string]any{"agent": "codex", "model": "gpt-5.6-sol", "speed": "regular", "use_for": "alias:sol"}},
+		map[string]any{"m5": "m5-mbp"})
+	t.Setenv("AGENTCTL_TEST_FAIL_UPDATE_ONCE", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	run := func() int {
+		var stdout, stderr bytes.Buffer
+		a := testApp(&stdout, &stderr)
+		a.stdin = strings.NewReader("Review")
+		a.stdinIsTerminal = func() bool { return false }
+		return a.run(ctx, []string{"--journal", journalPath, "--config", configPath, "dispatch", "--route", "m5 sol",
+			"--title", "Review", "--prompt-stdin", "--idempotency-key", "same-key"})
+	}
+	mark := func(suffix string) {
+		t.Helper()
+		if err := os.WriteFile(capture+suffix, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code := run(); code != output.ExitCodeFor(output.CodeRemoteFailure) {
+		t.Fatalf("expected the seeded activation failure, got exit %d", code)
+	}
+	mark(".hold-next-issue-get")
+	done := make(chan int, 1)
+	go func() { done <- run() }()
+	defer os.WriteFile(capture+".release-issue-get", nil, 0o600)
+	for {
+		if _, err := os.Stat(capture + ".issue-get-held"); err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatal("first replay did not reach issue get")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if code := run(); code != 0 {
+		t.Fatalf("second replay did not activate and finalize: exit %d", code)
+	}
+	if err := os.Remove(capture + ".updated"); err != nil {
+		t.Fatal(err)
+	}
+	mark(".release-issue-get")
+	if code := <-done; code != 0 {
+		t.Fatalf("first replay did not finish: exit %d", code)
+	}
+	updates, err := os.ReadFile(capture + ".update.argv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := bytes.Count(updates, []byte("\n")); count != 2 {
+		t.Fatalf("got %d activation attempts; expected seed failure and one activation", count)
 	}
 }
 
