@@ -31,7 +31,18 @@ off Skill Hub auto-clean.
 The managed checkout defaults to
 `~/.local/share/agentctl/skill-source`; its owner-only state is
 `~/.local/state/agentctl/skill-source.json`. It is a derived cache, never an
-authoring checkout.
+authoring checkout. Do not run Git in it: a checkout moved by hand no longer
+matches the recorded `applied_commit`, and every update then refuses as
+`checkout_revision` drift until the checkout is returned to that commit.
+
+Each automatic or explicit update records its outcome in
+`~/.local/state/agentctl/skill-update-last.json` (`succeeded`, `error_code`,
+bounded `error`, `drift`, and for repeated failures `first_failed_at` and
+`consecutive_failures`). The daily worker has no terminal, so this record is
+where its failure becomes visible: `agentctl update status` reports it as
+`skills.last_attempt` and marks skills unhealthy while the last attempt failed,
+and `agentctl skills doctor` reports it as `last_update`. A successful update
+clears the failure.
 
 ## Manifest
 
@@ -61,6 +72,7 @@ agentctl skills update --plan  # no fetch or write
 agentctl skills update         # fast-forward fetch + auto-clean reconcile
 agentctl skills plan           # pinned local projection, read-only
 agentctl skills status         # pinned local projection, read-only
+agentctl skills doctor         # read-only; reports checkout drift beside the per-skill table
 agentctl skills reconcile      # strict local reconcile, no network
 agentctl skills source rebind --plan
 agentctl skills source rebind --apply --expected-digest sha256:...
@@ -74,6 +86,13 @@ is an ancestor of the configured ref. A fork that contains the commit also
 passes; ancestry is shared history, not repository identity. A ref change, a
 dirty checkout, or a digest mismatch does not fetch. Retrying the applied
 digest is `already_bound` and does not fetch.
+
+Mutating commands refuse a drifted checkout. `skills doctor` does not: it
+returns `hub_drift` (the drift reasons, `applied_commit`, `checkout_commit`,
+and whether skills were evaluated) with `report.healthy` false, and judges the
+installed copies against the tree actually on disk (`evaluated_commit`). When
+the only drift is a clean checkout at the wrong revision, its next action
+returns the cache to `applied_commit`; `skills update` then fast-forwards it.
 
 All Git advances are fast-forward only. A dirty checkout, changed remote,
 invalid fetched manifest, unsafe path, symlink, oversized tree, or unsupported

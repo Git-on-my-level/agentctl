@@ -139,7 +139,7 @@ func (a *app) updateCommand(ctx context.Context, renderer output.Renderer, c com
 		if skill, err := portableasset.Skill(); err == nil {
 			observed["expected_portable_skill_sha256"] = skill.Digest
 		}
-		_ = renderer.Success(output.Success{Result: map[string]any{"binary": status, "skills": skills, "observed_binary": observed, "compatibility_actions": []output.NextAction{{Label: "Inspect installed portable skills", Argv: []string{"agentctl", "bootstrap", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}, {Label: "Inspect running supervisor", Argv: []string{"agentctl", "supervisor", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}}}, Lines: []output.Line{{Lead: "update.binary", Fields: []output.Field{{Name: "pending", Value: status.Pending}, {Name: "mode", Value: status.Mode}, {Name: "update_check", Value: status.UpdateCheck}, {Name: "checked_on", Value: status.CheckedOn}, {Name: "latest_version", Value: status.LatestVersion}, {Name: "installed_version", Value: status.InstalledVersion}}}, {Lead: "update.skills", Fields: []output.Field{{Name: "policy", Value: skills["policy"]}, {Name: "configured", Value: skills["configured"]}, {Name: "checked_on", Value: skills["checked_on"]}, {Name: "healthy", Value: skills["healthy"]}}}}})
+		_ = renderer.Success(output.Success{Result: map[string]any{"binary": status, "skills": skills, "observed_binary": observed, "compatibility_actions": []output.NextAction{{Label: "Inspect installed portable skills", Argv: []string{"agentctl", "bootstrap", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}, {Label: "Inspect running supervisor", Argv: []string{"agentctl", "supervisor", "status"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}}}}, Lines: []output.Line{{Lead: "update.binary", Fields: []output.Field{{Name: "pending", Value: status.Pending}, {Name: "mode", Value: status.Mode}, {Name: "update_check", Value: status.UpdateCheck}, {Name: "checked_on", Value: status.CheckedOn}, {Name: "latest_version", Value: status.LatestVersion}, {Name: "installed_version", Value: status.InstalledVersion}}}, {Lead: "update.skills", Fields: []output.Field{{Name: "policy", Value: skills["policy"]}, {Name: "configured", Value: skills["configured"]}, {Name: "checked_on", Value: skills["checked_on"]}, {Name: "healthy", Value: skills["healthy"]}, {Name: "last_attempt", Value: skills["last_attempt"]}}}}})
 		return nil
 	case "policy":
 		if len(args) != 2 {
@@ -230,6 +230,14 @@ func (a *app) skillsUpdateStatus(ctx context.Context, c common) map[string]any {
 		return result
 	}
 	result["configured"], result["healthy"], result["checked_on"], result["commit"], result["drift"] = status.Configured, status.InSync, status.CheckedOn, status.AppliedCommit, status.Drift
+	if attempt, attemptErr := skillpack.ReadUpdateAttempt(home); attemptErr != nil {
+		result["last_attempt_error"] = attemptErr.Error()
+	} else if attempt != nil {
+		result["last_attempt"] = attempt
+		if !attempt.Succeeded {
+			result["healthy"] = false
+		}
+	}
 	if status.InSync && status.Configured {
 		detected, problem := parseBootstrapHarnesses(home, "", "", a.getenv)
 		if problem != nil {
@@ -280,16 +288,41 @@ func (a *app) updateSkillsAutoClean(ctx context.Context, c common, force bool) (
 	if !force && !skillpack.HubUpdateDue(home, a.currentTime()) {
 		return skillpack.Report{}, nil
 	}
+	selection := skillpack.HubSelection{Remote: cfg.Skills.Source.Remote, Ref: cfg.Skills.Source.Ref, ManifestPath: cfg.Skills.Source.ManifestPath}
+	report, err := a.applySkillsAutoClean(ctx, home, selection)
+	a.recordSkillsUpdateAttempt(ctx, home, selection, force, report, err)
+	return report, err
+}
+
+func (a *app) applySkillsAutoClean(ctx context.Context, home string, selection skillpack.HubSelection) (skillpack.Report, error) {
 	detected, problem := parseBootstrapHarnesses(home, "", "", a.getenv)
 	if problem != nil {
 		return skillpack.Report{}, fmt.Errorf("detect skill harnesses: %s", problem.Message)
 	}
-	selection := skillpack.HubSelection{Remote: cfg.Skills.Source.Remote, Ref: cfg.Skills.Source.Ref, ManifestPath: cfg.Skills.Source.ManifestPath}
 	updated, err := skillpack.UpdateHubSource(ctx, home, selection, a.currentTime())
 	if err != nil {
 		return skillpack.Report{}, err
 	}
 	return skillpack.ReconcileAutoClean(skillpack.Options{Source: skillpack.SourceFromHubStatus(updated.Status), Home: home, DetectedHarnesses: detected})
+}
+
+// recordSkillsUpdateAttempt makes the daily worker's outcome durable. The
+// worker has no terminal, so an unrecorded failure is invisible: a drifted
+// cache once refused every update for a day while nothing said so. Recording
+// is best effort and never changes the update result.
+func (a *app) recordSkillsUpdateAttempt(ctx context.Context, home string, selection skillpack.HubSelection, explicit bool, report skillpack.Report, err error) {
+	attempt := skillpack.UpdateAttempt{AttemptedAt: a.currentTime(), Trigger: "auto", Succeeded: err == nil, Healthy: err == nil && report.Healthy, Conflicts: report.Conflicts}
+	if explicit {
+		attempt.Trigger = "explicit"
+	}
+	if err != nil {
+		attempt.ErrorCode = string(mapSkillpackError("apply Skill Hub update", report, err).Code)
+		attempt.Error = err.Error()
+		if status, statusErr := skillpack.HubSourceStatusReadOnly(ctx, home, selection); statusErr == nil {
+			attempt.Drift = status.Drift
+		}
+	}
+	_ = skillpack.RecordUpdateAttempt(home, attempt)
 }
 
 func (a *app) liveOwnerIDs() ([]string, error) {
