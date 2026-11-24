@@ -170,7 +170,7 @@ func TestLeaseProcessHelper(t *testing.T) {
 	_, _ = bufio.NewReader(os.Stdin).ReadByte()
 }
 
-func TestProcessCrashReclaimsSlotAcrossProcesses(t *testing.T) {
+func TestProcessCrashRetainsUnboundSlotAcrossProcessesUntilExpiry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	path := filepath.Join(t.TempDir(), "journal.db")
@@ -198,7 +198,8 @@ func TestProcessCrashReclaimsSlotAcrossProcesses(t *testing.T) {
 	if line, err := bufio.NewReader(out).ReadString('\n'); err != nil || line != "ready\n" {
 		t.Fatalf("child: %q %v", line, err)
 	}
-	s := New(path, time.Now, func(int) (string, error) { return testOwner.Start, nil })
+	now := time.Now()
+	s := New(path, func() time.Time { return now }, func(int) (string, error) { return testOwner.Start, nil })
 	b := testConfig()
 	b.StaticFallbackWindow, b.InitialWindow, b.MaxWindow = 1, 1, 1
 	q := s.Queue(testBucket, b, "external", Interactive, testOwner, testOwner, true)
@@ -210,8 +211,62 @@ func TestProcessCrashReclaimsSlotAcrossProcesses(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = cmd.Wait()
+	if d, err := q.Try(ctx, false); err != nil || d.Granted {
+		t.Fatalf("owner crash released unbound slot early: %#v %v", d, err)
+	}
+	now = now.Add(launchLeaseTTL)
 	if d, err := q.Try(ctx, false); err != nil || !d.Granted {
-		t.Fatalf("crash leaked slot: %#v %v", d, err)
+		t.Fatalf("expired launch gap leaked slot: %#v %v", d, err)
+	}
+}
+
+func TestNativeLeaseTracksChildGenerationAfterOwnerUnlock(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "journal.db")
+	now := time.Now().UTC()
+	b := testConfig()
+	b.InitialWindow, b.StaticFallbackWindow, b.MaxWindow = 1, 1, 1
+	start, inspectErr := "child-generation", error(nil)
+	childStart := func(pid int) (string, error) {
+		if pid != 42 {
+			t.Fatalf("inspected pid %d instead of child", pid)
+		}
+		return start, inspectErr
+	}
+	open := func() *Store { return New(path, func() time.Time { return now }, childStart) }
+	q := open().Queue(testBucket, b, "native", Background, testOwner, Owner{}, false)
+	defer q.Close()
+	if d, err := q.Try(ctx, false); err != nil || !d.Granted {
+		t.Fatalf("grant: %#v %v", d, err)
+	}
+	now = now.Add(launchLeaseTTL)
+	if err := q.PrepareLaunch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	view, err := open().Status(ctx, testBucket, b)
+	if err != nil || view.InUse != 1 || view.Holders[0].LaunchLeaseExpiresAt == nil ||
+		!view.Holders[0].LaunchLeaseExpiresAt.Equal(now.Add(launchLeaseTTL)) {
+		t.Fatalf("refreshed launch grace: %#v %v", view, err)
+	}
+	if err := q.BindChild(42); err != nil {
+		t.Fatal(err)
+	}
+	q.Close()
+	now = now.Add(2 * launchLeaseTTL)
+	view, err = open().Status(ctx, testBucket, b)
+	if err != nil || view.InUse != 1 || view.Holders[0].Child == nil ||
+		*view.Holders[0].Child != (Owner{42, start}) || view.Holders[0].LaunchLeaseExpiresAt != nil {
+		t.Fatalf("running child: %#v %v", view, err)
+	}
+	start, inspectErr = "", errors.New("process inspection unavailable")
+	contender := open().Queue(testBucket, b, "next", Interactive, testOwner, Owner{}, false)
+	defer contender.Close()
+	if d, err := contender.Try(ctx, false); err != nil || d.Granted {
+		t.Fatalf("uncertain child must remain counted: %#v %v", d, err)
+	}
+	start, inspectErr = "reused-child-pid", nil
+	if d, err := contender.Try(ctx, false); err != nil || !d.Granted {
+		t.Fatalf("old child generation still counted: %#v %v", d, err)
 	}
 }
 

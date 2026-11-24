@@ -351,14 +351,17 @@ provider key's output-token budget.
 Every launcher on a host must use the same profile bucket and journal
 directory. The owner-only sidecar under `<journal directory>/admission/` holds
 controller state and leases separately from the execution journal. Native
-leases and waiting tickets hold per-ticket flocks. Process exit releases those
-locks. External grants verify the recorded PID and kernel start identity
-across separate CLI calls. Linux launchers sharing a bucket use the same PID
-namespace and procfs view. A missing or reused PID releases the grant. If
-inspection becomes unavailable, the last verified identity expires after one
-minute. Native reservations last through child cleanup during normal
-operation. A provider service that continues work after its local client exits
-is outside the reservation's visibility.
+leases and waiting tickets hold per-ticket flocks. Each native grant records
+the child's PID and kernel start identity as soon as it launches. If agentctl
+crashes before recording that identity, the grant remains counted until the
+one-minute launch lease expires. Once the identity is recorded, the grant
+remains counted through child cleanup, including after agentctl crashes or
+process inspection becomes unavailable. A missing PID or a different kernel
+start identity proves the recorded child has exited. External grants verify
+the recorded owner across CLI calls and expire one minute after their last
+verification if inspection is unavailable. Linux launchers sharing a bucket
+use the same PID namespace and procfs view. The reservation covers the local
+client process.
 
 The defaults are an 8% target, a 0.7 decrease factor, a 60-second adjustment
 interval, a five-minute sample window and a five-minute maximum wait. The

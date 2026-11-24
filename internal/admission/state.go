@@ -19,6 +19,7 @@ import (
 
 const lockBudget = time.Second
 const PollInterval = 250 * time.Millisecond
+const launchLeaseTTL = time.Minute
 
 var ErrHolderOwned = errors.New("admission holder belongs to another process")
 var ErrLockBusy = errors.New("admission bucket lock is busy")
@@ -55,6 +56,10 @@ type Ticket struct {
 	ClaimOwner *Owner `json:"claim_owner,omitempty"`
 	// Only used when a previously verified external owner cannot be inspected.
 	VerifiedAt *time.Time `json:"verified_at,omitempty"`
+	// Native holders survive loss of the owner flock. The deadline covers
+	// a crash before the child generation could be recorded.
+	Child                *Owner     `json:"child,omitempty"`
+	LaunchLeaseExpiresAt *time.Time `json:"launch_lease_expires_at,omitempty"`
 }
 
 type Decision struct {
@@ -204,6 +209,9 @@ func (q *Queue) Try(ctx context.Context, enqueue bool) (Decision, error) {
 				return d, ErrHolderOwned
 			}
 			next.Owner, next.External, next.VerifiedAt, next.ClaimOwner = q.owner, true, &now, nil
+		} else {
+			expires := now.Add(launchLeaseTTL)
+			next.LaunchLeaseExpiresAt = &expires
 		}
 		next.AcquiredAt = &now
 		state.Admitted++
@@ -222,6 +230,7 @@ func (q *Queue) Try(ctx context.Context, enqueue bool) (Decision, error) {
 			d.Window, d.Adjustment, d.Warning = min(d.Window, q.bucket.fallback()), nil, "admission_state_write_failed"
 			if granted && inUse >= d.Window {
 				next.AcquiredAt, next.External, next.VerifiedAt, next.Owner = nil, false, nil, q.waiter
+				next.LaunchLeaseExpiresAt = nil
 				if q.external {
 					next.ClaimOwner = &q.owner
 				}
@@ -247,6 +256,78 @@ func (q *Queue) Try(ctx context.Context, enqueue bool) (Decision, error) {
 	return d, nil
 }
 
+// PrepareLaunch refreshes the recovery deadline immediately before exec.
+// After it succeeds, Close keeps the record until the child is reaped or its
+// identity can be checked by another process.
+func (q *Queue) PrepareLaunch(ctx context.Context) error {
+	err := q.updateLaunchTicket(ctx, func(ticket *Ticket) {
+		now := q.store.now().UTC()
+		if now.Before(*ticket.AcquiredAt) {
+			now = *ticket.AcquiredAt
+		}
+		expires := now.Add(launchLeaseTTL)
+		ticket.LaunchLeaseExpiresAt = &expires
+	})
+	if err == nil {
+		q.retain = true
+	}
+	return err
+}
+
+// BindChild records the kernel generation before the adapter can reap it.
+func (q *Queue) BindChild(pid int) error {
+	if pid <= 0 || q.store.start == nil {
+		return errors.New("native child generation is unavailable")
+	}
+	start, err := q.store.start(pid)
+	if err != nil {
+		return err
+	}
+	if start == "" {
+		return errors.New("native child generation is unavailable")
+	}
+	err = q.updateLaunchTicket(context.Background(), func(ticket *Ticket) {
+		ticket.Child = &Owner{PID: pid, Start: start}
+		ticket.LaunchLeaseExpiresAt = nil
+	})
+	if err == nil {
+		q.retain = true
+	}
+	return err
+}
+
+func (q *Queue) updateLaunchTicket(ctx context.Context, update func(*Ticket)) error {
+	if q.file == nil || q.external {
+		return ErrHolderOwned
+	}
+	lock, dir, err := q.store.lock(ctx, q.name, false)
+	if err != nil {
+		return err
+	}
+	if lock == nil {
+		return os.ErrNotExist
+	}
+	defer lock.Close()
+	name := ticketKey(q.holder) + ".json"
+	var ticket Ticket
+	if err := readJSON(filepath.Join(dir, name), &ticket, 4096); err != nil {
+		return err
+	}
+	if ticket.Holder != q.holder || ticket.Owner != q.waiter || ticket.External || ticket.AcquiredAt == nil {
+		return ErrHolderOwned
+	}
+	update(&ticket)
+	return writeJSON(dir, name, &ticket)
+}
+
+// ChildReaped permits immediate cleanup after an authoritative native wait
+// or a launch that failed before leaving a child under adapter supervision.
+func (q *Queue) ChildReaped() {
+	if q != nil && !q.external {
+		q.retain = false
+	}
+}
+
 func (q *Queue) Close() {
 	if q == nil || q.file == nil {
 		return
@@ -257,7 +338,7 @@ func (q *Queue) Close() {
 		return
 	}
 	// Remove while still holding the ticket flock and bucket lock. If the
-	// bucket is unavailable, closing the flock makes the record reclaimable.
+	// bucket is unavailable, readers use the recorded child or deadline.
 	lock, dir, err := q.store.lock(context.Background(), q.name, false)
 	if err == nil && lock != nil {
 		_ = os.Remove(filepath.Join(dir, ticketKey(q.holder)+".json"))
@@ -424,7 +505,9 @@ func (s *Store) tickets(dir string, now time.Time, prune bool, own *os.File, own
 		if !ValidHolder(ticket.Holder) || ticketKey(ticket.Holder) != key || !ValidPriority(ticket.Priority) ||
 			ticket.PID <= 0 || ticket.Start == "" || ticket.Sequence == 0 || ticket.QueuedAt.IsZero() ||
 			ticket.External && (ticket.AcquiredAt == nil || ticket.VerifiedAt == nil || ticket.ClaimOwner != nil) ||
-			ticket.ClaimOwner != nil && (ticket.AcquiredAt != nil || ticket.ClaimOwner.PID <= 0 || ticket.ClaimOwner.Start == "") {
+			ticket.ClaimOwner != nil && (ticket.AcquiredAt != nil || ticket.ClaimOwner.PID <= 0 || ticket.ClaimOwner.Start == "") ||
+			ticket.Child != nil && (ticket.External || ticket.AcquiredAt == nil || ticket.Child.PID <= 0 || ticket.Child.Start == "" || ticket.LaunchLeaseExpiresAt != nil) ||
+			ticket.LaunchLeaseExpiresAt != nil && (ticket.External || ticket.AcquiredAt == nil || ticket.LaunchLeaseExpiresAt.Before(*ticket.AcquiredAt)) {
 			return nil, errors.New("invalid admission ticket")
 		}
 		locked := own != nil && key == ownKey
@@ -452,6 +535,9 @@ func (s *Store) tickets(dir string, now time.Time, prune bool, own *os.File, own
 				}
 			}
 		}
+		if !locked && !ticket.External && ticket.AcquiredAt != nil {
+			locked = s.nativeLeaseActive(ticket, now)
+		}
 		if locked {
 			tickets = append(tickets, ticket)
 			continue
@@ -464,6 +550,22 @@ func (s *Store) tickets(dir string, now time.Time, prune bool, own *os.File, own
 		}
 	}
 	return tickets, nil
+}
+
+func (s *Store) nativeLeaseActive(ticket Ticket, now time.Time) bool {
+	if ticket.Child != nil {
+		if s.start == nil {
+			return true
+		}
+		start, err := s.start(ticket.Child.PID)
+		return err != nil || start == ticket.Child.Start
+	}
+	expires := ticket.LaunchLeaseExpiresAt
+	if expires == nil {
+		// Grants from earlier versions have no explicit launch deadline.
+		return now.Before(ticket.AcquiredAt.Add(launchLeaseTTL))
+	}
+	return now.Before(*expires)
 }
 
 var flockCall sync.Mutex

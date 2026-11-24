@@ -207,6 +207,79 @@ func TestProviderAdmissionPlanAndDisabledRun(t *testing.T) {
 	}
 }
 
+func TestProviderAdmissionOwnerCrashKeepsNativeLease(t *testing.T) {
+	t.Parallel()
+	f, script := admissionFixture(t, true, "5s")
+	body := "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'opencode 2.3.2'; exit 0; fi\nexec /bin/sleep 60\n"
+	if err := os.WriteFile(script, []byte(body), 0700); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(t.TempDir(), "agentctl")
+	if out, err := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v %s", err, out)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	owner := exec.CommandContext(ctx, binary, "--config", f.config, "--journal", f.journal,
+		"run", "--cwd", f.root, "--", script, "run", "--format", "json", "--model", "morph/morph-dsv41flash", "--", "task")
+	owner.Env = append(os.Environ(), "AGENTCTL_UPDATE_MODE=off")
+	var ownerOutput bytes.Buffer
+	owner.Stdout, owner.Stderr = &ownerOutput, &ownerOutput
+	if err := owner.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if owner.ProcessState == nil {
+			_ = owner.Process.Kill()
+			_ = owner.Wait()
+		}
+	}()
+	slots := admission.New(f.journal, time.Now, admissionProcessStart)
+	b := admission.Bucket{Harness: "opencode", Model: "morph/morph-dsv41flash", MinWindow: 1, InitialWindow: 1, MaxWindow: 1}
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	var child admission.Owner
+	for child.PID == 0 {
+		view, err := slots.Status(ctx, "morph", b)
+		if err == nil && len(view.Holders) == 1 && view.Holders[0].Child != nil {
+			child = *view.Holders[0].Child
+			break
+		}
+		select {
+		case <-ctx.Done():
+			_ = owner.Wait()
+			t.Fatalf("native child lease was not recorded: %#v %v %s", view, err, &ownerOutput)
+		case <-ticker.C:
+		}
+	}
+	process, err := os.FindProcess(child.PID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if start, err := admissionProcessStart(child.PID); err == nil && start == child.Start {
+			_ = process.Kill()
+		}
+	}()
+	if err := owner.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = owner.Wait()
+	if start, err := admissionProcessStart(child.PID); err != nil || start != child.Start {
+		t.Fatalf("child did not survive owner crash: %q %v", start, err)
+	}
+	testPID := os.Getpid()
+	testStart, err := admissionProcessStart(testPID)
+	if err != nil || testStart == "" {
+		t.Fatalf("contender identity: %q %v", testStart, err)
+	}
+	q := slots.Queue("morph", b, "contender", admission.Interactive, admission.Owner{PID: testPID, Start: testStart}, admission.Owner{}, false)
+	defer q.Close()
+	if d, err := q.Try(ctx, false); err != nil || d.Granted {
+		t.Fatalf("owner crash released a live child's lease: %#v %v", d, err)
+	}
+}
+
 func TestProviderAdmissionObservedAdjustment(t *testing.T) {
 	f, script := admissionFixture(t, true, "5s")
 	raw, err := os.ReadFile(f.config)

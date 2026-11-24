@@ -1180,6 +1180,19 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 			return LaunchResult{}, nativeContextError(runCtx, "native process launch")
 		}
 	}
+	if req.BeforeStart != nil {
+		if err := req.BeforeStart(runCtx); err != nil {
+			release()
+			if runCtx.Err() != nil {
+				return LaunchResult{}, nativeContextError(runCtx, "native process launch")
+			}
+			return LaunchResult{}, dependencyError("cannot prepare native process lease", err)
+		}
+		if runCtx.Err() != nil {
+			release()
+			return LaunchResult{}, nativeContextError(runCtx, "native process launch")
+		}
+	}
 	if err := cmd.Start(); err != nil {
 		release()
 		// exec.CommandContext reports a context error from Start when the
@@ -1190,8 +1203,16 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		}
 		return LaunchResult{}, dependencyError("native process failed to start", err)
 	}
-	started = true
 	startedAt := time.Now().UTC()
+	if req.OnStarted != nil {
+		if err := req.OnStarted(cmd.Process.Pid); err != nil {
+			_ = killProcess(cmd)
+			_ = cmd.Wait()
+			release()
+			return LaunchResult{}, dependencyError("cannot record native process lease", err)
+		}
+	}
+	started = true
 	ref := SourceRef{Adapter: a.Name(), Kind: a.config.LaunchKind, OpaqueID: strconv.Itoa(cmd.Process.Pid), PID: cmd.Process.Pid}
 	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: startedAt, updatedAt: startedAt, done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, outputDir: req.OutputDir, wholeStdout: a.config.WholeStdout, live: live, launchIdentity: captureProcessLaunch(cmd.Process.Pid, startedAt)}
 	if req.ExecutionContext != nil {

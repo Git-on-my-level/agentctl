@@ -150,6 +150,7 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 		}
 		if queue != nil {
 			queue.Close()
+			queue = nil
 		}
 	}
 	execution, problem := a.commitProviderAdmission(ctx, c, execution, meta, timeout, inbox, interrupt)

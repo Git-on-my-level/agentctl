@@ -304,6 +304,11 @@ type LaunchRequest struct {
 	// daemonless caller owns the child only while it remains alive, so normal
 	// launches wait and reap the child before returning.
 	StartOnly bool
+	// BeforeStart and OnStarted let an in-process caller record custody
+	// immediately around cmd.Start. OnStarted runs before cmd.Wait can reap
+	// the child. A failed OnStarted aborts and reaps the launch.
+	BeforeStart func(context.Context) error
+	OnStarted   func(int) error
 	// replaces is the process record a steering relaunch supersedes. The new
 	// record takes over its observation stream and every lookup key.
 	replaces *processRecord

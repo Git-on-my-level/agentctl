@@ -41,7 +41,17 @@
         "acquired_at": {"$ref": "#/$defs/time"},
         "external": {"type": "boolean"},
         "sequence": {"type": "integer", "minimum": 1},
-        "verified_at": {"$ref": "#/$defs/time"}
+        "verified_at": {"$ref": "#/$defs/time"},
+        "launch_lease_expires_at": {"$ref": "#/$defs/time"},
+        "child": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pid", "process_start"],
+          "properties": {
+            "pid": {"type": "integer", "minimum": 1},
+            "process_start": {"type": "string"}
+          }
+        }
       }
     },
     "snapshot": {

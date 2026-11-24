@@ -479,8 +479,22 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	if prompt != nil && (prompt.Delivery == "stdin" || prompt.Delivery == adapter.PromptDeliveryStream) {
 		launchRequest.Stdin = prompt.Bytes
 	}
+	var childBound bool
+	if slot != nil {
+		launchRequest.BeforeStart = slot.PrepareLaunch
+		launchRequest.OnStarted = func(pid int) error {
+			err := slot.BindChild(pid)
+			childBound = err == nil
+			return err
+		}
+	}
 	launch, err := runtime.Launch(launchCtx, launchRequest)
 	if err != nil {
+		if !childBound {
+			// Start failed, or the native adapter reaped the child after a
+			// failed OnStarted callback.
+			slot.ChildReaped()
+		}
 		writeJournal, current, openProblem := a.openExecutionWrite(context.Background(), c, execution.ID)
 		if openProblem != nil {
 			return openProblem
@@ -503,6 +517,9 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	ownedID := execution.ID // later failed journal assignments may return a zero execution
 	defer func() {
 		cancelErr := runtime.Cancel(context.Background(), adapter.CancelRequest{Ref: launch.Session.Ref, Signal: "term", Grace: nativeOwnerCancelGrace})
+		if cancelErr == nil {
+			slot.ChildReaped()
+		}
 		if runProblem != nil {
 			runProblem = a.settleNativeOwnerError(c, runtime, launch.Session.Ref, ownedID, opts.noStoreResult, runProblem, cancelErr)
 		}
@@ -639,6 +656,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			// The native turn is reaped and terminal. A follow-up launched
 			// by finishNativeTurn must acquire its own slot.
 			if waitErr == nil {
+				slot.ChildReaped()
 				slot.Close()
 			}
 			return a.finishNativeTurn(launchCtx, renderer, c, execution)
