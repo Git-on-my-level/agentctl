@@ -280,10 +280,10 @@ func TestZCodeRecipeUsesProvisionedModel(t *testing.T) {
 	if got.PromptDelivery != PromptDeliveryArgv {
 		t.Fatalf("delivery = %q", got.PromptDelivery)
 	}
-	for _, model := range []string{"glm-5.3", "glm-5.3-flash"} {
+	for _, model := range []string{"glm-5.3", "glm-5.3-flash", "glm-5.4"} {
 		selected, err := Build(Input{Harness: "zcode", Model: "zai/" + model})
 		selector := "ZCODE_MODEL="
-		if model == "glm-5.3-flash" {
+		if model != "glm-5.3" {
 			selector += model
 		}
 		if err != nil || len(selected.Env) != 1 || selected.Env[0] != selector {

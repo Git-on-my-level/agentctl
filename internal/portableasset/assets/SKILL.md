@@ -266,7 +266,7 @@ invalid receipts are delegate_remote_receipt_invalid. Preserve remote diagnostic
 including delegate_invalid_cwd. Multica delegation still fails closed.
 Multica delegation is rejected until its result/settings contract is available;
 explicit `dispatch` retains its existing lifecycle-only guarantees. The ZCode
-Flash recipe sets the non-secret `ZCODE_MODEL` selector; the host-managed
+Flash and GLM-5.4 recipes set the non-secret `ZCODE_MODEL` selector; the host-managed
 launcher needs its config from `zcode-cli-provision`. GLM-5.3 keeps the configured
 default by clearing inherited selectors with `ZCODE_MODEL=`. Launch values
 replace inherited entries. Missing variants fail before a prompt runs. Requested model/settings

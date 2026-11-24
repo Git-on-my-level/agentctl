@@ -35,15 +35,15 @@ func buildZCode(executable, model, speed, effort, access string) (Recipe, error)
 		return Recipe{}, fail("speed_unavailable", "zcode cannot guarantee fast service speed")
 	}
 	nativeModel := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(model)), "zai/")
-	if nativeModel != "glm-5.3" && nativeModel != "glm-5.3-flash" {
-		return Recipe{}, fail("model_unavailable", "zcode launcher supports only zai/glm-5.3 and zai/glm-5.3-flash via provisioned ZCODE_MODEL configs")
+	if nativeModel != "glm-5.3" && nativeModel != "glm-5.3-flash" && nativeModel != "glm-5.4" {
+		return Recipe{}, fail("model_unavailable", "zcode launcher supports only zai/glm-5.3, zai/glm-5.3-flash and zai/glm-5.4 via provisioned ZCODE_MODEL configs")
 	}
 	// Effort is not a native flag: delegate checks it against the selected
 	// profile at preflight. Static recipe compatibility cannot attest to it.
 	// Clear ambient selectors so the base model uses the configured default,
 	// including on hosts that have no provisioned per-model config.
 	env := []string{"ZCODE_MODEL="}
-	if nativeModel == "glm-5.3-flash" {
+	if nativeModel != "glm-5.3" {
 		env[0] += nativeModel
 	}
 	if access == AccessReadOnly {

@@ -185,6 +185,7 @@ func TestProviderPath(t *testing.T) {
 		{"", "/override.json", "/override.json"},
 		{"glm-5.3-flash", "/ignored.json", "/home/test/.zcode/cli/models/glm-5.3-flash/provider_config.json"},
 		{"glm-5.3", "", "/home/test/.zcode/cli/models/glm-5.3/provider_config.json"},
+		{"glm-5.4", "/ignored.json", "/home/test/.zcode/cli/models/glm-5.4/provider_config.json"},
 		{"../invalid", "", ""},
 	} {
 		if got := ProviderPath("/home/test", tc.selector, tc.override); got != tc.want {
