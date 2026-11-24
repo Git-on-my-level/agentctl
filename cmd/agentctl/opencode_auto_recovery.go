@@ -63,7 +63,7 @@ func (a *app) planOpenCodeRecovery(c common, journal *store.Journal, source mode
 	attempt := 1
 	all, err := journal.ListExecutions(context.Background(), false)
 	if err != nil {
-		return nil, autoCapacity
+		return nil, false // preserve explicit parking when the lineage cannot be checked
 	}
 	root := continuationRoot(all, source)
 	lineage := continuationSuccessors(all, root)
@@ -183,6 +183,8 @@ func (a *app) runOpenCodeRecovery(ctx context.Context, c common, source model.Ex
 }
 
 func (a *app) waitOpenCodeRecovery(ctx context.Context, c common, source model.Execution) bool {
+	ctx, cancel := context.WithDeadline(ctx, source.OpenCodeRecovery.ExpiresAt)
+	defer cancel()
 	for {
 		remaining := source.OpenCodeRecovery.NotBefore.Sub(a.now())
 		if remaining <= 0 {
@@ -197,6 +199,9 @@ func (a *app) waitOpenCodeRecovery(ctx context.Context, c common, source model.E
 		}
 		journal, problem := a.openReadContext(ctx, c)
 		if problem != nil {
+			if problem.Retryable && ctx.Err() == nil {
+				continue
+			}
 			return false
 		}
 		current, err := journal.GetExecution(ctx, source.ID)
@@ -293,6 +298,13 @@ func withRecoveryChain(problem *output.Error, execution model.Execution) *output
 		problem.WithDetail("recovery_chain", execution.RecoveryChain)
 	}
 	return problem
+}
+
+func collectionIDs(execution model.Execution, physical ids.ExecutionID) []ids.ExecutionID {
+	if len(execution.RecoveryChain) > 1 && !execution.RemoteForwarded() {
+		return execution.RecoveryChain
+	}
+	return []ids.ExecutionID{physical}
 }
 
 func parkedOpenCodeRateLimitFailure(e model.Execution) *nativeFailureView {

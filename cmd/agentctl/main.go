@@ -862,18 +862,6 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 	return nil
 }
 
-// dereferenceResult is the single-execution result contract. Batch collection
-// routes through it unchanged so conflicted evidence, nonterminal state, and
-// --allow-empty behave identically whether one id or a set was requested.
-func dereferenceResult(ctx context.Context, journal *store.Journal, id ids.ExecutionID, opts resultOptions, mode output.Mode) (model.Execution, model.Outcome, *output.Error) {
-	execution, err := journal.GetExecution(ctx, id)
-	if err != nil {
-		return model.Execution{}, model.Outcome{}, mapStoreError("read execution result", err)
-	}
-	outcome, problem := executionResult(ctx, journal, execution, id, opts, mode)
-	return execution, outcome, problem
-}
-
 func executionResult(ctx context.Context, journal *store.Journal, execution model.Execution, physical ids.ExecutionID, opts resultOptions, mode output.Mode) (model.Outcome, *output.Error) {
 	outcome, problem := physicalExecutionResult(ctx, journal, execution, physical, opts, mode)
 	if problem != nil {
@@ -955,17 +943,18 @@ func physicalExecutionResult(ctx context.Context, journal *store.Journal, execut
 }
 
 type unreconciledResultItem struct {
-	ExecutionID  string          `json:"execution_id"`
-	Labels       []string        `json:"labels"`
-	Adapter      string          `json:"adapter"`
-	Authority    model.Authority `json:"authority"`
-	State        model.State     `json:"state"`
-	TerminalAt   *time.Time      `json:"terminal_at,omitempty"`
-	Status       string          `json:"status"`
-	Acknowledged bool            `json:"acknowledged"`
-	Outcome      *model.Outcome  `json:"outcome,omitempty"`
-	SkipReason   string          `json:"skip_reason,omitempty"`
-	SkipMessage  string          `json:"skip_message,omitempty"`
+	ExecutionID   string            `json:"execution_id"`
+	Labels        []string          `json:"labels"`
+	Adapter       string            `json:"adapter"`
+	Authority     model.Authority   `json:"authority"`
+	State         model.State       `json:"state"`
+	TerminalAt    *time.Time        `json:"terminal_at,omitempty"`
+	Status        string            `json:"status"`
+	Acknowledged  bool              `json:"acknowledged"`
+	Outcome       *model.Outcome    `json:"outcome,omitempty"`
+	RecoveryChain []ids.ExecutionID `json:"recovery_chain,omitempty"`
+	SkipReason    string            `json:"skip_reason,omitempty"`
+	SkipMessage   string            `json:"skip_message,omitempty"`
 }
 
 // resultUnreconciled collects the terminal executions whose result nobody has
@@ -1007,7 +996,7 @@ func (a *app) resultUnreconciled(ctx context.Context, renderer output.Renderer, 
 	total := 0
 	for i := end - 1; i >= 0; i-- {
 		execution := executions[i]
-		if !acks.Unreconciled(execution) {
+		if execution.RetryOf != nil || !acks.Unreconciled(execution) {
 			continue
 		}
 		matched := true
@@ -1033,7 +1022,15 @@ func (a *app) resultUnreconciled(ctx context.Context, renderer output.Renderer, 
 			labels = []string{}
 		}
 		item := unreconciledResultItem{ExecutionID: execution.ID.String(), Labels: labels, Adapter: execution.Adapter, Authority: execution.Authority, State: execution.State, TerminalAt: execution.TerminalAt}
-		_, outcome, problem := dereferenceResult(ctx, journal, execution.ID, opts, renderer.Mode)
+		logical, physical, err := a.followOpenCodeRecovery(ctx, journal, execution)
+		var outcome model.Outcome
+		var problem *output.Error
+		if err != nil {
+			problem = mapStoreError("read automatic recovery chain", err)
+		} else {
+			item.State, item.TerminalAt, item.RecoveryChain = logical.State, logical.TerminalAt, logical.RecoveryChain
+			outcome, problem = executionResult(ctx, journal, logical, physical, opts, renderer.Mode)
+		}
 		if problem != nil {
 			item.Status = "skipped"
 			item.SkipReason = string(problem.Code)
@@ -1044,7 +1041,7 @@ func (a *app) resultUnreconciled(ctx context.Context, renderer output.Renderer, 
 		bounded := outcome
 		item.Status = "collected"
 		item.Outcome = &bounded
-		collect = append(collect, execution.ID)
+		collect = append(collect, collectionIDs(logical, physical)...)
 		items = append(items, item)
 	}
 	_ = journal.Close()
@@ -1536,11 +1533,8 @@ func (a *app) acknowledgeExecution(ctx context.Context, c common, id ids.Executi
 }
 
 func (a *app) acknowledgeRecoveredExecution(ctx context.Context, c common, execution model.Execution, physical ids.ExecutionID, source string) *output.Error {
-	if len(execution.RecoveryChain) > 1 && !execution.RemoteForwarded() {
-		_, problem := a.acknowledgeExecutions(ctx, c, execution.RecoveryChain, source)
-		return problem
-	}
-	return a.acknowledgeExecution(ctx, c, physical, source)
+	_, problem := a.acknowledgeExecutions(ctx, c, collectionIDs(execution, physical), source)
+	return problem
 }
 
 func openJournalWithRetry(path string, options store.Options) (*store.Journal, error) {

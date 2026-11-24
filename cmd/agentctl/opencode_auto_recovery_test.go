@@ -269,6 +269,29 @@ func TestOpenCodeRecoveredLogicalIDCanContinue(t *testing.T) {
 	}
 }
 
+func TestOpenCodeBulkResultCollectsOneLogicalExecution(t *testing.T) {
+	f := automaticOpenCodeFixture(t, "es")
+	code, out := f.invoke("private-original-task")
+	chain := openCodeChain(t, out)
+	if code != 0 || len(chain) != 2 {
+		t.Fatalf("recovery exit=%d: %s", code, out)
+	}
+	code, out = f.command(t, "", "result", "--unreconciled")
+	var doc struct {
+		Result struct {
+			Items []unreconciledResultItem `json:"executions"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil || code != 0 || len(doc.Result.Items) != 1 {
+		t.Fatalf("bulk result exit=%d: %s", code, out)
+	}
+	item := doc.Result.Items[0]
+	if item.ExecutionID != chain[0].String() || !slices.Equal(item.RecoveryChain, chain) ||
+		!item.Acknowledged || item.Outcome == nil || item.Outcome.Content == nil || item.Outcome.Content.Text != "recovered answer" {
+		t.Fatalf("bulk result did not collect the logical chain: %s", out)
+	}
+}
+
 func TestOpenCodeAutomaticRecoveryKillSwitchAndMissingSession(t *testing.T) {
 	for _, tt := range []struct {
 		name, turns  string
@@ -298,11 +321,11 @@ func TestOpenCodeAutomaticRecoveryKillSwitchAndMissingSession(t *testing.T) {
 
 func TestOpenCodeRecoveryPendingCanBeObservedAndCancelled(t *testing.T) {
 	f := automaticOpenCodeFixture(t, "rs")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	done := make(chan int, 1)
 	go func() {
-		code, _ := invokeAutomaticOpenCode(ctx, f, func(int, int64) time.Duration { return 5 * time.Second }, "--wait")
+		code, _ := invokeAutomaticOpenCode(ctx, f, func(int, int64) time.Duration { return 10 * time.Second }, "--wait")
 		done <- code
 	}()
 	var id string
@@ -333,6 +356,10 @@ func TestOpenCodeRecoveryPendingCanBeObservedAndCancelled(t *testing.T) {
 	code, out = f.command(t, "", "result", id)
 	if code != 8 || !strings.Contains(out, "execution is not terminal") || !strings.Contains(out, "recovery_chain") {
 		t.Fatalf("pending result exit=%d: %s", code, out)
+	}
+	code, out = f.command(t, "", "result", "--unreconciled")
+	if code != 0 || !strings.Contains(out, `"status":"skipped"`) || !strings.Contains(out, `"acknowledged":false`) {
+		t.Fatalf("pending bulk result exit=%d: %s", code, out)
 	}
 	code, out = f.command(t, "", "cancel", id)
 	if code != 0 || !strings.Contains(out, "opencode_recovery_cancelled") {

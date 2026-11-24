@@ -140,7 +140,8 @@ instruction.
   `waiting`, await keeps waiting and result directs callers to await.
   A terminal failure still exits 11 from `delegate --wait` and `await`.
   After delivery, collection acknowledges the recovered turns and the
-  terminal result. Events still describe their physical turns. A new
+  terminal result. Bulk result collection reports the logical execution once
+  and skips it during backoff. Events still describe their physical turns. A new
   `continue` on the logical ID uses the last recovered turn as its source.
   Manual and child-collection successors have their own results.
 - Cancel closes a pending retry and preserves the observed failure. After
@@ -154,6 +155,8 @@ Set `profiles.<name>.delegation.opencode_rate_limit_retry` or
 `profiles.<name>.delegation.opencode_final_answer_followup` to `false` to
 disable the corresponding automatic path. Both default to `true`. Rate-limit
 parking for explicit recovery remains available with automatic retry disabled.
+Remove both settings from the profile before downgrading agentctl to a build
+that predates these config keys.
 
 ## Explicit carry-forward rounds
 
