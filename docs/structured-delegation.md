@@ -450,13 +450,14 @@ continuing to refuse fast/priority variants and unsafe argument forms. Claude
 Code's documented native `[1m]` suffix is preserved only for that adapter; other
 harnesses retain their reviewed bracket grammar. Neither change remaps models.
 
-ZCode's host-managed launcher accepts `ZCODE_MODEL=glm-5.3` or
-`ZCODE_MODEL=glm-5.3-flash`. The Flash recipe selects its provisioned
-provider config through this environment value; the GLM-5.3 recipe preserves
+ZCode's host-managed launcher accepts `ZCODE_MODEL=glm-5.3`,
+`ZCODE_MODEL=glm-5.3-flash`, and `ZCODE_MODEL=glm-5.4`. The Flash and GLM-5.4
+recipes select their provisioned provider configs through this environment value.
+The GLM-5.3 recipe preserves
 the existing configured default by emitting `ZCODE_MODEL=` to clear any inherited
 selector. Launch values replace inherited entries. It adds no native `--model`
-flag. Provision the Flash config with `zcode-cli-provision` before selecting
-Flash; GLM-5.3 needs no per-model variant.
+flag. Provision the Flash and GLM-5.4 configs with `zcode-cli-provision` before
+selecting those models; GLM-5.3 needs no per-model variant.
 Plans expose these reviewed, non-secret values in `native.env`; the immutable
 admission retains them for retries and follow-up turns. Arbitrary caller env
 and credentials are not accepted through this recipe mechanism.
@@ -468,8 +469,8 @@ levels come from matching bundled `config.modelConfigRules.modelRules` entries'
 match the whole ID without case sensitivity; later matching rules override earlier
 ones. No supported-level list is hardcoded. Unreadable metadata, no matching rule,
 or an absent, empty or malformed final list makes effort unknown and cannot satisfy
-a required effort. The reader covers the launcher's reviewed GLM-5.3 and Flash
-model IDs; other selected models and unlisted levels are unknown. The base honors an inherited
+a required effort. The reader covers the launcher's reviewed GLM-5.3, Flash, and
+GLM-5.4 model IDs; other selected models and unlisted levels are unknown. The base honors an inherited
 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`; named profiles override it, and read-only
 launches ignore it, matching the isolated adapter. Bundled metadata follows
 `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` or the `ZCODE_APP` bundle path; read-only

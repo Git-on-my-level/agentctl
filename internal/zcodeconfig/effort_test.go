@@ -67,8 +67,12 @@ func TestEffortMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	glm54Profile := strings.ReplaceAll(string(profile), "glm-5.3", "glm-5.4")
+	const glm5Metadata = `{"config":{"modelConfigRules":{"modelRules":[{"modelMatch":".*glm-5.*","config":{"optionSpecs":{"reasoningLevel":{"values":["disabled","enabled"]}}}}]}}}`
 	for _, tc := range []struct{ name, profile, builtin, want string }{
 		{"listed", string(profile), string(builtin), "high"},
+		{"glm54_toggle", strings.ReplaceAll(glm54Profile, `"high"`, `"enabled"`), glm5Metadata, "enabled"},
+		{"glm54_rejects_high", glm54Profile, glm5Metadata, ""},
 		{"flash", strings.ReplaceAll(string(profile), "glm-5.3", "GLM-5.3-FLASH"), string(builtin), "high"},
 		{"unlisted", strings.ReplaceAll(string(profile), `"high"`, `"medium"`), string(builtin), ""},
 		{"metadata_not_hardcoded", strings.ReplaceAll(string(profile), `"high"`, `"medium"`), strings.ReplaceAll(string(builtin), `"high"`, `"medium"`), "medium"},
@@ -185,6 +189,7 @@ func TestProviderPath(t *testing.T) {
 		{"", "/override.json", "/override.json"},
 		{"glm-5.3-flash", "/ignored.json", "/home/test/.zcode/cli/models/glm-5.3-flash/provider_config.json"},
 		{"glm-5.3", "", "/home/test/.zcode/cli/models/glm-5.3/provider_config.json"},
+		{"glm-5.4", "/ignored.json", "/home/test/.zcode/cli/models/glm-5.4/provider_config.json"},
 		{"../invalid", "", ""},
 	} {
 		if got := ProviderPath("/home/test", tc.selector, tc.override); got != tc.want {

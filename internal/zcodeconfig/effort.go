@@ -15,7 +15,7 @@ import (
 // precedence over a personal-file override; an empty selector uses the base.
 func ProviderPath(home, selector, override string) string {
 	if selector != "" {
-		if selector != "glm-5.3" && selector != "glm-5.3-flash" {
+		if selector != "glm-5.3" && selector != "glm-5.3-flash" && selector != "glm-5.4" {
 			return ""
 		}
 		return filepath.Join(home, ".zcode", "cli", "models", selector, "provider_config.json")
@@ -82,7 +82,7 @@ func Effort(path, builtinPath string) (level, warning string) {
 	// These are the model IDs supported by the reviewed host launcher. Their
 	// supported effort levels come exclusively from metadata, never this list.
 	switch strings.ToLower(selection.ModelID) {
-	case "glm-5.3", "glm-5.3-flash":
+	case "glm-5.3", "glm-5.3-flash", "glm-5.4":
 	default:
 		return "", "ZCode selected model has unknown supported reasoningLevel values; effort is unknown"
 	}
