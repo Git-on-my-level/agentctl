@@ -286,7 +286,9 @@ window pressures tie). It requires at least 5% headroom below the candidate's
 `switch_threshold`, the profile threshold, or the default of 0.95, so pressure
 up to 0.90 is eligible by default. Candidate `cutoff_exempt`, `switch_threshold`
 and `windows` apply to this legacy rule. The `epsilon` and `expected_cost`
-settings are profile-wide. Keep the optional keys out of configs shared with
+settings are profile-wide. When the drain policy bypasses explicitly configured
+legacy limits, it warns `capacity_policy_overrides_limits` with the account and
+the affected settings. Keep the optional keys out of configs shared with
 older binaries that reject unknown keys.
 
 If the facts path is unset or the file is missing, stale or invalid, the default
@@ -304,7 +306,8 @@ and warning `capacity_all_over_threshold`. The refusals are an unknown pool name
 Plans, results and the execution record carry `capacity`: the pool, account,
 effective mode, reason, facts status and age, and each candidate as it looked.
 In drain mode, `considered` shows the highest-pressure window under `window`
-and the projected usage ceiling under `threshold`. A plan's choice is
+and the projected usage ceiling under `threshold`. `cutoff_exempt` describes
+the exemption applied by the effective policy. A plan's choice is
 advisory, since launch chooses again. Replaying a request key returns the original
 choice, and `continue` keeps the frozen launch plan, so it stays on the account
 holding the session. The stored selector is the resolved harness and model, so an
@@ -312,6 +315,8 @@ older binary can still read the record after a rollback.
 
 Recent launches come from this journal as of the selection scan. Other hosts'
 launches appear once the facts catch up. Account selection happens at launch.
+Following a provider limit error, later launches still select using the
+published usage and local launch debits.
 
 ## Native and Multica boundaries
 

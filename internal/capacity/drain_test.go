@@ -75,6 +75,10 @@ func TestDrainBreaksLatestResetTieByPressureThenConfiguredOrder(t *testing.T) {
 	if got := Select(in); got.Index != 0 {
 		t.Fatalf("0.10 + 0.02 and 0.12 tie, so the first account should win: %+v", got)
 	}
+	a.Windows[1].ResetsAt = a.Windows[0].ResetsAt
+	if got := Select(in); got.Index != 1 {
+		t.Fatalf("highest pressure among windows at the same latest reset should break the tie: %+v", got)
+	}
 }
 
 func TestDrainKeepsDecimalCeilingInclusiveWithMultipleDebits(t *testing.T) {

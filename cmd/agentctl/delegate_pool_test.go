@@ -275,6 +275,42 @@ func TestPoolUnreadJournalFallsBackToLegacyPolicy(t *testing.T) {
 	}
 }
 
+func TestPoolFreshFactsWithStaleWindowWarnAndUseLegacyPolicy(t *testing.T) {
+	f := newPoolFixture(t)
+	now := time.Now().UTC()
+	body := fmt.Sprintf(`{"schema_version":1,"generated_at":%q,"accounts":[
+		{"id":"account-a","windows":[{"name":"weekly","used_ratio":0.91,"resets_at":%q},
+		{"name":"5h","used_ratio":0.1,"observed_at":%q}]},
+		{"id":"account-b","windows":[{"name":"weekly","used_ratio":0.1,"resets_at":%q}]}]}`,
+		now.Format(time.RFC3339), now.Add(time.Hour).Format(time.RFC3339), now.Add(-2*time.Hour).Format(time.RFC3339), now.Add(24*time.Hour).Format(time.RFC3339))
+	if err := os.WriteFile(f.facts, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, warnings := f.plan(t)
+	if got["account"] != "account-b" || got["mode"] != "soonest_reset" || got["facts_status"] != "ok" ||
+		warningCodes(warnings) != "capacity_window_unusable" {
+		t.Fatalf("capacity=%v warnings=%v", got, warnings)
+	}
+}
+
+func TestPoolDrainWarnsWhenLegacyLimitsAreConfigured(t *testing.T) {
+	f := newPoolFixture(t, map[string]any{"cutoff_exempt": true, "windows": []string{"weekly"}})
+	f.updateCapacity(t, func(c map[string]any) { c["switch_threshold"] = .5 })
+	f.writeFacts(t, map[string]float64{"account-a": .1, "account-b": .2})
+	got, warnings := f.plan(t)
+	if got["mode"] != "drain_before_reset" || warningCodes(warnings) != "capacity_policy_overrides_limits,capacity_policy_overrides_limits" {
+		t.Fatalf("capacity=%v warnings=%v", got, warnings)
+	}
+	details := warnings[0].(map[string]any)["details"].(map[string]any)
+	if details["account"] != "account-a" || details["pool"] != "work" || fmt.Sprint(details["fields"]) != "[switch_threshold cutoff_exempt windows]" {
+		t.Fatalf("warning should identify the affected account and fields: %v", details)
+	}
+	f.updateCapacity(t, func(c map[string]any) { c["policy"] = "soonest_reset" })
+	if _, warnings := f.plan(t); len(warnings) != 0 {
+		t.Fatalf("legacy policy changed warnings: %v", warnings)
+	}
+}
+
 func TestPoolReplayKeepsOriginalChoiceAfterFactsChange(t *testing.T) {
 	f := newPoolFixture(t)
 	f.writeFacts(t, map[string]float64{"account-a": 0.1, "account-b": 0.9})

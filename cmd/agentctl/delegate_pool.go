@@ -112,7 +112,24 @@ func (a *app) selectDelegatePool(ctx context.Context, c common, profile config.P
 	chosen := viable[choice.Index]
 	considered := make([]model.CapacityEvaluation, len(choice.Evaluations))
 	for i, evaluation := range choice.Evaluations {
-		considered[i] = model.CapacityEvaluation{Account: evaluation.Account, Model: viable[i].candidate.Model, Window: evaluation.Window, Threshold: evaluation.Threshold,
+		candidate := viable[i].candidate
+		if choice.Mode == capacity.ModeDrainBeforeReset {
+			var fields []string
+			if settings.SwitchThreshold != nil || candidate.SwitchThreshold != nil {
+				fields = append(fields, "switch_threshold")
+			}
+			if candidate.CutoffExempt {
+				fields = append(fields, "cutoff_exempt")
+			}
+			if len(candidate.Windows) > 0 {
+				fields = append(fields, "windows")
+			}
+			if len(fields) > 0 {
+				selection.warnings = append(selection.warnings, output.Warning{Code: "capacity_policy_overrides_limits",
+					Message: "configured capacity limits apply only with soonest_reset", Details: map[string]any{"pool": selector.Pool, "account": candidate.Account, "fields": fields}})
+			}
+		}
+		considered[i] = model.CapacityEvaluation{Account: evaluation.Account, Model: candidate.Model, Window: evaluation.Window, Threshold: evaluation.Threshold,
 			CutoffExempt: evaluation.Exempt, Eligible: evaluation.Eligible, RecentLaunches: evaluation.RecentLaunches}
 		if evaluation.UsageKnown {
 			used := evaluation.UsedRatio

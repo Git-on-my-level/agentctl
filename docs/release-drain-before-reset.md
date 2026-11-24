@@ -9,6 +9,7 @@ The profile can tune `expected_cost` and `epsilon`.
 Receipts record the effective policy in `capacity.mode`. Unusable facts or a
 failed journal scan fall back to `soonest_reset` with a warning. If every
 candidate is over its limit, the least-used one still runs.
+Drain mode warns when an account has explicit legacy limit settings.
 
 To roll back selection on the new binary, set `policy` to `soonest_reset` on the
 affected capacity profile or pool. Before reverting to an older binary, remove
