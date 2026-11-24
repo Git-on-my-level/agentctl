@@ -35,6 +35,7 @@ type runOptions struct {
 	automaticContinuationOf *ids.ExecutionID
 	retryOf                 *ids.ExecutionID
 	recoveryLaunched        *bool
+	recoveryClaimDeadline   time.Time
 	scheduledRecovery       *model.Execution
 	collectionWaiter        bool
 	detachNative            bool
@@ -448,7 +449,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			opts.started(execution, false)
 			opts.started = nil
 		}
-		waited, queue, problem := a.waitProviderAdmission(ownerCtx, c, execution, bucket, cancels, interruptOwner, opts.timeout, opts.noStoreResult)
+		waited, queue, problem := a.waitProviderAdmission(ownerCtx, c, execution, bucket, cancels, interruptOwner, opts.timeout, opts.recoveryClaimDeadline, opts.noStoreResult)
 		if problem != nil {
 			return problem
 		}
@@ -495,6 +496,21 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			return err
 		}
 	}
+	if !opts.recoveryClaimDeadline.IsZero() {
+		launchRequest.BeforeStart = func(ctx context.Context) error {
+			prelaunch, cancel := context.WithDeadline(ctx, opts.recoveryClaimDeadline)
+			defer cancel()
+			if err := prelaunch.Err(); err != nil {
+				return err
+			}
+			if slot != nil {
+				if err := slot.PrepareLaunch(prelaunch); err != nil {
+					return err
+				}
+			}
+			return prelaunch.Err()
+		}
+	}
 	launch, err := runtime.Launch(launchCtx, launchRequest)
 	if err != nil {
 		if !childBound {
@@ -516,6 +532,9 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			return mapStoreError("record launch failure outcome", finalizeErr)
 		}
 		a.anxRegisterTerminal(c, failed.ID)
+		if !opts.recoveryClaimDeadline.IsZero() && errors.Is(err, context.DeadlineExceeded) {
+			return interruptedRunError(err, failed)
+		}
 		return mapAdapterError("launch failed", err).WithDetail("execution_id", failed.ID.String())
 	}
 	if opts.recoveryLaunched != nil {

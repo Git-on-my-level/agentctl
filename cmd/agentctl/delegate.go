@@ -930,6 +930,9 @@ func delegateExecutionError(code output.Code, message string, execution model.Ex
 	}
 	if failure := parkedOpenCodeRateLimitFailure(execution); failure != nil {
 		problem.WithDetail("failure", failure)
+		if execution.RateLimit != nil {
+			problem.WithDetail("rate_limit", execution.RateLimit)
+		}
 	}
 	return withRecoveryChain(problem, execution)
 }

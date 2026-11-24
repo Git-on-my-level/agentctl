@@ -176,6 +176,8 @@ type remoteReceipt struct {
 	OriginHostID  ids.HostID                  `json:"origin_host_id"`
 	State         model.State                 `json:"state"`
 	Liveness      model.Liveness              `json:"liveness"`
+	SourceState   string                      `json:"source_state"`
+	RateLimit     *model.NativeRateLimit      `json:"rate_limit"`
 	UpdatedAt     time.Time                   `json:"updated_at"`
 	TerminalAt    *time.Time                  `json:"terminal_at"`
 	Observation   *model.Observation          `json:"observation"`
@@ -217,10 +219,20 @@ func parseRemoteReceipt(body []byte) (remoteReceipt, *output.Error) {
 	}
 	if err != nil || idErr != nil || hostErr != nil || !validState || !validLiveness || !validIntegrity ||
 		!model.ValidOpenCodeRecoveryChain(receipt.RecoveryChain, receipt.ID) ||
-		receipt.Admission.Validate() != nil || receipt.DeadlineAt != nil && receipt.DeadlineAt.IsZero() {
+		receipt.Admission.Validate() != nil || receipt.DeadlineAt != nil && receipt.DeadlineAt.IsZero() ||
+		receipt.RateLimit != nil && receipt.RateLimit.Validate() != nil {
 		return receipt, delegateError(output.CodeRemoteFailure, "delegate_remote_receipt_invalid", "remote receipt lacks a valid execution identity or state")
 	}
 	return receipt, nil
+}
+
+func (r remoteReceipt) projectOpenCodePause(execution *model.Execution) {
+	if execution.Adapter == "opencode" && r.SourceState == "paused_capacity" &&
+		r.State == model.StateAttention && r.Liveness == model.LivenessBlocked &&
+		r.Observation != nil && r.Observation.Integrity == model.IntegrityVerified {
+		execution.SourceState = &r.SourceState
+		execution.RateLimit = r.RateLimit
+	}
 }
 
 func remoteLaunchFlags(opts delegateOptions) []string {
@@ -446,7 +458,8 @@ func (a *app) statusRemote(ctx context.Context, renderer output.Renderer, execut
 	if receipt.Observation != nil {
 		execution.Observation.Integrity = receipt.Observation.Integrity
 	}
-	return writeExecution(renderer, execution, "status")
+	receipt.projectOpenCodePause(&execution)
+	return writeExecutionReported(renderer, execution, "status", executionWriteOptions{failure: parkedOpenCodeRateLimitFailure(execution)})
 }
 
 // Remote await --content is raw text even in JSON mode. Collect metadata first,

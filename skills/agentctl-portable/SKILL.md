@@ -449,7 +449,11 @@ and keeps the same native session and model. Use the original ID with
 `recovery_chain`, and `--content` returns the final answer. Pending recovery
 shows up as waiting. New `continue` turns can use the same logical ID.
 Same-key replay observes that chain. An eligible 429 parks with exit 10 when
-the cap, backoff or deadline prevents another automatic retry. Terminal
+the cap, backoff or deadline prevents another automatic retry. When the
+provider retry time is known, wait until `rate_limit.next_retry_at` before
+launching a native `continue`. Plans remain available while parked. An
+automatic recovery claim gives the owner up to one minute to acquire a provider
+slot and start the successor, bounded by the original deadline. Terminal
 failures exit 11. Set `delegation.opencode_rate_limit_retry` or
 `delegation.opencode_final_answer_followup` to false to turn off either path.
 

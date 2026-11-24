@@ -1820,9 +1820,20 @@ func nativeApprovalAttention(e model.Execution) bool {
 // states can be observed again after the authority decides.
 func attentionNextActions(mode output.Mode, e model.Execution) []output.NextAction {
 	if e.NativeRecoveryParked() {
+		plan := output.NextAction{Label: "Plan native checkpoint recovery", Argv: []string{"agentctl", "continue", e.ID.String(), "--request-key", "<new-key>", "--prompt-file", "<recovery-instruction>", "--plan"}, SideEffectClass: output.ReadOnly, Preconditions: []string{"reconcile prior tool effects and recover from the latest parked turn"}}
+		if e.RemoteForwarded() {
+			return []output.NextAction{
+				{Label: "Read the remote parked failure", Argv: []string{"agentctl", "status", e.ID.String(), "--output", string(mode)}, SideEffectClass: output.ReadOnly},
+				plan,
+			}
+		}
+		physical := e.ID
+		if len(e.RecoveryChain) != 0 {
+			physical = e.RecoveryChain[len(e.RecoveryChain)-1]
+		}
 		return []output.NextAction{
-			{Label: "Read the parked failure receipt", Argv: []string{"agentctl", "events", e.ID.String(), "--kind", "attention"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}},
-			{Label: "Plan native checkpoint recovery", Argv: []string{"agentctl", "continue", e.ID.String(), "--request-key", "<new-key>", "--prompt-file", "<recovery-instruction>", "--plan"}, SideEffectClass: output.ReadOnly, Preconditions: []string{"reconcile prior tool effects and recover from the latest parked turn"}},
+			{Label: "Read the parked failure receipt", Argv: []string{"agentctl", "events", physical.String(), "--kind", "attention"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}},
+			plan,
 			{Label: "Cancel the idle parked turn", Argv: []string{"agentctl", "cancel", e.ID.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{"no recovery turn is active"}},
 		}
 	}
@@ -1854,6 +1865,9 @@ func outcomeError(code output.Code, message string, e model.Execution) *output.E
 	problem := output.NewError(code, message, code == output.CodeTimeout || code == output.CodeExecutionUnknown || e.NativeRecoveryParked()).WithDetail("execution_id", e.ID.String()).WithDetail("state", e.State).WithDetail("revision", e.Revision)
 	if e.RateLimit != nil {
 		problem.WithDetail("rate_limit", e.RateLimit)
+	}
+	if e.NativeRecoveryParked() {
+		problem.WithDetail("recovery_state", *e.SourceState)
 	}
 	if failure := parkedOpenCodeRateLimitFailure(e); failure != nil {
 		problem.WithDetail("failure", failure)

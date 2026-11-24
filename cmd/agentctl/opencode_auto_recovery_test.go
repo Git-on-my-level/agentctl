@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
+	"github.com/Git-on-my-level/agentctl/internal/output"
 	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
@@ -90,7 +92,9 @@ esac
 printf '%s\n' '{"type":"step_start","sessionID":"ses_recover","part":{"type":"step-start"}}'
 case "$(printf %s "$TEST_OPENCODE_TURNS" | cut -c "$step")" in
   r)
-    printf '%s\n' '{"type":"retry","sessionID":"ses_recover","attempt":4,"error":{"type":"provider.rate-limit","message":"private-provider-body","status":429,"retryAfterMs":65000}}'
+    if [ "${TEST_OPENCODE_SKIP_RETRY_EVENT:-0}" = 0 ]; then
+      printf '%s\n' '{"type":"retry","sessionID":"ses_recover","attempt":4,"error":{"type":"provider.rate-limit","message":"private-provider-body","status":429,"retryAfterMs":65000}}'
+    fi
     printf '{"type":"error","sessionID":"ses_recover","error":{"type":"provider.rate-limit","message":"private-provider-body","status":429,"retryAfterMs":%s}}\n' "${TEST_OPENCODE_RETRY_AFTER_MS:-90000}"
     exit 1 ;;
   e) printf '%s\n' '{"type":"reasoning","sessionID":"ses_recover","part":{"type":"reasoning","text":"private-reasoning"}}' ;;
@@ -602,6 +606,130 @@ func TestOpenCodeRecoveryParksWhenDelayCannotBeScheduled(t *testing.T) {
 			}
 			assertOpenCodeCapacityPark(t, out)
 		})
+	}
+}
+
+func TestOpenCodeParkRetainsTerminalRetryEmbargo(t *testing.T) {
+	for _, skipRetryEvent := range []string{"0", "1"} {
+		t.Run("skip_retry_event_"+skipRetryEvent, func(t *testing.T) {
+			f := automaticOpenCodeFixture(t, "rs")
+			t.Setenv("TEST_OPENCODE_RETRY_AFTER_MS", "7200000")
+			t.Setenv("TEST_OPENCODE_SKIP_RETRY_EVENT", skipRetryEvent)
+			start := time.Now()
+			code, out := f.invoke("private-original-task", "--wait")
+			if code != 10 || !strings.Contains(out, `"retry_after_ms":7200000`) {
+				t.Fatalf("park exit=%d: %s", code, out)
+			}
+			id := failureExecutionIDFromOutput(t, out)
+			for _, command := range []string{"status", "await", "await-any"} {
+				args := []string{command, id}
+				if command == "await-any" {
+					args = []string{command, "--execution", id}
+				}
+				code, out = f.command(t, "", args...)
+				if !strings.Contains(out, `"retry_after_ms":7200000`) || !strings.Contains(out, `"next_retry_at":`) {
+					t.Fatalf("%s exit=%d: %s", command, code, out)
+				}
+			}
+			journal, err := store.Open(f.journal, store.Options{ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			row, err := journal.GetExecution(context.Background(), ids.ExecutionID(id))
+			journal.Close()
+			if err != nil || row.RateLimit == nil || row.RateLimit.NextRetryAt == nil || row.RateLimit.NextRetryAt.Before(start.Add(2*time.Hour)) {
+				t.Fatalf("embargo not recorded: %+v %v", row.RateLimit, err)
+			}
+			code, out = f.command(t, "manual native follow-up", "continue", id, "--request-key", "after-embargo", "--prompt-stdin")
+			if code != 10 || !strings.Contains(out, "continue_opencode_retry_not_due") || f.launches(t) != 1 {
+				t.Fatalf("early continue exit=%d launches=%d: %s", code, f.launches(t), out)
+			}
+		})
+	}
+}
+
+func TestAwaitAnyOpenCodeParkedEvidenceTargetsSuccessor(t *testing.T) {
+	f := automaticOpenCodeFixture(t, "rr")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	code, out := invokeAutomaticOpenCode(ctx, f, func(attempt int, _ int64) time.Duration {
+		if attempt == 1 {
+			return 0
+		}
+		return time.Hour + time.Second
+	}, "--wait")
+	chain := openCodeChain(t, out)
+	if code != 10 || len(chain) != 2 {
+		t.Fatalf("parked successor exit=%d: %s", code, out)
+	}
+	root, successor := chain[0].String(), chain[1].String()
+	code, out = f.command(t, "", "await-any", "--execution", root)
+	if code != 10 || !strings.Contains(out, `"execution_id":"`+root+`"`) ||
+		!strings.Contains(out, `"events","`+successor+`","--kind","attention"`) ||
+		!strings.Contains(out, `"continue","`+root+`"`) {
+		t.Fatalf("await-any exit=%d: %s", code, out)
+	}
+}
+
+func TestOpenCodeRecoveryQueueStopsAtClaimDeadline(t *testing.T) {
+	f := automaticOpenCodeFixture(t, "es")
+	enableOpenCodeRecoveryAdmission(t, f)
+	disableOpenCodeRecovery(t, f, false, true)
+	code, out := f.invoke("private-original-task", "--wait")
+	if code != 11 {
+		t.Fatalf("seed exit=%d: %s", code, out)
+	}
+	root := ids.ExecutionID(failureExecutionIDFromOutput(t, out))
+	if code, out := f.command(t, "", "admission", "acquire", "--bucket", "recovery", "--holder", "fixture", "--pid", strconv.Itoa(os.Getpid()), "--no-wait"); code != 0 || !strings.Contains(out, `"granted":true`) {
+		t.Fatalf("hold provider slot exit=%d: %s", code, out)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	c := common{journalPath: f.journal, configPath: f.config}
+	a := testApp(&bytes.Buffer{}, &bytes.Buffer{})
+	journal, row, problem := a.openExecutionWrite(ctx, c, root)
+	if problem != nil {
+		t.Fatal(problem)
+	}
+	now := time.Now().UTC()
+	expires := now.Add(3 * time.Second)
+	row.OpenCodeRecovery = &model.OpenCodeRecovery{Kind: model.OpenCodeFinalAnswer, Attempt: 1, NotBefore: now, ExpiresAt: expires, Claimed: true}
+	_, err := journal.UpdateExecution(ctx, row, row.Revision)
+	journal.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := []byte(openCodeFinalAnswerInstruction)
+	done := make(chan *output.Error, 1)
+	go func() {
+		done <- a.continuePrepared(ctx, output.Renderer{Mode: output.JSON, Writer: &bytes.Buffer{}}, c, root, "queued-recovery",
+			delegateOptions{authority: "native", continuationMode: "native", automaticRecovery: true},
+			&promptPayload{Bytes: prompt, Digest: sha256Digest(prompt), Source: "opencode_recovery"}, nil)
+	}()
+	time.Sleep(time.Until(expires.Add(150 * time.Millisecond)))
+	if code, out := f.command(t, "", "admission", "release", "--bucket", "recovery", "--holder", "fixture"); code != 0 {
+		t.Fatalf("release provider slot exit=%d: %s", code, out)
+	}
+	select {
+	case problem := <-done:
+		if problem == nil || problem.Code != output.CodeTimeout || f.launches(t) != 1 {
+			t.Fatalf("expired recovery launched: %+v, launches=%d", problem, f.launches(t))
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	journal, err = store.Open(f.journal, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	row, err = journal.GetExecution(ctx, root)
+	if err != nil || row.SupersededBy == nil {
+		t.Fatalf("missing admitted successor: %+v %v", row, err)
+	}
+	next, err := journal.GetExecution(ctx, *row.SupersededBy)
+	if err != nil || next.State != model.StateCancelled || next.Admission == nil || next.Admission.Phase != "cancelled" || next.Launch != nil || next.DeadlineAt != nil {
+		t.Fatalf("expired queue state: %+v %v", next, err)
 	}
 }
 

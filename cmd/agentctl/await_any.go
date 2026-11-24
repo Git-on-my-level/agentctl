@@ -534,6 +534,7 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 		if receipt.Liveness != "" {
 			execution.Liveness = receipt.Liveness
 		}
+		receipt.projectOpenCodePause(&execution)
 		if !receipt.UpdatedAt.IsZero() {
 			execution.UpdatedAt = receipt.UpdatedAt
 		}

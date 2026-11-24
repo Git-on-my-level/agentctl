@@ -296,6 +296,12 @@ func (a *app) continuePrepared(ctx context.Context, renderer output.Renderer, c 
 				output.NextAction{Label: "Inspect steering", Argv: []string{"agentctl", "help", "steer"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 	}
 	recovery := opts.continuationMode == "native" && (source.State == model.StateFailed || source.NativeRecoveryParked())
+	if recovery && !opts.plan && parkedOpenCodeRateLimitFailure(source) != nil &&
+		source.RateLimit != nil && source.RateLimit.NextRetryAt != nil && now.Before(*source.RateLimit.NextRetryAt) {
+		problem := continueError(output.CodeAttentionRequired, "continue_opencode_retry_not_due", "the provider retry window has not opened", source)
+		problem.Retryable = true
+		return problem.WithDetail("rate_limit", source.RateLimit)
+	}
 	if source.State != model.StateCompleted && !recovery {
 		return continueError(output.CodeInvalidState, "continue_source_not_completed", "only a completed turn can be continued; a failed or cancelled turn may not have kept its context", source)
 	}
@@ -415,6 +421,7 @@ func (a *app) continuePrepared(ctx context.Context, renderer output.Renderer, c 
 	if opts.automaticRecovery {
 		run.retryOf = &id
 		run.recoveryLaunched = opts.recoveryLaunched
+		run.recoveryClaimDeadline = source.OpenCodeRecovery.ExpiresAt
 	}
 	if opts.continuationMode == "native" {
 		run.resumeSession = session

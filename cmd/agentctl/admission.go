@@ -101,7 +101,13 @@ func admissionWarnings(meta *model.ProviderAdmission) []output.Warning {
 }
 
 func (a *app) waitProviderAdmission(ctx context.Context, c common, execution model.Execution, b admission.Bucket,
-	inbox *cancelInbox, interrupt context.CancelFunc, timeout time.Duration, noStore bool) (model.Execution, *admission.Queue, *output.Error) {
+	inbox *cancelInbox, interrupt context.CancelFunc, timeout time.Duration, claimDeadline time.Time, noStore bool) (model.Execution, *admission.Queue, *output.Error) {
+	executionDeadline, _ := ctx.Deadline()
+	if !claimDeadline.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, claimDeadline)
+		defer cancel()
+	}
 	waitCtx, cancel := context.WithTimeout(ctx, b.Wait())
 	defer cancel()
 	meta := *execution.Admission
@@ -200,7 +206,7 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 			queue = nil
 		}
 	}
-	execution, problem := a.commitProviderAdmission(ctx, c, execution, meta, timeout, inbox, interrupt)
+	execution, problem := a.commitProviderAdmission(ctx, c, execution, meta, timeout, executionDeadline, inbox, interrupt)
 	if err := ctx.Err(); err != nil {
 		queue.Close()
 		cancelled, problem := a.cancelProviderAdmission(c, execution, meta, noStore, err)
@@ -217,7 +223,7 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 // The reservation decision ends the capacity wait. Its journal commit has the
 // normal journal retry budget, with short lock attempts so the owner continues
 // to service cancellation before any native child starts.
-func (a *app) commitProviderAdmission(ctx context.Context, c common, execution model.Execution, meta model.ProviderAdmission, timeout time.Duration, inbox *cancelInbox, interrupt context.CancelFunc) (model.Execution, *output.Error) {
+func (a *app) commitProviderAdmission(ctx context.Context, c common, execution model.Execution, meta model.ProviderAdmission, timeout time.Duration, executionDeadline time.Time, inbox *cancelInbox, interrupt context.CancelFunc) (model.Execution, *output.Error) {
 	var deadlineAt *time.Time
 	if timeout > 0 {
 		deadline := meta.GrantedAt.Add(timeout)
@@ -225,8 +231,8 @@ func (a *app) commitProviderAdmission(ctx context.Context, c common, execution m
 	}
 	// A recovery turn stays deadline-free while queued. At grant it must
 	// retain the original deadline so further backoff uses the same budget.
-	if deadline, ok := ctx.Deadline(); execution.RetryOf != nil && ok && (deadlineAt == nil || deadline.Before(*deadlineAt)) {
-		deadline = deadline.UTC()
+	if execution.RetryOf != nil && !executionDeadline.IsZero() && (deadlineAt == nil || executionDeadline.Before(*deadlineAt)) {
+		deadline := executionDeadline.UTC()
 		deadlineAt = &deadline
 	}
 	budget := c.journalBusyBudget

@@ -163,6 +163,7 @@ func helpTopics() map[string]commandHelp {
 			Defaults: []string{"native parent exit may automatically request one child-collection turn; delegation.child_exit_auto_continue defaults true; no recursive continuation or cancelled/timed-out parent resume", "only delegate-launched executions and their follow-up turns qualify; expert run executions lack the recorded launch plan and return continue_launch_plan_missing",
 				"the follow-up is a new execution with its own result; it supersedes the execution it continues",
 				"eligible native OpenCode runs admit up to three structured 429 retries with at most one hour of backoff per retry, park when unable to schedule a retry, and request one final answer after an empty stopped turn; profiles can disable either via delegation.opencode_rate_limit_retry or delegation.opencode_final_answer_followup",
+				"a parked OpenCode 429 preserves the provider retry window in rate_limit.next_retry_at when known; continue --plan can inspect recovery, and continue refuses to launch before that time; the automatic recovery claim covers provider queueing and prelaunch",
 				"mode defaults to native: the native CLI resumes its own session and agentctl stores no transcript",
 				"--mode carry_forward explicitly starts a fresh session with a versioned JSON prompt containing the prior stored answer and new instruction; available for any eligible delegated native harness",
 				"continuation reports mode, native_session_reused, and carry-forward result source/digest/bytes; carry-forward is never native resume",

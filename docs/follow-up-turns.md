@@ -129,6 +129,9 @@ instruction.
   The limit counts admitted retries. An exhausted limit, a provider retry hint
   or computed delay over one hour, or insufficient time before the deadline
   parks the session as `paused_capacity` (exit 10) for explicit recovery.
+  The parked receipt retains the terminal provider hint and any later absolute
+  retry time. Native `continue` before `rate_limit.next_retry_at` exits 10
+  with `continue_opencode_retry_not_due`. `continue --plan` remains available.
 - A stopped turn without assistant text (`empty_terminal_result`) gets one
   follow-up per lineage, asking for the final answer in the required format.
 - Both paths claim the schedule before launch, use distinct deterministic
@@ -153,7 +156,9 @@ instruction.
   observes the existing chain. If the owner disappears before admitting a
   successor, an unclaimed schedule expires one minute after backoff.
   Claiming starts a fresh one-minute admission budget, capped by the original
-  deadline. A claim that cannot start the native process leaves a bounded
+  deadline. This budget covers waiting for a provider slot and starting the
+  native process. A launched turn uses the original execution deadline. A claim
+  that cannot start the native process leaves a bounded
   `opencode_recovery.diagnostic` on its journal record. Callers can collect the
   recorded failure or continue explicitly from a verified checkpoint.
 
