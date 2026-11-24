@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Git-on-my-level/agentctl/internal/adapter"
 	"github.com/Git-on-my-level/agentctl/internal/admission"
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
@@ -739,6 +740,36 @@ func TestOpenCodeRecoveryQueueStopsAtClaimDeadline(t *testing.T) {
 			t.Fatalf("manual continuation exit=%d launches=%d: %s", code, f.launches(t), out)
 		}
 	})
+}
+
+func TestOpenCodeRecoveryPreservesSharedPrelaunchDeadline(t *testing.T) {
+	deadline := time.Now().Add(time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	preparing, started := false, false
+	_, err := adapter.NewOpenCode().Launch(ctx, adapter.LaunchRequest{
+		Argv: []string{"/bin/echo", "run", "--format", "json"},
+		BeforeStart: func(launchCtx context.Context) error {
+			preparing = true
+			<-launchCtx.Done()
+			return recoveryClaimContextError(launchCtx, deadline)
+		},
+		OnStarted: func(int) error {
+			started = true
+			return nil
+		},
+	})
+	if !preparing || started || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected the shared deadline during launch preparation: preparing=%t started=%t err=%v", preparing, started, err)
+	}
+	if !recoveryClaimLaunchExpired(ctx, deadline, err, started) {
+		t.Fatalf("shared prelaunch deadline was lost: %v", err)
+	}
+	if recoveryClaimLaunchExpired(ctx, deadline, err, true) ||
+		recoveryClaimLaunchExpired(ctx, deadline, context.Canceled, false) ||
+		recoveryClaimLaunchExpired(ctx, deadline.Add(time.Second), err, false) {
+		t.Fatal("post-launch failure, explicit cancellation, or earlier execution deadline qualified as claim expiry")
+	}
 }
 
 func TestOpenCodeRecoveryClaimExpiryMakesFailureCollectible(t *testing.T) {

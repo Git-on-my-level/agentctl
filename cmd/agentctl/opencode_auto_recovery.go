@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -30,6 +31,16 @@ func recoveryClaimContextError(ctx context.Context, claimDeadline time.Time) err
 		return errOpenCodeRecoveryClaimExpired
 	}
 	return err
+}
+
+func recoveryClaimLaunchExpired(ctx context.Context, claimDeadline time.Time, launchErr error, childStarted bool) bool {
+	if claimDeadline.IsZero() || childStarted || !errors.Is(launchErr, context.DeadlineExceeded) {
+		return false
+	}
+	// A shared execution/claim deadline can make the native adapter return
+	// its normal launch timeout even if the pre-start hook identified expiry.
+	return errors.Is(launchErr, errOpenCodeRecoveryClaimExpired) ||
+		recoveryClaimContextError(ctx, claimDeadline) == errOpenCodeRecoveryClaimExpired
 }
 
 func expiredRecoveryBeforeLaunch(e model.Execution) bool {

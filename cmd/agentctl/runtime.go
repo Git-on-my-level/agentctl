@@ -487,10 +487,16 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	if prompt != nil && (prompt.Delivery == "stdin" || prompt.Delivery == adapter.PromptDeliveryStream) {
 		launchRequest.Stdin = prompt.Bytes
 	}
-	var childBound bool
+	var childStarted, childBound bool
 	if slot != nil {
 		launchRequest.BeforeStart = slot.PrepareLaunch
+	}
+	if slot != nil || !opts.recoveryClaimDeadline.IsZero() {
 		launchRequest.OnStarted = func(pid int) error {
+			childStarted = true
+			if slot == nil {
+				return nil
+			}
 			err := slot.BindChild(pid)
 			childBound = err == nil
 			return err
@@ -528,7 +534,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		if launchInterrupted(err) {
 			failureState = adapter.StateCancelled
 		}
-		if errors.Is(err, errOpenCodeRecoveryClaimExpired) {
+		if recoveryClaimLaunchExpired(launchCtx, opts.recoveryClaimDeadline, err, childStarted) {
 			current.SourceState = stringPointer(openCodeRecoveryClaimExpired)
 		}
 		failed, finalizeErr := a.finalizeResult(context.Background(), c, writeJournal, current, nativeLaunchFailure(err, failureState), a.now().UTC(), opts.noStoreResult)
