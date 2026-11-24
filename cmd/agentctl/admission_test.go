@@ -504,7 +504,7 @@ func TestProviderAdmissionJournalUpdateRespectsContext(t *testing.T) {
 	defer cancel()
 	done := make(chan *output.Error, 1)
 	go func() {
-		_, problem := a.updateProviderAdmission(ctx, c, model.Execution{}, model.ProviderAdmission{}, false, 0)
+		_, problem := a.updateProviderAdmission(ctx, c, model.Execution{}, model.ProviderAdmission{}, false, nil)
 		done <- problem
 	}()
 	select {

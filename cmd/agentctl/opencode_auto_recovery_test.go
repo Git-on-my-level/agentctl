@@ -257,26 +257,26 @@ func TestOpenCodeAutomaticRecoveryChain(t *testing.T) {
 	}
 }
 
-func TestOpenCodeRecoveryReleasesProviderAdmissionSlot(t *testing.T) {
-	f := automaticOpenCodeFixture(t, "es")
+func enableOpenCodeRecoveryAdmission(t *testing.T, f delegateFixture) {
+	t.Helper()
 	cfg, err := config.Load(f.config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile := cfg.Profiles["test"]
+	profile := cfg.Profiles[cfg.DefaultProfile]
 	enabled := true
 	profile.Admission = &admission.Config{Buckets: map[string]admission.Bucket{
 		"recovery": {Harness: "opencode", Model: "provider/test-model", Enabled: &enabled, MinWindow: 1, InitialWindow: 1, MaxWindow: 1},
 	}}
-	cfg.Profiles["test"] = profile
-	data, err := json.Marshal(cfg)
-	if err != nil {
+	cfg.Profiles[cfg.DefaultProfile] = profile
+	if err := config.Save(f.config, cfg, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(f.config, data, 0600); err != nil {
-		t.Fatal(err)
-	}
+}
 
+func TestOpenCodeRecoveryReleasesProviderAdmissionSlot(t *testing.T) {
+	f := automaticOpenCodeFixture(t, "es")
+	enableOpenCodeRecoveryAdmission(t, f)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	code, out := invokeAutomaticOpenCode(ctx, f, nil, "--wait", "--timeout", "8s")
@@ -289,6 +289,7 @@ func TestOpenCodeRecoveryReleasesProviderAdmissionSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer journal.Close()
+	var deadline time.Time
 	for i, id := range chain {
 		row, err := journal.GetExecution(ctx, id)
 		if err != nil {
@@ -297,7 +298,23 @@ func TestOpenCodeRecoveryReleasesProviderAdmissionSlot(t *testing.T) {
 		if row.Admission == nil || row.Admission.Phase != "granted" || (i > 0 && row.Admission.Warning != "") {
 			t.Fatalf("execution %s admission=%+v, want an ordinary grant", id, row.Admission)
 		}
+		if row.DeadlineAt == nil || (i > 0 && !row.DeadlineAt.Equal(deadline)) {
+			t.Fatalf("execution %s deadline=%v, want original grant deadline", id, row.DeadlineAt)
+		}
+		deadline = *row.DeadlineAt
 	}
+}
+
+func TestOpenCodeRecoveryParksWhenBackoffExceedsInheritedDeadline(t *testing.T) {
+	f := automaticOpenCodeFixture(t, "er")
+	enableOpenCodeRecoveryAdmission(t, f)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	code, out := invokeAutomaticOpenCode(ctx, f, nil, "--wait", "--timeout", "10s")
+	if chain := openCodeChain(t, out); code != 10 || len(chain) != 2 || f.launches(t) != 2 {
+		t.Fatalf("recovery exit=%d chain=%v: %s", code, chain, out)
+	}
+	assertOpenCodeCapacityPark(t, out)
 }
 
 func TestOpenCodeRecoveredLogicalIDCanContinue(t *testing.T) {
