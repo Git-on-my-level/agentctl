@@ -250,7 +250,7 @@ Pools live in the profile. A candidate must also resolve through
 selects that account's launcher, which owns its authentication:
 
 ```json
-{"capacity":{"file":"/var/lib/capacity.json","max_age_seconds":3600,"switch_threshold":0.95,"pools":{
+{"capacity":{"file":"/var/lib/capacity.json","max_age_seconds":3600,"pools":{
   "work":{"candidates":[
     {"harness":"codex","model":"example-model","account":"account-a"},
     {"harness":"codex","model":"example-model","account":"account-b","executable":"/usr/local/bin/codex-b"}
@@ -258,46 +258,58 @@ selects that account's launcher, which owns its authentication:
 }}}
 ```
 
-- A candidate is eligible when its pressure, the used ratio plus `launch_debit`
-  (default 0.02) for each launch this journal still has running or completed after
-  that window's `observed_at` (falling back to the facts' `generated_at`), is below
-  its threshold by at least 5%, including exactly 5%. Completed work already
-  measured by the provider is not debited again. Without a usable observation,
-  only completions within `max_age_seconds` and running work count. Completion
-  time keeps a long-running job reserved even if it started before that interval.
-  Each window computes its own pressure and the highest pressure limits the
-  candidate; equal pressures prefer the sooner known reset. The threshold is its own
-  `switch_threshold`, else the profile's, else 0.95, so the default stops new work
-  above 0.90. `cutoff_exempt` keeps it eligible at any usage, for an account meant to
-  run past its allowance.
-- `windows` names the windows that limit a candidate; absent means all of them. A
-  window past its `resets_at` counts as empty with no known next reset, and one
-  whose observation is older than `max_age_seconds` or more than five minutes in
-  the future is ignored. A reset also retires debits for work completed before it.
-- Among eligible candidates, the one whose limiting window resets soonest runs
-  first, because unused quota is lost at reset. Candidates with known usage but no
-  known reset come next, then candidates with unknown usage. Ties keep configured
-  order. The recorded `reason` is `soonest_reset` or `configured_order`.
+The default policy, `drain_before_reset`, checks every reported window. Its
+projected usage is the used ratio plus local launch debits plus `expected_cost`
+(default 0.01). The candidate is eligible when every projection is at or below
+`1 - epsilon` (default epsilon 0.03). Among eligible accounts, take each account's
+latest upcoming `resets_at` and pick the earliest of those times. Equal times
+favor lower pressure on that latest window, then configured order. When several
+windows on an account share its latest reset, the highest pressure at that reset
+breaks the account tie. Known usage without an upcoming reset ranks next, then
+unknown usage. Within those groups, lower pressure wins and ties keep configured
+order. The recorded reason is `drain_before_reset` when the choice has an
+upcoming reset, otherwise `configured_order`.
 
-A pool doesn't block work on a number that may be stale. Missing, stale or invalid
-facts use configured order and warn `capacity_facts_unusable`; recent launches
-still spread the choice. If every candidate is over its threshold, the least
-used one runs and warns `capacity_all_over_threshold`. The refusals are an unknown
-pool name (`delegate_unknown_pool`) and no candidate matching the allowlist
+Pressure is usage plus `launch_debit` (default 0.02) for each local pool execution
+still running or completed after that window's `observed_at`, or `generated_at`
+when `observed_at` is absent. A window past its reset counts as empty with no
+known next reset. Its reset also retires debits for work completed at or before
+the reset when the observation predates it. Without a usable observation,
+running work and completions within `max_age_seconds` still count.
+
+Set `capacity.policy` or `capacity.pools.<name>.policy` to `soonest_reset` to
+restore the legacy rule. A pool policy overrides the profile. The legacy rule
+uses the reset of the highest-pressure window (choosing the earlier reset when
+window pressures tie). It requires at least 5% headroom below the candidate's
+`switch_threshold`, the profile threshold, or the default of 0.95, so pressure
+up to 0.90 is eligible by default. Candidate `cutoff_exempt`, `switch_threshold`
+and `windows` apply to this legacy rule. The `epsilon` and `expected_cost`
+settings are profile-wide. Keep the optional keys out of configs shared with
+older binaries that reject unknown keys.
+
+If the facts path is unset or the file is missing, stale or invalid, the default
+policy uses `soonest_reset` for that launch and warns `capacity_facts_unusable`.
+Facts older than `max_age_seconds` (default 3600) are stale. A reported window
+with a stale observation or one more than five minutes in the future also
+triggers legacy selection (`capacity_window_unusable`), which ignores that
+observation. A failed journal scan triggers legacy selection without launch
+debits (`capacity_recent_launches_unread`). If every candidate is over its limit,
+the account with the lowest maximum pressure runs with reason `all_over_threshold`
+and warning `capacity_all_over_threshold`. The refusals are an unknown pool name
+(`delegate_unknown_pool`) and no candidate matching the allowlist
 (`delegate_pool_no_candidate`).
 
 Plans, results and the execution record carry `capacity`: the pool, account,
-reason, facts status and age, and each candidate as it looked. A plan's choice is
+effective mode, reason, facts status and age, and each candidate as it looked.
+In drain mode, `considered` shows the highest-pressure window under `window`
+and the projected usage ceiling under `threshold`. A plan's choice is
 advisory, since launch chooses again. Replaying a request key returns the original
 choice, and `continue` keeps the frozen launch plan, so it stays on the account
 holding the session. The stored selector is the resolved harness and model, so an
 older binary can still read the record after a rollback.
 
-Known limits: recent launches come from this journal, so other hosts' launches
-appear only once the facts catch up. A provider limit error doesn't bench an
-account, because those failures are attributed to a harness rather than an account
-today; the recorded account makes that possible later. Multica delegation remains
-refused.
+Recent launches come from this journal as of the selection scan. Other hosts'
+launches appear once the facts catch up. Account selection happens at launch.
 
 ## Native and Multica boundaries
 

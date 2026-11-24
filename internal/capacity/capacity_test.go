@@ -21,7 +21,7 @@ func weekly(id string, ratio float64) Account {
 }
 
 func input(facts *Facts, candidates ...Candidate) Input {
-	return Input{Candidates: candidates, Facts: facts, LaunchDebit: 0.02, MaxAge: time.Hour, Now: testNow}
+	return Input{Candidates: candidates, Facts: facts, LaunchDebit: 0.02, Policy: ModeSoonestReset, MaxAge: time.Hour, Now: testNow}
 }
 
 func TestSoonestResetWinsOverFresherAccount(t *testing.T) {

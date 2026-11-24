@@ -138,15 +138,18 @@ slug from memory. Add explicit speed/effort inside the selector, under
 (for example `"300k"`) sets a Claude Code lane's
 compaction window for that launch; other harnesses refuse it.
 When a profile configures capacity pools and the user named no model, request
-`{"pool":"<name>"}` instead of a family or model. agentctl picks an account from
-published usage, keeps at least 5% headroom below `switch_threshold` (default
-0.95, so exactly 0.90 pressure remains eligible), and reports its choice as
-`capacity`. Pressure adds a per-launch debit only for running work or work
-completed after each usage window's observation (`observed_at`, else
-`generated_at`); fresh observations retire completed-work debits. Each window
-uses its own observation, and the highest pressure limits the candidate. Without
-usable observations, completed-work debits expire after `max_age_seconds`. Never combine a pool with harness, family,
-version, model, speed or effort, and never use a pool when the user named a model.
+`{"pool":"<name>"}` instead of a family or model. The default `drain_before_reset`
+policy picks the earliest of each eligible account's latest upcoming resets.
+Every reported window must fit observed usage, local launch debits, and
+`expected_cost` (default 0.01) within `1 - epsilon` (default 0.03). Window debits
+cover running work and work completed after that window's observation.
+`capacity.mode` reports the effective policy. The `soonest_reset` policy at the
+profile or pool restores the legacy limiting-window reset and 5% headroom below
+`switch_threshold` (default 0.95). Unusable facts or an unreadable journal make
+the default policy fall back to `soonest_reset` with a warning. If every candidate
+is over its limit, the least-used account runs. Never combine a pool with harness,
+family, version, model, speed or effort, and never use a pool when the user named
+a model.
 Labels are command metadata: pass `--label <value>` (repeatable) to `delegate`,
 never as request fields. Accounts are not selectable; a request that names one is
 refused with a repair to `pool` or an exact model.

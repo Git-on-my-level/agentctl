@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/Git-on-my-level/agentctl/internal/capacity"
 	"github.com/Git-on-my-level/agentctl/internal/launchrecipe"
 )
 
@@ -22,6 +23,10 @@ const (
 	// while work is running or its completion is newer than a usage observation,
 	// so a fan-out spreads while facts lag without counting measured work twice.
 	DefaultLaunchDebit = 0.02
+	// DefaultCapacityEpsilon is the room reserved below the plan limit.
+	DefaultCapacityEpsilon = 0.03
+	// DefaultExpectedCost is the allowance share budgeted for the next run.
+	DefaultExpectedCost = 0.01
 
 	maxCapacityPools      = 32
 	maxCapacityCandidates = 16
@@ -37,12 +42,16 @@ type Capacity struct {
 	MaxAgeSeconds   int                     `json:"max_age_seconds,omitempty"`
 	SwitchThreshold *float64                `json:"switch_threshold,omitempty"`
 	LaunchDebit     *float64                `json:"launch_debit,omitempty"`
+	Policy          capacity.Policy         `json:"policy,omitempty"`
+	Epsilon         *float64                `json:"epsilon,omitempty"`
+	ExpectedCost    *float64                `json:"expected_cost,omitempty"`
 	Pools           map[string]CapacityPool `json:"pools,omitempty"`
 }
 
 // CapacityPool is a candidate list. It is not a role: agentctl gives the name no
 // meaning, and callers choose a pool as they would a model.
 type CapacityPool struct {
+	Policy     capacity.Policy     `json:"policy,omitempty"`
 	Candidates []CapacityCandidate `json:"candidates"`
 }
 
@@ -87,6 +96,26 @@ func (c Capacity) Debit() float64 {
 	return DefaultLaunchDebit
 }
 
+// PoolPolicy returns the pool's override or the profile policy.
+func (c Capacity) PoolPolicy(pool CapacityPool) capacity.Policy {
+	if pool.Policy != "" {
+		return pool.Policy
+	}
+	return c.Policy
+}
+
+// DrainBudget returns the reserve and estimated cost for the next launch.
+func (c Capacity) DrainBudget() (epsilon, expectedCost float64) {
+	epsilon, expectedCost = DefaultCapacityEpsilon, DefaultExpectedCost
+	if c.Epsilon != nil {
+		epsilon = *c.Epsilon
+	}
+	if c.ExpectedCost != nil {
+		expectedCost = *c.ExpectedCost
+	}
+	return epsilon, expectedCost
+}
+
 // Validate checks shape only. Whether a candidate's model is allowed, and
 // whether its executable exists, are host facts reported by config doctor.
 func (c Capacity) Validate() error {
@@ -101,6 +130,15 @@ func (c Capacity) Validate() error {
 	}
 	if c.LaunchDebit != nil && (*c.LaunchDebit < 0 || *c.LaunchDebit > 1) {
 		return errors.New("capacity.launch_debit must be between 0 and 1")
+	}
+	if !validCapacityPolicy(c.Policy) {
+		return errors.New("capacity.policy must be drain_before_reset or soonest_reset")
+	}
+	if c.Epsilon != nil && !validCapacityRatio(*c.Epsilon) {
+		return errors.New("capacity.epsilon must be between 0 and 1")
+	}
+	if c.ExpectedCost != nil && !validCapacityRatio(*c.ExpectedCost) {
+		return errors.New("capacity.expected_cost must be between 0 and 1")
 	}
 	if len(c.Pools) > maxCapacityPools {
 		return fmt.Errorf("capacity.pools allows at most %d pools", maxCapacityPools)
@@ -117,6 +155,9 @@ func (c Capacity) Validate() error {
 }
 
 func (p CapacityPool) validate(name string) error {
+	if !validCapacityPolicy(p.Policy) {
+		return fmt.Errorf("capacity pool %q policy must be drain_before_reset or soonest_reset", name)
+	}
 	if len(p.Candidates) == 0 || len(p.Candidates) > maxCapacityCandidates {
 		return fmt.Errorf("capacity pool %q needs 1 to %d candidates", name, maxCapacityCandidates)
 	}
@@ -163,6 +204,14 @@ func validThreshold(value float64) bool {
 	return value > 0 && value <= 1
 }
 
+func validCapacityPolicy(policy capacity.Policy) bool {
+	return policy == "" || policy == capacity.ModeDrainBeforeReset || policy == capacity.ModeSoonestReset
+}
+
+func validCapacityRatio(value float64) bool {
+	return value >= 0 && value <= 1
+}
+
 func cloneCapacity(in *Capacity) *Capacity {
 	if in == nil {
 		return nil
@@ -170,6 +219,8 @@ func cloneCapacity(in *Capacity) *Capacity {
 	out := *in
 	out.SwitchThreshold = cloneFloat(in.SwitchThreshold)
 	out.LaunchDebit = cloneFloat(in.LaunchDebit)
+	out.Epsilon = cloneFloat(in.Epsilon)
+	out.ExpectedCost = cloneFloat(in.ExpectedCost)
 	if in.Pools != nil {
 		out.Pools = make(map[string]CapacityPool, len(in.Pools))
 		for name, pool := range in.Pools {

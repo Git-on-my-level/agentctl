@@ -247,9 +247,12 @@ func TestBundleCarriesCapacityIntoMaterializedConfig(t *testing.T) {
       },
       "capacity": {
         "file": "/var/capacity/facts.json",
+        "policy": "soonest_reset",
+        "epsilon": 0.04,
+        "expected_cost": 0,
         "switch_threshold": 0.9,
         "pools": {
-          "work": {"candidates": [
+          "work": {"policy": "drain_before_reset", "candidates": [
             {"harness": "codex", "model": "model-a", "account": "one", "executable": "/opt/bin/codex-one", "cutoff_exempt": true},
             {"harness": "codex", "model": "model-a", "account": "two", "executable": "/opt/bin/codex-two", "switch_threshold": 0.7, "windows": ["weekly"]}
           ]}
@@ -266,7 +269,12 @@ func TestBundleCarriesCapacityIntoMaterializedConfig(t *testing.T) {
 	if capacity == nil || capacity.File != "/var/capacity/facts.json" || capacity.SwitchThreshold == nil || *capacity.SwitchThreshold != 0.9 {
 		t.Fatalf("capacity = %+v", capacity)
 	}
-	candidates := capacity.Pools["work"].Candidates
+	pool := capacity.Pools["work"]
+	epsilon, expectedCost := capacity.DrainBudget()
+	if capacity.Policy != "soonest_reset" || capacity.PoolPolicy(pool) != "drain_before_reset" || epsilon != .04 || expectedCost != 0 {
+		t.Fatalf("policy=%s pool policy=%s epsilon=%v expected cost=%v", capacity.Policy, pool.Policy, epsilon, expectedCost)
+	}
+	candidates := pool.Candidates
 	if len(candidates) != 2 || candidates[0].Executable != "/opt/bin/codex-one" || !candidates[0].CutoffExempt || candidates[1].SwitchThreshold == nil || *candidates[1].SwitchThreshold != 0.7 {
 		t.Fatalf("candidates = %+v", candidates)
 	}
