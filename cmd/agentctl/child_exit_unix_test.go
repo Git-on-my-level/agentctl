@@ -55,7 +55,7 @@ func TestChildExitThroughBuiltBinary(t *testing.T) {
 				script = strings.Replace(script, "echo launch >>", "if [ \"$1\" = session ]; then exit 0; fi\necho launch >>", 1)
 			}
 			if variant == "timeout" {
-				script += "sleep 2\n"
+				script += "sleep 10\n"
 			}
 			if variant == "codex_failed" {
 				script += `case " $* " in
@@ -85,7 +85,9 @@ esac` + "\n"
 			}
 			args := []string{"--config", f.config, "--journal", f.journal, "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin"}
 			if variant == "timeout" {
-				args = append(args, "--timeout", "700ms")
+				// Leave time for the nested CLI to launch and record its child
+				// before testing timeout of the parent turn.
+				args = append(args, "--timeout", "5s")
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
