@@ -159,7 +159,7 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 		return cancelled, nil, problem
 	}
 	if problem != nil {
-		return execution, nil, problem
+		return execution, nil, problem.WithDetail("execution_id", execution.ID.String()).WithDetail("native_launch_started", false)
 	}
 	a.journalAdmissionAdjustment(ctx, c, execution, adjustment)
 	keep = true

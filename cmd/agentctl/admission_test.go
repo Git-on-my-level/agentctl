@@ -430,13 +430,17 @@ func TestProviderAdmissionJournalUpdateRespectsContext(t *testing.T) {
 	}
 }
 
-func TestProviderAdmissionCrashGapUsesStartingOwner(t *testing.T) {
+func TestProviderAdmissionCrashGapRequiresNativeLaunchProof(t *testing.T) {
 	start := time.Now().UTC()
 	owner := &model.LaunchIdentity{PID: 42, StartedAt: start}
 	row := model.Execution{State: model.StateStarting, OwnerLaunch: owner,
-		Admission: &model.ProviderAdmission{Phase: "granted", Bucket: "morph", Priority: admission.Background}}
+		Admission: &model.ProviderAdmission{Phase: "queued", Bucket: "morph", Priority: admission.Background}}
 	if identity, ok := recordedLaunch(row); !ok || identity.PID != owner.PID {
-		t.Fatalf("prelaunch crash lost owner identity: %+v (%v)", identity, ok)
+		t.Fatalf("queued crash lost owner identity: %+v (%v)", identity, ok)
+	}
+	row.Admission.Phase = "granted"
+	if identity, ok := recordedLaunch(row); ok {
+		t.Fatalf("owner identity cannot prove a possibly launched child is gone: %+v", identity)
 	}
 	row.Launch = &model.LaunchIdentity{PID: 43, StartedAt: start}
 	if identity, ok := recordedLaunch(row); !ok || identity.PID != row.Launch.PID {

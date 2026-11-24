@@ -85,9 +85,9 @@ func absDuration(value time.Duration) time.Duration {
 
 func recordedLaunch(execution model.Execution) (processIdentity, bool) {
 	launch := execution.Launch
-	if launch == nil && execution.State == model.StateStarting && execution.Admission != nil {
-		// If the owner vanished before recording Launch, the outcome is
-		// unknown. Its identity does not prove any native child has exited.
+	if launch == nil && execution.ProviderQueued() {
+		// A queued row cannot have launched. After grant, the owner can
+		// disappear with a live child whose launch has not been recorded.
 		launch = execution.OwnerLaunch
 	}
 	if launch == nil {
