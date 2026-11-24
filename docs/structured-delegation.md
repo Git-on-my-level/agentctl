@@ -261,7 +261,9 @@ selects that account's launcher, which owns its authentication:
 The default policy, `drain_before_reset`, checks every reported window. Its
 projected usage is the used ratio plus local launch debits plus `expected_cost`
 (default 0.01). The candidate is eligible when every projection is at or below
-`1 - epsilon` (default epsilon 0.03). Among eligible accounts, take each account's
+`1 - epsilon` (default epsilon 0.03). Drain eligibility and pressure ties use
+exact arithmetic on the shortest decimal representation of each parsed ratio.
+Among eligible accounts, take each account's
 latest upcoming `resets_at` and pick the earliest of those times. Equal times
 favor lower pressure on that latest window, then configured order. When several
 windows on an account share its latest reset, the highest pressure at that reset

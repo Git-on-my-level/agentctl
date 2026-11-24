@@ -70,9 +70,26 @@ func TestDrainBreaksLatestResetTieByPressureThenConfiguredOrder(t *testing.T) {
 	if got := Select(in); got.Index != 1 {
 		t.Fatalf("latest window pressure should beat pool order and short window pressure: %+v", got)
 	}
-	a.Windows[0].UsedRatio, b.Windows[0].UsedRatio = .2, .2+in.LaunchDebit
+	a.Windows[0].UsedRatio, b.Windows[0].UsedRatio = .10, .12
+	in.Candidates[0], in.Candidates[1] = in.Candidates[1], in.Candidates[0]
 	if got := Select(in); got.Index != 0 {
-		t.Fatalf("ties should keep configured order: %+v", got)
+		t.Fatalf("0.10 + 0.02 and 0.12 tie, so the first account should win: %+v", got)
+	}
+}
+
+func TestDrainKeepsDecimalCeilingInclusiveWithMultipleDebits(t *testing.T) {
+	a := weekly("a", .81)
+	later := testNow.Add(96 * time.Hour)
+	b := Account{ID: "b", Windows: []Window{{Name: "weekly", UsedRatio: .50, ResetsAt: &later}}}
+	in := drainInput(factsWith(a, b), Candidate{Account: "a"}, Candidate{Account: "b"})
+	in.Epsilon, in.ExpectedCost = .07, .06
+	in.Launches = []Launch{{Account: "a"}, {Account: "a"}, {Account: "a"}}
+	if got := Select(in); got.Index != 0 || !got.Evaluations[0].Eligible || got.Evaluations[0].Threshold != .93 {
+		t.Fatalf("0.81 + 3*0.02 + 0.06 is exactly 0.93: %+v", got)
+	}
+	a.Windows[0].UsedRatio = .8100000000000002
+	if got := Select(in); got.Index != 1 || got.Evaluations[0].Eligible {
+		t.Fatalf("a usage value just above the ceiling should select the other account: %+v", got)
 	}
 }
 
