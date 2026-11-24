@@ -17,8 +17,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
-// recentLaunchScanLimit bounds the journal read a pool does before launching. A
-// slow read only costs the fan-out spread, which the warning reports.
+// recentLaunchScanLimit bounds the journal read a pool does before launching.
 const recentLaunchScanLimit = 3 * time.Second
 
 // poolSelection is one pool's outcome. The zero value means no pool was named,
@@ -35,8 +34,8 @@ type viablePoolCandidate struct {
 	resolution delegation.Resolution
 }
 
-// selectDelegatePool picks one account from published facts. Only a name that
-// can't be served fails: unusable facts degrade to configured order with a warning.
+// selectDelegatePool picks one account from published facts. Unusable facts or
+// an unreadable journal send drain selection through the legacy policy.
 func (a *app) selectDelegatePool(ctx context.Context, c common, profile config.Profile, selector delegation.Selector) (poolSelection, *output.Error) {
 	var pools map[string]config.CapacityPool
 	if profile.Capacity != nil {
@@ -68,6 +67,8 @@ func (a *app) selectDelegatePool(ctx context.Context, c common, profile config.P
 	}
 
 	settings := *profile.Capacity
+	policy := settings.PoolPolicy(pool)
+	drain := policy != capacity.ModeSoonestReset
 	now := a.now()
 	maxAge := time.Duration(settings.MaxAge()) * time.Second
 	facts, status := capacity.Load(settings.File, maxAge, now)
@@ -79,25 +80,56 @@ func (a *app) selectDelegatePool(ctx context.Context, c common, profile config.P
 	if status != capacity.StatusOK {
 		facts = nil
 	}
-	if status == capacity.StatusMissing || status == capacity.StatusStale || status == capacity.StatusInvalid {
+	if drain && status != capacity.StatusOK {
+		selection.warnings = append(selection.warnings, output.Warning{Code: "capacity_facts_unusable",
+			Message: "capacity facts are unusable, so the pool used soonest_reset", Details: map[string]any{"pool": selector.Pool, "facts_status": status}})
+	} else if status == capacity.StatusMissing || status == capacity.StatusStale || status == capacity.StatusInvalid {
 		selection.warnings = append(selection.warnings, output.Warning{Code: "capacity_facts_unusable",
 			Message: "capacity facts are unusable, so the pool used its configured order", Details: map[string]any{"pool": selector.Pool, "facts_status": status}})
 	}
 	recent, recentProblem := a.recentPoolLaunches(ctx, c, now, maxAge)
 	if recentProblem != nil {
+		message := "recent launches could not be read, so the choice ignored them"
+		if drain {
+			policy = capacity.ModeSoonestReset
+			message = "recent launches could not be read, so the pool used soonest_reset without launch debits"
+		}
 		selection.warnings = append(selection.warnings, output.Warning{Code: "capacity_recent_launches_unread",
-			Message: "recent launches could not be read, so the choice ignored them", Details: map[string]any{"pool": selector.Pool}})
+			Message: message, Details: map[string]any{"pool": selector.Pool}})
 	}
 
-	input := capacity.Input{Facts: facts, Launches: recent, LaunchDebit: settings.Debit(), MaxAge: maxAge, Now: now}
+	epsilon, expectedCost := settings.DrainBudget()
+	input := capacity.Input{Facts: facts, Launches: recent, LaunchDebit: settings.Debit(), MaxAge: maxAge, Now: now,
+		Policy: policy, Epsilon: epsilon, ExpectedCost: expectedCost}
 	for _, item := range viable {
 		input.Candidates = append(input.Candidates, capacity.Candidate{Account: item.candidate.Account, Windows: item.candidate.Windows, Threshold: settings.Threshold(item.candidate), Exempt: item.candidate.CutoffExempt})
 	}
 	choice := capacity.Select(input)
+	if policy != capacity.ModeSoonestReset && facts != nil && choice.Mode == capacity.ModeSoonestReset {
+		selection.warnings = append(selection.warnings, output.Warning{Code: "capacity_window_unusable",
+			Message: "a capacity window observation is unusable, so the pool used soonest_reset", Details: map[string]any{"pool": selector.Pool}})
+	}
 	chosen := viable[choice.Index]
 	considered := make([]model.CapacityEvaluation, len(choice.Evaluations))
 	for i, evaluation := range choice.Evaluations {
-		considered[i] = model.CapacityEvaluation{Account: evaluation.Account, Model: viable[i].candidate.Model, Window: evaluation.Window, Threshold: evaluation.Threshold,
+		candidate := viable[i].candidate
+		if choice.Mode == capacity.ModeDrainBeforeReset {
+			var fields []string
+			if settings.SwitchThreshold != nil || candidate.SwitchThreshold != nil {
+				fields = append(fields, "switch_threshold")
+			}
+			if candidate.CutoffExempt {
+				fields = append(fields, "cutoff_exempt")
+			}
+			if len(candidate.Windows) > 0 {
+				fields = append(fields, "windows")
+			}
+			if len(fields) > 0 {
+				selection.warnings = append(selection.warnings, output.Warning{Code: "capacity_policy_overrides_limits",
+					Message: "configured capacity limits apply only with soonest_reset", Details: map[string]any{"pool": selector.Pool, "account": candidate.Account, "fields": fields}})
+			}
+		}
+		considered[i] = model.CapacityEvaluation{Account: evaluation.Account, Model: candidate.Model, Window: evaluation.Window, Threshold: evaluation.Threshold,
 			CutoffExempt: evaluation.Exempt, Eligible: evaluation.Eligible, RecentLaunches: evaluation.RecentLaunches}
 		if evaluation.UsageKnown {
 			used := evaluation.UsedRatio
@@ -114,7 +146,7 @@ func (a *app) selectDelegatePool(ctx context.Context, c common, profile config.P
 	}
 	selection.resolution = chosen.resolution
 	selection.executable = chosen.candidate.Executable
-	selection.capacity = &model.DelegationCapacity{Pool: selector.Pool, Mode: capacity.ModeSoonestReset, Account: chosen.candidate.Account, Reason: choice.Reason, FactsStatus: status, FactsAgeSeconds: age, Considered: considered}
+	selection.capacity = &model.DelegationCapacity{Pool: selector.Pool, Mode: choice.Mode, Account: chosen.candidate.Account, Reason: choice.Reason, FactsStatus: status, FactsAgeSeconds: age, Considered: considered}
 	return selection, nil
 }
 

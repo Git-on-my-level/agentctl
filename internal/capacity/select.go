@@ -1,14 +1,22 @@
 package capacity
 
 import (
+	"cmp"
 	"math"
+	"math/big"
+	"slices"
 	"sort"
+	"strconv"
 	"time"
 )
 
-// ModeSoonestReset names the one selection rule. It is recorded with every
-// choice so a reader can tell which rule chose the account.
-const ModeSoonestReset = "soonest_reset"
+// Policy is the configured selection rule. An empty policy uses the default.
+type Policy string
+
+const (
+	ModeSoonestReset     = "soonest_reset"
+	ModeDrainBeforeReset = "drain_before_reset"
+)
 
 // HeadroomFloor is the least room, as a share of the window, that a candidate
 // must keep below its threshold to stay eligible. It stops an account that is
@@ -18,6 +26,7 @@ const HeadroomFloor = 0.05
 // Reason says why a candidate was chosen. Values are stable identifiers.
 const (
 	ReasonSoonestReset     = "soonest_reset"
+	ReasonDrainBeforeReset = "drain_before_reset"
 	ReasonConfiguredOrder  = "configured_order"
 	ReasonAllOverThreshold = "all_over_threshold"
 )
@@ -40,32 +49,40 @@ type Launch struct {
 // Input is everything one choice depends on, so a choice is reproducible from
 // it. Facts is nil when the file is unusable; then no account has known usage.
 type Input struct {
-	Candidates  []Candidate
-	Facts       *Facts
-	Launches    []Launch
-	LaunchDebit float64
-	MaxAge      time.Duration
-	Now         time.Time
+	Candidates   []Candidate
+	Facts        *Facts
+	Launches     []Launch
+	LaunchDebit  float64
+	Policy       Policy
+	Epsilon      float64
+	ExpectedCost float64
+	MaxAge       time.Duration
+	Now          time.Time
 }
 
 // Evaluation explains how one candidate looked at selection time. Pressure is
 // the used ratio plus the debit for recent launches, the figure eligibility uses.
 type Evaluation struct {
-	Account        string
-	UsageKnown     bool
-	UsedRatio      float64
-	Window         string
-	ResetsAt       *time.Time
-	Threshold      float64
-	Exempt         bool
-	Eligible       bool
-	RecentLaunches int
-	pressure       float64
+	Account         string
+	UsageKnown      bool
+	UsedRatio       float64
+	Window          string
+	ResetsAt        *time.Time
+	Threshold       float64
+	Exempt          bool
+	Eligible        bool
+	RecentLaunches  int
+	pressure        float64
+	drainPressure   *big.Rat
+	rankingReset    *time.Time
+	rankingPressure *big.Rat
+	unusableWindow  bool
 }
 
 // Choice is the selected candidate index, why, and every evaluation in pool order.
 type Choice struct {
 	Index       int
+	Mode        string
 	Reason      string
 	Evaluations []Evaluation
 }
@@ -74,16 +91,22 @@ type Choice struct {
 // pool blocks no work on a number that may be stale, so when every candidate is
 // over its limit the least used one runs and the reason says so.
 //
-// Among eligible candidates, the one whose window resets soonest runs first,
-// because unused quota in that window is lost at reset. Candidates with known
-// usage but no known reset come next, then candidates with unknown usage. Ties
-// keep configured order.
+// Drain ranks accounts by their latest usable reset. The legacy policy ranks
+// by the limiting window's reset. Candidates with known usage but no known
+// reset come next, then candidates with unknown usage.
 func Select(input Input) Choice {
-	evaluations := make([]Evaluation, len(input.Candidates))
-	for i, candidate := range input.Candidates {
-		evaluations[i] = evaluate(candidate, input)
+	mode := ModeDrainBeforeReset
+	if input.Policy == ModeSoonestReset || input.Facts == nil {
+		mode = ModeSoonestReset
 	}
-	choice := Choice{Evaluations: evaluations}
+	evaluations := evaluateCandidates(input, mode)
+	if mode == ModeDrainBeforeReset && slices.ContainsFunc(evaluations, func(e Evaluation) bool { return e.unusableWindow }) {
+		// A fresh snapshot can carry a stale observation for one window.
+		// Use the legacy rule if we cannot check every reported window.
+		mode = ModeSoonestReset
+		evaluations = evaluateCandidates(input, mode)
+	}
+	choice := Choice{Mode: mode, Evaluations: evaluations}
 	eligible := make([]int, 0, len(evaluations))
 	for i, evaluation := range evaluations {
 		if evaluation.Eligible {
@@ -95,19 +118,60 @@ func Select(input Input) Choice {
 		return choice
 	}
 	choice.Index = soonestReset(evaluations, eligible)
-	if evaluations[choice.Index].ResetsAt != nil {
-		choice.Reason = ReasonSoonestReset
-	} else {
+	switch {
+	case evaluations[choice.Index].rankingReset == nil:
 		choice.Reason = ReasonConfiguredOrder
+	case mode == ModeDrainBeforeReset:
+		choice.Reason = ReasonDrainBeforeReset
+	default:
+		choice.Reason = ReasonSoonestReset
 	}
 	return choice
+}
+
+func evaluateCandidates(input Input, mode string) []Evaluation {
+	var budget *drainBudget
+	if mode == ModeDrainBeforeReset {
+		ceiling := new(big.Rat).Sub(big.NewRat(1, 1), decimalRatio(input.Epsilon))
+		threshold, _ := ceiling.Float64()
+		ceiling.Sub(ceiling, decimalRatio(input.ExpectedCost))
+		budget = &drainBudget{launchDebit: decimalRatio(input.LaunchDebit), pressureLimit: ceiling, threshold: threshold}
+	}
+	evaluations := make([]Evaluation, len(input.Candidates))
+	for i, candidate := range input.Candidates {
+		evaluations[i] = evaluate(candidate, input, budget)
+	}
+	return evaluations
+}
+
+type drainBudget struct {
+	launchDebit   *big.Rat
+	pressureLimit *big.Rat // Available pressure before adding the next run's cost.
+	threshold     float64  // Projected usage ceiling reported in the receipt.
+}
+
+// Use the shortest round-trip decimal for each input ratio. Exact decimal
+// arithmetic keeps inclusive limits and equal pressures stable across sums.
+func decimalRatio(value float64) *big.Rat {
+	ratio, _ := new(big.Rat).SetString(strconv.FormatFloat(value, 'g', -1, 64))
+	return ratio
+}
+
+func (budget *drainBudget) pressure(used float64, recent int) *big.Rat {
+	debit := new(big.Rat).Mul(budget.launchDebit, big.NewRat(int64(recent), 1))
+	return debit.Add(debit, decimalRatio(used))
 }
 
 // evaluate takes the tightest limiting window. A window past its reset counts as
 // empty with no known next reset, and one observed longer ago than MaxAge says
 // nothing about now.
-func evaluate(candidate Candidate, input Input) Evaluation {
+func evaluate(candidate Candidate, input Input, budget *drainBudget) Evaluation {
+	drain := budget != nil
 	evaluation := Evaluation{Account: candidate.Account, Threshold: candidate.Threshold, Exempt: candidate.Exempt}
+	if drain {
+		evaluation.Threshold = budget.threshold
+		evaluation.Exempt = false
+	}
 	// Without usable observations, retain only the bounded fallback history.
 	evaluation.RecentLaunches = pendingLaunches(input, candidate.Account, input.Now.Add(-input.MaxAge))
 	evaluation.pressure = input.LaunchDebit * float64(evaluation.RecentLaunches)
@@ -117,7 +181,7 @@ func evaluate(candidate Candidate, input Input) Evaluation {
 				continue
 			}
 			for _, window := range account.Windows {
-				if !limits(candidate.Windows, window.Name) {
+				if !drain && !limits(candidate.Windows, window.Name) {
 					continue
 				}
 				observed := input.Facts.GeneratedAt
@@ -125,6 +189,7 @@ func evaluate(candidate Candidate, input Input) Evaluation {
 					observed = *window.ObservedAt
 				}
 				if input.Now.Sub(observed) > input.MaxAge || observed.After(input.Now.Add(maxClockSkew)) {
+					evaluation.unusableWindow = true
 					continue
 				}
 				ratio, resets := window.UsedRatio, window.ResetsAt
@@ -142,18 +207,41 @@ func evaluate(candidate Candidate, input Input) Evaluation {
 				}
 				recent := pendingLaunches(input, candidate.Account, observed)
 				pressure := ratio + input.LaunchDebit*float64(recent)
-				if !evaluation.UsageKnown || pressure > evaluation.pressure ||
-					(pressure == evaluation.pressure && earlierReset(resets, evaluation.ResetsAt)) {
+				comparison := cmp.Compare(pressure, evaluation.pressure)
+				var exactPressure *big.Rat
+				if drain {
+					exactPressure = budget.pressure(ratio, recent)
+					if evaluation.drainPressure != nil {
+						comparison = exactPressure.Cmp(evaluation.drainPressure)
+					}
+					if resets != nil && (evaluation.rankingReset == nil || resets.After(*evaluation.rankingReset) ||
+						(resets.Equal(*evaluation.rankingReset) && exactPressure.Cmp(evaluation.rankingPressure) > 0)) {
+						evaluation.rankingReset, evaluation.rankingPressure = resets, exactPressure
+					}
+				}
+				if !evaluation.UsageKnown || comparison > 0 ||
+					(comparison == 0 && earlierReset(resets, evaluation.ResetsAt)) {
 					evaluation.UsageKnown, evaluation.UsedRatio, evaluation.Window, evaluation.ResetsAt = true, ratio, window.Name, resets
 					evaluation.RecentLaunches, evaluation.pressure = recent, pressure
+					evaluation.drainPressure = exactPressure
 				}
 			}
 			break
 		}
 	}
+	if !drain {
+		evaluation.rankingReset = evaluation.ResetsAt
+	} else if evaluation.rankingReset == nil {
+		evaluation.rankingPressure = evaluation.drainPressure
+		if !evaluation.UsageKnown {
+			evaluation.rankingPressure = budget.pressure(0, evaluation.RecentLaunches)
+		}
+	}
 	switch {
-	case candidate.Exempt || !evaluation.UsageKnown:
+	case evaluation.Exempt || !evaluation.UsageKnown:
 		evaluation.Eligible = true
+	case drain:
+		evaluation.Eligible = evaluation.drainPressure.Cmp(budget.pressureLimit) <= 0
 	default:
 		// Add the headroom before comparing, avoiding cancellation at small
 		// thresholds. One ULP covers rounding at the inclusive boundary.
@@ -189,7 +277,7 @@ func limits(names []string, window string) bool {
 	return false
 }
 
-// soonestReset ranks eligible candidates: known usage with a known reset first,
+// soonestReset ranks eligible candidates: known usage with a ranking reset first,
 // soonest reset first and lower pressure on a tie; then known usage without a
 // reset; then unknown usage. Remaining ties keep configured order.
 func soonestReset(evaluations []Evaluation, indexes []int) int {
@@ -199,8 +287,11 @@ func soonestReset(evaluations []Evaluation, indexes []int) int {
 		if ta, tb := tier(a), tier(b); ta != tb {
 			return ta < tb
 		}
-		if a.ResetsAt != nil && b.ResetsAt != nil && !a.ResetsAt.Equal(*b.ResetsAt) {
-			return a.ResetsAt.Before(*b.ResetsAt)
+		if a.rankingReset != nil && b.rankingReset != nil && !a.rankingReset.Equal(*b.rankingReset) {
+			return a.rankingReset.Before(*b.rankingReset)
+		}
+		if a.rankingPressure != nil {
+			return a.rankingPressure.Cmp(b.rankingPressure) < 0
 		}
 		return a.pressure < b.pressure
 	})
@@ -219,6 +310,9 @@ func leastUsed(evaluations []Evaluation) int {
 		if a.UsageKnown != b.UsageKnown {
 			return a.UsageKnown
 		}
+		if a.drainPressure != nil {
+			return a.drainPressure.Cmp(b.drainPressure) < 0
+		}
 		return a.pressure < b.pressure
 	})
 	return ranked[0]
@@ -228,7 +322,7 @@ func leastUsed(evaluations []Evaluation) int {
 // usage without one, 2 unknown usage.
 func tier(e Evaluation) int {
 	switch {
-	case e.UsageKnown && e.ResetsAt != nil:
+	case e.UsageKnown && e.rankingReset != nil:
 		return 0
 	case e.UsageKnown:
 		return 1

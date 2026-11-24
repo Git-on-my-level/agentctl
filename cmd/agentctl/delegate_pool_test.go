@@ -84,6 +84,26 @@ func (f poolFixture) writeFacts(t *testing.T, used map[string]float64) {
 	}
 }
 
+func (f poolFixture) updateCapacity(t *testing.T, update func(map[string]any)) {
+	t.Helper()
+	body, err := os.ReadFile(f.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(body, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	update(cfg["profiles"].(map[string]any)["test"].(map[string]any)["capacity"].(map[string]any))
+	body, err = json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.config, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (f poolFixture) plan(t *testing.T) (map[string]any, []any) {
 	t.Helper()
 	code, out := f.invoke("work", "--plan")
@@ -130,6 +150,7 @@ func TestPoolRunsTheChosenAccountsExecutable(t *testing.T) {
 
 func TestPoolExemptAccountStaysEligiblePastItsLimit(t *testing.T) {
 	f := newPoolFixture(t, map[string]any{"cutoff_exempt": true})
+	f.updateCapacity(t, func(c map[string]any) { c["policy"] = "soonest_reset" })
 	f.writeFacts(t, map[string]float64{"account-a": 1.3, "account-b": 0.99})
 	capacity, warnings := f.plan(t)
 	if capacity["account"] != "account-a" || capacity["reason"] != "configured_order" || len(warnings) != 0 {
@@ -140,10 +161,13 @@ func TestPoolExemptAccountStaysEligiblePastItsLimit(t *testing.T) {
 // The default threshold is 0.95, and a candidate needs 5% headroom below it, so
 // an account at 0.92 is out and one at 0.85 is in. Expected results come from
 // the same rule the capacity package tests cover.
-func TestPoolDefaultThresholdAndHeadroomFloor(t *testing.T) {
+func TestPoolLegacyThresholdAndHeadroomFloor(t *testing.T) {
 	f := newPoolFixture(t)
+	f.updateCapacity(t, func(c map[string]any) {
+		c["pools"].(map[string]any)["work"].(map[string]any)["policy"] = "soonest_reset"
+	})
 	f.writeFacts(t, map[string]float64{"account-a": 0.95, "account-b": 0.2})
-	if capacity, _ := f.plan(t); capacity["account"] != "account-b" {
+	if capacity, _ := f.plan(t); capacity["account"] != "account-b" || capacity["mode"] != "soonest_reset" {
 		t.Fatalf("capacity=%v", capacity)
 	}
 	f.writeFacts(t, map[string]float64{"account-a": 0.85, "account-b": 0.92})
@@ -163,13 +187,21 @@ func TestPoolPrefersSoonestResetOverFreshAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	capacity, _ := f.plan(t)
-	if capacity["account"] != "account-a" || capacity["reason"] != "soonest_reset" || capacity["mode"] != "soonest_reset" {
+	if capacity["account"] != "account-a" || capacity["reason"] != "drain_before_reset" || capacity["mode"] != "drain_before_reset" {
 		t.Fatalf("capacity=%v", capacity)
+	}
+	f.updateCapacity(t, func(c map[string]any) {
+		c["policy"] = "soonest_reset"
+		c["pools"].(map[string]any)["work"].(map[string]any)["policy"] = "drain_before_reset"
+	})
+	if capacity, _ := f.plan(t); capacity["mode"] != "drain_before_reset" {
+		t.Fatalf("pool override was ignored: %v", capacity)
 	}
 }
 
 func TestPoolCandidateThresholdOverridesDefault(t *testing.T) {
 	f := newPoolFixture(t, map[string]any{"switch_threshold": 0.5})
+	f.updateCapacity(t, func(c map[string]any) { c["policy"] = "soonest_reset" })
 	f.writeFacts(t, map[string]float64{"account-a": 0.6, "account-b": 0.7})
 	if capacity, _ := f.plan(t); capacity["account"] != "account-b" {
 		t.Fatalf("capacity=%v", capacity)
@@ -188,15 +220,94 @@ func TestPoolNeverBlocksWhenEveryAccountIsOver(t *testing.T) {
 func TestPoolUnusableFactsKeepOrderAndWarn(t *testing.T) {
 	f := newPoolFixture(t)
 	capacity, warnings := f.plan(t)
-	if capacity["account"] != "account-a" || capacity["facts_status"] != "missing" || !strings.Contains(warningCodes(warnings), "capacity_facts_unusable") {
+	if capacity["account"] != "account-a" || capacity["mode"] != "soonest_reset" || capacity["facts_status"] != "missing" || warningCodes(warnings) != "capacity_facts_unusable" {
 		t.Fatalf("capacity=%v warnings=%v", capacity, warnings)
 	}
 	if err := os.WriteFile(f.facts, []byte(`{"schema_version":1,"generated_at":"2020-01-01T00:00:00Z","accounts":[{"id":"account-a","windows":[{"name":"w","used_ratio":1}]}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	capacity, warnings = f.plan(t)
-	if capacity["account"] != "account-a" || capacity["facts_status"] != "stale" || !strings.Contains(warningCodes(warnings), "capacity_facts_unusable") {
+	if capacity["account"] != "account-a" || capacity["mode"] != "soonest_reset" || capacity["facts_status"] != "stale" || warningCodes(warnings) != "capacity_facts_unusable" {
 		t.Fatalf("capacity=%v warnings=%v", capacity, warnings)
+	}
+	if err := os.WriteFile(f.facts, []byte(`invalid JSON`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	capacity, warnings = f.plan(t)
+	if capacity["mode"] != "soonest_reset" || capacity["facts_status"] != "invalid" || warningCodes(warnings) != "capacity_facts_unusable" {
+		t.Fatalf("capacity=%v warnings=%v", capacity, warnings)
+	}
+	f.updateCapacity(t, func(c map[string]any) { delete(c, "file") })
+	capacity, warnings = f.plan(t)
+	if capacity["mode"] != "soonest_reset" || capacity["facts_status"] != "not_configured" || warningCodes(warnings) != "capacity_facts_unusable" {
+		t.Fatalf("capacity=%v warnings=%v", capacity, warnings)
+	}
+	f.updateCapacity(t, func(c map[string]any) { c["policy"] = "soonest_reset" })
+	if _, warnings := f.plan(t); len(warnings) != 0 {
+		t.Fatalf("legacy policy changed warnings: %v", warnings)
+	}
+}
+
+func TestPoolUnreadJournalFallsBackToLegacyPolicy(t *testing.T) {
+	f := newPoolFixture(t)
+	f.writeFacts(t, map[string]float64{"account-a": 0.92, "account-b": 0.92})
+	// A directory at the journal path forces the read to fail without relying on
+	// a race or filesystem permissions.
+	if err := os.MkdirAll(f.journal, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// The launch's earlier replay lookup also reads the journal. Exercise the
+	// selector directly to model a scan failure after that lookup succeeded.
+	cfg, err := config.Load(f.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	selection, problem := a.selectDelegatePool(context.Background(), common{journalPath: f.journal}, cfg.Profiles["test"], delegation.Selector{Pool: "work"})
+	if problem != nil {
+		t.Fatal(problem)
+	}
+	got, warnings := selection.capacity, selection.warnings
+	if got.Mode != "soonest_reset" || got.Reason != "all_over_threshold" || got.FactsStatus != "ok" || len(warnings) != 2 ||
+		warnings[0].Code != "capacity_recent_launches_unread" || warnings[1].Code != "capacity_all_over_threshold" {
+		t.Fatalf("capacity=%+v warnings=%v", got, warnings)
+	}
+}
+
+func TestPoolFreshFactsWithStaleWindowWarnAndUseLegacyPolicy(t *testing.T) {
+	f := newPoolFixture(t)
+	now := time.Now().UTC()
+	body := fmt.Sprintf(`{"schema_version":1,"generated_at":%q,"accounts":[
+		{"id":"account-a","windows":[{"name":"weekly","used_ratio":0.91,"resets_at":%q},
+		{"name":"5h","used_ratio":0.1,"observed_at":%q}]},
+		{"id":"account-b","windows":[{"name":"weekly","used_ratio":0.1,"resets_at":%q}]}]}`,
+		now.Format(time.RFC3339), now.Add(time.Hour).Format(time.RFC3339), now.Add(-2*time.Hour).Format(time.RFC3339), now.Add(24*time.Hour).Format(time.RFC3339))
+	if err := os.WriteFile(f.facts, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, warnings := f.plan(t)
+	if got["account"] != "account-b" || got["mode"] != "soonest_reset" || got["facts_status"] != "ok" ||
+		warningCodes(warnings) != "capacity_window_unusable" {
+		t.Fatalf("capacity=%v warnings=%v", got, warnings)
+	}
+}
+
+func TestPoolDrainWarnsWhenLegacyLimitsAreConfigured(t *testing.T) {
+	f := newPoolFixture(t, map[string]any{"cutoff_exempt": true, "windows": []string{"weekly"}})
+	f.updateCapacity(t, func(c map[string]any) { c["switch_threshold"] = .5 })
+	f.writeFacts(t, map[string]float64{"account-a": .1, "account-b": .2})
+	got, warnings := f.plan(t)
+	if got["mode"] != "drain_before_reset" || warningCodes(warnings) != "capacity_policy_overrides_limits,capacity_policy_overrides_limits" {
+		t.Fatalf("capacity=%v warnings=%v", got, warnings)
+	}
+	details := warnings[0].(map[string]any)["details"].(map[string]any)
+	if details["account"] != "account-a" || details["pool"] != "work" || fmt.Sprint(details["fields"]) != "[switch_threshold cutoff_exempt windows]" {
+		t.Fatalf("warning should identify the affected account and fields: %v", details)
+	}
+	f.updateCapacity(t, func(c map[string]any) { c["policy"] = "soonest_reset" })
+	if _, warnings := f.plan(t); len(warnings) != 0 {
+		t.Fatalf("legacy policy changed warnings: %v", warnings)
 	}
 }
 
@@ -361,13 +472,13 @@ func TestPoolFreshObservationRestoresSoonestResetAccount(t *testing.T) {
 	if err := os.WriteFile(f.request, []byte(`{"schema_version":1,"request_key":"after-observation","selector":{"pool":"work"}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	publish(.69, now)
+	publish(.75, now)
 	if got, _ := f.plan(t); got["account"] != "account-b" {
 		t.Fatalf("unobserved work was not reserved: %v", got)
 	}
-	publish(.69, time.Now().UTC())
+	publish(.75, time.Now().UTC())
 	got, _ := f.plan(t)
-	if got["account"] != "account-a" || got["reason"] != "soonest_reset" {
+	if got["account"] != "account-a" || got["reason"] != "drain_before_reset" {
 		t.Fatalf("observation did not restore soonest reset: %v", got)
 	}
 	first := got["considered"].([]any)[0].(map[string]any)
