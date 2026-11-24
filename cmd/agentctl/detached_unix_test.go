@@ -129,7 +129,7 @@ func testDetachedQueuedWorkerCrashBeforeClaim(t *testing.T, missingIdentity bool
 				if row.Observation.FreshForSeconds == nil {
 					t.Fatal("queued row has no observation window")
 				}
-				now = now.Add(time.Duration(*row.Observation.FreshForSeconds)*time.Second + nativeRunnerHeartbeatEvery)
+				now = now.Add(time.Duration(*row.Observation.FreshForSeconds)*time.Second + nativeRunnerHeartbeatEvery + queuedWorkerStartupBudget(row.Adapter))
 				recoverRow("")
 				fresh, err := journal.GetExecution(ctx, id)
 				if err != nil || fresh.Revision != row.Revision || !fresh.ProviderQueued() {
@@ -152,6 +152,59 @@ func testDetachedQueuedWorkerCrashBeforeClaim(t *testing.T, missingIdentity bool
 				t.Fatalf("missing %s outcome: %+v err=%v", reason, outcome, err)
 			}
 		})
+	}
+}
+
+func TestDetachedQueuedWorkerClaimSurvivesHeartbeatCutoff(t *testing.T) {
+	f, _ := admissionFixture(t, true, "90s")
+	binary := filepath.Join(t.TempDir(), "agentctl")
+	if out, err := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v %s", err, out)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	a.stdin = strings.NewReader("private queued task")
+	a.startDetachedWorker = func(cmd *exec.Cmd) error {
+		cmd.Path = binary
+		cmd.Env = append(cmd.Env, "AGENTCTL_UPDATE_MODE=off")
+		return cmd.Start()
+	}
+	journal := scopedJournal{path: f.journal}
+	var reserved model.Execution
+	a.queuedWorkerOwner = func(int) *model.LaunchIdentity {
+		rows, err := journal.ListExecutions(ctx, false)
+		if err != nil || len(rows) != 1 || !rows[0].ProviderQueued() || rows[0].SourceState != nil {
+			t.Errorf("expected an unclaimed queue: %+v err=%v", rows, err)
+			return nil
+		}
+		reserved = rows[0]
+		// The worker is waiting for its launch payload. Advance the recovery
+		// clock to simulate a claim delayed past the former 40-second cutoff.
+		var recoveryOut, recoveryErr bytes.Buffer
+		recovery := testApp(&recoveryOut, &recoveryErr)
+		recovery.now = func() time.Time { return reserved.Observation.ObservedAt.Add(45 * time.Second) }
+		bridge := pathSupervisorExecutions{path: f.journal, app: recovery}
+		if result, handled, err := bridge.probeNativeOwner(ctx, reserved.ID.String()); err != nil || !handled || result.Revision != reserved.Revision {
+			t.Errorf("supervisor settled a worker within its claim budget: %+v handled=%v err=%v", result, handled, err)
+		}
+		return nil
+	}
+	args := []string{"--config", f.config, "--journal", f.journal}
+	if code := a.run(ctx, append(args, "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin", "--timeout", "5s", "--detach")); code != 0 {
+		t.Fatalf("delegate exit=%d %s", code, stdout.String())
+	}
+	if resultID(t, stdout.String()) != reserved.ID.String() {
+		t.Fatalf("worker did not claim its original reservation: %s", stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(ctx, append(args, "await", reserved.ID.String(), "--content", "--timeout", "8s")); code != 0 || stdout.String() != "fixture answer" {
+		t.Fatalf("await exit=%d %s", code, stdout.String())
+	}
+	current, err := journal.GetExecution(ctx, reserved.ID)
+	if err != nil || current.State != model.StateCompleted || current.Admission == nil || current.Admission.Phase != "granted" {
+		t.Fatalf("late claim did not launch: %+v err=%v", current, err)
 	}
 }
 

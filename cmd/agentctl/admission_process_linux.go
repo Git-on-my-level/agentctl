@@ -6,11 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 
-	"github.com/Git-on-my-level/agentctl/internal/adapter"
 	"golang.org/x/sys/unix"
 )
 
@@ -33,20 +31,19 @@ var admissionLinuxScope = sync.OnceValues(func() (string, error) {
 })
 
 func admissionProcessStart(pid int) (string, error) {
+	return inspectAdmissionProcess(pid, false)
+}
+
+func admissionLiveChildStart(pid int) (string, error) {
+	return inspectAdmissionProcess(pid, true)
+}
+
+func inspectAdmissionProcess(pid int, liveOnly bool) (string, error) {
 	scope, err := admissionLinuxScope()
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) && errors.Is(unix.Kill(pid, 0), unix.ESRCH) {
-			return "", nil
-		}
-		return "", err
-	}
-	ticks, err := adapter.ProcStartTicks(data)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%s/%d", scope, ticks), nil
+	return linuxAdmissionProcessStart(pid, scope, liveOnly, os.ReadFile, func(pid int) bool {
+		return errors.Is(unix.Kill(pid, 0), unix.ESRCH)
+	})
 }

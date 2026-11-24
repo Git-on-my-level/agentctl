@@ -2,12 +2,31 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
 )
+
+func linuxAdmissionProcessStart(pid int, scope string, liveOnly bool, read func(string) ([]byte, error), absent func(int) bool) (string, error) {
+	data, err := read("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) && absent(pid) {
+			return "", nil
+		}
+		return "", err
+	}
+	ticks, state, err := adapter.ProcStatIdentity(data)
+	if err != nil {
+		return "", err
+	}
+	if liveOnly && (state == 'Z' || state == 'X' || state == 'x') {
+		return "", nil
+	}
+	return fmt.Sprintf("%s/%d", scope, ticks), nil
+}
 
 func linuxProcessStart(pid int, read func(string) ([]byte, error), namespace func() (uint64, error), retry func()) processObservation {
 	path := "/proc/" + strconv.Itoa(pid) + "/stat"

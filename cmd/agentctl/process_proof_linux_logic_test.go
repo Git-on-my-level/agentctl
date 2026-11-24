@@ -183,6 +183,33 @@ func TestLinuxQueuedProcessStartRetriesWithoutPIDOneAccess(t *testing.T) {
 	}
 }
 
+func TestLinuxAdmissionChildLivenessDistinguishesExitedState(t *testing.T) {
+	for _, state := range []byte{'S', 'T', 'Z', 'X', 'x'} {
+		t.Run(string(state), func(t *testing.T) {
+			read := func(path string) ([]byte, error) {
+				if path != "/proc/42/stat" {
+					t.Fatalf("unexpected read of %s", path)
+				}
+				return []byte(fmt.Sprintf("42 (opencode (task)) %c 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 5000\n", state)), nil
+			}
+			absent := func(int) bool {
+				t.Fatal("readable procfs stat was checked for absence")
+				return false
+			}
+			want := "boot/7/5000"
+			if generation, err := linuxAdmissionProcessStart(42, "boot/7", false, read, absent); err != nil || generation != want {
+				t.Fatalf("bind generation=%q err=%v", generation, err)
+			}
+			if state == 'Z' || state == 'X' || state == 'x' {
+				want = ""
+			}
+			if generation, err := linuxAdmissionProcessStart(42, "boot/7", true, read, absent); err != nil || generation != want {
+				t.Fatalf("live lease generation=%q err=%v, want %q", generation, err, want)
+			}
+		})
+	}
+}
+
 func procStatLine(pid, ppid int, ticks int64) []byte {
 	return []byte(fmt.Sprintf("%d (cmd) S %d 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 %d\n", pid, ppid, ticks))
 }

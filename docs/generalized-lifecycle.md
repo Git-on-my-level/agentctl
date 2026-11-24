@@ -110,7 +110,9 @@ legacy unattested Linux identities remain unproven.
 
 Recovery records an unknown outcome and preserves the execution for collection.
 A provider queue with no recorded worker or launch identity can be abandoned
-after its observation freshness window plus ten seconds. That path records
+after its observation freshness window plus ten seconds. An unclaimed detached
+reservation also gets the maximum journal retry budget plus bounded preflight
+time. Recovery records
 `admission_owner_lease_expired` with heartbeat evidence. It applies only while
 the execution is still queued, before a worker can start a native child.
 

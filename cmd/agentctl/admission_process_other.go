@@ -20,3 +20,7 @@ func admissionProcessStart(pid int) (string, error) {
 	}
 	return obs.started.UTC().Format(time.RFC3339Nano), nil
 }
+
+func admissionLiveChildStart(pid int) (string, error) {
+	return admissionProcessStart(pid)
+}

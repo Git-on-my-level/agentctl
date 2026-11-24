@@ -742,7 +742,13 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		if execution.Liveness == model.LivenessUnreachable || (execution.Admission == nil && len(execution.SourceBindings) == 0 && a.now().Sub(execution.CreatedAt) > time.Minute) {
 			return delegateExecutionError(output.CodeExecutionUnknown, "delegated launch or execution cannot be proven; it has not been relaunched", execution)
 		}
-		if fresh := execution.Observation.FreshForSeconds; fresh != nil && a.now().After(execution.Observation.ObservedAt.Add(time.Duration(*fresh)*time.Second+10*time.Second)) {
+		now := a.now()
+		fresh := execution.Observation.FreshForSeconds
+		leaseExpired := fresh != nil && now.After(execution.Observation.ObservedAt.Add(time.Duration(*fresh)*time.Second+10*time.Second))
+		if execution.ProviderQueued() {
+			leaseExpired = providerQueueLeaseExpired(execution, now)
+		}
+		if leaseExpired {
 			return delegateExecutionError(output.CodeExecutionUnknown, "delegated owner lease expired; execution has not been relaunched", execution)
 		}
 		if execution.DeadlineAt != nil && a.now().After(execution.DeadlineAt.Add(10*time.Second)) {

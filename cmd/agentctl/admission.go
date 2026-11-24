@@ -25,7 +25,7 @@ func (a *app) admissionStore(c common) (*admission.Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return admission.New(path, a.now, admissionProcessStart), nil
+	return admission.NewWithChildLiveness(path, a.now, admissionProcessStart, admissionLiveChildStart), nil
 }
 
 func (a *app) nativeAdmission(c common, harness string, argv []string) (*model.ProviderAdmission, admission.Bucket, *output.Error) {
@@ -55,9 +55,23 @@ func (a *app) nativeAdmission(c common, harness string, argv []string) (*model.P
 }
 
 func providerQueueLeaseExpired(execution model.Execution, now time.Time) bool {
+	grace := nativeRunnerHeartbeatEvery
+	// Before a detached worker claims its reservation it cannot refresh the
+	// observation while waiting on the journal. The retry budget belongs to
+	// that worker, so recovery must allow the supported maximum.
+	if execution.Authority == model.AuthorityNative && execution.State == model.StateStarting &&
+		execution.SourceState == nil && !execution.RemoteForwarded() {
+		grace += queuedWorkerStartupBudget(execution.Adapter)
+	}
 	fresh := execution.Observation.FreshForSeconds
 	return fresh != nil && *fresh > 0 &&
-		observationAge(execution, now).Seconds() > float64(*fresh)+nativeRunnerHeartbeatEvery.Seconds()
+		observationAge(execution, now).Seconds() > float64(*fresh)+grace.Seconds()
+}
+
+func queuedWorkerStartupBudget(adapterName string) time.Duration {
+	// Include the parent's short owner-record attempt and the worker's
+	// version probe and possible continuation check before journal claim.
+	return journalBusyAttemptLock + adapter.VersionProbeTimeout(adapterName) + openCodeSessionVerificationTimeout + maxJournalBusyBudget
 }
 
 func expiredUnownedProviderQueue(execution model.Execution, now time.Time) bool {

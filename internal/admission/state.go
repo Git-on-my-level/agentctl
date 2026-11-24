@@ -35,13 +35,21 @@ type Owner struct {
 type ProcessStart func(pid int) (string, error)
 
 type Store struct {
-	dir   string
-	now   func() time.Time
-	start ProcessStart
+	dir            string
+	now            func() time.Time
+	start          ProcessStart
+	liveChildStart ProcessStart
 }
 
 func New(journalPath string, now func() time.Time, start ProcessStart) *Store {
-	return &Store{dir: filepath.Join(filepath.Dir(journalPath), "admission"), now: now, start: start}
+	return NewWithChildLiveness(journalPath, now, start, start)
+}
+
+// NewWithChildLiveness separates generation capture at bind time from the
+// liveness check of an unlocked lease. Exited children may still have a
+// readable generation until they are reaped.
+func NewWithChildLiveness(journalPath string, now func() time.Time, start, liveChildStart ProcessStart) *Store {
+	return &Store{dir: filepath.Join(filepath.Dir(journalPath), "admission"), now: now, start: start, liveChildStart: liveChildStart}
 }
 
 type Ticket struct {
@@ -453,26 +461,31 @@ func (s *Store) ObserveWithKey(ctx context.Context, name string, b Bucket, req O
 	if req.IdempotencyKey != "" && !ValidHolder(req.IdempotencyKey) {
 		return result, errors.New("invalid observation key")
 	}
+	active := b.Active()
 	sample := Sample{Attempts: req.Attempts, Throttled: req.Throttled}
 	if req.At != nil {
 		sample.At = req.At.UTC()
-		if (req.IdempotencyKey == "" || !b.Active()) && !b.ValidSample(s.now().UTC(), sample) {
+		if req.IdempotencyKey == "" && !b.ValidSample(s.now().UTC(), sample) {
 			return result, ErrInvalidSample
 		}
 	}
-	if !b.Active() {
+	if !active && req.IdempotencyKey == "" {
 		return result, nil
 	}
-	lock, dir, err := s.lock(ctx, name, true)
+	lock, dir, err := s.lock(ctx, name, active)
 	if err != nil {
 		return result, err
 	}
-	defer lock.Close()
+	if lock != nil {
+		defer lock.Close()
+	}
 	now := s.now().UTC()
-	state, warning := readController(dir, now, b)
-	result.Warning = warning
+	var state *controller
+	if lock != nil {
+		state, result.Warning = readController(dir, now, b)
+	}
 	var key, fingerprint string
-	if req.IdempotencyKey != "" {
+	if req.IdempotencyKey != "" && state != nil {
 		key = observationDigest(req.IdempotencyKey)
 		timestamp := ""
 		if req.At != nil {
@@ -493,6 +506,9 @@ func (s *Store) ObserveWithKey(ctx context.Context, name string, b Bucket, req O
 	if !b.ValidSample(now, sample) {
 		return result, ErrInvalidSample
 	}
+	if !active {
+		return result, nil
+	}
 	if key != "" {
 		if len(state.ObservationKeys) >= maxObservationKeys {
 			return result, ErrObservationKeysFull
@@ -506,7 +522,7 @@ func (s *Store) ObserveWithKey(ctx context.Context, name string, b Bucket, req O
 	if err != nil {
 		return result, err
 	}
-	if warning != "" {
+	if result.Warning != "" {
 		state.Window = b.InitialWindow
 	}
 	state.observe(sample)
@@ -681,10 +697,10 @@ func (s *Store) tickets(dir string, now time.Time, prune bool, own *os.File, own
 
 func (s *Store) nativeLeaseActive(ticket Ticket, now time.Time) bool {
 	if ticket.Child != nil {
-		if s.start == nil {
+		if s.liveChildStart == nil {
 			return true
 		}
-		start, err := s.start(ticket.Child.PID)
+		start, err := s.liveChildStart(ticket.Child.PID)
 		return err != nil || start == ticket.Child.Start
 	}
 	expires := ticket.LaunchLeaseExpiresAt

@@ -396,7 +396,9 @@ defer its claim. Each host owns its window independently.
   the same key, counts, and explicit timestamp if supplied. Accepted keys are
   retained for one hour per bucket. A repeat returns `recorded: false` and
   `duplicate: true`. Changing the inputs for a retained key returns
-  `admission_observation_key_conflict` (exit 8). Keys have 1–128 characters,
+  `admission_observation_key_conflict` (exit 8). Disabled buckets still check
+  retained keys before applying the sample window, and ignore new valid
+  observations. Keys have 1–128 characters,
   start with a letter or digit, and can also contain `._:/-`. If all 4,096
   key entries are still retained, a new keyed observation returns a
   retryable `admission_observation_keys_full` error. Every unkeyed call adds

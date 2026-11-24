@@ -640,8 +640,9 @@ writes nothing if that digest no longer matches, then rechecks each row before
 writing. A launcher-recorded PID that is provably gone after `--stale-after`
 produces an `orphaned` execution with `owner_lost`. A provider queue with no
 owner or launch identity can expire after its observation freshness window plus
-10 seconds. It becomes `orphaned` with `admission_owner_lease_expired` and
-heartbeat evidence. A numeric session id is not a PID. `journal_host_match`
+10 seconds. Unclaimed detached reservations also get the maximum journal retry
+budget plus bounded preflight time. Recovery records `orphaned` with
+`admission_owner_lease_expired` and heartbeat evidence. A numeric session id is not a PID. `journal_host_match`
 compares the journal's stored host id. Other rows without a launch record stay
 `ownership_unproven` unless `--include-legacy-unproven` is set. Eligible rows
 are native, match the journal host, and are older than `--legacy-stale-after`

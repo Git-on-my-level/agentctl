@@ -88,6 +88,52 @@ func TestObservationKeySurvivesReopenAndSampleExpiry(t *testing.T) {
 	}
 }
 
+func TestObservationKeyReplayAfterBucketDisabled(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	observed := now
+	path := filepath.Join(t.TempDir(), "journal.db")
+	s := New(path, func() time.Time { return now }, nil)
+	b := testConfig()
+	req := ObservationRequest{At: &observed, Attempts: 7, Throttled: 2, IdempotencyKey: "provider-batch"}
+	if result, err := s.ObserveWithKey(ctx, testBucket, b, req); err != nil || !result.Recorded {
+		t.Fatalf("first observation: %#v %v", result, err)
+	}
+	controllerPath := filepath.Join(s.dir, testBucket, "controller.json")
+	before, err := os.ReadFile(controllerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled := false
+	b.Enabled = &disabled
+	now = now.Add(b.lookback())
+	if result, err := s.ObserveWithKey(ctx, testBucket, b, req); err != nil || result.Recorded || !result.Duplicate || result.Adjustment != nil {
+		t.Fatalf("disabled replay after sample expiry: %#v %v", result, err)
+	}
+	changed := req
+	changed.Attempts++
+	if _, err := s.ObserveWithKey(ctx, testBucket, b, changed); !errors.Is(err, ErrObservationKeyConflict) {
+		t.Fatalf("disabled conflicting replay: %v", err)
+	}
+	fresh := ObservationRequest{At: &now, Attempts: 1, IdempotencyKey: "new-key"}
+	if result, err := s.ObserveWithKey(ctx, testBucket, b, fresh); err != nil || result.Recorded || result.Duplicate {
+		t.Fatalf("new disabled observation: %#v %v", result, err)
+	}
+	if result, err := s.ObserveWithKey(ctx, "missing", b, fresh); err != nil || result.Recorded || result.Duplicate {
+		t.Fatalf("new disabled bucket: %#v %v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(s.dir, "missing")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("disabled replay created bucket state: %v", err)
+	}
+	now = observed.Add(observationKeyTTL)
+	if _, err := s.ObserveWithKey(ctx, testBucket, b, req); !errors.Is(err, ErrInvalidSample) {
+		t.Fatalf("expired key should return to sample-age validation: %v", err)
+	}
+	if after, err := os.ReadFile(controllerPath); err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("disabled observations rewrote the controller: %v", err)
+	}
+}
+
 func TestObservationKeyConcurrentReplayCommitsOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

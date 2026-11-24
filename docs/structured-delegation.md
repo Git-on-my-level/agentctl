@@ -320,8 +320,9 @@ still measures collector wait. A keyed replay reuses the recorded execution.
 Queued native work is owned by its agentctl process and does not resume after
 owner death. When a recorded owner is provably gone, recovery records
 `owner_lost`. Without a recorded process identity, the supervisor and
-`reconcile` can abandon the queue once the observation freshness window plus
-10 seconds has elapsed. They record `admission_owner_lease_expired` with
+`reconcile` can abandon the queue after its observation freshness window plus
+10 seconds. Unclaimed detached reservations also get the maximum journal retry
+budget plus bounded preflight time. Recovery records `admission_owner_lease_expired` with
 heartbeat evidence. If the journal stays busy through the grant-write budget,
 the slot is released and the invocation returns its execution ID with
 `native_launch_started: false`. The queued row remains available for later
