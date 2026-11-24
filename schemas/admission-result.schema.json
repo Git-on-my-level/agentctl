@@ -127,6 +127,7 @@
       "properties": {
         "bucket": {"$ref": "#/$defs/bucket"},
         "recorded": {"type": "boolean"},
+        "duplicate": {"type": "boolean"},
         "adjustment": {"anyOf": [{"$ref": "#/$defs/adjustment"}, {"type": "null"}]}
       }
     }

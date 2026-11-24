@@ -87,8 +87,8 @@ func helpTopics() map[string]commandHelp {
 		},
 		"admission observe": {
 			Name: "admission observe", Summary: "Record external successful step starts plus structured HTTP 429 attempts.",
-			Usage: "agentctl admission observe --bucket name --attempts N --throttled M [--at RFC3339]", SideEffectClass: output.LocalOperationalWrite,
-			Defaults: []string{"time defaults to now", "each call adds its counts once; replay adds them again"},
+			Usage: "agentctl admission observe --bucket name --attempts N --throttled M [--at RFC3339] [--idempotency-key id]", SideEffectClass: output.LocalOperationalWrite,
+			Defaults: []string{"time defaults to now", "reuse a key and the same inputs within one hour to get duplicate=true without recording the counts again", "each unkeyed call adds its counts"},
 		},
 		"children": {
 			Name: "children", Summary: "Find this caller's uncollected children and active children without known collectors.", Usage: childrenUsage,

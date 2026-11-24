@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const maxSampleWindowSeconds = 3600
+
 const (
 	PriorityEnv = "AGENTCTL_ADMISSION_PRIORITY"
 	Interactive = "interactive"
@@ -106,7 +108,7 @@ func (c *Config) Validate() error {
 		}
 		if b.target() < 0 || b.target() > 1 || b.decrease() <= 0 || b.decrease() >= 1 ||
 			b.IncreaseIntervalSeconds < 0 || b.IncreaseIntervalSeconds > 3600 ||
-			b.SampleWindowSeconds < 0 || b.SampleWindowSeconds > 3600 || b.Wait() <= 0 || b.Wait() > time.Hour {
+			b.SampleWindowSeconds < 0 || b.SampleWindowSeconds > maxSampleWindowSeconds || b.Wait() <= 0 || b.Wait() > time.Hour {
 			return fmt.Errorf("invalid controller settings for admission bucket %q", name)
 		}
 		key := b.Model + ":" + b.ModelPrefix

@@ -2,6 +2,7 @@ package admission
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -55,6 +56,103 @@ func TestControllerAIMDRequiresSamplesAndDemand(t *testing.T) {
 	tick(4, 2, "above_target")
 	tick(2, 1, "above_target")
 	tick(1, 1, "") // Floor.
+}
+
+func TestObservationKeySurvivesReopenAndSampleExpiry(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	observed := now
+	path := filepath.Join(t.TempDir(), "journal.db")
+	open := func() *Store { return New(path, func() time.Time { return now }, nil) }
+	b := testConfig()
+	req := ObservationRequest{At: &observed, Attempts: 11, Throttled: 2, IdempotencyKey: "provider-batch-001"}
+	if result, err := open().ObserveWithKey(ctx, testBucket, b, req); err != nil || !result.Recorded || result.Duplicate {
+		t.Fatalf("first observation: %#v %v", result, err)
+	}
+	now = now.Add(b.lookback())
+	if result, err := open().ObserveWithKey(ctx, testBucket, b, req); err != nil || result.Recorded || !result.Duplicate || result.Adjustment != nil {
+		t.Fatalf("replay after sample expiry: %#v %v", result, err)
+	}
+	changed := req
+	changed.Attempts++
+	if _, err := open().ObserveWithKey(ctx, testBucket, b, changed); !errors.Is(err, ErrObservationKeyConflict) {
+		t.Fatalf("changed observation: %v", err)
+	}
+	status, err := open().Status(ctx, testBucket, b)
+	if err != nil || status.TotalAttempts != 11 || status.ThrottledAttempts != 2 || status.Attempts != 0 {
+		t.Fatalf("replay changed counts: %#v %v", status, err)
+	}
+	data, err := os.ReadFile(filepath.Join(open().dir, testBucket, "controller.json"))
+	if err != nil || bytes.Contains(data, []byte(req.IdempotencyKey)) {
+		t.Fatalf("raw observation key persisted: %v", err)
+	}
+}
+
+func TestObservationKeyConcurrentReplayCommitsOnce(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	path := filepath.Join(t.TempDir(), "journal.db")
+	b := testConfig()
+	req := ObservationRequest{Attempts: 2, Throttled: 1, IdempotencyKey: "concurrent-batch"}
+	var recorded atomic.Int32
+	var wg sync.WaitGroup
+	for range 12 {
+		wg.Go(func() {
+			s := New(path, time.Now, nil)
+			result, err := s.ObserveWithKey(ctx, testBucket, b, req)
+			if err != nil || result.Recorded == result.Duplicate {
+				t.Errorf("observation receipt: %#v %v", result, err)
+			}
+			if result.Recorded {
+				recorded.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+	status, err := New(path, time.Now, nil).Status(ctx, testBucket, b)
+	if err != nil || recorded.Load() != 1 || status.TotalAttempts != 2 || status.ThrottledAttempts != 1 {
+		t.Fatalf("recorded %d times: %#v %v", recorded.Load(), status, err)
+	}
+}
+
+func TestObservationKeyCapacityRetainsExistingKeysUntilTTL(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	b := testConfig()
+	s := New(filepath.Join(t.TempDir(), "journal.db"), func() time.Time { return now }, nil)
+	req := ObservationRequest{Attempts: 1, IdempotencyKey: "existing-batch"}
+	if result, err := s.ObserveWithKey(ctx, testBucket, b, req); err != nil || !result.Recorded {
+		t.Fatalf("first observation: %#v %v", result, err)
+	}
+	dir := filepath.Join(s.dir, testBucket)
+	state, warning := readController(dir, now, b)
+	if warning != "" {
+		t.Fatal(warning)
+	}
+	receipt := state.ObservationKeys[observationDigest(req.IdempotencyKey)]
+	for i := 1; i < maxObservationKeys; i++ {
+		state.ObservationKeys[observationDigest(fmt.Sprint(i))] = receipt
+	}
+	if err := writeJSON(dir, "controller.json", state); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(observationKeyTTL - time.Nanosecond)
+	distinct := req
+	distinct.IdempotencyKey = "new-batch"
+	if _, err := s.ObserveWithKey(ctx, testBucket, b, distinct); !errors.Is(err, ErrObservationKeysFull) {
+		t.Fatalf("expected full retention: %v", err)
+	}
+	if result, err := s.ObserveWithKey(ctx, testBucket, b, req); err != nil || !result.Duplicate {
+		t.Fatalf("retained replay at capacity: %#v %v", result, err)
+	}
+	now = now.Add(time.Nanosecond)
+	if result, err := s.ObserveWithKey(ctx, testBucket, b, distinct); err != nil || !result.Recorded {
+		t.Fatalf("expired receipts still occupy capacity: %#v %v", result, err)
+	}
+	status, err := s.Status(ctx, testBucket, b)
+	if err != nil || status.TotalAttempts != 2 {
+		t.Fatalf("unaccepted observations changed totals: %#v %v", status, err)
+	}
 }
 
 func TestQueuePriorityFIFOAndFallback(t *testing.T) {

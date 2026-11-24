@@ -292,7 +292,7 @@ func (a *app) admissionCommand(ctx context.Context, renderer output.Renderer, c 
 	command := args[0]
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	var name, harness, modelID, holder, priority, format, at string
+	var name, harness, modelID, holder, priority, format, at, observationKey string
 	var wait time.Duration
 	var noWait bool
 	var pid int
@@ -319,6 +319,13 @@ func (a *app) admissionCommand(ctx context.Context, renderer output.Renderer, c 
 		fs.Int64Var(&attempts, "attempts", -1, "")
 		fs.Int64Var(&throttled, "throttled", -1, "")
 		fs.StringVar(&at, "at", "", "")
+		fs.Func("idempotency-key", "", func(value string) error {
+			if !admission.ValidHolder(value) {
+				return errors.New("invalid observation key")
+			}
+			observationKey = value
+			return nil
+		})
 	default:
 		return usage()
 	}
@@ -359,6 +366,12 @@ func (a *app) admissionCommand(ctx context.Context, renderer output.Renderer, c 
 		code, diagnostic := output.CodeDependencyUnavailable, "admission_state_unavailable"
 		if errors.Is(err, admission.ErrHolderOwned) {
 			code, diagnostic = output.CodeConflict, "admission_holder_conflict"
+		}
+		if errors.Is(err, admission.ErrObservationKeyConflict) {
+			code, diagnostic = output.CodeConflict, "admission_observation_key_conflict"
+		}
+		if errors.Is(err, admission.ErrObservationKeysFull) {
+			diagnostic = "admission_observation_keys_full"
 		}
 		if ctx.Err() != nil {
 			code, diagnostic = output.CodeExecutionCancelled, "admission_cancelled"
@@ -418,27 +431,29 @@ func (a *app) admissionCommand(ctx context.Context, renderer output.Renderer, c 
 		}
 		return write(map[string]any{"bucket": name, "released": released}, output.Field{Name: "released", Value: released})
 	case "observe":
-		now := a.now().UTC()
-		observedAt := now
+		req := admission.ObservationRequest{Attempts: attempts, Throttled: throttled, IdempotencyKey: observationKey}
 		if at != "" {
 			parsed, err := time.Parse(time.RFC3339Nano, at)
 			if err != nil {
 				return usage()
 			}
-			observedAt = parsed.UTC()
+			req.At = &parsed
 		}
-		sample := admission.Sample{At: observedAt, Attempts: attempts, Throttled: throttled}
-		if !bucket.ValidSample(now, sample) {
+		result, err := slots.ObserveWithKey(ctx, name, bucket, req)
+		if errors.Is(err, admission.ErrInvalidSample) {
 			return usage()
 		}
-		adjustment, warning, err := slots.Observe(ctx, name, bucket, sample)
 		if err != nil {
 			return stateProblem(err)
 		}
-		if warning != "" {
-			renderer = renderer.WithWarnings(output.Warning{Code: warning, Message: "Admission used the configured static fallback window."})
+		if result.Warning != "" {
+			renderer = renderer.WithWarnings(output.Warning{Code: result.Warning, Message: "Admission used the configured static fallback window."})
 		}
-		return write(map[string]any{"bucket": name, "recorded": bucket.Active(), "adjustment": adjustment}, output.Field{Name: "recorded", Value: bucket.Active()})
+		fields := []output.Field{{Name: "recorded", Value: result.Recorded}}
+		if result.Duplicate {
+			fields = append(fields, output.Field{Name: "duplicate", Value: true})
+		}
+		return write(result, fields...)
 	case "acquire":
 		waitSet := false
 		fs.Visit(func(f *flag.Flag) {

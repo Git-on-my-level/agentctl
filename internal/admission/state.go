@@ -3,6 +3,7 @@ package admission
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -395,30 +396,116 @@ func (s *Store) Release(ctx context.Context, name, holder string) (bool, error) 
 }
 
 func (b Bucket) ValidSample(now time.Time, sample Sample) bool {
-	return sample.Attempts >= 1 && sample.Attempts <= 1_000_000_000 &&
-		sample.Throttled >= 0 && sample.Throttled <= sample.Attempts &&
+	return validSampleCounts(sample.Attempts, sample.Throttled) &&
 		!sample.At.After(now) && sample.At.After(now.Add(-b.lookback()))
+}
+
+func validSampleCounts(attempts, throttled int64) bool {
+	return attempts >= 1 && attempts <= 1_000_000_000 && throttled >= 0 && throttled <= attempts
+}
+
+const observationKeyTTL = maxSampleWindowSeconds * time.Second
+
+// Leave room for the full sample window in the 1 MiB controller file.
+const maxObservationKeys = 4096
+const observationDigestLength = 43 // base64url SHA-256 without padding
+
+var ErrInvalidSample = errors.New("observation must be within the sample window with 1 to 1000000000 attempts and throttled between zero and attempts")
+var ErrObservationKeyConflict = errors.New("observation key was accepted with different inputs")
+var ErrObservationKeysFull = errors.New("observation key retention is full")
+
+type ObservationRequest struct {
+	// Nil timestamps default to the time of acceptance.
+	At             *time.Time
+	Attempts       int64
+	Throttled      int64
+	IdempotencyKey string
+}
+
+type ObservationResult struct {
+	Bucket     string      `json:"bucket"`
+	Recorded   bool        `json:"recorded"`
+	Duplicate  bool        `json:"duplicate,omitempty"`
+	Adjustment *Adjustment `json:"adjustment"`
+	Warning    string      `json:"-"`
+}
+
+func observationDigest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func (s *Store) Observe(ctx context.Context, name string, b Bucket, sample Sample) (*Adjustment, string, error) {
 	if !b.Active() {
 		return nil, "", nil
 	}
-	now := s.now().UTC()
-	if !b.ValidSample(now, sample) {
-		return nil, "", errors.New("observation must be within the sample window with 1 to 1000000000 attempts and throttled between zero and attempts")
+	result, err := s.ObserveWithKey(ctx, name, b, ObservationRequest{At: &sample.At, Attempts: sample.Attempts, Throttled: sample.Throttled})
+	return result.Adjustment, result.Warning, err
+}
+
+// ObserveWithKey accounts for a batch and, when keyed, commits its receipt
+// under the same bucket lock and in the same controller update.
+func (s *Store) ObserveWithKey(ctx context.Context, name string, b Bucket, req ObservationRequest) (ObservationResult, error) {
+	result := ObservationResult{Bucket: name}
+	if !validSampleCounts(req.Attempts, req.Throttled) {
+		return result, ErrInvalidSample
+	}
+	if req.IdempotencyKey != "" && !ValidHolder(req.IdempotencyKey) {
+		return result, errors.New("invalid observation key")
+	}
+	sample := Sample{Attempts: req.Attempts, Throttled: req.Throttled}
+	if req.At != nil {
+		sample.At = req.At.UTC()
+		if (req.IdempotencyKey == "" || !b.Active()) && !b.ValidSample(s.now().UTC(), sample) {
+			return result, ErrInvalidSample
+		}
+	}
+	if !b.Active() {
+		return result, nil
 	}
 	lock, dir, err := s.lock(ctx, name, true)
 	if err != nil {
-		return nil, "", err
+		return result, err
 	}
 	defer lock.Close()
-	now = s.now().UTC()
+	now := s.now().UTC()
+	state, warning := readController(dir, now, b)
+	result.Warning = warning
+	var key, fingerprint string
+	if req.IdempotencyKey != "" {
+		key = observationDigest(req.IdempotencyKey)
+		timestamp := ""
+		if req.At != nil {
+			timestamp = sample.At.Format(time.RFC3339Nano)
+		}
+		fingerprint = observationDigest(fmt.Sprintf("%d/%d/%s", req.Attempts, req.Throttled, timestamp))
+		if receipt, found := state.ObservationKeys[key]; found {
+			if receipt.Fingerprint != fingerprint {
+				return result, ErrObservationKeyConflict
+			}
+			result.Duplicate = true
+			return result, nil
+		}
+	}
+	if req.At == nil {
+		sample.At = now
+	}
+	if !b.ValidSample(now, sample) {
+		return result, ErrInvalidSample
+	}
+	if key != "" {
+		if len(state.ObservationKeys) >= maxObservationKeys {
+			return result, ErrObservationKeysFull
+		}
+		if state.ObservationKeys == nil {
+			state.ObservationKeys = make(map[string]observationReceipt)
+		}
+		state.ObservationKeys[key] = observationReceipt{Fingerprint: fingerprint, ExpiresAt: now.Add(observationKeyTTL)}
+	}
 	tickets, err := s.tickets(dir, now, true, nil, "")
 	if err != nil {
-		return nil, "", err
+		return result, err
 	}
-	state, warning := readController(dir, now, b)
 	if warning != "" {
 		state.Window = b.InitialWindow
 	}
@@ -431,10 +518,12 @@ func (s *Store) Observe(ctx context.Context, name string, b Bucket, sample Sampl
 		}
 	}
 	adjustment := state.tick(now, b, inUse)
+	// Counts and the replay receipt become visible in the same rename.
 	if err := writeJSON(dir, "controller.json", state); err != nil {
-		return nil, warning, err
+		return result, err
 	}
-	return adjustment, warning, nil
+	result.Recorded, result.Adjustment = true, adjustment
+	return result, nil
 }
 
 func (s *Store) Status(ctx context.Context, name string, b Bucket) (Snapshot, error) {
@@ -485,9 +574,25 @@ func readController(dir string, now time.Time, b Bucket) (*controller, string) {
 	if errors.Is(err, os.ErrNotExist) {
 		return fallback, "admission_state_missing"
 	}
-	if err != nil || state.Version != 1 || state.Window < 1 || state.Window > 256 ||
+	keysValid := len(state.ObservationKeys) <= maxObservationKeys
+	if err == nil && keysValid {
+		for key, receipt := range state.ObservationKeys {
+			if len(key) != observationDigestLength || len(receipt.Fingerprint) != observationDigestLength || receipt.ExpiresAt.IsZero() {
+				keysValid = false
+				break
+			}
+			if !now.Before(receipt.ExpiresAt) {
+				delete(state.ObservationKeys, key)
+			}
+		}
+	}
+	if err == nil && keysValid {
+		// Keep readable receipts even when the adaptive data needs repair.
+		fallback.ObservationKeys = state.ObservationKeys
+	}
+	if err != nil || !keysValid || state.Version != 1 || state.Window < 1 || state.Window > 256 ||
 		state.Attempts < 0 || state.Throttled < 0 || state.Throttled > state.Attempts || state.Admitted < 0 ||
-		state.LastTick.IsZero() || state.LastTick.After(now) || len(state.Samples) > 3601 {
+		state.LastTick.IsZero() || state.LastTick.After(now) || len(state.Samples) > maxSampleWindowSeconds+1 {
 		return fallback, "admission_state_invalid"
 	}
 	var previous time.Time

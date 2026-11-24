@@ -457,6 +457,14 @@ func TestProviderAdmissionExternalCLI(t *testing.T) {
 	invoke(2, `"admission_invalid_arguments"`, "observe", "--bucket", "morph", "--attempts", "1", "--throttled", "0", "--at", "invalid")
 	invoke(0, `"recorded":true`, "observe", "--bucket", "morph", "--attempts", "5", "--throttled", "1", "--at", time.Now().Add(-time.Second).UTC().Format(time.RFC3339Nano))
 	invoke(0, `"throttle_rate":0.2`, "status", "--bucket", "morph")
+	keyed := []string{"observe", "--bucket", "morph", "--attempts", "3", "--throttled", "1", "--idempotency-key"}
+	invoke(2, `"admission_invalid_arguments"`, append(keyed, "")...)
+	invoke(0, `"recorded":true`, append(keyed, "external:batch-1")...)
+	invoke(0, `"duplicate":true`, append(keyed, "external:batch-1")...)
+	changed := append([]string(nil), keyed...)
+	changed[4] = "4"
+	invoke(8, `"admission_observation_key_conflict"`, append(changed, "external:batch-1")...)
+	invoke(0, `"total_attempts":8`, "status", "--bucket", "morph")
 	pid := strconv.Itoa(os.Getpid())
 	invoke(0, `"granted":true`, "acquire", "--bucket", "morph", "--holder", "fixture", "--pid", pid, "--no-wait")
 	invoke(0, `"granted":false`, "acquire", "--bucket", "morph", "--holder", "another", "--pid", pid, "--no-wait")

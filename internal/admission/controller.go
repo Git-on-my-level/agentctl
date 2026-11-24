@@ -29,6 +29,13 @@ type controller struct {
 	Admitted       int64       `json:"admitted"`
 	Attempts       int64       `json:"attempts"`
 	Throttled      int64       `json:"throttled_attempts"`
+
+	ObservationKeys map[string]observationReceipt `json:"observation_keys,omitempty"`
+}
+
+type observationReceipt struct {
+	Fingerprint string    `json:"fingerprint"`
+	ExpiresAt   time.Time `json:"expires_at"`
 }
 
 func (s *controller) expire(now time.Time, b Bucket) {

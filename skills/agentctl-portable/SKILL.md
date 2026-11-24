@@ -307,7 +307,9 @@ for CLI errors. Gateway-backed `acp` is outside this adapter.
   `admission acquire --bucket B --holder ID --pid OWNER_PID --no-wait` before
   claiming, check `result.granted`, and release on claim failure or completion.
   Use a stable holder for retries while the owner PID is alive. Feed
-  `admission observe --bucket B --attempts N --throttled M` once per batch.
+  `admission observe --bucket B --attempts N --throttled M --idempotency-key ID`
+  with a stable key per batch. Replay the same inputs within one hour to
+  recover the receipt as `duplicate: true`.
   `admission status [--bucket B]` is read-only. Add `--format prom` for
   Prometheus text. See `agentctl help admission` and `schema show admission-result`.
 

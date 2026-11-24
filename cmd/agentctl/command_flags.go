@@ -7,7 +7,7 @@ import "strings"
 // "--help" or "--plan" is not itself a flag. Inline help and prompt repairs use
 // this grammar instead of scanning raw token shapes.
 var commandValueFlags = map[string]map[string]bool{
-	"admission": flagSet("--bucket", "--harness", "--model", "--priority", "--holder", "--wait", "--pid", "--attempts", "--throttled", "--at", "--format", "--output"),
+	"admission": flagSet("--bucket", "--harness", "--model", "--priority", "--holder", "--wait", "--pid", "--attempts", "--throttled", "--at", "--idempotency-key", "--format", "--output"),
 	"run": flagSet("--execution-id", "--label", "--anx-card", "--task-contract", "--adapter",
 		"--timeout", "--prompt-file", "--prompt-delivery", "--cwd", "--idempotency-key",
 		"--issue", "--run"),

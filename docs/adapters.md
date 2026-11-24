@@ -391,12 +391,18 @@ defer its claim. Each host owns its window independently.
 - `admission release --bucket B --holder ID` releases an external reservation.
   Repeat release is safe. Release after a failed claim, cancellation, or
   terminal outcome. Native leases are managed by the native owner.
-- `admission observe --bucket B --attempts N --throttled M [--at RFC3339]`
-  accepts one batch of counts within the sample window. Each call adds counts,
-  so retry only after establishing that the previous call failed. Observe
-  adjusts the sidecar controller. Native adjustments also produce a
-  content-free `admission.window_adjusted` health event on the observing
-  execution, when the execution journal is available.
+- `admission observe --bucket B --attempts N --throttled M [--at RFC3339] [--idempotency-key ID]`
+  accepts one batch of counts within the sample window. For retries, reuse
+  the same key, counts, and explicit timestamp if supplied. Accepted keys are
+  retained for one hour per bucket. A repeat returns `recorded: false` and
+  `duplicate: true`. Changing the inputs for a retained key returns
+  `admission_observation_key_conflict` (exit 8). Keys have 1–128 characters,
+  start with a letter or digit, and can also contain `._:/-`. If all 4,096
+  key entries are still retained, a new keyed observation returns a
+  retryable `admission_observation_keys_full` error. Every unkeyed call adds
+  its counts. Observe adjusts the sidecar controller. When the execution
+  journal is available, native adjustments also produce a content-free
+  `admission.window_adjusted` health event on the observing execution.
 - `admission status [--bucket B]` reads the bucket without updating it. It
   reports active holders, queue depth by priority, rate, goodput, and the last
   adjustment. `--format prom` emits duration-window gauges and lifetime
