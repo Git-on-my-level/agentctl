@@ -667,6 +667,7 @@ func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding
 	}
 	if native != nil {
 		result["native"] = native
+		projectAdmissionPlan(result, native)
 		if fields, ok := native.(map[string]any); ok {
 			if constraints, ok := fields["launch_constraints"]; ok {
 				result["launch_constraints"] = constraints
@@ -679,6 +680,9 @@ func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding
 		result["id"] = reusedID
 	}
 	var actions []output.NextAction
+	if len(replay) != 0 && replay[0].Admission != nil {
+		result["admission"] = replay[0].Admission
+	}
 	if len(replay) != 0 && failedResultReplay(replay[0], true) {
 		result["replayed"] = true
 		actions = append(actions, retryWithNewKeyAction(replay[0]))
@@ -705,6 +709,9 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 	}
 
 	defer func() {
+		if problem != nil {
+			problem.Warnings = append(problem.Warnings, admissionWarnings(execution.Admission)...)
+		}
 		if problem != nil && failedResultReplay(execution, reused) {
 			problem.WithDetail("replayed", true).WithDetail("reused", true).WithActions(retryWithNewKeyAction(execution))
 		}
@@ -716,11 +723,14 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		armWaiter()
 		var remoteProblem *output.Error
 		var deadline time.Time
-		if execution.DeadlineAt != nil && !execution.State.Terminal() {
+		var flags []string
+		if execution.ProviderQueued() && opts.timeout > 0 {
+			flags = []string{"--through-execution-deadline"}
+		} else if execution.DeadlineAt != nil && !execution.State.Terminal() {
 			// Match the local wait path's cancellation and terminal-journaling window.
 			deadline = execution.DeadlineAt.Add(10 * time.Second)
 		}
-		execution, remoteProblem = a.waitRemoteTerminal(ctx, c, execution, nil, deadline)
+		execution, remoteProblem = a.waitRemoteTerminal(ctx, c, execution, flags, deadline)
 		if remoteProblem != nil {
 			return remoteProblem
 		}
@@ -729,10 +739,16 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		if execution.State == model.StateAttention || execution.Liveness == model.LivenessBlocked {
 			return delegateExecutionError(output.CodeAttentionRequired, "delegated execution requires attention", execution)
 		}
-		if execution.Liveness == model.LivenessUnreachable || (len(execution.SourceBindings) == 0 && a.now().Sub(execution.CreatedAt) > time.Minute) {
+		if execution.Liveness == model.LivenessUnreachable || (execution.Admission == nil && len(execution.SourceBindings) == 0 && a.now().Sub(execution.CreatedAt) > time.Minute) {
 			return delegateExecutionError(output.CodeExecutionUnknown, "delegated launch or execution cannot be proven; it has not been relaunched", execution)
 		}
-		if fresh := execution.Observation.FreshForSeconds; fresh != nil && a.now().After(execution.Observation.ObservedAt.Add(time.Duration(*fresh)*time.Second+10*time.Second)) {
+		now := a.now()
+		fresh := execution.Observation.FreshForSeconds
+		leaseExpired := fresh != nil && now.After(execution.Observation.ObservedAt.Add(time.Duration(*fresh)*time.Second+10*time.Second))
+		if execution.ProviderQueued() {
+			leaseExpired = providerQueueLeaseExpired(execution, now)
+		}
+		if leaseExpired {
 			return delegateExecutionError(output.CodeExecutionUnknown, "delegated owner lease expired; execution has not been relaunched", execution)
 		}
 		if execution.DeadlineAt != nil && a.now().After(execution.DeadlineAt.Add(10*time.Second)) {
@@ -786,7 +802,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		}
 		outcome = &value
 	}
-	renderer = renderer.WithWarnings(childExitWarnings(execution)...)
+	renderer = renderer.WithWarnings(childExitWarnings(execution)...).WithWarnings(admissionWarnings(execution.Admission)...)
 	binding := execution.Delegation
 	if binding == nil {
 		return delegateExecutionError(output.CodeInternal, "delegated execution has no resolution binding", execution)
@@ -799,6 +815,12 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		result := map[string]any{"id": execution.ID, "origin_host_id": execution.OriginHostID, "state": execution.State, "liveness": execution.Liveness,
 			"authority": execution.Authority, "reused": reused, "requested": binding.Requested, "resolved": binding.Resolved,
 			"provenance": map[string]any{"configuration_sha256": binding.ConfigurationSHA256, "defaulted": binding.Defaulted}, "request_sha256": binding.RequestSHA256}
+		if execution.Admission != nil {
+			result["admission"] = execution.Admission
+			if execution.DeadlineAt != nil {
+				result["deadline_at"] = execution.DeadlineAt
+			}
+		}
 		if execution.ParentExecutionID != nil {
 			result["parent_execution_id"] = execution.ParentExecutionID
 		}
@@ -828,6 +850,9 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 			result["launch_status"] = "launched"
 			if execution.State == model.StateStarting {
 				result["launch_status"] = "admitted"
+			}
+			if execution.ProviderQueued() {
+				result["launch_status"] = "queued"
 			}
 		}
 		if len(execution.Supersedes) != 0 {

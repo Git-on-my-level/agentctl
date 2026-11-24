@@ -52,6 +52,7 @@ func TestSchemaListPublishesEverySchemaArtifact(t *testing.T) {
 	want := map[string]string{
 		"anx-registration":     "schemas/anx-registration.schema.json",
 		"anx-requeue-result":   "schemas/anx-requeue-result.schema.json",
+		"admission-result":     "schemas/admission-result.schema.json",
 		"adapter-manifest":     "schemas/adapter-manifest.schema.json",
 		"await-any-result":     "schemas/await-any-result.schema.json",
 		"callback-envelope":    "schemas/callback-envelope.schema.json",

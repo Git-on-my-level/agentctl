@@ -20,6 +20,8 @@
     "auto_continuation_of": {"$ref": "execution.schema.json#/properties/id"},
     "remote": {"$ref": "delegate-result.schema.json#/properties/remote"},
     "transport": {"$ref": "delegate-result.schema.json#/properties/transport"},
+    "deadline_at": {"type": "string", "format": "date-time"},
+    "admission": {"$ref": "execution.schema.json#/$defs/provider_admission"},
     "capacity": {"$ref": "delegate-result.schema.json#/properties/capacity"},
     "launch_status": {"$ref": "delegate-result.schema.json#/properties/launch_status"},
     "continues": {

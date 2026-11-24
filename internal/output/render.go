@@ -119,7 +119,7 @@ func (r Renderer) Failure(err *Error) error {
 	if err == nil {
 		err = NewError(CodeInternal, "internal error", false)
 	}
-	warnings := r.claimWarnings()
+	warnings := append(r.claimWarnings(), err.Warnings...)
 	if r.Mode == JSON {
 		return writeJSON(r.Writer, ErrorDocument{OK: false, SchemaVersion: 1, Error: err, Warnings: nonNilWarnings(warnings)})
 	}

@@ -10,18 +10,27 @@ import (
 // The comm field may contain spaces and parentheses, so parsing starts after
 // the last ')'.
 func ProcStartTicks(stat []byte) (int64, error) {
+	ticks, _, err := ProcStatIdentity(stat)
+	return ticks, err
+}
+
+// ProcStatIdentity reads the start ticks and process state from one snapshot.
+func ProcStatIdentity(stat []byte) (int64, byte, error) {
 	fields, err := procStatFields(stat)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if len(fields) < 20 {
-		return 0, errors.New("short process stat")
+		return 0, 0, errors.New("short process stat")
+	}
+	if len(fields[0]) != 1 {
+		return 0, 0, errors.New("invalid process state")
 	}
 	ticks, err := strconv.ParseInt(fields[19], 10, 64)
 	if err != nil || ticks < 0 {
-		return 0, errors.New("invalid starttime")
+		return 0, 0, errors.New("invalid starttime")
 	}
-	return ticks, nil
+	return ticks, fields[0][0], nil
 }
 
 // ProcParentPID reads the ppid field of /proc/<pid>/stat.

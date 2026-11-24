@@ -6,7 +6,7 @@
   "skill": {
     "path": "agentctl-portable/SKILL.md",
     "source": "skills/agentctl-portable/SKILL.md",
-    "sha256": "95147190275623ef4498ec760be9650baf40577dd759ef708433c8adc218e088"
+    "sha256": "1feef4ec6c3d0e0ea79ec0f9c900b5b34151894b8933c37c594a413b79a6d85e"
   },
   "runtime": {
     "entrypoint": "agentctl",
@@ -19,6 +19,7 @@
       "doctor",
       "route",
       "delegate",
+      "admission",
       "run",
       "dispatch",
       "recent",

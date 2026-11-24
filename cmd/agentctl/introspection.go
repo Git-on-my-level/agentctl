@@ -163,6 +163,7 @@ func schemaCatalog() []map[string]any {
 		{"name": "context-result", "version": 1, "file": "schemas/context-result.schema.json"},
 		{"name": "capacity-facts", "version": 1, "file": "schemas/capacity-facts.schema.json"},
 		{"name": "carry-forward-prompt", "version": 1, "file": "schemas/carry-forward-prompt.schema.json"},
+		{"name": "admission-result", "version": 1, "file": "schemas/admission-result.schema.json"},
 		{"name": "continue-result", "version": 1, "file": "schemas/continue-result.schema.json"},
 		{"name": "data-cleanup-plan", "version": 1, "file": "schemas/data-cleanup-plan.schema.json"},
 		{"name": "journal-policy", "version": 1, "file": "schemas/journal-policy.schema.json"},

@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
+	"github.com/Git-on-my-level/agentctl/internal/admission"
 	"github.com/Git-on-my-level/agentctl/internal/anxrun"
 	"github.com/Git-on-my-level/agentctl/internal/callback"
 	"github.com/Git-on-my-level/agentctl/internal/config"
@@ -169,9 +170,13 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			return problem.WithDetail("adapter", runtime.Name())
 		}
 	}
+	meta, bucket, admissionProblem := a.nativeAdmission(c, runtime.Name(), opts.argv)
+	if admissionProblem != nil {
+		return admissionProblem
+	}
 	operationCtx := ctx
 	var operationCancel context.CancelFunc
-	if opts.timeout > 0 {
+	if opts.timeout > 0 && meta == nil {
 		operationCtx, operationCancel = context.WithTimeout(ctx, opts.timeout)
 		defer operationCancel()
 	}
@@ -223,6 +228,9 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	}
 	if opts.plan {
 		result := map[string]any{"adapter": runtime.Name(), "executable": opts.argv[0], "argument_count": len(opts.argv) - 1, "profile": profileName, "side_effect_class": output.ExternalSideEffect, "probe": probe, "writes_local_state": true, "stores_result": !opts.noStoreResult, "timeout": timeoutDescription(opts), "labels": opts.labels}
+		if meta != nil {
+			result["admission"] = meta
+		}
 		if prompt != nil {
 			result["prompt"] = map[string]any{"source": prompt.Source, "delivery": prompt.Delivery, "bytes": len(prompt.Bytes), "sha256": prompt.Digest}
 		}
@@ -279,6 +287,16 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		workspace = nil
 	}
 	execution := model.Execution{ID: opts.executionID, Authority: model.AuthorityNative, Adapter: runtime.Name(), Mode: model.ModeDirect, Acquisition: model.AcquisitionLaunched, State: model.StateStarting, Liveness: model.LivenessUnknown, SourceBindings: []model.SourceBinding{}, Capabilities: capabilitySnapshot(probe), Labels: append([]string(nil), opts.labels...), CWD: launchCWD, Repository: repository, Workspace: workspace, Supersedes: append([]ids.ExecutionID{}, opts.supersedes...), TaskContract: taskContractValue(taskContract), DeadlineAt: deadlineAt, Observation: model.Observation{Source: model.ObservationUnknown, Integrity: model.IntegrityUnknown, ObservedAt: now, FreshForSeconds: &fresh}}
+	if meta != nil {
+		meta.Phase = "queued"
+		execution.Admission, execution.DeadlineAt = meta, nil
+		if !opts.detachNative {
+			execution.SourceState = stringPointer("admission_wait")
+			retainNativeOwner(&execution)
+		}
+		lease := nativeRunnerLeaseSeconds
+		execution.Observation.FreshForSeconds = &lease
+	}
 	mutation := contracts.MutationKey{}
 	execution.Caller = caller
 	execution.AutoContinuationOf = opts.automaticContinuationOf
@@ -331,6 +349,28 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		if err == nil {
 			claim := "detached_worker_claimed"
 			execution.SourceState = &claim
+			// The parent's recorded decision survives a kill-switch/config change.
+			// If the bucket no longer matches, the worker starts the run budget now.
+			if execution.ProviderQueued() {
+				execution.SourceState = stringPointer("admission_wait")
+				retainNativeOwner(&execution)
+				execution.Observation.ObservedAt = now
+				if meta == nil || meta.Bucket != execution.Admission.Bucket {
+					changed := *execution.Admission
+					changed.Phase, changed.GrantedAt = "disabled", &now
+					execution.Admission = &changed
+					if opts.timeout > 0 {
+						deadline := now.Add(opts.timeout)
+						execution.DeadlineAt = &deadline
+					}
+					execution.SourceState = &claim
+					meta = nil
+				}
+			} else {
+				// A previous-release parent already fixed its deadline and
+				// did not advertise a provider queue.
+				meta = nil
+			}
 			execution, err = journal.UpdateExecution(context.Background(), execution, execution.Revision)
 		}
 	}
@@ -384,6 +424,45 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		}
 		return a.startReservedDetachedNative(ctx, renderer, c, opts, execution)
 	}
+	// The same cancel spool covers queueing and the native child.
+	cancels := a.openCancelInbox(c, execution.ID)
+	defer closeCancelInbox(cancels)
+	ownerCtx, interruptOwner := context.WithCancel(ctx)
+	defer interruptOwner()
+	var slots *admission.Store
+	var slot *admission.Queue
+	if meta != nil {
+		if opts.collectionWaiter {
+			closeWaiter := a.registerWaiter(ownerCtx, c, execution.ID)
+			defer closeWaiter()
+			opts.collectionWaiter = false
+		}
+		if opts.started != nil && cancels != nil {
+			opts.started(execution, false)
+			opts.started = nil
+		}
+		waited, queue, problem := a.waitProviderAdmission(ownerCtx, c, execution, bucket, cancels, interruptOwner, opts.timeout, opts.noStoreResult)
+		if problem != nil {
+			return problem
+		}
+		execution, slot = waited, queue
+		defer slot.Close()
+		warnings := admissionWarnings(execution.Admission)
+		defer func() {
+			if runProblem != nil {
+				runProblem.Warnings = append(runProblem.Warnings, warnings...)
+			}
+		}()
+		slots, _ = a.admissionStore(c)
+	}
+	if execution.Admission != nil {
+		operationCtx = ownerCtx
+		if execution.DeadlineAt != nil {
+			var cancel context.CancelFunc
+			operationCtx, cancel = context.WithDeadline(ownerCtx, *execution.DeadlineAt)
+			defer cancel()
+		}
+	}
 	if opts.collectionWaiter {
 		closeWaiter := a.registerWaiter(operationCtx, c, execution.ID)
 		defer closeWaiter()
@@ -391,10 +470,6 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 
 	launchCtx, interruptLaunch := context.WithCancel(operationCtx)
 	defer interruptLaunch()
-	// A preallocated ID can be cancelled during launch, and the spool must outlive
-	// every later defer that records this execution's outcome.
-	cancels := a.openCancelInbox(c, execution.ID)
-	defer closeCancelInbox(cancels)
 	launchRequest := adapter.LaunchRequest{Env: opts.env, Argv: opts.argv, Cwd: opts.cwd, Context: contextInput(c), DiscoveryWindow: 250 * time.Millisecond, StartOnly: true,
 		ExecutionContext: &adapter.ExecutionContext{ExecutionID: execution.ID.String(), Adapter: execution.Adapter, HostID: execution.OriginHostID.String(), Labels: append([]string(nil), execution.Labels...), Authority: string(execution.Authority)}}
 	if execution.Adapter == "generic-process" && !opts.noStoreResult {
@@ -404,8 +479,22 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	if prompt != nil && (prompt.Delivery == "stdin" || prompt.Delivery == adapter.PromptDeliveryStream) {
 		launchRequest.Stdin = prompt.Bytes
 	}
+	var childBound bool
+	if slot != nil {
+		launchRequest.BeforeStart = slot.PrepareLaunch
+		launchRequest.OnStarted = func(pid int) error {
+			err := slot.BindChild(pid)
+			childBound = err == nil
+			return err
+		}
+	}
 	launch, err := runtime.Launch(launchCtx, launchRequest)
 	if err != nil {
+		if !childBound {
+			// Start failed, or the native adapter reaped the child after a
+			// failed OnStarted callback.
+			slot.ChildReaped()
+		}
 		writeJournal, current, openProblem := a.openExecutionWrite(context.Background(), c, execution.ID)
 		if openProblem != nil {
 			return openProblem
@@ -428,6 +517,9 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	ownedID := execution.ID // later failed journal assignments may return a zero execution
 	defer func() {
 		cancelErr := runtime.Cancel(context.Background(), adapter.CancelRequest{Ref: launch.Session.Ref, Signal: "term", Grace: nativeOwnerCancelGrace})
+		if cancelErr == nil {
+			slot.ChildReaped()
+		}
 		if runProblem != nil {
 			runProblem = a.settleNativeOwnerError(c, runtime, launch.Session.Ref, ownedID, opts.noStoreResult, runProblem, cancelErr)
 		}
@@ -455,7 +547,11 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			return mapStoreError("record resumed native session", err)
 		}
 	}
-	if err := appendSynthetic(context.Background(), writeJournal, execution, model.EventStarted, execution.State, map[string]any{"accepted": true}, "launch"); err != nil {
+	startedPayload := map[string]any{"accepted": true}
+	if execution.Admission != nil && execution.Admission.Warning != "" {
+		startedPayload["admission_warning"] = execution.Admission.Warning
+	}
+	if err := appendSynthetic(context.Background(), writeJournal, execution, model.EventStarted, execution.State, startedPayload, "launch"); err != nil {
 		writeJournal.Close()
 		return mapStoreError("record started event", err)
 	}
@@ -486,7 +582,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		nativeEvents, eventErr := runtime.Events(launchCtx, adapter.EventsRequest{Ref: launch.Session.Ref, Cursor: cursor})
 		if eventErr == nil && len(nativeEvents) != 0 {
 			var terminal bool
-			execution, terminal, openProblem = a.recordNativeEvents(c, execution, nativeEvents, &cursor, inbox)
+			execution, terminal, openProblem = a.recordNativeEvents(c, execution, nativeEvents, &cursor, inbox, slots, bucket)
 			if openProblem != nil {
 				return openProblem
 			}
@@ -525,7 +621,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			// CommitTerminalOutcome below, so native terminal records are skipped.
 			if pending, pendingErr := runtime.Events(context.Background(), adapter.EventsRequest{Ref: launch.Session.Ref, Cursor: cursor}); pendingErr == nil && len(pending) != 0 {
 				var terminal bool
-				execution, terminal, openProblem = a.recordNativeEvents(c, execution, pending, &cursor, inbox)
+				execution, terminal, openProblem = a.recordNativeEvents(c, execution, pending, &cursor, inbox, slots, bucket)
 				if openProblem != nil {
 					return openProblem
 				}
@@ -557,6 +653,12 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			if launchCtx.Err() != nil && execution.State != model.StateCompleted {
 				return interruptedRunError(launchCtx.Err(), execution)
 			}
+			// The native turn is reaped and terminal. A follow-up launched
+			// by finishNativeTurn must acquire its own slot.
+			if waitErr == nil {
+				slot.ChildReaped()
+				slot.Close()
+			}
 			return a.finishNativeTurn(launchCtx, renderer, c, execution)
 		}
 		// Apply steering only after this tick's observation. A late message
@@ -577,7 +679,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			// before committing the normalized terminal outcome.
 			if pending, pendingErr := runtime.Events(context.Background(), adapter.EventsRequest{Ref: launch.Session.Ref, Cursor: cursor}); pendingErr == nil && len(pending) != 0 {
 				var terminal bool
-				execution, terminal, openProblem = a.recordNativeEvents(c, execution, pending, &cursor, inbox)
+				execution, terminal, openProblem = a.recordNativeEvents(c, execution, pending, &cursor, inbox, slots, bucket)
 				if openProblem != nil {
 					return openProblem
 				}
@@ -612,7 +714,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	}
 }
 
-func (a *app) recordNativeEvents(c common, execution model.Execution, nativeEvents []adapter.Event, cursor *string, inbox *steerInbox) (model.Execution, bool, *output.Error) {
+func (a *app) recordNativeEvents(c common, execution model.Execution, nativeEvents []adapter.Event, cursor *string, inbox *steerInbox, slots *admission.Store, bucket admission.Bucket) (model.Execution, bool, *output.Error) {
 	defer a.acknowledgeSteer(c, execution.ID, inbox, nativeEvents)
 	// Bound a stream burst's exclusive file-lock tenure. Each event remains
 	// atomic; a competing command may observe any committed prefix.
@@ -621,7 +723,15 @@ func (a *app) recordNativeEvents(c common, execution model.Execution, nativeEven
 		n := min(batchSize, len(nativeEvents))
 		var terminal bool
 		var problem *output.Error
-		execution, terminal, problem = a.recordNativeEventBatch(c, execution, nativeEvents[:n], cursor)
+		var sample admission.Sample
+		execution, terminal, problem = a.recordNativeEventBatch(c, execution, nativeEvents[:n], cursor, &sample)
+		if slots != nil && sample.Attempts > 0 && execution.Admission != nil {
+			sample.At = a.now().UTC()
+			adjustment, _, err := slots.Observe(context.Background(), execution.Admission.Bucket, bucket, sample)
+			if err == nil {
+				a.journalAdmissionAdjustment(context.Background(), c, execution, adjustment)
+			}
+		}
 		if problem != nil || terminal {
 			return execution, terminal, problem
 		}
@@ -633,7 +743,7 @@ func (a *app) recordNativeEvents(c common, execution model.Execution, nativeEven
 	return execution, false, nil
 }
 
-func (a *app) recordNativeEventBatch(c common, execution model.Execution, nativeEvents []adapter.Event, cursor *string) (model.Execution, bool, *output.Error) {
+func (a *app) recordNativeEventBatch(c common, execution model.Execution, nativeEvents []adapter.Event, cursor *string, sample *admission.Sample) (model.Execution, bool, *output.Error) {
 	journal, current, problem := a.openExecutionWriteOwned(c, execution.ID)
 	if problem != nil {
 		return execution, false, problem
@@ -678,6 +788,9 @@ func (a *app) recordNativeEventBatch(c common, execution model.Execution, native
 				WithDetail("diagnostic_code", "native_event_write_failed").WithDetail("execution_id", execution.ID.String()).
 				WithDetail("event_kind", nativeEvent.Kind).WithDetail("event_sequence", nativeEvent.Sequence).
 				WithDetail("journal_error_class", nativeJournalErrorClass(appendErr)).WithDetail("journal_operation", nativeEventWriteStage(appendErr))
+		}
+		if execution.Admission != nil && updated.Revision != execution.Revision {
+			countAdmissionAttempt(nativeEvent, sample)
 		}
 		execution = updated
 	}
@@ -2104,6 +2217,11 @@ func runnerLeaseLiveness(state model.State) model.Liveness {
 func (a *app) finalizeResult(ctx context.Context, c common, journal *store.Journal, execution model.Execution, result adapter.Result, now time.Time, noStoreResult bool) (model.Execution, error) {
 	if !execution.State.Terminal() && execution.State != toModelState(result.State) {
 		execution.RecordProgress(now)
+	}
+	if execution.ProviderQueued() {
+		meta := *execution.Admission
+		meta.Phase, meta.Position = "aborted", 0
+		execution.Admission = &meta
 	}
 	execution.State = toModelState(result.State)
 	execution.Liveness = model.LivenessExited

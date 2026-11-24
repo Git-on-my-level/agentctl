@@ -8,19 +8,29 @@ import (
 )
 
 func retainNativeOwner(execution *model.Execution) {
-	if execution.OwnerLaunch != nil {
-		return
+	if execution.OwnerLaunch == nil {
+		pid := os.Getpid()
+		if execution.ProviderQueued() {
+			execution.OwnerLaunch = queuedNativeOwnerLaunch(pid)
+		} else {
+			execution.OwnerLaunch = nativeOwnerLaunch(pid, processStart(pid))
+		}
 	}
-	pid := os.Getpid()
-	observed := processStart(pid)
+}
+
+func queuedNativeOwnerLaunch(pid int) *model.LaunchIdentity {
+	return nativeOwnerLaunch(pid, queuedProcessStart(pid))
+}
+
+func nativeOwnerLaunch(pid int, observed processObservation) *model.LaunchIdentity {
 	if observed.err != nil || !observed.present || !observed.startKnown {
-		return
+		return nil
 	}
 	started := observed.started
 	if started.IsZero() {
 		started = time.Now().UTC()
 	} // Linux identity uses kernel ticks and namespace.
-	execution.OwnerLaunch = &model.LaunchIdentity{PID: pid, StartedAt: started, StartTicks: observed.startTicks, PIDNamespaceIno: observed.nsInode, ProcfsPIDNamespaceIno: observed.nsInode}
+	return &model.LaunchIdentity{PID: pid, StartedAt: started, StartTicks: observed.startTicks, PIDNamespaceIno: observed.nsInode, ProcfsPIDNamespaceIno: observed.nsInode}
 }
 
 const processStartTolerance = 5 * time.Second
@@ -32,14 +42,15 @@ type processIdentity struct {
 	StartTicks            int64
 	PIDNamespaceIno       uint64
 	ProcfsPIDNamespaceIno uint64
+	exactStart            bool
 }
 
 // processProof is identity evidence for one recorded launch PID. Gone is proof
 // the recorded process cannot be the live PID. Alive is proof it still is.
 // Anything else is not proof, and reconcile must not change the execution.
 type processProof struct {
-	PID               int        `json:"pid"`
-	RecordedStartedAt time.Time  `json:"recorded_started_at,omitempty"`
+	PID               int        `json:"pid,omitempty"`
+	RecordedStartedAt time.Time  `json:"recorded_started_at,omitzero"`
 	ProcessStartedAt  *time.Time `json:"process_started_at,omitempty"`
 	Present           bool       `json:"process_present"`
 	Proof             string     `json:"proof"`
@@ -84,12 +95,18 @@ func absDuration(value time.Duration) time.Duration {
 }
 
 func recordedLaunch(execution model.Execution) (processIdentity, bool) {
-	if execution.Launch == nil {
+	launch := execution.Launch
+	queuedOwner := launch == nil && execution.ProviderQueued()
+	if queuedOwner {
+		// A queued row cannot have launched. After grant, the owner can
+		// disappear with a live child whose launch has not been recorded.
+		launch = execution.OwnerLaunch
+	}
+	if launch == nil {
 		return processIdentity{}, false
 	}
-	launch := execution.Launch
 	if launch.PID <= 0 || launch.PID > model.MaxLaunchPID || launch.StartedAt.IsZero() {
 		return processIdentity{}, false
 	}
-	return processIdentity{PID: launch.PID, StartedAt: launch.StartedAt, StartTicks: launch.StartTicks, PIDNamespaceIno: launch.PIDNamespaceIno, ProcfsPIDNamespaceIno: launch.ProcfsPIDNamespaceIno}, true
+	return processIdentity{PID: launch.PID, StartedAt: launch.StartedAt, StartTicks: launch.StartTicks, PIDNamespaceIno: launch.PIDNamespaceIno, ProcfsPIDNamespaceIno: launch.ProcfsPIDNamespaceIno, exactStart: queuedOwner}, true
 }
