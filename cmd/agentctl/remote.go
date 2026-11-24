@@ -411,6 +411,10 @@ func remoteErrorLocal(problem *output.Error, execution model.Execution) *output.
 		return nil
 	}
 	problem.WithDetail("execution_id", execution.ID.String()).WithDetail("remote", execution.Delegation.RemotePlan)
+	if execution.Adapter == "opencode" && problem.Code == output.CodeAttentionRequired && problem.Details["recovery_state"] == "paused_capacity" {
+		problem.NextActions = remoteCheckpointActions(output.JSON, execution.ID)
+		return problem
+	}
 	remote := execution.Delegation.RemotePlan
 	for i := range problem.NextActions {
 		for j, arg := range problem.NextActions[i].Argv {
@@ -420,6 +424,13 @@ func remoteErrorLocal(problem *output.Error, execution model.Execution) *output.
 		}
 	}
 	return problem
+}
+
+func remoteCheckpointActions(mode output.Mode, id ids.ExecutionID) []output.NextAction {
+	return []output.NextAction{
+		{Label: "Read the remote parked failure", Argv: []string{"agentctl", "status", id.String(), "--output", string(mode)}, SideEffectClass: output.ReadOnly},
+		checkpointRecoveryPlan(id),
+	}
 }
 
 func remoteObservation(ctx context.Context, execution model.Execution, command string, flags []string) (remoteReceipt, *output.Error) {

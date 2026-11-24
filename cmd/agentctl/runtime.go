@@ -500,15 +500,17 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		launchRequest.BeforeStart = func(ctx context.Context) error {
 			prelaunch, cancel := context.WithDeadline(ctx, opts.recoveryClaimDeadline)
 			defer cancel()
-			if err := prelaunch.Err(); err != nil {
+			if err := recoveryClaimContextError(prelaunch, opts.recoveryClaimDeadline); err != nil {
 				return err
 			}
 			if slot != nil {
-				if err := slot.PrepareLaunch(prelaunch); err != nil {
-					return err
+				err := slot.PrepareLaunch(prelaunch)
+				if cause := recoveryClaimContextError(prelaunch, opts.recoveryClaimDeadline); cause != nil {
+					return cause
 				}
+				return err
 			}
-			return prelaunch.Err()
+			return recoveryClaimContextError(prelaunch, opts.recoveryClaimDeadline)
 		}
 	}
 	launch, err := runtime.Launch(launchCtx, launchRequest)
@@ -525,6 +527,9 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		failureState := adapter.StateFailed
 		if launchInterrupted(err) {
 			failureState = adapter.StateCancelled
+		}
+		if errors.Is(err, errOpenCodeRecoveryClaimExpired) {
+			current.SourceState = stringPointer(openCodeRecoveryClaimExpired)
 		}
 		failed, finalizeErr := a.finalizeResult(context.Background(), c, writeJournal, current, nativeLaunchFailure(err, failureState), a.now().UTC(), opts.noStoreResult)
 		writeJournal.Close()

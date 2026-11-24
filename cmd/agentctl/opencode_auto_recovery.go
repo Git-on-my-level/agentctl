@@ -19,7 +19,23 @@ const (
 	openCodeRecoveryMaxBackoff      = time.Hour
 	openCodeRateLimitInstruction    = "Inspect the session history. If the task already finished, return its final answer. Otherwise reconcile any previous tool effects, then continue the task and return the required final answer."
 	openCodeFinalAnswerInstruction  = "Your last turn ended without a final answer. Reply now with only your final answer in the required format."
+	openCodeRecoveryClaimExpired    = "opencode_recovery_claim_expired"
 )
+
+var errOpenCodeRecoveryClaimExpired = fmt.Errorf("OpenCode recovery claim expired: %w", context.DeadlineExceeded)
+
+func recoveryClaimContextError(ctx context.Context, claimDeadline time.Time) error {
+	err := ctx.Err()
+	if deadline, ok := ctx.Deadline(); err == context.DeadlineExceeded && ok && deadline.Equal(claimDeadline) {
+		return errOpenCodeRecoveryClaimExpired
+	}
+	return err
+}
+
+func expiredRecoveryBeforeLaunch(e model.Execution) bool {
+	return e.State == model.StateCancelled && e.RetryOf != nil && e.Launch == nil && len(e.SourceBindings) == 0 &&
+		e.SourceState != nil && *e.SourceState == openCodeRecoveryClaimExpired
+}
 
 // Let the native path return and reap the child before sleeping or admitting
 // another turn. Any launch-scoped admission lease must be released here.

@@ -722,15 +722,23 @@ func TestOpenCodeRecoveryQueueStopsAtClaimDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer journal.Close()
 	row, err = journal.GetExecution(ctx, root)
 	if err != nil || row.SupersededBy == nil {
+		journal.Close()
 		t.Fatalf("missing admitted successor: %+v %v", row, err)
 	}
 	next, err := journal.GetExecution(ctx, *row.SupersededBy)
-	if err != nil || next.State != model.StateCancelled || next.Admission == nil || next.Admission.Phase != "cancelled" || next.Launch != nil || next.DeadlineAt != nil {
+	journal.Close()
+	if err != nil || !expiredRecoveryBeforeLaunch(next) || next.Admission == nil || next.Admission.Phase != "cancelled" || next.DeadlineAt != nil {
 		t.Fatalf("expired queue state: %+v %v", next, err)
 	}
+	t.Run("manual_recovery", func(t *testing.T) {
+		code, out := f.command(t, "manual native follow-up", "continue", root.String(), "--request-key", "manual-after-expiry", "--prompt-stdin", "--wait")
+		if code != 0 || f.launches(t) != 2 || !strings.Contains(out, `"continues":"`+root.String()+`"`) ||
+			!strings.Contains(out, "recovered answer") {
+			t.Fatalf("manual continuation exit=%d launches=%d: %s", code, f.launches(t), out)
+		}
+	})
 }
 
 func TestOpenCodeRecoveryClaimExpiryMakesFailureCollectible(t *testing.T) {

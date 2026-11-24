@@ -193,7 +193,7 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 		}
 	}
 	a.serviceCancelInbox(inbox, interrupt)
-	if err := ctx.Err(); err != nil {
+	if err := recoveryClaimContextError(ctx, claimDeadline); err != nil {
 		queue.Close()
 		cancelled, problem := a.cancelProviderAdmission(c, execution, meta, noStore, err)
 		return cancelled, nil, problem
@@ -207,7 +207,7 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 		}
 	}
 	execution, problem := a.commitProviderAdmission(ctx, c, execution, meta, timeout, executionDeadline, inbox, interrupt)
-	if err := ctx.Err(); err != nil {
+	if err := recoveryClaimContextError(ctx, claimDeadline); err != nil {
 		queue.Close()
 		cancelled, problem := a.cancelProviderAdmission(c, execution, meta, noStore, err)
 		return cancelled, nil, problem
@@ -262,6 +262,9 @@ func (a *app) cancelProviderAdmission(c common, execution model.Execution, meta 
 	}
 	meta.Phase, meta.Position = "cancelled", 0
 	current.Admission = &meta
+	if errors.Is(cause, errOpenCodeRecoveryClaimExpired) {
+		current.SourceState = stringPointer(openCodeRecoveryClaimExpired)
+	}
 	final, err := a.finalizeResult(context.Background(), c, journal, current,
 		adapter.Result{State: adapter.StateCancelled, Error: "cancelled during provider admission"}, a.now().UTC(), noStore)
 	journal.Close()

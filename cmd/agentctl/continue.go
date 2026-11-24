@@ -259,12 +259,20 @@ func (a *app) continuePrepared(ctx context.Context, renderer output.Renderer, c 
 		return problem
 	}
 	source, err := journal.GetExecution(ctx, id)
-	if err == nil && !opts.automaticRecovery && automaticOf == nil && source.OpenCodeRecovery != nil {
-		_, physical, followErr := a.followOpenCodeRecovery(ctx, journal, source)
-		if followErr != nil {
-			err = followErr
-		} else if physical != id {
-			id = physical
+	if err == nil && !opts.automaticRecovery && automaticOf == nil {
+		if source.OpenCodeRecovery != nil {
+			_, physical, followErr := a.followOpenCodeRecovery(ctx, journal, source)
+			if followErr != nil {
+				err = followErr
+			} else if physical != id {
+				id = physical
+				source, err = journal.GetExecution(ctx, id)
+			}
+		}
+		if err == nil && expiredRecoveryBeforeLaunch(source) {
+			// Keep the cancelled attempt in the reported chain. The native
+			// session is still at the checkpoint of the preceding turn.
+			id = *source.RetryOf
 			source, err = journal.GetExecution(ctx, id)
 		}
 	}

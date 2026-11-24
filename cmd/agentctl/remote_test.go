@@ -1137,6 +1137,25 @@ func TestAwaitAnyRemoteOpenCodeCapacityPauseOffersRecovery(t *testing.T) {
 	if code == 0 || !strings.Contains(out, "delegate_remote_receipt_invalid") || strings.Contains(out, rateLimit.ProviderErrorType) {
 		t.Fatalf("invalid provider metadata exit=%d: %s", code, out)
 	}
+	t.Run("direct_await", func(t *testing.T) {
+		remoteError := output.NewError(output.CodeAttentionRequired, "execution requires attention", true).
+			WithDetail("recovery_state", "paused_capacity").
+			WithActions(output.NextAction{Label: "Read parked failure events", Argv: []string{"agentctl", "events", remoteNextID}})
+		body, err := json.Marshal(output.ErrorDocument{SchemaVersion: 1, Error: remoteError})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, value := range map[string]string{"fail": "10", "diagnostic": "", "fail-output": string(body)} {
+			if err := os.WriteFile(filepath.Join(f.root, name), []byte(value), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		code, out := f.command("", "await", id, "--timeout", "2s")
+		if code != 10 || !strings.Contains(out, `"status","`+id+`"`) || !strings.Contains(out, `"continue","`+id+`"`) ||
+			strings.Contains(out, `"events","`) {
+			t.Fatalf("remote await exit=%d: %s", code, out)
+		}
+	})
 }
 
 func cloneRemoteCandidate(t *testing.T, f remoteFixture, source, destination string) string {

@@ -1820,12 +1820,8 @@ func nativeApprovalAttention(e model.Execution) bool {
 // states can be observed again after the authority decides.
 func attentionNextActions(mode output.Mode, e model.Execution) []output.NextAction {
 	if e.NativeRecoveryParked() {
-		plan := output.NextAction{Label: "Plan native checkpoint recovery", Argv: []string{"agentctl", "continue", e.ID.String(), "--request-key", "<new-key>", "--prompt-file", "<recovery-instruction>", "--plan"}, SideEffectClass: output.ReadOnly, Preconditions: []string{"reconcile prior tool effects and recover from the latest parked turn"}}
 		if e.RemoteForwarded() {
-			return []output.NextAction{
-				{Label: "Read the remote parked failure", Argv: []string{"agentctl", "status", e.ID.String(), "--output", string(mode)}, SideEffectClass: output.ReadOnly},
-				plan,
-			}
+			return remoteCheckpointActions(mode, e.ID)
 		}
 		physical := e.ID
 		if len(e.RecoveryChain) != 0 {
@@ -1833,7 +1829,7 @@ func attentionNextActions(mode output.Mode, e model.Execution) []output.NextActi
 		}
 		return []output.NextAction{
 			{Label: "Read the parked failure receipt", Argv: []string{"agentctl", "events", physical.String(), "--kind", "attention"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}},
-			plan,
+			checkpointRecoveryPlan(e.ID),
 			{Label: "Cancel the idle parked turn", Argv: []string{"agentctl", "cancel", e.ID.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{"no recovery turn is active"}},
 		}
 	}
@@ -1852,6 +1848,10 @@ func attentionNextActions(mode output.Mode, e model.Execution) []output.NextActi
 		{Label: "Re-check state after the authority decision", Argv: []string{"agentctl", "status", e.ID.String(), "--output", string(mode)}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}},
 		{Label: "Wait through attention after the authority decides", Argv: argv, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{attentionDecisionPrecondition(e)}},
 	}
+}
+
+func checkpointRecoveryPlan(id ids.ExecutionID) output.NextAction {
+	return output.NextAction{Label: "Plan native checkpoint recovery", Argv: []string{"agentctl", "continue", id.String(), "--request-key", "<new-key>", "--prompt-file", "<recovery-instruction>", "--plan"}, SideEffectClass: output.ReadOnly, Preconditions: []string{"reconcile prior tool effects and recover from the latest parked turn"}}
 }
 
 func taskContractAcceptanceWarning() output.Warning {
