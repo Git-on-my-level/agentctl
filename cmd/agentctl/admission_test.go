@@ -381,9 +381,9 @@ func TestProviderAdmissionLongQueueRemainsCollectable(t *testing.T) {
 }
 
 func TestProviderAdmissionFallbackWarnings(t *testing.T) {
-	for _, tc := range []struct{ name, wait, warning string }{
-		{"full", "500ms", "admission_max_wait"},
-		{"unavailable", "30s", "admission_state_unavailable"},
+	for _, tc := range []struct{ name, wait, phase, warning string }{
+		{"full", "500ms", "granted", "admission_max_wait"},
+		{"unavailable", "30s", "bypassed", "admission_state_unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, script := admissionFixture(t, true, tc.wait)
@@ -421,13 +421,19 @@ func TestProviderAdmissionFallbackWarnings(t *testing.T) {
 				t.Fatal(err)
 			}
 			row := doc.Result
-			if row.State != model.StateCompleted || row.Admission == nil || row.Admission.Phase != "bypassed" ||
+			if row.State != model.StateCompleted || row.Admission == nil || row.Admission.Phase != tc.phase ||
 				row.Admission.Warning != tc.warning || row.Admission.GrantedAt == nil || row.DeadlineAt == nil ||
 				row.DeadlineAt.Sub(*row.Admission.GrantedAt) != 2*time.Second || len(doc.Warnings) == 0 || doc.Warnings[0].Code != tc.warning {
 				t.Fatalf("missing fallback evidence: %s", run)
 			}
 			if events := invoke(0, "events", row.ID.String()); !strings.Contains(events, `"admission_warning":"`+tc.warning+`"`) {
 				t.Fatal(events)
+			}
+			if tc.name == "full" {
+				status := invoke(0, "admission", "status")
+				if !strings.Contains(status, `"admitted":2`) || !strings.Contains(status, `"in_use":1`) {
+					t.Fatalf("max-wait launch did not take and release its lease: %s", status)
+				}
 			}
 		})
 	}

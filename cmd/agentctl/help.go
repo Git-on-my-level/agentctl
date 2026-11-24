@@ -69,6 +69,7 @@ func helpTopics() map[string]commandHelp {
 		"admission status": {
 			Name: "admission status", Summary: "Read active slots, queue depth, and controller measurements.",
 			Usage: "agentctl admission status [--bucket name] [--format prom]", SideEffectClass: output.ReadOnly,
+			Defaults: []string{"in_use includes counted native leases granted at max_wait; JSON and text report over_window"},
 		},
 		"admission match": {
 			Name: "admission match", Summary: "Resolve the configured bucket and enabled flag for an exact native model ID.",

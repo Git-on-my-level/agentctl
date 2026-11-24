@@ -50,6 +50,7 @@ type Ticket struct {
 	QueuedAt   time.Time  `json:"queued_at"`
 	AcquiredAt *time.Time `json:"acquired_at,omitempty"`
 	External   bool       `json:"external,omitempty"`
+	OverWindow bool       `json:"over_window,omitempty"`
 	Sequence   uint64     `json:"sequence"`
 	// A pending external claim keeps the invoker's flock and separately
 	// records the intended long-lived owner for same-holder replays.
@@ -79,6 +80,7 @@ type Snapshot struct {
 	Enabled           bool           `json:"enabled"`
 	Window            int            `json:"window"`
 	InUse             int            `json:"in_use"`
+	OverWindow        int            `json:"over_window"`
 	Queued            map[string]int `json:"queued"`
 	Holders           []Ticket       `json:"holders"`
 	ThrottleRate      float64        `json:"throttle_rate"`
@@ -110,6 +112,18 @@ func (s *Store) Queue(name string, b Bucket, holder, priority string, waiter, ow
 func ticketKey(holder string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(holder))) }
 
 func (q *Queue) Try(ctx context.Context, enqueue bool) (Decision, error) {
+	return q.try(ctx, enqueue, false)
+}
+
+// TryAfterMaxWait takes a counted native lease without waiting for capacity.
+func (q *Queue) TryAfterMaxWait(ctx context.Context) (Decision, error) {
+	if q.external {
+		return Decision{}, errors.New("only native launches can exceed the admission window")
+	}
+	return q.try(ctx, true, true)
+}
+
+func (q *Queue) try(ctx context.Context, enqueue, overWindow bool) (Decision, error) {
 	d := Decision{Bucket: q.name, Priority: q.priority, Reason: "at_capacity"}
 	if !q.bucket.Active() {
 		d.Granted, d.Reason = true, "disabled"
@@ -190,7 +204,7 @@ func (q *Queue) Try(ctx context.Context, enqueue bool) (Decision, error) {
 		d.Adjustment, d.Reason, d.Priority = nil, "already_queued", next.Priority
 		return d, nil
 	}
-	granted := position == 1 && inUse < d.Window
+	granted := overWindow || position == 1 && inUse < d.Window
 	if q.file == nil && (granted || enqueue) {
 		q.file, err = openOwned(filepath.Join(dir, ticketKey(q.holder)+".lock"), true)
 		if err != nil {
@@ -214,6 +228,7 @@ func (q *Queue) Try(ctx context.Context, enqueue bool) (Decision, error) {
 			next.LaunchLeaseExpiresAt = &expires
 		}
 		next.AcquiredAt = &now
+		next.OverWindow = overWindow
 		state.Admitted++
 		state.tick(now, q.bucket, inUse+1)
 	}
@@ -228,7 +243,7 @@ func (q *Queue) Try(ctx context.Context, enqueue bool) (Decision, error) {
 		if err := writeJSON(dir, "controller.json", state); err != nil {
 			// Ticket accounting is independent of controller storage.
 			d.Window, d.Adjustment, d.Warning = min(d.Window, q.bucket.fallback()), nil, "admission_state_write_failed"
-			if granted && inUse >= d.Window {
+			if granted && !overWindow && inUse >= d.Window {
 				next.AcquiredAt, next.External, next.VerifiedAt, next.Owner = nil, false, nil, q.waiter
 				next.LaunchLeaseExpiresAt = nil
 				if q.external {
@@ -251,6 +266,9 @@ func (q *Queue) Try(ctx context.Context, enqueue bool) (Decision, error) {
 	}
 	if granted {
 		d.Granted, d.Position, d.Reason, d.AcquiredAt = true, 0, "slot", &now
+		if overWindow {
+			d.Reason = "over_window"
+		}
 		q.retain = q.external
 	}
 	return d, nil
@@ -441,6 +459,9 @@ func (s *Store) Status(ctx context.Context, name string, b Bucket) (Snapshot, er
 			} else {
 				status.Holders = append(status.Holders, ticket)
 				status.InUse++
+				if ticket.OverWindow {
+					status.OverWindow++
+				}
 			}
 		}
 		sort.Slice(status.Holders, func(i, j int) bool { return status.Holders[i].Sequence < status.Holders[j].Sequence })
@@ -506,6 +527,7 @@ func (s *Store) tickets(dir string, now time.Time, prune bool, own *os.File, own
 			ticket.PID <= 0 || ticket.Start == "" || ticket.Sequence == 0 || ticket.QueuedAt.IsZero() ||
 			ticket.External && (ticket.AcquiredAt == nil || ticket.VerifiedAt == nil || ticket.ClaimOwner != nil) ||
 			ticket.ClaimOwner != nil && (ticket.AcquiredAt != nil || ticket.ClaimOwner.PID <= 0 || ticket.ClaimOwner.Start == "") ||
+			ticket.OverWindow && (ticket.External || ticket.AcquiredAt == nil) ||
 			ticket.Child != nil && (ticket.External || ticket.AcquiredAt == nil || ticket.Child.PID <= 0 || ticket.Child.Start == "" || ticket.LaunchLeaseExpiresAt != nil) ||
 			ticket.LaunchLeaseExpiresAt != nil && (ticket.External || ticket.AcquiredAt == nil || ticket.LaunchLeaseExpiresAt.Before(*ticket.AcquiredAt)) {
 			return nil, errors.New("invalid admission ticket")

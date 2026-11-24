@@ -61,7 +61,7 @@ func admissionWarnings(meta *model.ProviderAdmission) []output.Warning {
 	var message string
 	switch meta.Warning {
 	case "admission_max_wait":
-		message = "Admission reached max_wait. The native launch proceeded without a slot."
+		message = "Admission reached max_wait. The native launch took a counted over-window slot."
 	case "admission_state_unavailable":
 		message = "Admission slot state was unavailable. The native launch proceeded without a slot."
 	case "admission_lock_timeout":
@@ -84,10 +84,12 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 	if stateErr == nil {
 		pid := os.Getpid()
 		start, err := admissionProcessStart(pid)
-		if err == nil && start != "" {
-			owner := admission.Owner{PID: pid, Start: start}
-			queue = slots.Queue(meta.Bucket, b, execution.ID.String(), meta.Priority, owner, owner, false)
+		if err != nil || start == "" {
+			return execution, nil, delegateError(output.CodeDependencyUnavailable, "admission_identity_unavailable", "could not establish the native admission owner").
+				WithDetail("execution_id", execution.ID.String()).WithDetail("native_launch_started", false)
 		}
+		owner := admission.Owner{PID: pid, Start: start}
+		queue = slots.Queue(meta.Bucket, b, execution.ID.String(), meta.Priority, owner, owner, false)
 	}
 	keep := false
 	defer func() {
@@ -99,10 +101,21 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 	stateUnavailable := queue == nil
 	for !stateUnavailable {
 		a.serviceCancelInbox(inbox, interrupt)
-		if ctx.Err() != nil || waitCtx.Err() != nil {
+		if ctx.Err() != nil {
 			break
 		}
-		decision, err := queue.Try(waitCtx, true)
+		attemptCtx := waitCtx
+		afterMaxWait := waitCtx.Err() != nil
+		var decision admission.Decision
+		var err error
+		if afterMaxWait {
+			// A busy bucket lock is retried with the owner's context after
+			// max_wait. Launch requires a counted ticket in usable state.
+			attemptCtx = ctx
+			decision, err = queue.TryAfterMaxWait(attemptCtx)
+		} else {
+			decision, err = queue.Try(attemptCtx, true)
+		}
 		if err == nil {
 			adjustment = decision.Adjustment
 			meta.Window = decision.Window
@@ -112,14 +125,25 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 			meta.Position = decision.Position
 			if decision.Granted {
 				meta.Phase, meta.GrantedAt = "granted", decision.AcquiredAt
+				if afterMaxWait {
+					meta.Warning = "admission_max_wait"
+				}
 				break
 			}
-		} else if !errors.Is(err, admission.ErrLockBusy) {
-			stateUnavailable = waitCtx.Err() == nil
-			break
+		} else {
+			switch {
+			case attemptCtx.Err() != nil:
+				continue
+			case errors.Is(err, admission.ErrHolderOwned):
+				return execution, nil, delegateError(output.CodeConflict, "admission_holder_conflict", "provider admission is owned by another process").
+					WithDetail("execution_id", execution.ID.String()).WithDetail("native_launch_started", false)
+			case !errors.Is(err, admission.ErrLockBusy):
+				stateUnavailable = true
+				continue
+			}
 		}
 		if meta.Position != execution.Admission.Position || a.now().Sub(execution.Observation.ObservedAt) >= nativeRunnerHeartbeatEvery {
-			refreshCtx, stop := context.WithTimeout(waitCtx, admission.PollInterval)
+			refreshCtx, stop := context.WithTimeout(attemptCtx, admission.PollInterval)
 			updated, problem := a.updateProviderAdmission(refreshCtx, c, execution, meta, false, 0)
 			expired := refreshCtx.Err() != nil
 			stop()
@@ -129,10 +153,10 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 				return execution, nil, problem
 			}
 		}
-		a.journalAdmissionAdjustment(waitCtx, c, execution, adjustment)
+		a.journalAdmissionAdjustment(attemptCtx, c, execution, adjustment)
 		adjustment = nil
 		select {
-		case <-waitCtx.Done():
+		case <-attemptCtx.Done():
 		case <-time.After(admission.PollInterval):
 		}
 	}
@@ -144,10 +168,7 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 	}
 	if meta.Phase != "granted" {
 		now := a.now().UTC()
-		meta.Phase, meta.Position, meta.GrantedAt, meta.Warning = "bypassed", 0, &now, "admission_max_wait"
-		if stateUnavailable {
-			meta.Warning = "admission_state_unavailable"
-		}
+		meta.Phase, meta.Position, meta.GrantedAt, meta.Warning = "bypassed", 0, &now, "admission_state_unavailable"
 		if queue != nil {
 			queue.Close()
 			queue = nil
@@ -377,7 +398,7 @@ func (a *app) admissionCommand(ctx context.Context, renderer output.Renderer, c 
 			}
 			views = append(views, status)
 			lines = append(lines, output.Line{Lead: "admission.bucket", Fields: []output.Field{
-				{Name: "bucket", Value: key}, {Name: "enabled", Value: status.Enabled}, {Name: "window", Value: status.Window}, {Name: "in_use", Value: status.InUse}, {Name: "queued", Value: status.Queued[admission.Interactive] + status.Queued[admission.Background]},
+				{Name: "bucket", Value: key}, {Name: "enabled", Value: status.Enabled}, {Name: "window", Value: status.Window}, {Name: "in_use", Value: status.InUse}, {Name: "over_window", Value: status.OverWindow}, {Name: "queued", Value: status.Queued[admission.Interactive] + status.Queued[admission.Background]},
 			}})
 		}
 		if format == "prom" {

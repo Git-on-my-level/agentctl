@@ -367,9 +367,12 @@ The defaults are an 8% target, a 0.7 decrease factor, a 60-second adjustment
 interval, a five-minute sample window and a five-minute maximum wait. The
 static fallback defaults to the initial window. If the controller file is
 missing or corrupt, acquisitions use the static cap while rebuilding state
-under the bucket lock. At `max_wait`, native invocations proceed without a
-reservation and record a warning. A permanent slot-state error takes the
-same fallback immediately. These exceptions can exceed the window. The
+under the bucket lock. At `max_wait`, a native invocation takes a counted
+lease even if the window is full. It records an `admission_max_wait` warning.
+Those leases contribute to controller demand and `in_use`. Status marks each
+such holder with `over_window: true` and reports the number of these holders.
+If the slot state is unusable, a native launch proceeds without a lease and
+records an `admission_state_unavailable` warning. The
 external CLI reports denied or a typed error, so the external claimant can
 defer its claim. Each host owns its window independently.
 

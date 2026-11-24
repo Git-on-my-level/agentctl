@@ -40,6 +40,7 @@
         "queued_at": {"$ref": "#/$defs/time"},
         "acquired_at": {"$ref": "#/$defs/time"},
         "external": {"type": "boolean"},
+        "over_window": {"type": "boolean"},
         "sequence": {"type": "integer", "minimum": 1},
         "verified_at": {"$ref": "#/$defs/time"},
         "launch_lease_expires_at": {"$ref": "#/$defs/time"},
@@ -63,6 +64,7 @@
         "enabled": {"type": "boolean"},
         "window": {"$ref": "#/$defs/window"},
         "in_use": {"$ref": "#/$defs/count"},
+        "over_window": {"$ref": "#/$defs/count"},
         "queued": {
           "type": "object",
           "additionalProperties": false,

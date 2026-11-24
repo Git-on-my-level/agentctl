@@ -299,8 +299,10 @@ for CLI errors. Gateway-backed `acp` is outside this adapter.
 - A plan reports admission without reserving a slot. `status` and `recent`
   report `admission.phase=queued` and queue position. A detached receipt can
   report `launch_status=queued`. Collect with `await` or cancel with `cancel`.
-  Execution timeout starts at grant. The native maximum-wait exception proceeds
-  with a warning. Reuse the execution ID and request key on replay.
+  Execution timeout starts at grant. At `max_wait`, native work receives a
+  counted over-window lease and a warning. A broken slot sidecar permits an
+  uncounted launch with a warning. Reuse the execution ID and request key on
+  replay.
 - External launchers share the same journal directory and bucket. Call
   `admission acquire --bucket B --holder ID --pid OWNER_PID --no-wait` before
   claiming, check `result.granted`, and release on claim failure or completion.

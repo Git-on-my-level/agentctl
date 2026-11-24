@@ -100,6 +100,78 @@ func TestQueuePriorityFIFOAndFallback(t *testing.T) {
 	try(back, true, 0)
 }
 
+func TestOverWindowLeaseCountsTowardsCapacityAndDemand(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	s := New(filepath.Join(t.TempDir(), "journal.db"), func() time.Time { return now }, nil)
+	b := testConfig()
+	b.InitialWindow, b.StaticFallbackWindow = 1, 1
+	newQueue := func(holder, priority string) *Queue {
+		q := s.Queue(testBucket, b, holder, priority, testOwner, Owner{}, false)
+		t.Cleanup(q.Close)
+		return q
+	}
+	active := newQueue("active", Background)
+	if d, err := active.Try(ctx, true); err != nil || !d.Granted {
+		t.Fatalf("grant: %#v %v", d, err)
+	}
+	timedOut := newQueue("timed-out", Background)
+	if d, err := timedOut.Try(ctx, true); err != nil || d.Granted {
+		t.Fatalf("queue: %#v %v", d, err)
+	}
+	if d, err := timedOut.TryAfterMaxWait(ctx); err != nil || !d.Granted || d.Reason != "over_window" {
+		t.Fatalf("max wait: %#v %v", d, err)
+	}
+	status, err := s.Status(ctx, testBucket, b)
+	if err != nil || status.InUse != 2 || status.OverWindow != 1 || status.Admitted != 2 ||
+		status.Holders[0].OverWindow || !status.Holders[1].OverWindow || status.Queued[Background] != 0 {
+		t.Fatalf("extra lease was not counted: %#v %v", status, err)
+	}
+	active.Close()
+	next := newQueue("waiting", Interactive)
+	if d, err := next.Try(ctx, true); err != nil || d.Granted {
+		t.Fatalf("over-window holder did not use capacity: %#v %v", d, err)
+	}
+	now = now.Add(2 * b.interval())
+	adjustment, _, err := s.Observe(ctx, testBucket, b, Sample{At: now, Attempts: 1})
+	if err != nil || adjustment == nil || adjustment.To != 2 {
+		t.Fatalf("over-window holder did not register as current demand: %#v %v", adjustment, err)
+	}
+	timedOut.Close()
+	status, err = s.Status(ctx, testBucket, b)
+	if err != nil || status.InUse != 0 || status.OverWindow != 0 {
+		t.Fatalf("extra lease survived release: %#v %v", status, err)
+	}
+}
+
+func TestOverWindowLeaseSurvivesControllerWriteFailure(t *testing.T) {
+	ctx := context.Background()
+	s := New(filepath.Join(t.TempDir(), "journal.db"), time.Now, nil)
+	b := testConfig()
+	b.InitialWindow, b.StaticFallbackWindow = 1, 1
+	active := s.Queue(testBucket, b, "active", Background, testOwner, Owner{}, false)
+	defer active.Close()
+	if d, err := active.Try(ctx, true); err != nil || !d.Granted {
+		t.Fatalf("grant: %#v %v", d, err)
+	}
+	path := filepath.Join(s.dir, testBucket, "controller.json")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	q := s.Queue(testBucket, b, "timed-out", Background, testOwner, Owner{}, false)
+	defer q.Close()
+	if d, err := q.TryAfterMaxWait(ctx); err != nil || !d.Granted || d.Warning != "admission_state_write_failed" {
+		t.Fatalf("max wait: %#v %v", d, err)
+	}
+	status, err := s.Status(ctx, testBucket, b)
+	if err != nil || status.InUse != 2 || status.OverWindow != 1 {
+		t.Fatalf("extra lease was not counted: %#v %v", status, err)
+	}
+}
+
 func TestExternalLeaseOwnerIdentityAndExpiry(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
