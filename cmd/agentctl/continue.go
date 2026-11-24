@@ -414,6 +414,7 @@ func (a *app) continuePrepared(ctx context.Context, renderer output.Renderer, c 
 		delegation: binding, supersedes: []ids.ExecutionID{id}, mutationOverride: &mutation, admissionReused: &admissionReused, admissionRecorded: &admissionRecorded}
 	if opts.automaticRecovery {
 		run.retryOf = &id
+		run.recoveryLaunched = opts.recoveryLaunched
 	}
 	if opts.continuationMode == "native" {
 		run.resumeSession = session

@@ -32,6 +32,7 @@ type delegateOptions struct {
 	caller                                  *model.ExecutionCaller
 	detachedReceipt                         bool
 	automaticRecovery                       bool
+	recoveryLaunched                        *bool
 	continuationMode                        string
 	requestFile, promptFile, cwd, authority string
 	promptStdin, plan, wait, contentOnly    bool

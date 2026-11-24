@@ -10,7 +10,7 @@ import (
 
 // parkNativeFailure never replays prompts or tool calls. The caller has reaped
 // the native child; the original recipe and checkpoint stay on this execution.
-func (a *app) parkNativeFailure(journal *store.Journal, execution model.Execution, result adapter.Result) (model.Execution, bool, error) {
+func (a *app) parkNativeFailure(c common, journal *store.Journal, execution model.Execution, result adapter.Result) (model.Execution, bool, error) {
 	if execution.Authority != model.AuthorityNative || execution.Delegation == nil || result.State != adapter.StateFailed ||
 		(execution.Adapter != "codex" && execution.Adapter != "zcode" && execution.Adapter != "opencode") {
 		return execution, false, nil
@@ -38,6 +38,9 @@ func (a *app) parkNativeFailure(journal *store.Journal, execution model.Executio
 	execution.UpdatedAt = now
 	execution.Observation = model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: now}
 	execution.RecordProgress(now)
+	if execution.Adapter == "opencode" && openCodeCapacityFailure(result) {
+		execution = a.checkChildExit(context.Background(), c, journal, execution, now)
+	}
 	event, canonical, err := syntheticEvent(execution, model.EventAttention, execution.State,
 		map[string]any{"reason": state, "failure": failure, "recovery": "explicit_native_continue", "native_process_exited": true}, state, now)
 	if err != nil {

@@ -282,7 +282,7 @@ meaning.
   nonzero exit or timeout fails closed as `continue_opencode_session_unverified`.
   Plans probe the version but do not export history. Concurrent external deletion
   between this check and launch is outside agentctl's control.
-- Known-session network failures and capacity failures with automatic retry disabled park as
+- Known-session network failures and capacity failures that have no eligible automatic retry park as
   `attention`/`blocked` with `paused_network`/`paused_capacity` after client exit.
   Same-key replay never relaunches. Use a new-key `continue` instruction to
   inspect native history, reconcile prior tool effects, and return the previous

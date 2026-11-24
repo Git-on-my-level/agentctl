@@ -224,6 +224,12 @@ an additional 30-minute maximum. Its own execution can be cancelled normally.
 The original parent stays terminal; await/result do not silently redirect to the
 automatic successor. Read `child_exit_guard.continuation_id` to collect that turn.
 
+For a parent with outstanding children, `opencode_recovery_pending` records
+that a scheduled OpenCode recovery will own the next turn.
+`opencode_recovery_suppressed` records that the structured 429 prevented a
+child-collection turn, including when the parent parks for explicit recovery.
+The child snapshot and collection actions remain available in either state.
+
 | Harness / authority | Automatic action after an eligible exited turn with outstanding children |
 | --- | --- |
 | Codex, Cursor, Claude Code, OMP | One native continuation when the recorded recipe and session meet the existing exact-invocation route. Expert `run` without a frozen delegation recipe is flagged only. |

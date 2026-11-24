@@ -16,6 +16,7 @@ import (
 
 const (
 	openCodeRecoveryAdmissionBudget = time.Minute
+	openCodeRecoveryMaxBackoff      = time.Hour
 	openCodeRateLimitInstruction    = "Inspect the session history. If the task already finished, return its final answer. Otherwise reconcile any previous tool effects, then continue the task and return the required final answer."
 	openCodeFinalAnswerInstruction  = "Your last turn ended without a final answer. Reply now with only your final answer in the required format."
 )
@@ -36,9 +37,8 @@ func (a *app) runNativeRecovering(ctx context.Context, renderer output.Renderer,
 }
 
 // planOpenCodeRecovery runs only for a reaped child and returns a schedule to
-// commit atomically with the physical outcome. The second result means a
-// structured 429 has reached the automatic path, so exhaustion is a failure
-// instead of a new indefinite capacity park.
+// commit atomically with the physical outcome. The second result selects the
+// automatic path for a scheduled 429. Other eligible 429s park for recovery.
 func (a *app) planOpenCodeRecovery(c common, journal *store.Journal, source model.Execution, result adapter.Result) (*model.OpenCodeRecovery, bool) {
 	if source.Authority != model.AuthorityNative || source.Adapter != "opencode" || result.State != adapter.StateFailed ||
 		source.Delegation == nil || source.Delegation.NativePlan == nil || !verifiedOpenCodeExecution(source) ||
@@ -73,23 +73,34 @@ func (a *app) planOpenCodeRecovery(c common, journal *store.Journal, source mode
 			break
 		}
 	}
-	for _, previous := range lineage {
-		if r := previous.OpenCodeRecovery; r != nil && r.Kind == kind && nativeSessionID(previous) == nativeSessionID(source) {
-			attempt++
+	admitted := make(map[ids.ExecutionID]ids.ExecutionID)
+	for _, successor := range lineage {
+		if successor.RetryOf != nil {
+			admitted[*successor.RetryOf] = successor.ID
 		}
+	}
+	for _, previous := range lineage {
+		r := previous.OpenCodeRecovery
+		if r == nil || r.Kind != kind || nativeSessionID(previous) != nativeSessionID(source) {
+			continue
+		}
+		if autoCapacity && (previous.SupersededBy == nil || admitted[previous.ID] != *previous.SupersededBy) {
+			continue
+		}
+		attempt++
 	}
 	now := a.now().UTC()
 	notBefore := now
 	if autoCapacity {
 		if attempt > model.OpenCodeRetryLimit {
-			return nil, true
+			return nil, false
 		}
 		retryAfter, _ := nativeMetadataInt(result.Data["retry_after_ms"])
 		retryAfter = openCodeRetryFloorMS(retryAfter, source.RateLimit, now)
 		// A longer provider embargo is outside this short quota recovery
 		// path. Never schedule an earlier retry by truncating the embargo.
-		if retryAfter > time.Hour.Milliseconds() {
-			return nil, true
+		if retryAfter > openCodeRecoveryMaxBackoff.Milliseconds() {
+			return nil, false
 		}
 		delay := a.openCodeRecoveryDelay
 		if delay == nil {
@@ -97,7 +108,11 @@ func (a *app) planOpenCodeRecovery(c common, journal *store.Journal, source mode
 				return openCodeBackoff(attempt, retryAfterMS, rand.N)
 			}
 		}
-		notBefore = now.Add(delay(attempt, retryAfter))
+		wait := delay(attempt, retryAfter)
+		if wait > openCodeRecoveryMaxBackoff {
+			return nil, false
+		}
+		notBefore = now.Add(wait)
 	} else if attempt > 1 {
 		return nil, false
 	}
@@ -106,7 +121,7 @@ func (a *app) planOpenCodeRecovery(c common, journal *store.Journal, source mode
 		expires = *source.DeadlineAt
 	}
 	if !expires.After(notBefore) {
-		return nil, autoCapacity
+		return nil, false
 	}
 	return &model.OpenCodeRecovery{Kind: kind, Attempt: attempt, NotBefore: notBefore, ExpiresAt: expires}, autoCapacity
 }
@@ -161,7 +176,8 @@ func (a *app) runOpenCodeRecovery(ctx context.Context, c common, source model.Ex
 		ctx, cancel = context.WithDeadline(ctx, *source.DeadlineAt)
 		defer cancel()
 	}
-	defer a.closeOpenCodeRecovery(c, source.ID)
+	diagnostic := ""
+	defer func() { a.closeOpenCodeRecovery(c, source.ID, diagnostic) }()
 	if !a.waitOpenCodeRecovery(ctx, c, source) {
 		return
 	}
@@ -176,10 +192,28 @@ func (a *app) runOpenCodeRecovery(ctx context.Context, c common, source model.Ex
 	}
 	bytes := []byte(instruction)
 	prompt := &promptPayload{Bytes: bytes, Digest: sha256Digest(bytes), Source: "opencode_recovery"}
-	opts := delegateOptions{authority: "native", continuationMode: "native", automaticRecovery: true}
+	launched := false
+	opts := delegateOptions{authority: "native", continuationMode: "native", automaticRecovery: true, recoveryLaunched: &launched}
 	// A preflight refusal leaves the persisted physical failure as the result.
 	// Once admitted, even a failed or cancelled successor is the next outcome.
-	_ = a.continuePrepared(ctx, output.Renderer{Mode: output.JSON, Writer: io.Discard}, c, source.ID, key, opts, prompt, nil)
+	problem := a.continuePrepared(ctx, output.Renderer{Mode: output.JSON, Writer: io.Discard}, c, source.ID, key, opts, prompt, nil)
+	if problem != nil && !launched {
+		diagnostic = openCodeRecoveryLaunchDiagnostic(problem)
+	}
+}
+
+func openCodeRecoveryLaunchDiagnostic(problem *output.Error) string {
+	if problem.Details["diagnostic_code"] == "continue_opencode_session_unverified" {
+		return model.OpenCodeRecoverySessionUnverified
+	}
+	switch problem.Code {
+	case output.CodeTimeout:
+		return model.OpenCodeRecoveryLaunchTimeout
+	case output.CodeExecutionCancelled:
+		return model.OpenCodeRecoveryLaunchCancelled
+	default:
+		return model.OpenCodeRecoveryLaunchFailed
+	}
 }
 
 func (a *app) waitOpenCodeRecovery(ctx context.Context, c common, source model.Execution) bool {
@@ -224,12 +258,16 @@ func (a *app) claimOpenCodeRecovery(ctx context.Context, c common, id ids.Execut
 		return false
 	}
 	r.Claimed = true
+	r.ExpiresAt = now.Add(openCodeRecoveryAdmissionBudget)
+	if current.DeadlineAt != nil && current.DeadlineAt.Before(r.ExpiresAt) {
+		r.ExpiresAt = *current.DeadlineAt
+	}
 	current.UpdatedAt = now
 	_, err := journal.UpdateExecution(ctx, current, current.Revision)
 	return err == nil
 }
 
-func (a *app) closeOpenCodeRecovery(c common, id ids.ExecutionID) {
+func (a *app) closeOpenCodeRecovery(c common, id ids.ExecutionID, diagnostic string) {
 	// Expiry is the fallback when cleanup cannot reach the journal.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -238,7 +276,16 @@ func (a *app) closeOpenCodeRecovery(c common, id ids.ExecutionID) {
 		return
 	}
 	defer journal.Close()
-	_, _ = stopOpenCodeRecovery(ctx, journal, current, a.now().UTC())
+	now := a.now().UTC()
+	if r := current.OpenCodeRecovery; diagnostic != "" && r != nil && r.Claimed && !r.Closed {
+		// Keep the refusal on the claimed turn even when the admission expired
+		// or a successor was journaled before the native launch failed.
+		r.Closed, r.Diagnostic = true, diagnostic
+		current.UpdatedAt = now
+		_, _ = journal.UpdateExecution(ctx, current, current.Revision)
+		return
+	}
+	_, _ = stopOpenCodeRecovery(ctx, journal, current, now)
 }
 
 func stopOpenCodeRecovery(ctx context.Context, journal *store.Journal, current model.Execution, now time.Time) (model.Execution, error) {
@@ -259,6 +306,7 @@ func (a *app) followOpenCodeRecovery(ctx context.Context, journal *store.Journal
 	}
 	active := original
 	chain := []ids.ExecutionID{original.ID}
+	var prelaunchFailure *model.OpenCodeRecovery
 	for active.OpenCodeRecovery != nil && active.SupersededBy != nil {
 		next, err := journal.GetExecution(ctx, *active.SupersededBy)
 		if err != nil {
@@ -270,10 +318,16 @@ func (a *app) followOpenCodeRecovery(ctx context.Context, journal *store.Journal
 		if len(chain) >= model.OpenCodeRetryLimit+2 {
 			return model.Execution{}, "", fmt.Errorf("%w: OpenCode recovery chain exceeds its turn limit", store.ErrCorrupt)
 		}
+		if active.OpenCodeRecovery.Diagnostic != "" {
+			prelaunchFailure = active.OpenCodeRecovery
+		}
 		active = next
 		chain = append(chain, active.ID)
 	}
 	physical := active.ID
+	if active.OpenCodeRecovery == nil && active.State.Terminal() {
+		active.OpenCodeRecovery = prelaunchFailure
+	}
 	if active.RetryOf != nil && active.State == model.StateStarting && len(active.SourceBindings) == 0 && active.OwnerLaunch != nil {
 		owner := active.OwnerLaunch
 		if a.proveProcess(processIdentity{PID: owner.PID, StartedAt: owner.StartedAt, StartTicks: owner.StartTicks,

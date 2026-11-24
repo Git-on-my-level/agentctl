@@ -33,6 +33,7 @@ import (
 type runOptions struct {
 	automaticContinuationOf *ids.ExecutionID
 	retryOf                 *ids.ExecutionID
+	recoveryLaunched        *bool
 	scheduledRecovery       *model.Execution
 	collectionWaiter        bool
 	detachNative            bool
@@ -428,6 +429,9 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		a.anxRegisterTerminal(c, failed.ID)
 		return mapAdapterError("launch failed", err).WithDetail("execution_id", failed.ID.String())
 	}
+	if opts.recoveryLaunched != nil {
+		*opts.recoveryLaunched = true
+	}
 	// Native launches are same-process owned. Any return path must reap the
 	// child, including journal or renderer failures, so foreground fan-out and
 	// lock contention cannot leak a process group.
@@ -550,7 +554,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 					current.OpenCodeRecovery, autoCapacity = a.planOpenCodeRecovery(c, writeJournal, current, result)
 				}
 				if !autoCapacity {
-					parked, didPark, parkErr := a.parkNativeFailure(writeJournal, current, result)
+					parked, didPark, parkErr := a.parkNativeFailure(c, writeJournal, current, result)
 					if parkErr != nil || didPark {
 						writeJournal.Close()
 						if parkErr != nil {
@@ -2165,7 +2169,7 @@ func (a *app) finalizeResult(ctx context.Context, c common, journal *store.Journ
 		execution.Adapter == "opencode" && openCodeCapacityFailure(result) {
 		// Keep the outstanding-child receipt without sending another prompt
 		// when backoff, the retry cap, or the deadline ruled out recovery.
-		guard.AutoContinue = "parent_not_completed"
+		guard.AutoContinue = model.ChildExitOpenCodeRecoverySuppressed
 	}
 	outcome := buildOutcome(execution, result, now, noStoreResult)
 	outcome.ChildExitRecheck = execution.ChildExitRecheck

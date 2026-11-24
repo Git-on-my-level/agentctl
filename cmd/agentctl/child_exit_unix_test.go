@@ -141,8 +141,12 @@ esac` + "\n"
 			if parent.ChildExitGuard == nil || len(parent.UncollectedChildren) != 1 {
 				t.Fatalf("parent guard=%+v children=%+v output=%s", parent.ChildExitGuard, parent.UncollectedChildren, out)
 			}
-			if variant == "opencode_throttled_deadline" && (parent.State != model.StateFailed || parent.OpenCodeRecovery != nil || parent.ChildExitGuard.AutoContinue != "parent_not_completed") {
-				t.Fatalf("child collection bypassed 429 backoff: %+v", parent.ChildExitGuard)
+			if variant == "opencode_throttled_deadline" {
+				if !parent.NativeRecoveryParked() || *parent.SourceState != "paused_capacity" || parent.OpenCodeRecovery != nil ||
+					parent.ChildExitGuard.AutoContinue != model.ChildExitOpenCodeRecoverySuppressed || len(auto) != 0 {
+					t.Fatalf("child collection bypassed 429 backoff: %+v", parent.ChildExitGuard)
+				}
+				return
 			}
 			outcome, err := j.GetOutcome(context.Background(), parent.ID)
 			if err != nil || len(outcome.UncollectedChildren) != 1 {

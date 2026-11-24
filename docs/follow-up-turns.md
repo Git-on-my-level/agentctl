@@ -126,19 +126,23 @@ instruction.
   delay is the greatest of the provider's retry-after, any remaining wait
   until its absolute retry time, and 60 seconds, plus
   jitter of up to that base. Later attempts double the base delay per attempt.
-  A retry-after over one hour leaves the failure for explicit recovery.
+  The limit counts admitted retries. An exhausted limit, a provider retry hint
+  or computed delay over one hour, or insufficient time before the deadline
+  parks the session as `paused_capacity` (exit 10) for explicit recovery.
 - A stopped turn without assistant text (`empty_terminal_result`) gets one
   follow-up per lineage, asking for the final answer in the required format.
 - Both paths claim the schedule before launch, use distinct deterministic
   continuation keys, and link each admitted successor with `retry_of`,
   `supersedes` and `superseded_by`. No prompt or native export is journaled.
   The original execution deadline covers backoff and all resumed turns.
-- `delegate --wait`, `await`, `status` and single-ID `result` keep the requested
+- `delegate --wait`, `await`, `await-any`, `status` and single-ID `result` keep the requested
   logical ID and follow automatic successors. JSON reports `recovery_chain` in
   order from the original ID through the current attempt. Exact `--content`
   returns the final text. While backoff or preflight is pending, status reports
   `waiting`, await keeps waiting and result directs callers to await.
-  A terminal failure still exits 11 from `delegate --wait` and `await`.
+  `await-any` skips pending turns and label selectors match each recovery
+  lineage once. Terminal failures exit 11 and parked turns return attention
+  with exit 10.
   After delivery, collection acknowledges the recovered turns and the
   terminal result. Bulk result collection reports the logical execution once
   and skips it during backoff. Events still describe their physical turns. A new
@@ -147,9 +151,11 @@ instruction.
 - Cancel closes a pending retry and preserves the observed failure. After
   admission, cancel addresses the active successor. Same-key replay only
   observes the existing chain. If the owner disappears before admitting a
-  successor, the claim expires no later than one minute after backoff and
-  callers can collect the physical failure. A refused preflight also exposes
-  the physical failure. Neither starts an unverified session.
+  successor, an unclaimed schedule expires one minute after backoff.
+  Claiming starts a fresh one-minute admission budget, capped by the original
+  deadline. A claim that cannot start the native process leaves a bounded
+  `opencode_recovery.diagnostic` on its journal record. Callers can collect the
+  recorded failure or continue explicitly from a verified checkpoint.
 
 Set `profiles.<name>.delegation.opencode_rate_limit_retry` or
 `profiles.<name>.delegation.opencode_final_answer_followup` to `false` to

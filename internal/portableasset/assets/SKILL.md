@@ -417,14 +417,15 @@ answer if already complete; do not repeat completed work. `await` does not
 reconnect to the background service. Process-interruption steering is unavailable.
 
 Eligible OpenCode delegates automatically resume a structured HTTP 429 up to
-three times per lineage with growing jittered backoff, or send one follow-up
+three admitted times per lineage with growing jittered backoff of at most one hour, or send one follow-up
 when a stopped turn has no final text. The owner waits for the child to exit
 and keeps the same native session and model. Use the original ID with
-`delegate --wait`, `await`, `status` or `result`; JSON reports the ordered
+`delegate --wait`, `await`, `await-any`, `status` or `result`; JSON reports the ordered
 `recovery_chain`, and `--content` returns the final answer. Pending recovery
 shows up as waiting. New `continue` turns can use the same logical ID.
-Same-key replay observes that chain. Terminal failure
-still exits 11. Set `delegation.opencode_rate_limit_retry` or
+Same-key replay observes that chain. An eligible 429 parks with exit 10 when
+the cap, backoff or deadline prevents another automatic retry. Terminal
+failures exit 11. Set `delegation.opencode_rate_limit_retry` or
 `delegation.opencode_final_answer_followup` to false to turn off either path.
 
 For a harness with no verified resume route, choose an explicit carry-forward
@@ -659,7 +660,9 @@ lowercase `[a-z0-9_.-]`, never `/`; for example `two-lane.<lane>` or
 `card-<handle>`) and wake on the first one with
 `await-any --label-prefix <prefix> --timeout <duration>`; it exits like `await`
 (0, 9, 10, 11, 12, 13), names the execution in `execution_id` and
-`matched_kind`, and acknowledges only that execution locally. Remote forwarding
+`matched_kind`, and acknowledges that logical execution and its recovered
+turns locally. It skips pending OpenCode recovery, and a label selector
+matches the logical execution once. Remote forwarding
 rows are polled over SSH after closing the journal: at most 8 concurrent
 probes, 3s per probe, and 4s per remote status scan (plus up to 2s SSH pipe
 cleanup), bounded by the wait deadline. Budget-limited scans resume interrupted rows before the remaining

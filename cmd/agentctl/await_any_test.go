@@ -101,7 +101,7 @@ func TestAwaitAnyConflictTriggerTimestamps(t *testing.T) {
 	} {
 		t.Run(item.name, func(t *testing.T) {
 			e := model.Execution{State: model.StateCompleted, UpdatedAt: updated, Observation: model.Observation{Integrity: model.IntegrityConflicted, ObservedAt: item.at}}
-			match, ok, problem := awaitAnyClassify(context.Background(), nil, awaitAnyOptions{kinds: map[string]bool{awaitAnyKindAttention: true}, since: item.since}, e, false, store.AcknowledgementIndex{})
+			match, ok, problem := awaitAnyClassify(context.Background(), nil, awaitAnyOptions{kinds: map[string]bool{awaitAnyKindAttention: true}, since: item.since}, awaitAnyCandidate{e, e.ID}, false, store.AcknowledgementIndex{})
 			if problem != nil || ok != item.match || ok && !match.triggerAt.Equal(item.trigger) {
 				t.Fatalf("trigger=%s ok=%v error=%v", match.triggerAt, ok, problem)
 			}

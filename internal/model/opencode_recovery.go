@@ -14,6 +14,13 @@ const (
 	OpenCodeRetryLimit                       = 3
 )
 
+const (
+	OpenCodeRecoverySessionUnverified = "opencode_recovery_session_unverified"
+	OpenCodeRecoveryLaunchTimeout     = "opencode_recovery_launch_timeout"
+	OpenCodeRecoveryLaunchCancelled   = "opencode_recovery_launch_cancelled"
+	OpenCodeRecoveryLaunchFailed      = "opencode_recovery_launch_failed"
+)
+
 func (k OpenCodeRecoveryKind) validAttempt(n int) bool {
 	return k == OpenCodeRateLimit && n >= 1 && n <= OpenCodeRetryLimit ||
 		k == OpenCodeFinalAnswer && n == 1
@@ -23,12 +30,24 @@ func (k OpenCodeRecoveryKind) validAttempt(n int) bool {
 // Claiming it does not mean a prompt was sent. The journal links the successor
 // at admission, and an expired or closed claim can never admit a successor.
 type OpenCodeRecovery struct {
-	Kind      OpenCodeRecoveryKind `json:"kind"`
-	Attempt   int                  `json:"attempt"`
-	NotBefore time.Time            `json:"not_before"`
-	ExpiresAt time.Time            `json:"expires_at"`
-	Claimed   bool                 `json:"claimed"`
-	Closed    bool                 `json:"closed"`
+	Kind       OpenCodeRecoveryKind `json:"kind"`
+	Attempt    int                  `json:"attempt"`
+	NotBefore  time.Time            `json:"not_before"`
+	ExpiresAt  time.Time            `json:"expires_at"`
+	Claimed    bool                 `json:"claimed"`
+	Closed     bool                 `json:"closed"`
+	Diagnostic string               `json:"diagnostic,omitempty"`
+}
+
+func (r OpenCodeRecovery) validDiagnostic() bool {
+	switch r.Diagnostic {
+	case "":
+		return true
+	case OpenCodeRecoverySessionUnverified, OpenCodeRecoveryLaunchTimeout, OpenCodeRecoveryLaunchCancelled, OpenCodeRecoveryLaunchFailed:
+		return r.Claimed && r.Closed
+	default:
+		return false
+	}
 }
 
 func (e Execution) OpenCodeRecoveryPending(now time.Time) bool {

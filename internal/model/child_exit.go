@@ -29,6 +29,11 @@ type ChildExitGuard struct {
 	ContinuationID *ids.ExecutionID `json:"continuation_id,omitempty"`
 }
 
+const (
+	ChildExitOpenCodeRecoveryPending    = "opencode_recovery_pending"
+	ChildExitOpenCodeRecoverySuppressed = "opencode_recovery_suppressed"
+)
+
 func validateUncollectedChildren(children []UncollectedChild) error {
 	if len(children) > 200 {
 		return errors.New("uncollected children exceed bound")
@@ -58,7 +63,8 @@ func (g ChildExitGuard) Validate() error {
 		return errors.New("invalid child exit guard")
 	}
 	switch g.AutoContinue {
-	case "pending", "attempted", "launched", "failed", "disabled", "unavailable", "parent_not_completed", "parent_interrupted", "suppressed_recursive":
+	case "pending", "attempted", "launched", "failed", "disabled", "unavailable", "parent_not_completed", "parent_interrupted", "suppressed_recursive",
+		ChildExitOpenCodeRecoveryPending, ChildExitOpenCodeRecoverySuppressed:
 	default:
 		return errors.New("invalid child exit continuation state")
 	}

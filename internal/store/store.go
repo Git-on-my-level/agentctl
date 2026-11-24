@@ -575,7 +575,9 @@ func validateEventProjection(event model.Event, canonicalProjection []byte) erro
 	if err := model.ValidateBoundedMetadata(projectionValue, 64*1024); err != nil {
 		return fmt.Errorf("%w: canonical semantic projection: %v", ErrEventValidation, err)
 	}
-	expectedKey, normalizedProjection, err := callback.SemanticDedupeKey(event.Adapter, uint32(event.DedupeVersion), projectionValue)
+	// Keep integer metadata exact when checking the original canonical bytes.
+	// Decoding into interface{} first would recanonicalize large integers as floats.
+	expectedKey, normalizedProjection, err := callback.SemanticDedupeKey(event.Adapter, uint32(event.DedupeVersion), json.RawMessage(canonicalProjection))
 	if err != nil {
 		return fmt.Errorf("%w: canonical semantic projection: %v", ErrEventValidation, err)
 	}

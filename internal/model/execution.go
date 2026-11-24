@@ -630,7 +630,7 @@ func (e Execution) Validate() error {
 	}
 	if r := e.OpenCodeRecovery; r != nil {
 		if e.Adapter != "opencode" || e.Authority != AuthorityNative || e.State != StateFailed ||
-			!r.Kind.validAttempt(r.Attempt) || r.NotBefore.IsZero() || !r.ExpiresAt.After(r.NotBefore) {
+			!r.Kind.validAttempt(r.Attempt) || !r.validDiagnostic() || r.NotBefore.IsZero() || !r.ExpiresAt.After(r.NotBefore) {
 			return errors.New("invalid OpenCode recovery schedule")
 		}
 	}
