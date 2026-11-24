@@ -469,8 +469,8 @@ levels come from matching bundled `config.modelConfigRules.modelRules` entries'
 match the whole ID without case sensitivity; later matching rules override earlier
 ones. No supported-level list is hardcoded. Unreadable metadata, no matching rule,
 or an absent, empty or malformed final list makes effort unknown and cannot satisfy
-a required effort. The reader covers the launcher's reviewed GLM-5.3 and Flash
-model IDs; other selected models and unlisted levels are unknown. The base honors an inherited
+a required effort. The reader covers the launcher's reviewed GLM-5.3, Flash, and
+GLM-5.4 model IDs; other selected models and unlisted levels are unknown. The base honors an inherited
 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`; named profiles override it, and read-only
 launches ignore it, matching the isolated adapter. Bundled metadata follows
 `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` or the `ZCODE_APP` bundle path; read-only
