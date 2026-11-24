@@ -12,16 +12,18 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/output"
 )
 
+const openCodeSessionVerificationTimeout = 20 * time.Second
+
 func verifiedOpenCodeExecution(execution model.Execution) bool {
 	version := execution.Capabilities.BackendVersion
 	return version != nil && adapter.OpenCodeResumeVersionSupported(*version)
 }
 
 // Export is a native existence check, not an imported conversation. OpenCode
-// 2.2.6 exits nonzero for missing sessions, whereas run --session creates them.
+// 2.2.6 and 2.3.2 exit nonzero for missing sessions, whereas run --session creates them.
 // Never run this during a plan, capture its transcript, or expose native errors.
 func verifyOpenCodeSession(ctx context.Context, opts runOptions) *output.Error {
-	checkCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	checkCtx, cancel := context.WithTimeout(ctx, openCodeSessionVerificationTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, opts.argv[0], "session", "export", "--sanitize", "--", opts.resumeSession)
 	cmd.Dir = opts.cwd

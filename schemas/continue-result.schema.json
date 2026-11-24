@@ -20,6 +20,8 @@
     "auto_continuation_of": {"$ref": "execution.schema.json#/properties/id"},
     "remote": {"$ref": "delegate-result.schema.json#/properties/remote"},
     "transport": {"$ref": "delegate-result.schema.json#/properties/transport"},
+    "deadline_at": {"type": "string", "format": "date-time"},
+    "admission": {"$ref": "execution.schema.json#/$defs/provider_admission"},
     "capacity": {"$ref": "delegate-result.schema.json#/properties/capacity"},
     "launch_status": {"$ref": "delegate-result.schema.json#/properties/launch_status"},
     "continues": {
@@ -70,6 +72,7 @@
       "type": "object",
       "description": "Plan only. The native session id in argv is replaced by <native-session>. Devin ACP uses the internal --agentctl-acp-session descriptor, stripped before exec and mapped to session/load only when loadSession is advertised. --agentctl-acp-config descriptors stay on the argv, so the loaded session is verified again."
     },
+    "recovery_chain": {"$ref": "execution.schema.json#/properties/recovery_chain"},
     "outcome": {
       "$ref": "outcome.schema.json"
     },

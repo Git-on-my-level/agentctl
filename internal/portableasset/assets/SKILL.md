@@ -292,6 +292,31 @@ payloads are skipped. The local process gets a fresh session key at launch. A su
 version probe does not prove provider authentication; inspect the run result
 for CLI errors. Gateway-backed `acp` is outside this adapter.
 
+### OpenCode provider admission
+
+- Run `agentctl admission match --harness opencode --model MODEL` to discover a
+  configured bucket. An enabled bucket covers native delegate, continue, expert
+  run, and fanout by exact recipe model. Set
+  `AGENTCTL_ADMISSION_PRIORITY=interactive` on the invoking agentctl to put an
+  interactive launch ahead of background FIFO work. Priority is caller
+  metadata and is stripped from native children.
+- A plan reports admission without reserving a slot. `status` and `recent`
+  report `admission.phase=queued` and queue position. A detached receipt can
+  report `launch_status=queued`. Collect with `await` or cancel with `cancel`.
+  Execution timeout starts at grant. At `max_wait`, native work receives a
+  counted over-window lease and a warning. A broken slot sidecar permits an
+  uncounted launch with a warning. Reuse the execution ID and request key on
+  replay.
+- External launchers share the same journal directory and bucket. Call
+  `admission acquire --bucket B --holder ID --pid OWNER_PID --no-wait` before
+  claiming, check `result.granted`, and release on claim failure or completion.
+  Use a stable holder for retries while the owner PID is alive. Feed
+  `admission observe --bucket B --attempts N --throttled M --idempotency-key ID`
+  with a stable key per batch. Replay the same inputs within one hour to
+  recover the receipt as `duplicate: true`.
+  `admission status [--bucket B]` is read-only. Add `--format prom` for
+  Prometheus text. See `agentctl help admission` and `schema show admission-result`.
+
 ## Expert native path
 
 `run` is for an exact argv you already decided. It does not apply delegate
@@ -404,14 +429,14 @@ recorded native checkpoint park as `attention`/`blocked`, with source state
 exits 10 with `retryable=true`; same-key replay returns the pause without
 relaunching. Inspect events, reconcile already-applied tool effects, then plan
 `continue` from the latest parked turn with a new key and recovery instruction.
-There is no automatic prompt/tool replay or provider switch. Missing checkpoints,
+A parked turn requires a new-key continuation. Missing checkpoints,
 unknown errors, authentication and quota failures are not parked. Cancel can
 close an idle parked execution locally. ZCode coding-session continuation is
 verified only for CLI 0.17.0; its disposable read_only session storage cannot
 resume. ZCode process-interruption steering remains unavailable. Carry-forward
 still requires a completed turn with a verified stored answer. OpenCode recovery
 uses only the recorded session and frozen recipe; both recorded and current
-CLI versions must be 2.2.6. Before sending the prompt, actual continuation checks
+CLI versions must be 2.2.6 or 2.3.2. Before sending the prompt, actual continuation checks
 existence through a bounded native `session export --sanitize` with both streams
 discarded. Missing or unprovable sessions refuse; plans do not export history.
 External deletion racing the check and launch remains outside agentctl's control.
@@ -419,6 +444,22 @@ Its background turn may finish
 after client transport loss: inspect native history and return the prior final
 answer if already complete; do not repeat completed work. `await` does not
 reconnect to the background service. Process-interruption steering is unavailable.
+
+Eligible OpenCode delegates automatically resume a structured HTTP 429 up to
+three admitted times per lineage with growing jittered backoff of at most one hour, or send one follow-up
+when a stopped turn has no final text. The owner waits for the child to exit
+and keeps the same native session and model. Use the original ID with
+`delegate --wait`, `await`, `await-any`, `status` or `result`; JSON reports the ordered
+`recovery_chain`, and `--content` returns the final answer. Pending recovery
+shows up as waiting. New `continue` turns can use the same logical ID.
+Same-key replay observes that chain. An eligible 429 parks with exit 10 when
+the cap, backoff or deadline prevents another automatic retry. When the
+provider retry time is known, wait until `rate_limit.next_retry_at` before
+launching a native `continue`. Plans remain available while parked. An
+automatic recovery claim gives the owner up to one minute to acquire a provider
+slot and start the successor, bounded by the original deadline. Terminal
+failures exit 11. Set `delegation.opencode_rate_limit_retry` or
+`delegation.opencode_final_answer_followup` to false to turn off either path.
 
 For a harness with no verified resume route, choose an explicit carry-forward
 round. The same choice is available for resumable harnesses when a fresh session
@@ -513,7 +554,7 @@ Native owners flag outstanding children on terminal execution/outcome with
 `uncollected_children`, exact `collect_argv`, and a warning. Completed parents
 with a frozen recipe and verified native resume route receive one automatic
 collection turn using ordinary keyed `continue` admission. The successor carries
-`auto_continuation_of`, preventing recursive automatic turns. OpenCode 2.2.6 may use #150's verified background-service recipe with version
+`auto_continuation_of`, preventing recursive automatic turns. OpenCode 2.2.6 and 2.3.2 may use #150's verified background-service recipe with version
 and session-existence checks; other non-resumable routes stay flagged in `inbox`. Hermes remains
 unverified and Devin ACP must advertise session loading. Cancelled/timed-out
 parents never auto-continue; childless runs do not change. A profile's
@@ -615,12 +656,14 @@ do not establish completion. Do not auto-acknowledge or infer failure.
 `agentctl reconcile` is the explicit journal repair. Read `help reconcile`,
 then `--plan` before `--apply --plan-digest`. `--plan` writes nothing and
 returns `plan_digest` over the candidate ids, actions, and proofs. Apply
-writes nothing if that digest no longer matches, then proves each row again
-before writing. It orphans a native execution only when the launcher-recorded
-PID is provably gone and the last observation is older than `--stale-after`.
-A numeric session id is not a PID. `journal_host_match` is the journal's stored
-host id, not a machine fingerprint. The state is `orphaned` with `owner_lost`:
-the outcome is unknown, not success or failure. Rows with no launch record stay
+writes nothing if that digest no longer matches, then rechecks each row before
+writing. A launcher-recorded PID that is provably gone after `--stale-after`
+produces an `orphaned` execution with `owner_lost`. A provider queue with no
+owner or launch identity can expire after its observation freshness window plus
+10 seconds. Unclaimed detached reservations also get the maximum journal retry
+budget plus bounded preflight time. Recovery records `orphaned` with
+`admission_owner_lease_expired` and heartbeat evidence. A numeric session id is not a PID. `journal_host_match`
+compares the journal's stored host id. Other rows without a launch record stay
 `ownership_unproven` unless `--include-legacy-unproven` is set. Eligible rows
 are native, match the journal host, and are older than `--legacy-stale-after`
 (default 168h, minimum 72h). They are listed under `legacy_orphan` with evidence
@@ -652,7 +695,9 @@ lowercase `[a-z0-9_.-]`, never `/`; for example `two-lane.<lane>` or
 `card-<handle>`) and wake on the first one with
 `await-any --label-prefix <prefix> --timeout <duration>`; it exits like `await`
 (0, 9, 10, 11, 12, 13), names the execution in `execution_id` and
-`matched_kind`, and acknowledges only that execution locally. Remote forwarding
+`matched_kind`, and acknowledges that logical execution and its recovered
+turns locally. It skips pending OpenCode recovery, and a label selector
+matches the logical execution once. Remote forwarding
 rows are polled over SSH after closing the journal: at most 8 concurrent
 probes, 3s per probe, and 4s per remote status scan (plus up to 2s SSH pipe
 cleanup), bounded by the wait deadline. Budget-limited scans resume interrupted rows before the remaining
@@ -742,7 +787,8 @@ at most 200 characters, native code) to status, result, and a failed
 ZCode provider code `1308` and parsed HTTP `responseStatus: 429` qualify and may
 include the provider reset time. OpenCode's structured numeric `error.status: 429`
 also qualifies and records attempt/delay/provider-type metadata on `rate_limit`
-in `status` and `await` outcome details. A bare native/provider code `429` is not HTTP
+in `status` and `await` outcome details. Its failure message identifies HTTP
+429 and advises waiting before retrying with the same model. A bare native/provider code `429` is not HTTP
 evidence. Authentication is classified before capacity; generic usage-limit,
 quota and rate-limit wording is `quota_exceeded`. Raw stderr transcripts and
 request/trace identifiers are not stored. Explicit `result` is the supported

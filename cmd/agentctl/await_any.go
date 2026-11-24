@@ -41,8 +41,14 @@ type awaitAnyOptions struct {
 
 type awaitAnyMatch struct {
 	execution model.Execution
+	physical  ids.ExecutionID
 	kind      string
 	triggerAt time.Time
+}
+
+type awaitAnyCandidate struct {
+	execution model.Execution
+	physical  ids.ExecutionID
 }
 
 type awaitAnyRemoteScan struct {
@@ -388,18 +394,22 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 			return output.NewError(output.CodeUsage, "await-any label prefix matches too many executions; narrow the prefix or use explicit IDs", false).
 				WithDetail("label_prefix", options.labelPrefix).WithDetail("candidate_limit", awaitAnyMaxExecutions)
 		}
-		var index store.AcknowledgementIndex
-		if skipReconciled && options.kinds[awaitAnyKindTerminal] {
-			var err error
-			index, err = journal.AcknowledgementIndexFor(ctx, candidates)
-			if err != nil {
-				return mapStoreError("read acknowledgements", err)
-			}
-		}
+		projected := make([]awaitAnyCandidate, 0, len(candidates))
 		for _, execution := range candidates {
 			if err := ctx.Err(); err != nil {
 				return output.Wrap(output.CodeTimeout, "await-any scan interrupted", true, err)
 			}
+			if options.labelPrefix != "" && execution.RetryOf != nil {
+				continue // the inherited label already selects the logical execution
+			}
+			logical, physical, err := a.followOpenCodeRecovery(ctx, journal, execution)
+			if err != nil {
+				return mapStoreError("read automatic recovery chain", err).WithDetail("execution_id", execution.ID.String())
+			}
+			if logical.State == model.StateWaiting && logical.OpenCodeRecovery != nil {
+				continue
+			}
+			execution = logical
 			if execution.RemoteForwarded() && execution.Observation.Integrity != model.IntegrityConflicted {
 				refresh := !execution.State.Terminal()
 				if !refresh {
@@ -417,7 +427,25 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 					continue
 				}
 			}
-			match, ok, problem := awaitAnyClassify(ctx, journal, options, execution, skipReconciled, index)
+			projected = append(projected, awaitAnyCandidate{execution, physical})
+		}
+		var index store.AcknowledgementIndex
+		if skipReconciled && options.kinds[awaitAnyKindTerminal] {
+			terminals := make([]model.Execution, 0, len(projected))
+			for _, candidate := range projected {
+				if terminal := candidate.execution; terminal.State.Terminal() {
+					terminal.ID = candidate.physical
+					terminals = append(terminals, terminal)
+				}
+			}
+			var err error
+			index, err = journal.AcknowledgementIndexFor(ctx, terminals)
+			if err != nil {
+				return mapStoreError("read acknowledgements", err)
+			}
+		}
+		for _, candidate := range projected {
+			match, ok, problem := awaitAnyClassify(ctx, journal, options, candidate, skipReconciled, index)
 			if problem != nil {
 				return problem
 			}
@@ -498,6 +526,7 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 		}
 		delete(remoteScan.problems, execution.ID)
 		execution.State = receipt.State
+		execution.RecoveryChain = receipt.RecoveryChain
 		if receipt.Observation != nil {
 			execution.Observation.Integrity = receipt.Observation.Integrity
 			execution.Observation.ObservedAt = receipt.Observation.ObservedAt
@@ -505,6 +534,7 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 		if receipt.Liveness != "" {
 			execution.Liveness = receipt.Liveness
 		}
+		receipt.projectOpenCodePause(&execution)
 		if !receipt.UpdatedAt.IsZero() {
 			execution.UpdatedAt = receipt.UpdatedAt
 		}
@@ -515,7 +545,7 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 		}
 		// Newly observed terminals have not been collected locally. The
 		// acknowledgement index applies once a terminal is stored locally.
-		match, ok, problem := awaitAnyClassify(ctx, nil, options, execution, false, store.AcknowledgementIndex{})
+		match, ok, problem := awaitAnyClassify(ctx, nil, options, awaitAnyCandidate{execution, execution.ID}, false, store.AcknowledgementIndex{})
 		if problem != nil {
 			return nil, watched, problem
 		}
@@ -532,7 +562,9 @@ func (a *app) awaitAnyScanJournal(ctx context.Context, c common, options awaitAn
 	return matches, watched, nil
 }
 
-func awaitAnyClassify(ctx context.Context, journal *store.Journal, options awaitAnyOptions, execution model.Execution, skipReconciled bool, index store.AcknowledgementIndex) (awaitAnyMatch, bool, *output.Error) {
+func awaitAnyClassify(ctx context.Context, journal *store.Journal, options awaitAnyOptions, candidate awaitAnyCandidate, skipReconciled bool, index store.AcknowledgementIndex) (awaitAnyMatch, bool, *output.Error) {
+	execution := candidate.execution
+	match := awaitAnyMatch{execution: execution, physical: candidate.physical}
 	after := func(at time.Time) bool { return options.since.IsZero() || at.After(options.since) }
 	if !options.kinds[awaitAnyKindTerminal] && !options.kinds[awaitAnyKindAttention] {
 		return awaitAnyMatch{}, false, nil
@@ -544,7 +576,8 @@ func awaitAnyClassify(ctx context.Context, journal *store.Journal, options await
 			at = execution.UpdatedAt
 		}
 		if after(at) {
-			return awaitAnyMatch{execution: execution, kind: awaitAnyKindIntegrity, triggerAt: at}, true, nil
+			match.kind, match.triggerAt = awaitAnyKindIntegrity, at
+			return match, true, nil
 		}
 		return awaitAnyMatch{}, false, nil
 	}
@@ -553,7 +586,9 @@ func awaitAnyClassify(ctx context.Context, journal *store.Journal, options await
 		if !options.kinds[awaitAnyKindTerminal] {
 			return awaitAnyMatch{}, false, nil
 		}
-		if skipReconciled && !index.Unreconciled(execution) {
+		physical := execution
+		physical.ID = candidate.physical
+		if skipReconciled && !index.Unreconciled(physical) {
 			return awaitAnyMatch{}, false, nil
 		}
 		at := execution.UpdatedAt
@@ -563,7 +598,8 @@ func awaitAnyClassify(ctx context.Context, journal *store.Journal, options await
 		if !after(at) {
 			return awaitAnyMatch{}, false, nil
 		}
-		return awaitAnyMatch{execution: execution, kind: awaitAnyKindTerminal, triggerAt: at}, true, nil
+		match.kind, match.triggerAt = awaitAnyKindTerminal, at
+		return match, true, nil
 	case execution.State == model.StateAttention:
 		if !options.kinds[awaitAnyKindAttention] {
 			return awaitAnyMatch{}, false, nil
@@ -571,7 +607,9 @@ func awaitAnyClassify(ctx context.Context, journal *store.Journal, options await
 		at := execution.UpdatedAt
 		var err error
 		if journal != nil {
-			at, err = latestAttentionAt(ctx, journal, execution)
+			physical := execution
+			physical.ID = candidate.physical
+			at, err = latestAttentionAt(ctx, journal, physical)
 		}
 		if err != nil {
 			return awaitAnyMatch{}, false, mapStoreError("read attention events", err).WithDetail("execution_id", execution.ID.String())
@@ -579,7 +617,8 @@ func awaitAnyClassify(ctx context.Context, journal *store.Journal, options await
 		if !after(at) {
 			return awaitAnyMatch{}, false, nil
 		}
-		return awaitAnyMatch{execution: execution, kind: awaitAnyKindAttention, triggerAt: at}, true, nil
+		match.kind, match.triggerAt = awaitAnyKindAttention, at
+		return match, true, nil
 	}
 	return awaitAnyMatch{}, false, nil
 }
@@ -606,8 +645,8 @@ func awaitAnyDetails(problem *output.Error, options awaitAnyOptions, match await
 		WithDetail("acknowledged", acknowledged).WithDetail("labels", match.execution.Labels)
 }
 
-// deliverAwaitAny writes exactly one document for the chosen execution. Only
-// that execution can be acknowledged; other matches stay untouched.
+// deliverAwaitAny writes one document and acknowledges the chosen logical
+// execution's turns. Other matches stay untouched.
 func (a *app) deliverAwaitAny(ctx context.Context, renderer output.Renderer, c common, options awaitAnyOptions, match awaitAnyMatch, pending, watched int) int {
 	execution := match.execution
 	acknowledge := !options.noAcknowledge && execution.State.Terminal() && match.kind == awaitAnyKindTerminal
@@ -622,13 +661,16 @@ func (a *app) deliverAwaitAny(ctx context.Context, renderer output.Renderer, c c
 			"matched_kind": match.kind, "trigger_at": match.triggerAt.UTC().Format(time.RFC3339Nano), "pending_matches": pending,
 			"watched": watched, "selector": options.selector(), "acknowledged": acknowledge,
 		}
+		if len(execution.RecoveryChain) != 0 {
+			result["recovery_chain"] = execution.RecoveryChain
+		}
 		lines := []output.Line{{Lead: execution.ID.String(), Fields: []output.Field{{Name: "state", Value: execution.State}, {Name: "matched_kind", Value: match.kind}, {Name: "pending_matches", Value: pending}}}}
 		actions := []output.NextAction{{Label: "Read the completed result", Argv: []string{"agentctl", "result", execution.ID.String(), "--content"}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}}}
 		if err := renderer.Success(output.Success{Result: result, Lines: lines, NextActions: actions}); err != nil {
 			return a.fail(renderer, output.Wrap(output.CodeInternal, "write output", false, err))
 		}
 		if acknowledge {
-			if problem := a.acknowledgeExecution(ctx, c, execution.ID, store.AcknowledgementAwait); problem != nil {
+			if problem := a.acknowledgeRecoveredExecution(ctx, c, execution, match.physical, store.AcknowledgementAwait); problem != nil {
 				_, _ = fmt.Fprintln(a.stderr, "agentctl: terminal state delivered but acknowledgement failed:", problem)
 			}
 		}
@@ -650,5 +692,5 @@ func (a *app) deliverAwaitAny(ctx context.Context, renderer output.Renderer, c c
 	if !acknowledge {
 		return a.fail(renderer, problem)
 	}
-	return a.deliverAwaitError(ctx, renderer, c, execution.ID, store.AcknowledgementAwait, problem)
+	return a.deliverAwaitError(ctx, renderer, c, execution, match.physical, problem)
 }

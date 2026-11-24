@@ -34,6 +34,7 @@ type recentOptions struct {
 }
 
 type recentExecution struct {
+	Admission             *model.ProviderAdmission    `json:"admission,omitempty"`
 	Host                  string                      `json:"host,omitempty"`
 	Remote                *model.DelegationRemotePlan `json:"remote,omitempty"`
 	Capacity              *model.DelegationCapacity   `json:"capacity,omitempty"`
@@ -141,6 +142,9 @@ func (a *app) recent(ctx context.Context, renderer output.Renderer, c common, ar
 	lines := make([]output.Line, 0, len(items))
 	for _, item := range items {
 		fields := []output.Field{{Name: "state", Value: item.State}, {Name: "adapter", Value: item.Adapter}, {Name: "liveness", Value: item.Liveness}, {Name: "duration", Value: time.Duration(item.DurationSeconds * float64(time.Second)).Round(time.Second)}}
+		if item.Admission != nil {
+			fields = append(fields, admissionTextFields(item.Admission)...)
+		}
 		if item.Host != "" {
 			fields = append(fields, output.Field{Name: "host", Value: item.Host})
 		}
@@ -413,7 +417,7 @@ func projectRecent(execution model.Execution, now time.Time, acks store.Acknowle
 	if labels == nil {
 		labels = []string{}
 	}
-	item := recentExecution{Caller: execution.Caller, ID: execution.ID, Labels: labels, Authority: execution.Authority, Adapter: execution.Adapter, Mode: execution.Mode, State: execution.State, Liveness: execution.Liveness, CreatedAt: execution.CreatedAt, StartedAt: execution.StartedAt, UpdatedAt: execution.UpdatedAt, ProgressAt: execution.ProgressAt, TerminalAt: execution.TerminalAt, DurationSeconds: duration.Seconds(), Unreconciled: acks.Unreconciled(execution)}
+	item := recentExecution{Admission: execution.Admission, Caller: execution.Caller, ID: execution.ID, Labels: labels, Authority: execution.Authority, Adapter: execution.Adapter, Mode: execution.Mode, State: execution.State, Liveness: execution.Liveness, CreatedAt: execution.CreatedAt, StartedAt: execution.StartedAt, UpdatedAt: execution.UpdatedAt, ProgressAt: execution.ProgressAt, TerminalAt: execution.TerminalAt, DurationSeconds: duration.Seconds(), Unreconciled: acks.Unreconciled(execution)}
 	if execution.Delegation != nil {
 		item.Capacity = execution.Delegation.Capacity
 		item.Host = execution.Delegation.Resolved.Host

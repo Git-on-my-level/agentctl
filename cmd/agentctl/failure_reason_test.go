@@ -123,7 +123,8 @@ printf '%s\n' '{"type":"turn.failed","thread_id":"thread-1","error":{"message":"
 	if err != nil {
 		t.Fatal(err)
 	}
-	problem := a.delegateFailedExecution(ctx, common{journalPath: journalPath}, execution)
+	problem := delegateExecutionError(output.CodeExecutionFailed, "delegated execution failed", execution)
+	a.attachNativeFailure(ctx, common{journalPath: journalPath}, execution.ID, problem)
 	if problem == nil || problem.Code != output.CodeExecutionFailed || !problem.Retryable {
 		t.Fatalf("delegate failure=%v", problem)
 	}
@@ -504,5 +505,18 @@ func TestOpenCodeProviderInvalidRequestOutcome(t *testing.T) {
 	outcome := withAllowlistedFailure(buildOutcome(e, result, time.Now().UTC(), false))
 	if outcome.Failure == nil || outcome.Failure.Code != "opencode_provider_invalid_request" || outcome.Failure.Kind != "provider" || outcome.Failure.Retryable || outcome.Failure.Message != "OpenCode provider rejected the request" {
 		t.Fatalf("%+v", outcome.Failure)
+	}
+}
+
+func TestDelegateExecutionErrorReportsRecoveryChain(t *testing.T) {
+	chain := []ids.ExecutionID{"exec-root", "exec-retry"}
+	execution := model.Execution{ID: "exec-root", State: model.StateFailed, RecoveryChain: chain}
+	problem := delegateExecutionError(output.CodeExecutionFailed, "delegated execution failed", execution)
+	if got, ok := problem.Details["recovery_chain"].([]ids.ExecutionID); !ok || len(got) != 2 || got[1] != "exec-retry" {
+		t.Fatalf("recovery_chain detail = %#v", problem.Details["recovery_chain"])
+	}
+	execution.RecoveryChain = nil
+	if _, ok := delegateExecutionError(output.CodeExecutionFailed, "delegated execution failed", execution).Details["recovery_chain"]; ok {
+		t.Fatal("recovery_chain reported without recovery")
 	}
 }

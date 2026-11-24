@@ -14,6 +14,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/Git-on-my-level/agentctl/internal/admission"
 )
 
 const SchemaVersion = 1
@@ -81,6 +83,7 @@ type Profile struct {
 	AgentPreferences *AgentPreferences  `json:"agent_preferences,omitempty"`
 	Route            *Route             `json:"route,omitempty"`
 	Delegation       *DelegationPolicy  `json:"delegation,omitempty"`
+	Admission        *admission.Config  `json:"admission,omitempty"`
 	Capacity         *Capacity          `json:"capacity,omitempty"`
 }
 
@@ -90,6 +93,8 @@ type Profile struct {
 type DelegationPolicy struct {
 	// Nil defaults to enabled. False disables automatic child-collection turns, not warnings.
 	ChildExitAutoContinue       *bool `json:"child_exit_auto_continue,omitempty"`
+	OpenCodeRateLimitRetry      *bool `json:"opencode_rate_limit_retry,omitempty"`
+	OpenCodeFinalAnswerFollowup *bool `json:"opencode_final_answer_followup,omitempty"`
 	CursorWorkspaceTrust        bool  `json:"cursor_workspace_trust,omitempty"`
 	UnattendedCodingPermissions bool  `json:"unattended_coding_permissions,omitempty"`
 }
@@ -237,6 +242,9 @@ func (c Config) Validate() error {
 			if err := profile.Route.Validate(); err != nil {
 				return fmt.Errorf("profile %q route: %w", name, err)
 			}
+		}
+		if err := profile.Admission.Validate(); err != nil {
+			return fmt.Errorf("profile %q: %w", name, err)
 		}
 		if profile.Capacity != nil {
 			if err := profile.Capacity.Validate(); err != nil {

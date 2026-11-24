@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/Git-on-my-level/agentctl/internal/testutil"
+
+	"github.com/Git-on-my-level/agentctl/internal/admission"
 )
 
 const validBundle = `{
@@ -413,5 +415,27 @@ func TestPreferredEntryMayOmitUnsupportedServiceSpeed(t *testing.T) {
 	p := AgentPreferences{Mode: "advisory", Preferred: []AgentPreference{{Agent: "omp", Model: "zai/glm-5.3", Family: "glm", Version: "5.3", Effort: "high"}}}
 	if err := p.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSourceEnrichmentPreservesAdmission(t *testing.T) {
+	enabled := true
+	disabled := false
+	bucket := admission.Bucket{Harness: "opencode", Model: "morph/flash", Enabled: &enabled, InitialWindow: 2, MinWindow: 1, MaxWindow: 4}
+	changed := bucket
+	changed.Enabled = &disabled
+	profile := func(bucket *admission.Bucket) Config {
+		p := Profile{}
+		if bucket != nil {
+			p.Admission = &admission.Config{Buckets: map[string]admission.Bucket{"morph": *bucket}}
+		}
+		return Config{SchemaVersion: SchemaVersion, Profiles: map[string]Profile{"default": p}}
+	}
+	existing := profile(&bucket)
+	if configCanBeEnrichedBy(existing, profile(nil)) || configCanBeEnrichedBy(existing, profile(&changed)) {
+		t.Fatal("source init must preserve the existing admission policy")
+	}
+	if !configCanBeEnrichedBy(existing, profile(&bucket)) || !configCanBeEnrichedBy(profile(nil), existing) {
+		t.Fatal("source init should allow a matching or newly added policy")
 	}
 }

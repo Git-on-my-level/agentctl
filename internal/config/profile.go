@@ -3,6 +3,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
+
 	"reflect"
 	"strings"
 )
@@ -213,8 +215,32 @@ func cloneProfile(in Profile) Profile {
 			enabled := *grant.ChildExitAutoContinue
 			grant.ChildExitAutoContinue = &enabled
 		}
+		if grant.OpenCodeRateLimitRetry != nil {
+			enabled := *grant.OpenCodeRateLimitRetry
+			grant.OpenCodeRateLimitRetry = &enabled
+		}
+		if grant.OpenCodeFinalAnswerFollowup != nil {
+			enabled := *grant.OpenCodeFinalAnswerFollowup
+			grant.OpenCodeFinalAnswerFollowup = &enabled
+		}
 		out.Delegation = &grant
 	}
 	out.Capacity = cloneCapacity(in.Capacity)
+	if in.Admission != nil {
+		copied := *in.Admission
+		copied.Buckets = maps.Clone(in.Admission.Buckets)
+		for name, bucket := range copied.Buckets {
+			if bucket.Enabled != nil {
+				enabled := *bucket.Enabled
+				bucket.Enabled = &enabled
+			}
+			if bucket.TargetThrottleRate != nil {
+				target := *bucket.TargetThrottleRate
+				bucket.TargetThrottleRate = &target
+			}
+			copied.Buckets[name] = bucket
+		}
+		out.Admission = &copied
+	}
 	return out
 }

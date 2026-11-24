@@ -9,6 +9,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func queuedProcessStart(pid int) processObservation {
+	return processStart(pid)
+}
+
 func processStart(pid int) processObservation {
 	info, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	if err != nil {
@@ -48,6 +52,11 @@ func inspectProcessPlatform(id processIdentity) processProof {
 	started := obs.started.UTC()
 	proof.ProcessStartedAt = &started
 	recorded := id.StartedAt.UTC()
+	if id.exactStart && !started.Equal(recorded) {
+		proof.Proof = "pid_reused"
+		proof.Gone = true
+		return proof
+	}
 	if absDuration(started.Sub(recorded)) <= processStartTolerance {
 		proof.Proof = "pid_alive"
 		proof.Alive = true

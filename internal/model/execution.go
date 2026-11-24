@@ -393,11 +393,46 @@ func (r NativeRateLimit) Validate() error {
 // never valid; unknown provider namespaces become "unclassified" at the parser.
 var nativeRateLimitProviderErrorType = regexp.MustCompile(`^(?:unclassified|provider\.[a-z0-9][a-z0-9._-]{0,54})$`)
 
+// ProviderAdmission is local scheduling evidence for a matched native launch.
+type ProviderAdmission struct {
+	Bucket    string     `json:"bucket"`
+	Priority  string     `json:"priority"`
+	Phase     string     `json:"phase"`
+	Position  int        `json:"position,omitempty"`
+	Window    int        `json:"window,omitempty"`
+	GrantedAt *time.Time `json:"granted_at,omitempty"`
+	Warning   string     `json:"warning,omitempty"`
+}
+
+func (a *ProviderAdmission) Validate() error {
+	if a == nil {
+		return nil
+	}
+	if !namePattern.MatchString(a.Bucket) || strings.Contains(a.Bucket, ".") ||
+		a.Priority != "interactive" && a.Priority != "background" || a.Position < 0 || a.Window < 0 || a.Window > 256 ||
+		a.GrantedAt != nil && a.GrantedAt.IsZero() || a.Warning != "" && !namePattern.MatchString(a.Warning) {
+		return errors.New("invalid provider admission metadata")
+	}
+	switch a.Phase {
+	case "planned", "queued", "granted", "bypassed", "disabled", "cancelled", "aborted":
+		return nil
+	default:
+		return errors.New("invalid provider admission phase")
+	}
+}
+
+func (e Execution) ProviderQueued() bool {
+	return !e.State.Terminal() && e.Admission != nil && e.Admission.Phase == "queued"
+}
+
 type Execution struct {
 	UncollectedChildren  []UncollectedChild `json:"uncollected_children,omitempty"`
 	ChildExitRecheck     bool               `json:"child_exit_recheck,omitempty"`
 	ChildExitGuard       *ChildExitGuard    `json:"child_exit_guard,omitempty"`
 	AutoContinuationOf   *ids.ExecutionID   `json:"auto_continuation_of,omitempty"`
+	RetryOf              *ids.ExecutionID   `json:"retry_of,omitempty"`
+	OpenCodeRecovery     *OpenCodeRecovery  `json:"opencode_recovery,omitempty"`
+	RecoveryChain        []ids.ExecutionID  `json:"recovery_chain,omitempty"`
 	CallerIdentity       *CallerIdentity    `json:"caller_identity,omitempty"`
 	Caller               *ExecutionCaller   `json:"caller,omitempty"`
 	LastOperationFailure *OperationFailure  `json:"last_operation_failure,omitempty"`
@@ -433,9 +468,10 @@ type Execution struct {
 	Launch *LaunchIdentity `json:"launch,omitempty"`
 	// OwnerLaunch identifies the agentctl process collecting this native child.
 	// A gone child alone does not prove its live owner lost the result.
-	OwnerLaunch *LaunchIdentity `json:"owner_launch,omitempty"`
-	DeadlineAt  *time.Time      `json:"deadline_at,omitempty"`
-	UpdatedAt   time.Time       `json:"updated_at"`
+	OwnerLaunch *LaunchIdentity    `json:"owner_launch,omitempty"`
+	Admission   *ProviderAdmission `json:"admission,omitempty"`
+	DeadlineAt  *time.Time         `json:"deadline_at,omitempty"`
+	UpdatedAt   time.Time          `json:"updated_at"`
 	// ProgressAt is newly recorded task progress, not a probe or heartbeat.
 	// Nil preserves unknown history; UpdatedAt is never a backfill source.
 	ProgressAt  *time.Time  `json:"progress_at"`
@@ -526,6 +562,9 @@ func (e Execution) Validate() error {
 	}
 	if e.CreatedAt.IsZero() || e.UpdatedAt.IsZero() || e.Observation.ObservedAt.IsZero() {
 		return errors.New("required timestamp is zero")
+	}
+	if err := e.Admission.Validate(); err != nil {
+		return err
 	}
 	if e.DeadlineAt != nil && e.DeadlineAt.IsZero() {
 		return errors.New("deadline_at is zero")
@@ -619,12 +658,31 @@ func (e Execution) Validate() error {
 			return fmt.Errorf("rate_limit: %w", err)
 		}
 	}
+	if e.RetryOf != nil {
+		if _, err := ids.ParseExecutionID(e.RetryOf.String()); err != nil || *e.RetryOf == e.ID ||
+			e.Adapter != "opencode" || e.Authority != AuthorityNative || len(e.Supersedes) != 1 || e.Supersedes[0] != *e.RetryOf {
+			return errors.New("invalid OpenCode recovery predecessor")
+		}
+	}
+	if r := e.OpenCodeRecovery; r != nil {
+		if e.Adapter != "opencode" || e.Authority != AuthorityNative || e.State != StateFailed ||
+			!r.Kind.validAttempt(r.Attempt) || !r.validDiagnostic() || r.NotBefore.IsZero() || !r.ExpiresAt.After(r.NotBefore) {
+			return errors.New("invalid OpenCode recovery schedule")
+		}
+	}
+	if len(e.RecoveryChain) != 0 && (e.Adapter != "opencode" || !e.RemoteForwarded() ||
+		!ValidOpenCodeRecoveryChain(e.RecoveryChain, e.Delegation.RemotePlan.ExecutionID)) {
+		return errors.New("invalid remote OpenCode recovery chain")
+	}
 	return nil
 }
 
 func ValidateTransition(previous, next Execution) error {
 	if !reflect.DeepEqual(previous.AutoContinuationOf, next.AutoContinuationOf) {
 		return errors.New("automatic continuation provenance is immutable")
+	}
+	if !reflect.DeepEqual(previous.RetryOf, next.RetryOf) {
+		return errors.New("automatic recovery provenance is immutable")
 	}
 	if !reflect.DeepEqual(previous.ParentExecutionID, next.ParentExecutionID) || !reflect.DeepEqual(previous.CallerIdentity, next.CallerIdentity) {
 		return errors.New("execution launch attribution is immutable")

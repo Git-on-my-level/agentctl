@@ -106,6 +106,7 @@ Verified against the installed CLIs on 2026-10-01, except where dated below.
 | Devin ACP, Devin cloud ACP | none | Session loading after completed turns is implemented and verified live for both. Cancel plus reprompt steering has not been verified against real Devin; no steering route is advertised. |
 | ZCode 0.17.0 | none | Exited coding turns can continue via `--resume <sessionId> --prompt`; interrupted-process steering remains unverified. Disposable read_only sessions cannot resume. |
 | OpenCode 2.2.6 | none | Exited turns continue via `run --session <recorded-id>`. Read-only inspection of a disposable native-history copy on 2026-11-11 confirmed successful completion after two client transport failures and server recovery. Background turns can outlive clients, so interruption is not verified. |
+| OpenCode 2.3.2 | none | Exited turns continue via `run --session <recorded-id>` after a sanitized export checks the recorded session. See [adapter evidence](adapters.md#opencode). |
 | Generic process, Multica | none | No native steering route. Multica owns run input. |
 
 `delegate` launches Claude Code in the streaming-input form, so delegated

@@ -67,7 +67,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-    "capacity": {"$ref": "#/$defs/capacity"},
+        "capacity": {"$ref": "#/$defs/capacity"},
+        "admission": {"$ref": "#/$defs/admission"},
         "adapters": {
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/adapter" }
@@ -78,11 +79,46 @@
         "delegation": { "$ref": "#/$defs/delegation" }
       },
       "anyOf": [
-        { "required": ["adapters"] }, {"required": ["capacity"]},
+        { "required": ["adapters"] }, {"required": ["capacity"]}, {"required": ["admission"]},
         { "required": ["multica"] },
         { "required": ["agent_preferences"] },
         { "required": ["route"] }
       ]
+    },
+    "admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["buckets"],
+      "properties": {
+        "buckets": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 32,
+          "propertyNames": {"pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+          "additionalProperties": {"$ref": "#/$defs/admission_bucket"}
+        }
+      }
+    },
+    "admission_bucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness", "initial_window", "min_window", "max_window"],
+      "oneOf": [{"required": ["model"]}, {"required": ["model_prefix"]}],
+      "properties": {
+        "harness": {"const": "opencode"},
+        "model": {"type": "string", "maxLength": 192, "pattern": "^[^\\s]*/[^\\s]*$"},
+        "model_prefix": {"type": "string", "maxLength": 192, "pattern": "^[^\\s]*/[^\\s]*$"},
+        "enabled": {"type": "boolean", "default": true},
+        "initial_window": {"type": "integer", "minimum": 1, "maximum": 256},
+        "min_window": {"type": "integer", "minimum": 1, "maximum": 256},
+        "max_window": {"type": "integer", "minimum": 1, "maximum": 256},
+        "static_fallback_window": {"type": "integer", "minimum": 0, "maximum": 256, "description": "Zero or omission uses initial_window."},
+        "target_throttle_rate": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.08},
+        "decrease_factor": {"type": "number", "minimum": 0, "exclusiveMaximum": 1, "default": 0.7, "description": "Zero uses the default."},
+        "increase_interval_seconds": {"type": "integer", "minimum": 0, "maximum": 3600, "default": 60, "description": "Zero uses the default."},
+        "sample_window_seconds": {"type": "integer", "minimum": 0, "maximum": 3600, "default": 300, "description": "Zero uses the default."},
+        "max_wait": {"type": "string", "minLength": 1, "default": "5m", "description": "Positive Go duration, at most one hour."}
+      }
     },
     "adapter": {
       "type": "object",
@@ -132,6 +168,8 @@
       "additionalProperties": false,
       "properties": {
         "child_exit_auto_continue": {"type": "boolean", "default": true, "description": "Allow at most one automatic native child-collection continuation per parent; false keeps warnings and inbox surfacing."},
+        "opencode_rate_limit_retry": {"type": "boolean", "default": true, "description": "Allow bounded same-session continuation after a native OpenCode structured HTTP 429."},
+        "opencode_final_answer_followup": {"type": "boolean", "default": true, "description": "Allow one same-session final-answer follow-up for a stopped OpenCode turn with no text."},
         "cursor_workspace_trust": {"description": "Required grant for Cursor read_only delegation; when granted all Cursor recipes add --trust.", "type": "boolean" },
         "unattended_coding_permissions": { "type": "boolean", "description": "Explicit grant for coding delegates: Cursor --force, Codex --dangerously-bypass-approvals-and-sandbox, Claude Code --permission-mode bypassPermissions, OpenCode --auto, and Devin ACP one-operation permission approvals. Never applied to read_only or expert run argv." }
       }

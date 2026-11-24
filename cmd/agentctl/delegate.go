@@ -31,6 +31,8 @@ type delegateOptions struct {
 	callerIdentity                          *model.CallerIdentity
 	caller                                  *model.ExecutionCaller
 	detachedReceipt                         bool
+	automaticRecovery                       bool
+	recoveryLaunched                        *bool
 	continuationMode                        string
 	requestFile, promptFile, cwd, authority string
 	promptStdin, plan, wait, contentOnly    bool
@@ -516,7 +518,7 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 	}
 	var captured bytes.Buffer
 	inner := output.Renderer{Mode: output.JSON, Writer: &captured}
-	problem = a.runNativeOptions(ctx, inner, c, nil, run)
+	problem = a.runNativeRecovering(ctx, inner, c, run)
 	if problem != nil {
 		if !admissionRecorded {
 			return recoverAdmission(problem)
@@ -667,6 +669,7 @@ func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding
 	}
 	if native != nil {
 		result["native"] = native
+		projectAdmissionPlan(result, native)
 		if fields, ok := native.(map[string]any); ok {
 			if constraints, ok := fields["launch_constraints"]; ok {
 				result["launch_constraints"] = constraints
@@ -679,6 +682,9 @@ func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding
 		result["id"] = reusedID
 	}
 	var actions []output.NextAction
+	if len(replay) != 0 && replay[0].Admission != nil {
+		result["admission"] = replay[0].Admission
+	}
 	if len(replay) != 0 && failedResultReplay(replay[0], true) {
 		result["replayed"] = true
 		actions = append(actions, retryWithNewKeyAction(replay[0]))
@@ -693,18 +699,28 @@ func writeDelegatePlan(renderer output.Renderer, binding model.DelegationBinding
 
 func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c common, execution model.Execution, opts delegateOptions, reused bool) (problem *output.Error) {
 	var closeWaiter func()
+	var waiterID ids.ExecutionID
+	physical := execution.ID
 	defer func() {
 		if closeWaiter != nil {
 			closeWaiter()
 		}
 	}()
 	armWaiter := func() {
-		if closeWaiter == nil {
-			closeWaiter = a.registerWaiter(ctx, c, execution.ID)
+		if waiterID != physical {
+			if closeWaiter != nil {
+				closeWaiter()
+			}
+			waiterID = physical
+			closeWaiter = a.registerWaiter(ctx, c, physical)
 		}
 	}
 
 	defer func() {
+		if problem != nil {
+			problem.Warnings = append(problem.Warnings, admissionWarnings(execution.Admission)...)
+			withRecoveryChain(problem, execution)
+		}
 		if problem != nil && failedResultReplay(execution, reused) {
 			problem.WithDetail("replayed", true).WithDetail("reused", true).WithActions(retryWithNewKeyAction(execution))
 		}
@@ -716,23 +732,44 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		armWaiter()
 		var remoteProblem *output.Error
 		var deadline time.Time
-		if execution.DeadlineAt != nil && !execution.State.Terminal() {
+		var flags []string
+		if execution.ProviderQueued() && opts.timeout > 0 {
+			flags = []string{"--through-execution-deadline"}
+		} else if execution.DeadlineAt != nil && !execution.State.Terminal() {
 			// Match the local wait path's cancellation and terminal-journaling window.
 			deadline = execution.DeadlineAt.Add(10 * time.Second)
 		}
-		execution, remoteProblem = a.waitRemoteTerminal(ctx, c, execution, nil, deadline)
+		execution, remoteProblem = a.waitRemoteTerminal(ctx, c, execution, flags, deadline)
 		if remoteProblem != nil {
 			return remoteProblem
+		}
+	}
+	if execution.OpenCodeRecovery != nil {
+		journal, problem := a.openReadContext(ctx, c)
+		if problem != nil {
+			return problem
+		}
+		var err error
+		execution, physical, err = a.followOpenCodeRecovery(ctx, journal, execution)
+		journal.Close()
+		if err != nil {
+			return mapStoreError("read automatic recovery chain", err)
 		}
 	}
 	for opts.wait && !execution.State.Terminal() {
 		if execution.State == model.StateAttention || execution.Liveness == model.LivenessBlocked {
 			return delegateExecutionError(output.CodeAttentionRequired, "delegated execution requires attention", execution)
 		}
-		if execution.Liveness == model.LivenessUnreachable || (len(execution.SourceBindings) == 0 && a.now().Sub(execution.CreatedAt) > time.Minute) {
+		if execution.Liveness == model.LivenessUnreachable || (execution.Admission == nil && len(execution.SourceBindings) == 0 && a.now().Sub(execution.CreatedAt) > time.Minute) {
 			return delegateExecutionError(output.CodeExecutionUnknown, "delegated launch or execution cannot be proven; it has not been relaunched", execution)
 		}
-		if fresh := execution.Observation.FreshForSeconds; fresh != nil && a.now().After(execution.Observation.ObservedAt.Add(time.Duration(*fresh)*time.Second+10*time.Second)) {
+		now := a.now()
+		fresh := execution.Observation.FreshForSeconds
+		leaseExpired := fresh != nil && now.After(execution.Observation.ObservedAt.Add(time.Duration(*fresh)*time.Second+10*time.Second))
+		if execution.ProviderQueued() {
+			leaseExpired = providerQueueLeaseExpired(execution, now)
+		}
+		if leaseExpired {
 			return delegateExecutionError(output.CodeExecutionUnknown, "delegated owner lease expired; execution has not been relaunched", execution)
 		}
 		if execution.DeadlineAt != nil && a.now().After(execution.DeadlineAt.Add(10*time.Second)) {
@@ -752,6 +789,9 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 			return problem.WithDetail("execution_id", execution.ID.String())
 		}
 		latest, err := journal.GetExecution(ctx, execution.ID)
+		if err == nil {
+			latest, physical, err = a.followOpenCodeRecovery(ctx, journal, latest)
+		}
 		journal.Close()
 		if err != nil {
 			return mapStoreError("observe delegated execution", err).WithDetail("execution_id", execution.ID.String())
@@ -766,7 +806,9 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		}
 		switch execution.State {
 		case model.StateFailed:
-			return a.delegateFailedExecution(ctx, c, execution)
+			problem := delegateExecutionError(output.CodeExecutionFailed, "delegated execution failed", execution)
+			a.attachNativeFailure(ctx, c, physical, problem)
+			return problem
 		case model.StateCancelled:
 			return delegateExecutionError(output.CodeExecutionCancelled, "delegated execution was cancelled", execution)
 		case model.StateOrphaned:
@@ -776,7 +818,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		if problem != nil {
 			return problem.WithDetail("execution_id", execution.ID.String())
 		}
-		_, value, problem := dereferenceResult(ctx, journal, execution.ID, resultOptions{requireContent: true, requireSource: opts.requireSource, minResultBytes: opts.minBytes}, renderer.Mode)
+		value, problem := executionResult(ctx, journal, execution, physical, resultOptions{requireContent: true, requireSource: opts.requireSource, minResultBytes: opts.minBytes}, renderer.Mode)
 		journal.Close()
 		if problem != nil {
 			return problem.WithDetail("execution_id", execution.ID.String())
@@ -786,7 +828,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		}
 		outcome = &value
 	}
-	renderer = renderer.WithWarnings(childExitWarnings(execution)...)
+	renderer = renderer.WithWarnings(childExitWarnings(execution)...).WithWarnings(admissionWarnings(execution.Admission)...)
 	binding := execution.Delegation
 	if binding == nil {
 		return delegateExecutionError(output.CodeInternal, "delegated execution has no resolution binding", execution)
@@ -799,6 +841,15 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		result := map[string]any{"id": execution.ID, "origin_host_id": execution.OriginHostID, "state": execution.State, "liveness": execution.Liveness,
 			"authority": execution.Authority, "reused": reused, "requested": binding.Requested, "resolved": binding.Resolved,
 			"provenance": map[string]any{"configuration_sha256": binding.ConfigurationSHA256, "defaulted": binding.Defaulted}, "request_sha256": binding.RequestSHA256}
+		if execution.Admission != nil {
+			result["admission"] = execution.Admission
+			if execution.DeadlineAt != nil {
+				result["deadline_at"] = execution.DeadlineAt
+			}
+		}
+		if len(execution.RecoveryChain) != 0 {
+			result["recovery_chain"] = execution.RecoveryChain
+		}
 		if execution.ParentExecutionID != nil {
 			result["parent_execution_id"] = execution.ParentExecutionID
 		}
@@ -829,6 +880,9 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 			if execution.State == model.StateStarting {
 				result["launch_status"] = "admitted"
 			}
+			if execution.ProviderQueued() {
+				result["launch_status"] = "queued"
+			}
 		}
 		if len(execution.Supersedes) != 0 {
 			result["continues"] = execution.Supersedes[0]
@@ -856,7 +910,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		}
 	}
 	if opts.wait {
-		if problem := a.acknowledgeExecution(ctx, c, execution.ID, store.AcknowledgementResult); problem != nil {
+		if problem := a.acknowledgeRecoveredExecution(ctx, c, execution, physical, store.AcknowledgementResult); problem != nil {
 			_, _ = io.WriteString(a.stderr, "agentctl: answer delivered but collection acknowledgement failed\n")
 		}
 	}
@@ -865,7 +919,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 
 func delegateExecutionError(code output.Code, message string, execution model.Execution) *output.Error {
 	if nativeApprovalAttention(execution) {
-		return delegateError(code, "native_approval_required", message).WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State).WithDetail("repair_action", "Cancel the parked run, review its native permission policy, and retry with a new request key; agentctl cannot approve a native prompt.").WithActions(attentionNextActions(output.JSON, execution)...)
+		return withRecoveryChain(delegateError(code, "native_approval_required", message).WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State).WithDetail("repair_action", "Cancel the parked run, review its native permission policy, and retry with a new request key; agentctl cannot approve a native prompt.").WithActions(attentionNextActions(output.JSON, execution)...), execution)
 	}
 
 	problem := delegateError(code, "delegate_"+string(code), message).WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State).
@@ -874,19 +928,24 @@ func delegateExecutionError(code output.Code, message string, execution model.Ex
 		problem.Retryable = true
 		problem.WithDetail("recovery_state", *execution.SourceState).WithActions(output.NextAction{Label: "Plan recovery of the parked native session", Argv: []string{"agentctl", "continue", execution.ID.String(), "--request-key", "<new-key>", "--prompt-file", "<recovery-instruction>", "--plan"}, SideEffectClass: output.ReadOnly, Preconditions: []string{"requires a recorded session and verified failed-turn resume route; reconcile prior tool effects in the recovery instruction"}})
 	}
-	return problem
+	if failure := parkedOpenCodeRateLimitFailure(execution); failure != nil {
+		problem.WithDetail("failure", failure)
+		if execution.RateLimit != nil {
+			problem.WithDetail("rate_limit", execution.RateLimit)
+		}
+	}
+	return withRecoveryChain(problem, execution)
 }
 
-func (a *app) delegateFailedExecution(ctx context.Context, c common, execution model.Execution) *output.Error {
-	problem := delegateExecutionError(output.CodeExecutionFailed, "delegated execution failed", execution)
+func (a *app) attachNativeFailure(ctx context.Context, c common, id ids.ExecutionID, problem *output.Error) {
 	journal, openErr := a.openRead(c)
 	if openErr != nil {
-		return problem
+		return
 	}
 	defer journal.Close()
-	outcome, err := journal.GetOutcome(ctx, execution.ID)
+	outcome, err := journal.GetOutcome(ctx, id)
 	if err != nil {
-		return problem
+		return
 	}
 	if outcome.NativeExitCode != nil {
 		problem.WithDetail("native_exit_code", *outcome.NativeExitCode)
@@ -895,7 +954,6 @@ func (a *app) delegateFailedExecution(ctx context.Context, c common, execution m
 		problem.Retryable = outcome.Failure.Retryable
 		problem.WithDetail("failure", view)
 	}
-	return problem
 }
 
 // Replayed terminal failures retain their original identity and exit behavior.

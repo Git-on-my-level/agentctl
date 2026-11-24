@@ -13,6 +13,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/Git-on-my-level/agentctl/internal/admission"
 )
 
 // BundleSchemaVersion is versioned independently from the live config file.
@@ -38,6 +40,7 @@ type BundleProfile struct {
 	AgentPreferences *AgentPreferences        `json:"agent_preferences,omitempty"`
 	Route            *Route                   `json:"route,omitempty"`
 	Delegation       *DelegationPolicy        `json:"delegation,omitempty"`
+	Admission        *admission.Config        `json:"admission,omitempty"`
 	Capacity         *Capacity                `json:"capacity,omitempty"`
 }
 
@@ -216,7 +219,7 @@ func applyBundle(base Config, bundle Bundle) (Config, error) {
 }
 
 func (p BundleProfile) profile() Profile {
-	result := cloneProfile(Profile{Multica: p.Multica, AgentPreferences: p.AgentPreferences, Route: p.Route, Delegation: p.Delegation, Capacity: p.Capacity})
+	result := cloneProfile(Profile{Multica: p.Multica, AgentPreferences: p.AgentPreferences, Route: p.Route, Delegation: p.Delegation, Capacity: p.Capacity, Admission: p.Admission})
 	if len(p.Adapters) != 0 {
 		result.Adapters = make(map[string]Adapter, len(p.Adapters))
 		for name, adapter := range p.Adapters {

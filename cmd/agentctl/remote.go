@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Git-on-my-level/agentctl/internal/admission"
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/delegation"
@@ -168,17 +169,22 @@ func remoteResult(body []byte) (json.RawMessage, *output.Error) {
 }
 
 type remoteReceipt struct {
-	ID           ids.ExecutionID             `json:"id"`
-	OriginHostID ids.HostID                  `json:"origin_host_id"`
-	State        model.State                 `json:"state"`
-	Liveness     model.Liveness              `json:"liveness"`
-	UpdatedAt    time.Time                   `json:"updated_at"`
-	TerminalAt   *time.Time                  `json:"terminal_at"`
-	Observation  *model.Observation          `json:"observation"`
-	Resolved     model.DelegationTarget      `json:"resolved"`
-	Capacity     *model.DelegationCapacity   `json:"capacity"`
-	Continuation *model.FollowUpContinuation `json:"continuation"`
-	Provenance   struct {
+	RecoveryChain []ids.ExecutionID           `json:"recovery_chain"`
+	Admission     *model.ProviderAdmission    `json:"admission"`
+	DeadlineAt    *time.Time                  `json:"deadline_at"`
+	ID            ids.ExecutionID             `json:"id"`
+	OriginHostID  ids.HostID                  `json:"origin_host_id"`
+	State         model.State                 `json:"state"`
+	Liveness      model.Liveness              `json:"liveness"`
+	SourceState   string                      `json:"source_state"`
+	RateLimit     *model.NativeRateLimit      `json:"rate_limit"`
+	UpdatedAt     time.Time                   `json:"updated_at"`
+	TerminalAt    *time.Time                  `json:"terminal_at"`
+	Observation   *model.Observation          `json:"observation"`
+	Resolved      model.DelegationTarget      `json:"resolved"`
+	Capacity      *model.DelegationCapacity   `json:"capacity"`
+	Continuation  *model.FollowUpContinuation `json:"continuation"`
+	Provenance    struct {
 		ConfigurationSHA256 string   `json:"configuration_sha256"`
 		Defaulted           []string `json:"defaulted"`
 	} `json:"provenance"`
@@ -211,10 +217,22 @@ func parseRemoteReceipt(body []byte) (remoteReceipt, *output.Error) {
 			validIntegrity = false
 		}
 	}
-	if err != nil || idErr != nil || hostErr != nil || !validState || !validLiveness || !validIntegrity {
+	if err != nil || idErr != nil || hostErr != nil || !validState || !validLiveness || !validIntegrity ||
+		!model.ValidOpenCodeRecoveryChain(receipt.RecoveryChain, receipt.ID) ||
+		receipt.Admission.Validate() != nil || receipt.DeadlineAt != nil && receipt.DeadlineAt.IsZero() ||
+		receipt.RateLimit != nil && receipt.RateLimit.Validate() != nil {
 		return receipt, delegateError(output.CodeRemoteFailure, "delegate_remote_receipt_invalid", "remote receipt lacks a valid execution identity or state")
 	}
 	return receipt, nil
+}
+
+func (r remoteReceipt) projectOpenCodePause(execution *model.Execution) {
+	if execution.Adapter == "opencode" && r.SourceState == "paused_capacity" &&
+		r.State == model.StateAttention && r.Liveness == model.LivenessBlocked &&
+		r.Observation != nil && r.Observation.Integrity == model.IntegrityVerified {
+		execution.SourceState = &r.SourceState
+		execution.RateLimit = r.RateLimit
+	}
 }
 
 func remoteLaunchFlags(opts delegateOptions) []string {
@@ -254,6 +272,7 @@ func (a *app) delegateRemote(ctx context.Context, renderer output.Renderer, c co
 	if len(replay) != 0 {
 		destination = replay[0].Delegation.RemotePlan.SSHDestination
 	}
+	launch := a.remoteNativeCommand("agentctl", "delegate", "--output", "json", "--cwd", opts.cwd)
 	// mktemp creates a fresh 0700 directory; shared TMPDIR entries cannot
 	// redirect the request write. Only the remote request key provides replay.
 	stage, problem := sshStep(ctx, destination, `umask 077 && dir=$(mktemp -d "${TMPDIR:-/tmp}/agentctl-delegate.XXXXXXXXXX") && { cat > "$dir/request.json" && printf '%s\n' "$dir" || { rm -f -- "$dir/request.json"; rmdir -- "$dir"; exit 1; }; }`, requestBody)
@@ -266,9 +285,9 @@ func (a *app) delegateRemote(ctx context.Context, renderer output.Renderer, c co
 	}
 	staged := shellQuote(dir + "/request.json")
 	args := append(remoteLaunchFlags(opts), "--authority", "native", "--journal-busy-budget", c.journalBusyBudget.String())
-	command := "cd " + shellQuote(opts.cwd) + " && " + remoteCommand("agentctl", "delegate", "--output", "json", "--cwd", opts.cwd) + " --request-file " + staged + " " + remoteCommand(args...)
+	command := "cd " + shellQuote(opts.cwd) + " && " + launch + " --request-file " + staged + " " + remoteCommand(args...)
 	// Let agentctl classify a missing cwd rather than allowing shell cd to hide it.
-	command = "if [ -d " + shellQuote(opts.cwd) + " ]; then " + command + "; else " + remoteCommand("agentctl", "delegate", "--output", "json", "--cwd", opts.cwd) + " --request-file " + staged + " " + remoteCommand(args...) + "; fi"
+	command = "if [ -d " + shellQuote(opts.cwd) + " ]; then " + command + "; else " + launch + " --request-file " + staged + " " + remoteCommand(args...) + "; fi"
 	// Preserve the launch's status while cleaning up on success, failure, or plan.
 	cleanup := "rm -f -- " + staged + "; rmdir -- " + shellQuote(dir)
 	command = "trap " + shellQuote(cleanup) + " 0; " + command
@@ -359,7 +378,10 @@ func (a *app) recordRemote(ctx context.Context, renderer output.Renderer, c comm
 	if state.Terminal() {
 		execution.TerminalAt = &now
 	}
-	if opts.timeout > 0 {
+	execution.Admission = receipt.Admission
+	if execution.Admission != nil {
+		execution.DeadlineAt = receipt.DeadlineAt
+	} else if opts.timeout > 0 {
 		deadline := now.Add(opts.timeout)
 		execution.DeadlineAt = &deadline
 	}
@@ -389,6 +411,10 @@ func remoteErrorLocal(problem *output.Error, execution model.Execution) *output.
 		return nil
 	}
 	problem.WithDetail("execution_id", execution.ID.String()).WithDetail("remote", execution.Delegation.RemotePlan)
+	if execution.Adapter == "opencode" && problem.Code == output.CodeAttentionRequired && problem.Details["recovery_state"] == "paused_capacity" {
+		problem.NextActions = remoteCheckpointActions(output.JSON, execution.ID)
+		return problem
+	}
 	remote := execution.Delegation.RemotePlan
 	for i := range problem.NextActions {
 		for j, arg := range problem.NextActions[i].Argv {
@@ -400,6 +426,13 @@ func remoteErrorLocal(problem *output.Error, execution model.Execution) *output.
 	return problem
 }
 
+func remoteCheckpointActions(mode output.Mode, id ids.ExecutionID) []output.NextAction {
+	return []output.NextAction{
+		{Label: "Read the remote parked failure", Argv: []string{"agentctl", "status", id.String(), "--output", string(mode)}, SideEffectClass: output.ReadOnly},
+		checkpointRecoveryPlan(id),
+	}
+}
+
 func remoteObservation(ctx context.Context, execution model.Execution, command string, flags []string) (remoteReceipt, *output.Error) {
 	plan := execution.Delegation.RemotePlan
 	args := append([]string{"agentctl", command, plan.ExecutionID.String(), "--output", "json"}, flags...)
@@ -408,7 +441,8 @@ func remoteObservation(ctx context.Context, execution model.Execution, command s
 		return remoteReceipt{}, remoteErrorLocal(problem, execution)
 	}
 	receipt, problem := body.receipt()
-	if problem == nil && (receipt.ID != plan.ExecutionID || receipt.OriginHostID != plan.OriginHostID) {
+	if problem == nil && (receipt.ID != plan.ExecutionID || receipt.OriginHostID != plan.OriginHostID ||
+		(len(receipt.RecoveryChain) > 0 && execution.Adapter != "opencode")) {
 		problem = delegateError(output.CodeRemoteFailure, "delegate_remote_receipt_invalid", "remote observation identity disagrees with admitted execution")
 	}
 	return receipt, remoteErrorLocal(body.problem(problem), execution)
@@ -420,6 +454,10 @@ func (a *app) statusRemote(ctx context.Context, renderer output.Renderer, execut
 		return problem
 	}
 	execution.State = receipt.State
+	execution.RecoveryChain = receipt.RecoveryChain
+	if receipt.Admission != nil {
+		execution.Admission, execution.DeadlineAt = receipt.Admission, receipt.DeadlineAt
+	}
 	if receipt.Liveness != "" {
 		execution.Liveness = receipt.Liveness
 	}
@@ -431,7 +469,8 @@ func (a *app) statusRemote(ctx context.Context, renderer output.Renderer, execut
 	if receipt.Observation != nil {
 		execution.Observation.Integrity = receipt.Observation.Integrity
 	}
-	return writeExecution(renderer, execution, "status")
+	receipt.projectOpenCodePause(&execution)
+	return writeExecutionReported(renderer, execution, "status", executionWriteOptions{failure: parkedOpenCodeRateLimitFailure(execution)})
 }
 
 // Remote await --content is raw text even in JSON mode. Collect metadata first,
@@ -494,6 +533,10 @@ func (a *app) observeRemoteTerminal(ctx context.Context, c common, execution mod
 	now := a.now().UTC()
 	next := latest
 	next.State, next.Liveness, next.UpdatedAt, next.TerminalAt = receipt.State, model.LivenessExited, now, &now
+	next.RecoveryChain = receipt.RecoveryChain
+	if receipt.Admission != nil {
+		next.Admission, next.DeadlineAt = receipt.Admission, receipt.DeadlineAt
+	}
 	if receipt.TerminalAt != nil {
 		next.TerminalAt = receipt.TerminalAt
 	} else if execution.TerminalAt != nil {
@@ -572,7 +615,7 @@ func (a *app) awaitRemote(ctx context.Context, renderer output.Renderer, c commo
 	switch execution.State {
 	case model.StateCompleted:
 		if content {
-			return a.writeAwaitContent(ctx, renderer, c, execution.ID)
+			return a.writeAwaitContent(ctx, renderer, c, execution, execution.ID)
 		}
 		if problem := writeExecution(renderer, execution, "await"); problem != nil {
 			return problem
@@ -621,7 +664,7 @@ func (a *app) continueRemote(ctx context.Context, renderer output.Renderer, c co
 	for _, label := range opts.labels {
 		args = append(args, "--label", label)
 	}
-	body, problem := sshStep(ctx, plan.SSHDestination, remoteCommand(args...), prompt)
+	body, problem := sshStep(ctx, plan.SSHDestination, a.remoteNativeCommand(args...), prompt)
 	if problem != nil {
 		return remoteErrorLocal(problem, source)
 	}
@@ -636,3 +679,11 @@ func (a *app) continueRemote(ctx context.Context, renderer output.Renderer, c co
 }
 
 var _ io.Writer = (*sshCapture)(nil)
+
+func (a *app) remoteNativeCommand(args ...string) string {
+	command := remoteCommand(args...)
+	if priority := a.getenv(admission.PriorityEnv); priority != "" {
+		command = admission.PriorityEnv + "=" + shellQuote(priority) + " " + command
+	}
+	return command
+}

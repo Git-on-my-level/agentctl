@@ -131,6 +131,7 @@ type processRecord struct {
 	opencodeFinishReason      string
 	opencodeTokenUsage        *TokenUsage
 	opencodeHTTPStatus        int64
+	opencodeRetryAfterMS      int64
 	opencodeProviderErrorType string
 	opencodeProviderError     bool
 
@@ -390,10 +391,12 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 		switch obs.SourceState {
 		case "opencode.retry", "opencode.error":
 			p.opencodeHTTPStatus, _ = obs.Data["http_status"].(int64)
+			p.opencodeRetryAfterMS, _ = obs.Data["retry_after_ms"].(int64)
 			p.opencodeProviderErrorType, _ = obs.Data["provider_error_type"].(string)
 			p.opencodeProviderError = obs.SourceState == "opencode.error"
 		default:
 			p.opencodeHTTPStatus = 0
+			p.opencodeRetryAfterMS = 0
 			p.opencodeProviderErrorType = ""
 			p.opencodeProviderError = false
 		}
@@ -708,6 +711,9 @@ func (p *processRecord) finish(err error) {
 			p.result.Data["failure_structured"] = true
 			p.result.Data["failure_category"] = "capacity"
 			p.result.Data["http_status"] = p.opencodeHTTPStatus
+			if p.opencodeRetryAfterMS > 0 {
+				p.result.Data["retry_after_ms"] = p.opencodeRetryAfterMS
+			}
 			if p.opencodeProviderErrorType != "" {
 				p.result.Data["provider_error_type"] = p.opencodeProviderErrorType
 			}
@@ -918,7 +924,7 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 				resume.Status, resume.Reason = CapabilityUnavailable, "ZCode continuation is verified only for CLI 0.17.0"
 			}
 			if a.Name() == "opencode" && !OpenCodeResumeVersionSupported(backendVersion) {
-				resume.Status, resume.Reason = CapabilityUnavailable, "OpenCode continuation is verified only for CLI 2.2.6"
+				resume.Status, resume.Reason = CapabilityUnavailable, "OpenCode continuation is verified only for CLI 2.2.6 and 2.3.2"
 			}
 			capabilities = append(capabilities, resume)
 			continue
@@ -1180,6 +1186,19 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 			return LaunchResult{}, nativeContextError(runCtx, "native process launch")
 		}
 	}
+	if req.BeforeStart != nil {
+		if err := req.BeforeStart(runCtx); err != nil {
+			release()
+			if runCtx.Err() != nil {
+				return LaunchResult{}, nativeContextError(runCtx, "native process launch")
+			}
+			return LaunchResult{}, dependencyError("cannot prepare native process lease", err)
+		}
+		if runCtx.Err() != nil {
+			release()
+			return LaunchResult{}, nativeContextError(runCtx, "native process launch")
+		}
+	}
 	if err := cmd.Start(); err != nil {
 		release()
 		// exec.CommandContext reports a context error from Start when the
@@ -1190,8 +1209,16 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 		}
 		return LaunchResult{}, dependencyError("native process failed to start", err)
 	}
-	started = true
 	startedAt := time.Now().UTC()
+	if req.OnStarted != nil {
+		if err := req.OnStarted(cmd.Process.Pid); err != nil {
+			_ = killProcess(cmd)
+			_ = cmd.Wait()
+			release()
+			return LaunchResult{}, dependencyError("cannot record native process lease", err)
+		}
+	}
+	started = true
 	ref := SourceRef{Adapter: a.Name(), Kind: a.config.LaunchKind, OpaqueID: strconv.Itoa(cmd.Process.Pid), PID: cmd.Process.Pid}
 	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: startedAt, updatedAt: startedAt, done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, outputDir: req.OutputDir, wholeStdout: a.config.WholeStdout, live: live, launchIdentity: captureProcessLaunch(cmd.Process.Pid, startedAt)}
 	if req.ExecutionContext != nil {

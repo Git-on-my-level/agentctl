@@ -1101,6 +1101,63 @@ func TestAwaitAnyRemoteAttentionAndIdentity(t *testing.T) {
 	}
 }
 
+func TestAwaitAnyRemoteOpenCodeCapacityPauseOffersRecovery(t *testing.T) {
+	f := newRemoteFixture(t)
+	f.selectRequest(t, `{"harness":"opencode","model":"provider/test-model","host":"remote"}`)
+	f.writeJSON(t, "receipt", map[string]any{
+		"id": remoteTestID, "origin_host_id": remoteTestHost, "state": "running",
+		"resolved":   model.DelegationTarget{Harness: "opencode", Model: "provider/test-model", Authority: model.AuthorityNative},
+		"provenance": map[string]any{"configuration_sha256": "sha256:" + strings.Repeat("b", 64)},
+	})
+	code, out := f.invoke("task")
+	if code != 0 {
+		t.Fatal(out)
+	}
+	id := remoteLocalID(t, out)
+	rateLimit := &model.NativeRateLimit{Attempt: 2, HTTPStatus: 429, RetryAfterMS: 7200000, ProviderErrorType: "provider.rate-limit"}
+	receipt := map[string]any{
+		"id": remoteTestID, "origin_host_id": remoteTestHost, "state": "attention", "liveness": "blocked",
+		"source_state": "paused_capacity", "rate_limit": rateLimit, "updated_at": "2026-11-08T00:00:00Z",
+		"observation": model.Observation{Source: model.ObservationNativeStream, Integrity: model.IntegrityVerified, ObservedAt: time.Now()},
+	}
+	f.writeJSON(t, "terminal", receipt)
+	code, out = f.command("", "await-any", "--execution", id, "--timeout", "2s")
+	if code != 10 || !strings.Contains(out, `"recovery_state":"paused_capacity"`) ||
+		!strings.Contains(out, `"retry_after_ms":7200000`) || !strings.Contains(out, failureMessageOpenCodeRateLimit) ||
+		!strings.Contains(out, `"continue","`+id+`"`) || !strings.Contains(out, `"status","`+id+`"`) ||
+		strings.Contains(out, "--ignore-attention") || strings.Contains(out, `"events","`) || strings.Contains(out, `"cancel","`) {
+		t.Fatalf("remote park exit=%d: %s", code, out)
+	}
+	if e := f.execution(t, id); e.State != model.StateRunning || e.RateLimit != nil {
+		t.Fatalf("remote status changed the local journal: %+v", e)
+	}
+	rateLimit.ProviderErrorType = "unsafe provider text"
+	f.writeJSON(t, "terminal", receipt)
+	code, out = f.command("", "status", id)
+	if code == 0 || !strings.Contains(out, "delegate_remote_receipt_invalid") || strings.Contains(out, rateLimit.ProviderErrorType) {
+		t.Fatalf("invalid provider metadata exit=%d: %s", code, out)
+	}
+	t.Run("direct_await", func(t *testing.T) {
+		remoteError := output.NewError(output.CodeAttentionRequired, "execution requires attention", true).
+			WithDetail("recovery_state", "paused_capacity").
+			WithActions(output.NextAction{Label: "Read parked failure events", Argv: []string{"agentctl", "events", remoteNextID}})
+		body, err := json.Marshal(output.ErrorDocument{SchemaVersion: 1, Error: remoteError})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, value := range map[string]string{"fail": "10", "diagnostic": "", "fail-output": string(body)} {
+			if err := os.WriteFile(filepath.Join(f.root, name), []byte(value), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		code, out := f.command("", "await", id, "--timeout", "2s")
+		if code != 10 || !strings.Contains(out, `"status","`+id+`"`) || !strings.Contains(out, `"continue","`+id+`"`) ||
+			strings.Contains(out, `"events","`) {
+			t.Fatalf("remote await exit=%d: %s", code, out)
+		}
+	})
+}
+
 func cloneRemoteCandidate(t *testing.T, f remoteFixture, source, destination string) string {
 	t.Helper()
 	e := f.execution(t, source)

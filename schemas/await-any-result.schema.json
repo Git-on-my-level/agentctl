@@ -24,6 +24,7 @@
       "pattern": "^exec-[a-z]{3,10}(?:-[a-z]{3,10}){5}$"
     },
     "state": {"const": "completed"},
+    "recovery_chain": {"$ref": "execution.schema.json#/properties/recovery_chain"},
     "adapter": {"type": "string", "minLength": 1},
     "labels": {
       "anyOf": [
@@ -53,6 +54,6 @@
         {"required": ["execution_ids"]}
       ]
     },
-    "acknowledged": {"type": "boolean", "description": "Local collection acknowledgement was requested for this terminal. Remote terminal collection acknowledges the winning result remotely even when this is false. The stamp is written after the document; a failed stamp is reported on stderr and leaves the execution unreconciled."}
+    "acknowledged": {"type": "boolean", "description": "Local collection acknowledgement was requested for this logical terminal and its physical recovery turns. Remote terminal collection acknowledges the winning result remotely even when this is false. The stamp is written after the document; a failed stamp is reported on stderr and leaves the execution unreconciled."}
   }
 }

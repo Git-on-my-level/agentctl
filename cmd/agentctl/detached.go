@@ -38,6 +38,7 @@ type detachedReply struct {
 	OK          bool                `json:"ok"`
 	Result      json.RawMessage     `json:"result"`
 	Error       *output.Error       `json:"error"`
+	Warnings    []output.Warning    `json:"warnings"`
 	NextActions []output.NextAction `json:"next_actions"`
 }
 
@@ -50,11 +51,15 @@ func (a *app) startDetachedNative(ctx context.Context, renderer output.Renderer,
 
 func (a *app) startReservedDetachedNative(ctx context.Context, renderer output.Renderer, c common, run runOptions, execution model.Execution) (problem *output.Error) {
 	workerStarted := false
+	var ownerWarning *output.Warning
 	defer func() {
 		if problem == nil {
 			return
 		}
 		problem.WithDetail("execution_id", execution.ID.String())
+		if ownerWarning != nil {
+			problem.Warnings = append(problem.Warnings, *ownerWarning)
+		}
 		if !workerStarted {
 			a.settleDetachedAdmission(c, execution.ID, problem)
 		}
@@ -95,9 +100,18 @@ func (a *app) startReservedDetachedNative(ctx context.Context, renderer output.R
 	// Never CommandContext: cancellation of the collecting parent must not kill
 	// the owner. Its native execution deadline is passed separately above.
 	command := exec.Command(executable, "_delegate-worker")
-	command.Stdin = bytes.NewReader(data)
 	command.Env = os.Environ()
 	prepareDetachedCommand(command)
+	var launchGate *io.PipeWriter
+	if execution.ProviderQueued() {
+		// Attempt to persist the worker's identity before it can enter preflight.
+		var ready *io.PipeReader
+		ready, launchGate = io.Pipe()
+		defer launchGate.CloseWithError(io.ErrClosedPipe)
+		command.Stdin = io.MultiReader(ready, bytes.NewReader(data))
+	} else {
+		command.Stdin = bytes.NewReader(data)
+	}
 	replyPipe, err := command.StdoutPipe()
 	if err != nil {
 		return output.Wrap(output.CodeInternal, "open detached receipt pipe", false, err)
@@ -109,6 +123,13 @@ func (a *app) startReservedDetachedNative(ctx context.Context, renderer output.R
 	if err := startWorker(); err != nil {
 		replyPipe.Close()
 		return output.Wrap(output.CodeDependencyUnavailable, "start detached owner", false, err)
+	}
+	if launchGate != nil {
+		ownerWarning = a.recordQueuedDetachedWorker(c, execution.ID, command.Process.Pid)
+		if ownerWarning != nil {
+			renderer = renderer.WithWarnings(*ownerWarning)
+		}
+		_ = launchGate.Close()
 	}
 	workerStarted = true
 	// Wait reaps a worker that exits while this caller is still alive. The pipe
@@ -150,6 +171,7 @@ func (a *app) startReservedDetachedNative(ctx context.Context, renderer output.R
 			// parent's exact admission known and terminal when no native
 			// process was accepted.
 			a.settleDetachedAdmission(c, execution.ID, response.reply.Error)
+			response.reply.Error.Warnings = response.reply.Warnings
 			return response.reply.Error
 		}
 		if len(response.reply.Result) == 0 {
@@ -163,12 +185,43 @@ func (a *app) startReservedDetachedNative(ctx context.Context, renderer output.R
 		if err := json.Unmarshal(response.reply.Result, &metadata); err != nil || metadata.ID != execution.ID.String() {
 			return known()
 		}
-		if err := renderer.Success(output.Success{Result: response.reply.Result, NextActions: response.reply.NextActions,
+		if err := renderer.Success(output.Success{Result: response.reply.Result, Warnings: response.reply.Warnings, NextActions: response.reply.NextActions,
 			Lines: []output.Line{{Lead: metadata.ID, Fields: []output.Field{{Name: "state", Value: metadata.State}, {Name: "reused", Value: metadata.Reused}}}}}); err != nil {
 			return output.Wrap(output.CodeInternal, "write detached receipt", false, err)
 		}
 		return nil
 	}
+}
+
+func (a *app) recordQueuedDetachedWorker(c common, id ids.ExecutionID, pid int) *output.Warning {
+	capture := a.queuedWorkerOwner
+	if capture == nil {
+		capture = queuedNativeOwnerLaunch
+	}
+	owner := capture(pid)
+	if owner == nil {
+		return &output.Warning{Code: "admission_identity_unavailable", Message: "Could not establish the detached admission owner's process identity. The worker can still claim the queued execution."}
+	}
+	warning := &output.Warning{Code: "admission_owner_record_failed", Message: "Could not record the detached admission owner's process identity. The worker can still attempt to claim the queued execution."}
+	ctx, cancel := context.WithTimeout(context.Background(), journalBusyAttemptLock)
+	defer cancel()
+	journal, problem := a.openWriteContext(ctx, c)
+	if problem != nil {
+		return warning
+	}
+	defer journal.Close()
+	current, err := journal.GetExecution(ctx, id)
+	if err != nil {
+		return warning
+	}
+	if !current.ProviderQueued() || current.State != model.StateStarting || len(current.SourceBindings) != 0 || current.SourceState != nil || current.OwnerLaunch != nil {
+		return warning
+	}
+	current.OwnerLaunch = owner
+	if _, err := journal.UpdateExecution(ctx, current, current.Revision); err != nil {
+		return warning
+	}
+	return nil
 }
 
 func (a *app) detachedNativeWorker(ctx context.Context) int {
@@ -213,7 +266,7 @@ func (a *app) detachedNativeWorker(ctx context.Context) int {
 	}
 	run := runOptions{resumeSession: payload.ResumeSession, env: payload.Env, adapter: payload.Adapter, cwd: payload.CWD, argv: payload.Argv, labels: payload.Labels,
 		timeout: payload.Timeout, delegation: payload.Binding, mutationOverride: &payload.Mutation, preparedPrompt: &payload.Prompt, started: sendReceipt, reservedExecution: payload.ReservedExecution}
-	problem := a.runNativeOptions(ctx, output.Renderer{Mode: output.JSON, Writer: io.Discard}, c, nil, run)
+	problem := a.runNativeRecovering(ctx, output.Renderer{Mode: output.JSON, Writer: io.Discard}, c, run)
 	if problem != nil {
 		if !sent {
 			if !payload.ReservedExecution.IsZero() {
