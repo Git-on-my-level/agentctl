@@ -139,7 +139,7 @@ func TestChildExitFlagAndContinuationExactlyOnce(t *testing.T) {
 }
 
 func TestChildExitPolicyStates(t *testing.T) {
-	for _, variant := range []string{"no_children", "covered", "disabled", "opencode", "cancelled", "failed", "query_failure"} {
+	for _, variant := range []string{"no_children", "covered", "disabled", "opencode", "opencode_recovery_pending", "cancelled", "failed", "query_failure"} {
 		t.Run(variant, func(t *testing.T) {
 			f := newDelegateFixture(t, continueAgent)
 			code, out := f.invoke("parent task")
@@ -180,6 +180,10 @@ func TestChildExitPolicyStates(t *testing.T) {
 			switch variant {
 			case "opencode":
 				parent.Adapter = "opencode"
+			case "opencode_recovery_pending":
+				parent.Adapter, parent.State = "opencode", model.StateFailed
+				now := time.Now()
+				parent.OpenCodeRecovery = &model.OpenCodeRecovery{Kind: model.OpenCodeRateLimit, Attempt: 1, NotBefore: now.Add(time.Minute), ExpiresAt: now.Add(2 * time.Minute)}
 			case "cancelled":
 				parent.State = model.StateCancelled
 			case "failed":
@@ -222,6 +226,8 @@ func TestChildExitPolicyStates(t *testing.T) {
 				want = "disabled"
 			case "opencode", "query_failure", "failed":
 				want = "unavailable"
+			case "opencode_recovery_pending":
+				want = model.ChildExitOpenCodeRecoveryPending
 			case "cancelled":
 				want = "parent_not_completed"
 			}

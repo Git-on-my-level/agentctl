@@ -56,10 +56,11 @@ func childCollectArgv(c common, id ids.ExecutionID) []string {
 	return append(argv, "await", id.String(), "--content")
 }
 
-// checkChildExit runs before the atomic terminal execution/outcome/event commit,
-// borrowing its journal handle. Query failure remains explicit unknown coverage.
+// checkChildExit borrows the journal handle before committing a terminal or
+// parked execution. Query failure remains explicit unknown coverage.
 func (a *app) checkChildExit(ctx context.Context, c common, journal *store.Journal, execution model.Execution, now time.Time) model.Execution {
-	if execution.Authority != model.AuthorityNative || execution.RemoteForwarded() || !execution.State.Terminal() || refusedAdmission(execution) {
+	parkedCapacity := parkedOpenCodeRateLimitFailure(execution) != nil
+	if execution.Authority != model.AuthorityNative || execution.RemoteForwarded() || (!execution.State.Terminal() && !parkedCapacity) || refusedAdmission(execution) {
 		return execution
 	}
 	queryCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
@@ -90,6 +91,12 @@ func (a *app) checkChildExit(ctx context.Context, c common, journal *store.Journ
 	}
 	execution.UncollectedChildren = children
 	switch {
+	case execution.OpenCodeRecoveryPending(now):
+		// The failure already scheduled a same-session turn. Keep child
+		// collection evidence without starting a competing continuation.
+		guard.AutoContinue = model.ChildExitOpenCodeRecoveryPending
+	case parkedCapacity:
+		guard.AutoContinue = model.ChildExitOpenCodeRecoverySuppressed
 	case execution.AutoContinuationOf != nil:
 		guard.AutoContinue = "suppressed_recursive"
 	case execution.State != model.StateCompleted && execution.State != model.StateFailed:

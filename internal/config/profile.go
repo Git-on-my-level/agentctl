@@ -215,6 +215,14 @@ func cloneProfile(in Profile) Profile {
 			enabled := *grant.ChildExitAutoContinue
 			grant.ChildExitAutoContinue = &enabled
 		}
+		if grant.OpenCodeRateLimitRetry != nil {
+			enabled := *grant.OpenCodeRateLimitRetry
+			grant.OpenCodeRateLimitRetry = &enabled
+		}
+		if grant.OpenCodeFinalAnswerFollowup != nil {
+			enabled := *grant.OpenCodeFinalAnswerFollowup
+			grant.OpenCodeFinalAnswerFollowup = &enabled
+		}
 		out.Delegation = &grant
 	}
 	out.Capacity = cloneCapacity(in.Capacity)

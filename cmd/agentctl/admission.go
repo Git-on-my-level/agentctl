@@ -101,7 +101,13 @@ func admissionWarnings(meta *model.ProviderAdmission) []output.Warning {
 }
 
 func (a *app) waitProviderAdmission(ctx context.Context, c common, execution model.Execution, b admission.Bucket,
-	inbox *cancelInbox, interrupt context.CancelFunc, timeout time.Duration, noStore bool) (model.Execution, *admission.Queue, *output.Error) {
+	inbox *cancelInbox, interrupt context.CancelFunc, timeout time.Duration, claimDeadline time.Time, noStore bool) (model.Execution, *admission.Queue, *output.Error) {
+	executionDeadline, _ := ctx.Deadline()
+	if !claimDeadline.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, claimDeadline)
+		defer cancel()
+	}
 	waitCtx, cancel := context.WithTimeout(ctx, b.Wait())
 	defer cancel()
 	meta := *execution.Admission
@@ -170,7 +176,7 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 		}
 		if meta.Position != execution.Admission.Position || a.now().Sub(execution.Observation.ObservedAt) >= nativeRunnerHeartbeatEvery {
 			refreshCtx, stop := context.WithTimeout(attemptCtx, admission.PollInterval)
-			updated, problem := a.updateProviderAdmission(refreshCtx, c, execution, meta, false, 0)
+			updated, problem := a.updateProviderAdmission(refreshCtx, c, execution, meta, false, nil)
 			expired := refreshCtx.Err() != nil
 			stop()
 			if problem == nil {
@@ -187,7 +193,7 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 		}
 	}
 	a.serviceCancelInbox(inbox, interrupt)
-	if err := ctx.Err(); err != nil {
+	if err := recoveryClaimContextError(ctx, claimDeadline); err != nil {
 		queue.Close()
 		cancelled, problem := a.cancelProviderAdmission(c, execution, meta, noStore, err)
 		return cancelled, nil, problem
@@ -200,8 +206,8 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 			queue = nil
 		}
 	}
-	execution, problem := a.commitProviderAdmission(ctx, c, execution, meta, timeout, inbox, interrupt)
-	if err := ctx.Err(); err != nil {
+	execution, problem := a.commitProviderAdmission(ctx, c, execution, meta, timeout, executionDeadline, inbox, interrupt)
+	if err := recoveryClaimContextError(ctx, claimDeadline); err != nil {
 		queue.Close()
 		cancelled, problem := a.cancelProviderAdmission(c, execution, meta, noStore, err)
 		return cancelled, nil, problem
@@ -217,7 +223,18 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 // The reservation decision ends the capacity wait. Its journal commit has the
 // normal journal retry budget, with short lock attempts so the owner continues
 // to service cancellation before any native child starts.
-func (a *app) commitProviderAdmission(ctx context.Context, c common, execution model.Execution, meta model.ProviderAdmission, timeout time.Duration, inbox *cancelInbox, interrupt context.CancelFunc) (model.Execution, *output.Error) {
+func (a *app) commitProviderAdmission(ctx context.Context, c common, execution model.Execution, meta model.ProviderAdmission, timeout time.Duration, executionDeadline time.Time, inbox *cancelInbox, interrupt context.CancelFunc) (model.Execution, *output.Error) {
+	var deadlineAt *time.Time
+	if timeout > 0 {
+		deadline := meta.GrantedAt.Add(timeout)
+		deadlineAt = &deadline
+	}
+	// A recovery turn stays deadline-free while queued. At grant it must
+	// retain the original deadline so further backoff uses the same budget.
+	if execution.RetryOf != nil && !executionDeadline.IsZero() && (deadlineAt == nil || executionDeadline.Before(*deadlineAt)) {
+		deadline := executionDeadline.UTC()
+		deadlineAt = &deadline
+	}
 	budget := c.journalBusyBudget
 	if budget <= 0 {
 		budget = journalBusyAttemptLock
@@ -226,7 +243,7 @@ func (a *app) commitProviderAdmission(ctx context.Context, c common, execution m
 	defer stop()
 	for {
 		attemptCtx, cancel := context.WithTimeout(writeCtx, admission.PollInterval)
-		current, problem := a.updateProviderAdmission(attemptCtx, c, execution, meta, true, timeout)
+		current, problem := a.updateProviderAdmission(attemptCtx, c, execution, meta, true, deadlineAt)
 		expired := attemptCtx.Err() != nil
 		cancel()
 		a.serviceCancelInbox(inbox, interrupt)
@@ -245,6 +262,9 @@ func (a *app) cancelProviderAdmission(c common, execution model.Execution, meta 
 	}
 	meta.Phase, meta.Position = "cancelled", 0
 	current.Admission = &meta
+	if errors.Is(cause, errOpenCodeRecoveryClaimExpired) {
+		current.SourceState = stringPointer(openCodeRecoveryClaimExpired)
+	}
 	final, err := a.finalizeResult(context.Background(), c, journal, current,
 		adapter.Result{State: adapter.StateCancelled, Error: "cancelled during provider admission"}, a.now().UTC(), noStore)
 	journal.Close()
@@ -255,7 +275,7 @@ func (a *app) cancelProviderAdmission(c common, execution model.Execution, meta 
 	return final, interruptedRunError(cause, final)
 }
 
-func (a *app) updateProviderAdmission(ctx context.Context, c common, execution model.Execution, meta model.ProviderAdmission, granted bool, timeout time.Duration) (model.Execution, *output.Error) {
+func (a *app) updateProviderAdmission(ctx context.Context, c common, execution model.Execution, meta model.ProviderAdmission, granted bool, deadlineAt *time.Time) (model.Execution, *output.Error) {
 	journal, problem := a.openWriteContext(ctx, c)
 	if problem != nil {
 		return execution, problem
@@ -273,9 +293,8 @@ func (a *app) updateProviderAdmission(ctx context.Context, c common, execution m
 	current.UpdatedAt, current.Observation.ObservedAt = now, now
 	if granted {
 		current.SourceState = nil
-		if timeout > 0 {
-			deadline := meta.GrantedAt.Add(timeout)
-			current.DeadlineAt = &deadline
+		if deadlineAt != nil {
+			current.DeadlineAt = deadlineAt
 		}
 	}
 	updated, err := journal.UpdateExecution(ctx, current, current.Revision)

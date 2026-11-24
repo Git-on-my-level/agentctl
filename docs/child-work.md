@@ -224,12 +224,18 @@ an additional 30-minute maximum. Its own execution can be cancelled normally.
 The original parent stays terminal; await/result do not silently redirect to the
 automatic successor. Read `child_exit_guard.continuation_id` to collect that turn.
 
+For a parent with outstanding children, `opencode_recovery_pending` records
+that a scheduled OpenCode recovery will own the next turn.
+`opencode_recovery_suppressed` records that the structured 429 prevented a
+child-collection turn, including when the parent parks for explicit recovery.
+The child snapshot and collection actions remain available in either state.
+
 | Harness / authority | Automatic action after an eligible exited turn with outstanding children |
 | --- | --- |
 | Codex, Cursor, Claude Code, OMP | One native continuation when the recorded recipe and session meet the existing exact-invocation route. Expert `run` without a frozen delegation recipe is flagged only. |
 | ZCode | One native continuation for eligible coding recipes; the existing version check still requires CLI 0.17.0. Disposable read-only sessions cannot resume. |
 | Devin / Devin cloud ACP | One conditional session-load attempt; normal ACP initialization must advertise `loadSession` and verify the frozen configuration. Missing support fails closed, leaving the flag. Print mode has no continuation route. |
-| OpenCode-backed Morph models | One conditional continuation for the verified OpenCode 2.2.6 background-service recipe, preserving #150's version and session-existence checks. Other recipes/versions remain flagged. |
+| OpenCode-backed Morph models | One conditional continuation for the verified OpenCode 2.2.6 or 2.3.2 background-service recipe, preserving #150's version and session-existence checks. Other recipes/versions remain flagged. |
 | OpenClaw, generic process | Flag and inbox actions; no verified native continuation route. |
 | Hermes | Flag and inbox actions; provider-backed continuation remains unverified. |
 | Multica | Multica retains task/run authority. Local native parents can track Multica children; agentctl does not introduce Multica auto-continuation. |

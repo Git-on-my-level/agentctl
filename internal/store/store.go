@@ -359,6 +359,11 @@ func (j *Journal) CreateExecution(ctx context.Context, execution model.Execution
 				return err
 			}
 		}
+		if execution.RetryOf != nil {
+			if err := j.linkOpenCodeRecovery(tx, execution, now); err != nil {
+				return err
+			}
+		}
 		result = execution
 		return nil
 	})
@@ -570,7 +575,9 @@ func validateEventProjection(event model.Event, canonicalProjection []byte) erro
 	if err := model.ValidateBoundedMetadata(projectionValue, 64*1024); err != nil {
 		return fmt.Errorf("%w: canonical semantic projection: %v", ErrEventValidation, err)
 	}
-	expectedKey, normalizedProjection, err := callback.SemanticDedupeKey(event.Adapter, uint32(event.DedupeVersion), projectionValue)
+	// Keep integer metadata exact when checking the original canonical bytes.
+	// Decoding into interface{} first would recanonicalize large integers as floats.
+	expectedKey, normalizedProjection, err := callback.SemanticDedupeKey(event.Adapter, uint32(event.DedupeVersion), json.RawMessage(canonicalProjection))
 	if err != nil {
 		return fmt.Errorf("%w: canonical semantic projection: %v", ErrEventValidation, err)
 	}

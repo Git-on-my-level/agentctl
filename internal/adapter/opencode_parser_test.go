@@ -725,7 +725,21 @@ func TestOpenCodeInvalidRequestRetainsClassifier(t *testing.T) {
 }
 
 func TestOpenCodeProbeGatesResumeOnVerifiedVersion(t *testing.T) {
-	for _, version := range []string{"opencode 2.2.6", "opencode v2.2.6", "opencode 1.17.13", "opencode 2.2.7"} {
+	for _, tt := range []struct {
+		version string
+		want    CapabilityStatus
+	}{
+		{"opencode 2.2.6", CapabilitySupported},
+		{"opencode v2.2.6", CapabilitySupported},
+		{"opencode v2.3.2", CapabilitySupported},
+		{"opencode 2.3.3", CapabilityUnavailable},
+		{"opencode 2.2.7", CapabilityUnavailable},
+		{"opencode 1.17.13", CapabilityUnavailable},
+	} {
+		version := tt.version
+		if supported := OpenCodeResumeVersionSupported(version); supported != (tt.want == CapabilitySupported) {
+			t.Fatalf("%s: allowlist support=%t want %s", version, supported, tt.want)
+		}
 		path := fixtureExecutable(t, `printf '%s\n' '`+version+`'`)
 		got, err := NewOpenCode().Probe(context.Background(), ProbeRequest{Executable: path, Argv: []string{path, "run", "--format", "json", "--", "task"}, PromptDelivery: PromptDeliveryArgv, PromptArgs: 1})
 		if err != nil {
@@ -735,8 +749,8 @@ func TestOpenCodeProbeGatesResumeOnVerifiedVersion(t *testing.T) {
 		for _, c := range got.Capabilities {
 			if c.Name == CapabilityResume {
 				found = true
-				if (c.Status == CapabilitySupported) != OpenCodeResumeVersionSupported(version) {
-					t.Fatalf("%s: %s %s", version, c.Status, c.Reason)
+				if c.Status != tt.want {
+					t.Fatalf("%s: %s %s, want %s", version, c.Status, c.Reason, tt.want)
 				}
 			}
 		}

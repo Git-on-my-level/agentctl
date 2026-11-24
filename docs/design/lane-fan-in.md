@@ -158,6 +158,11 @@ candidate matches when:
   state. Reported as `matched_kind: integrity`; `trigger_at` is
   `observation.observed_at`, falling back to `updated_at` for older evidence.
 
+For automatic OpenCode recovery, pending turns are skipped. The active
+physical turn supplies the state and trigger timestamp, while output keeps
+the logical execution ID and includes `recovery_chain`. Label selectors match
+the logical execution once and check the final turn's acknowledgement.
+
 Remote-forwarding candidates refresh through SSH status **after all journal
 handles close**, with eight concurrent probes, a 3s per-probe bound and a 4s
 remote status scan budget, clipped by the overall wait deadline (SSH pipe
@@ -213,8 +218,9 @@ its next action. `await-any` never prints answer content; collect it with
 
 ### Acknowledgement
 
-Only the returned execution can be acknowledged, and only when it matched as
-a terminal: the stamp has source `await`, exactly as `await` writes it.
+Only the returned logical execution can be acknowledged, and only when it matched as
+a terminal. Collection stamps the physical turns in its recovery chain with
+source `await`, exactly as `await` does.
 Other matches, attention, and integrity results are never acknowledged. With
 `--no-acknowledge` the returned terminal stays in `recent --unreconciled` and
 `inbox`. A label-mode loop therefore drains naturally: each call returns, and

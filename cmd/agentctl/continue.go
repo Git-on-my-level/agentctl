@@ -232,6 +232,9 @@ func (a *app) continuePrepared(ctx context.Context, renderer output.Renderer, c 
 		return output.Wrap(output.CodeInternal, "digest continue key", false, err)
 	}
 	mutation := contracts.MutationKey{Scope: "execution:continue", Key: key, InputDigest: inputDigest}
+	if opts.automaticRecovery {
+		mutation.Scope = "execution:opencode-recovery"
+	}
 	// A retry of the same key and inputs recovers the turn it already
 	// started, whatever has happened to the session since.
 	previous, found, problem := a.findDelegation(ctx, c, mutation)
@@ -241,6 +244,9 @@ func (a *app) continuePrepared(ctx context.Context, renderer output.Renderer, c 
 	if found && !refusedAdmission(previous) {
 		if previous.Delegation == nil {
 			return delegateError(output.CodeInternal, "delegate_binding_missing", "continued execution is missing its resolution binding").WithDetail("execution_id", previous.ID.String())
+		}
+		if len(previous.Supersedes) == 1 {
+			id = previous.Supersedes[0]
 		}
 		if opts.plan {
 			return writeContinuePlan(renderer, id, *previous.Delegation, nil, previous.ID.String(), previous)
@@ -253,6 +259,23 @@ func (a *app) continuePrepared(ctx context.Context, renderer output.Renderer, c 
 		return problem
 	}
 	source, err := journal.GetExecution(ctx, id)
+	if err == nil && !opts.automaticRecovery && automaticOf == nil {
+		if source.OpenCodeRecovery != nil {
+			_, physical, followErr := a.followOpenCodeRecovery(ctx, journal, source)
+			if followErr != nil {
+				err = followErr
+			} else if physical != id {
+				id = physical
+				source, err = journal.GetExecution(ctx, id)
+			}
+		}
+		if err == nil && expiredRecoveryBeforeLaunch(source) {
+			// Keep the cancelled attempt in the reported chain. The native
+			// session is still at the checkpoint of the preceding turn.
+			id = *source.RetryOf
+			source, err = journal.GetExecution(ctx, id)
+		}
+	}
 	var all []model.Execution
 	if err == nil {
 		all, err = journal.ListExecutions(ctx, false)
@@ -267,12 +290,26 @@ func (a *app) continuePrepared(ctx context.Context, renderer output.Renderer, c 
 	if source.Authority != model.AuthorityNative {
 		return continueError(output.CodeCapabilityUnavailable, "continue_authority_unavailable", "only native executions can be continued; Multica owns issue and run continuation", source)
 	}
+	now := a.now()
+	if opts.automaticRecovery {
+		if !source.OpenCodeRecoveryPending(now) || !source.OpenCodeRecovery.Claimed {
+			return continueError(output.CodeConflict, "continue_recovery_claim_inactive", "the automatic recovery claim is no longer active", source)
+		}
+	} else if source.OpenCodeRecoveryPending(now) {
+		return continueError(output.CodeConflict, "continue_recovery_pending", "automatic OpenCode recovery already owns this turn; use await", source)
+	}
 	if !source.State.Terminal() && !source.NativeRecoveryParked() {
 		return continueError(output.CodeInvalidState, "continue_source_running", "the execution is still running; wait for it, or redirect it with steer", source).
 			WithActions(output.NextAction{Label: "Wait for the running turn", Argv: []string{"agentctl", "await", id.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}},
 				output.NextAction{Label: "Inspect steering", Argv: []string{"agentctl", "help", "steer"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 	}
 	recovery := opts.continuationMode == "native" && (source.State == model.StateFailed || source.NativeRecoveryParked())
+	if recovery && !opts.plan && parkedOpenCodeRateLimitFailure(source) != nil &&
+		source.RateLimit != nil && source.RateLimit.NextRetryAt != nil && now.Before(*source.RateLimit.NextRetryAt) {
+		problem := continueError(output.CodeAttentionRequired, "continue_opencode_retry_not_due", "the provider retry window has not opened", source)
+		problem.Retryable = true
+		return problem.WithDetail("rate_limit", source.RateLimit)
+	}
 	if source.State != model.StateCompleted && !recovery {
 		return continueError(output.CodeInvalidState, "continue_source_not_completed", "only a completed turn can be continued; a failed or cancelled turn may not have kept its context", source)
 	}
@@ -318,6 +355,10 @@ func (a *app) continuePrepared(ctx context.Context, renderer output.Renderer, c 
 	}
 	root := continuationRoot(all, source)
 	for _, relative := range continuationSuccessors(all, root) {
+		if relative.ID != source.ID && relative.OpenCodeRecoveryPending(now) {
+			return continueError(output.CodeConflict, "continue_recovery_pending", "automatic OpenCode recovery already owns this session; use await", source).
+				WithDetail("running_execution_id", relative.ID.String())
+		}
 		if relative.ID != source.ID && !relative.State.Terminal() && !relative.NativeRecoveryParked() {
 			return continueError(output.CodeConflict, "continue_in_progress", "a turn in this native session lineage is already running", source).WithDetail("running_execution_id", relative.ID.String())
 		}
@@ -347,7 +388,7 @@ func (a *app) continuePrepared(ctx context.Context, renderer output.Renderer, c 
 			return continueError(output.CodeCapabilityUnavailable, "continue_session_unrecorded", "this execution recorded no native session id, so its exact session cannot be continued", source).WithDetail("adapter", source.Adapter)
 		}
 		if source.Adapter == "opencode" && !verifiedOpenCodeExecution(source) {
-			return continueError(output.CodeCapabilityUnavailable, "continue_opencode_version_unverified", "OpenCode session continuation is verified only for CLI 2.2.6", source)
+			return continueError(output.CodeCapabilityUnavailable, "continue_opencode_version_unverified", "OpenCode session continuation is verified only for CLI 2.2.6 and 2.3.2", source)
 		}
 	}
 	if source.CWD == nil || *source.CWD == "" {
@@ -385,6 +426,11 @@ func (a *app) continuePrepared(ctx context.Context, renderer output.Renderer, c 
 	admissionReused, admissionRecorded := false, false
 	run := runOptions{automaticContinuationOf: automaticOf, collectionWaiter: opts.wait, env: append([]string(nil), plan.Env...), adapter: source.Adapter, cwd: *source.CWD, argv: append([]string(nil), argv...), preparedPrompt: prompt, plan: opts.plan, timeout: opts.timeout, labels: labels,
 		delegation: binding, supersedes: []ids.ExecutionID{id}, mutationOverride: &mutation, admissionReused: &admissionReused, admissionRecorded: &admissionRecorded}
+	if opts.automaticRecovery {
+		run.retryOf = &id
+		run.recoveryLaunched = opts.recoveryLaunched
+		run.recoveryClaimDeadline = source.OpenCodeRecovery.ExpiresAt
+	}
 	if opts.continuationMode == "native" {
 		run.resumeSession = session
 	}
@@ -432,7 +478,7 @@ func (a *app) continuePrepared(ctx context.Context, renderer output.Renderer, c 
 		return a.startDetachedNative(ctx, renderer, detachedCommon, run)
 	}
 	var captured bytes.Buffer
-	problem = a.runNativeOptions(ctx, output.Renderer{Mode: output.JSON, Writer: &captured}, c, nil, run)
+	problem = a.runNativeRecovering(ctx, output.Renderer{Mode: output.JSON, Writer: &captured}, c, run)
 	if problem != nil {
 		if execution, ok, _ := a.findDelegation(context.Background(), c, mutation); ok {
 			problem.WithDetail("execution_id", execution.ID.String())

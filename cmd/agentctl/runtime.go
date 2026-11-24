@@ -33,6 +33,10 @@ import (
 
 type runOptions struct {
 	automaticContinuationOf *ids.ExecutionID
+	retryOf                 *ids.ExecutionID
+	recoveryLaunched        *bool
+	recoveryClaimDeadline   time.Time
+	scheduledRecovery       *model.Execution
 	collectionWaiter        bool
 	detachNative            bool
 	reservedExecution       ids.ExecutionID
@@ -186,7 +190,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	}
 	if runtime.Name() == "opencode" && opts.resumeSession != "" && opts.delegation != nil && opts.delegation.NativePlan != nil {
 		if !adapter.OpenCodeResumeVersionSupported(probe.BackendVersion) {
-			return output.NewError(output.CodeCapabilityUnavailable, "OpenCode session continuation is verified only for CLI 2.2.6", false).WithDetail("diagnostic_code", "continue_opencode_version_unverified")
+			return output.NewError(output.CodeCapabilityUnavailable, "OpenCode session continuation is verified only for CLI 2.2.6 and 2.3.2", false).WithDetail("diagnostic_code", "continue_opencode_version_unverified")
 		}
 		// An admitted continuation selects its recorded session in argv. Future
 		// turns use the frozen, selection-free recipe, so negotiate resume from
@@ -300,6 +304,10 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	mutation := contracts.MutationKey{}
 	execution.Caller = caller
 	execution.AutoContinuationOf = opts.automaticContinuationOf
+	execution.RetryOf = opts.retryOf
+	if opts.retryOf != nil {
+		retainNativeOwner(&execution)
+	}
 	if opts.idempotencyKey != "" {
 		digest, dErr := mutationDigest(runtime.Name(), opts.cwd, opts.argv, opts.labels, opts.noStoreResult, prompt, taskContract)
 		if dErr != nil {
@@ -441,7 +449,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			opts.started(execution, false)
 			opts.started = nil
 		}
-		waited, queue, problem := a.waitProviderAdmission(ownerCtx, c, execution, bucket, cancels, interruptOwner, opts.timeout, opts.noStoreResult)
+		waited, queue, problem := a.waitProviderAdmission(ownerCtx, c, execution, bucket, cancels, interruptOwner, opts.timeout, opts.recoveryClaimDeadline, opts.noStoreResult)
 		if problem != nil {
 			return problem
 		}
@@ -479,13 +487,36 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	if prompt != nil && (prompt.Delivery == "stdin" || prompt.Delivery == adapter.PromptDeliveryStream) {
 		launchRequest.Stdin = prompt.Bytes
 	}
-	var childBound bool
+	var childStarted, childBound bool
 	if slot != nil {
 		launchRequest.BeforeStart = slot.PrepareLaunch
+	}
+	if slot != nil || !opts.recoveryClaimDeadline.IsZero() {
 		launchRequest.OnStarted = func(pid int) error {
+			childStarted = true
+			if slot == nil {
+				return nil
+			}
 			err := slot.BindChild(pid)
 			childBound = err == nil
 			return err
+		}
+	}
+	if !opts.recoveryClaimDeadline.IsZero() {
+		launchRequest.BeforeStart = func(ctx context.Context) error {
+			prelaunch, cancel := context.WithDeadline(ctx, opts.recoveryClaimDeadline)
+			defer cancel()
+			if err := recoveryClaimContextError(prelaunch, opts.recoveryClaimDeadline); err != nil {
+				return err
+			}
+			if slot != nil {
+				err := slot.PrepareLaunch(prelaunch)
+				if cause := recoveryClaimContextError(prelaunch, opts.recoveryClaimDeadline); cause != nil {
+					return cause
+				}
+				return err
+			}
+			return recoveryClaimContextError(prelaunch, opts.recoveryClaimDeadline)
 		}
 	}
 	launch, err := runtime.Launch(launchCtx, launchRequest)
@@ -503,13 +534,22 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		if launchInterrupted(err) {
 			failureState = adapter.StateCancelled
 		}
+		if recoveryClaimLaunchExpired(launchCtx, opts.recoveryClaimDeadline, err, childStarted) {
+			current.SourceState = stringPointer(openCodeRecoveryClaimExpired)
+		}
 		failed, finalizeErr := a.finalizeResult(context.Background(), c, writeJournal, current, nativeLaunchFailure(err, failureState), a.now().UTC(), opts.noStoreResult)
 		writeJournal.Close()
 		if finalizeErr != nil {
 			return mapStoreError("record launch failure outcome", finalizeErr)
 		}
 		a.anxRegisterTerminal(c, failed.ID)
+		if !opts.recoveryClaimDeadline.IsZero() && errors.Is(err, context.DeadlineExceeded) {
+			return interruptedRunError(err, failed)
+		}
 		return mapAdapterError("launch failed", err).WithDetail("execution_id", failed.ID.String())
+	}
+	if opts.recoveryLaunched != nil {
+		*opts.recoveryLaunched = true
 	}
 	// Native launches are same-process owned. Any return path must reap the
 	// child, including journal or renderer failures, so foreground fan-out and
@@ -635,19 +675,28 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 				return openProblem
 			}
 			if launchCtx.Err() == nil {
-				parked, didPark, parkErr := a.parkNativeFailure(writeJournal, current, result)
-				if parkErr != nil || didPark {
-					writeJournal.Close()
-					if parkErr != nil {
-						return mapStoreError("park native transient failure", parkErr)
+				autoCapacity := false
+				if opts.scheduledRecovery != nil && waitErr == nil {
+					current.OpenCodeRecovery, autoCapacity = a.planOpenCodeRecovery(c, writeJournal, current, result)
+				}
+				if !autoCapacity {
+					parked, didPark, parkErr := a.parkNativeFailure(c, writeJournal, current, result)
+					if parkErr != nil || didPark {
+						writeJournal.Close()
+						if parkErr != nil {
+							return mapStoreError("park native transient failure", parkErr)
+						}
+						return writeExecution(renderer, parked, "run")
 					}
-					return writeExecution(renderer, parked, "run")
 				}
 			}
 			execution, err = a.finalizeResultConverging(context.Background(), c, writeJournal, current, result, a.now().UTC(), opts.noStoreResult)
 			writeJournal.Close()
 			if err != nil {
 				return mapStoreError("record terminal result", err)
+			}
+			if opts.scheduledRecovery != nil && current.OpenCodeRecovery != nil && execution.OpenCodeRecoveryPending(a.now()) {
+				*opts.scheduledRecovery = execution
 			}
 			a.anxRegisterTerminal(c, execution.ID)
 			if launchCtx.Err() != nil && execution.State != model.StateCompleted {
@@ -1784,6 +1833,32 @@ func (a *app) cancelNative(ctx context.Context, renderer output.Renderer, c comm
 	if orphanIfGone {
 		return a.orphanNativeIfGone(ctx, renderer, c, execution.ID)
 	}
+	if execution.OpenCodeRecovery != nil {
+		journal, problem = a.openWriteContext(ctx, c)
+		if problem != nil {
+			return problem
+		}
+		var physical ids.ExecutionID
+		execution, err = journal.GetExecution(ctx, id)
+		if err == nil {
+			execution, physical, err = a.followOpenCodeRecovery(ctx, journal, execution)
+		}
+		if err == nil {
+			execution, err = journal.GetExecution(ctx, physical)
+		}
+		stopped := err == nil && execution.OpenCodeRecoveryPending(a.now())
+		if stopped {
+			execution, err = stopOpenCodeRecovery(ctx, journal, execution, a.now().UTC())
+		}
+		journal.Close()
+		if err != nil {
+			return mapStoreError("cancel automatic recovery", err)
+		}
+		if stopped {
+			return writeExecution(renderer, execution, "cancel", output.Warning{Code: "opencode_recovery_cancelled", Message: "Stopped the pending automatic OpenCode recovery"})
+		}
+		id = physical
+	}
 	if execution.State == model.StateCancelled && execution.Authority != model.AuthorityMultica {
 		return writeExecution(renderer, execution, "cancel")
 	}
@@ -2238,6 +2313,12 @@ func (a *app) finalizeResult(ctx context.Context, c common, journal *store.Journ
 		execution.TokenUsage = &model.TokenUsage{Input: result.TokenUsage.Input, Output: result.TokenUsage.Output, CacheRead: result.TokenUsage.CacheRead, CacheWrite: result.TokenUsage.CacheWrite, Reasoning: result.TokenUsage.Reasoning, Saturated: result.TokenUsage.Saturated}
 	}
 	execution = a.checkChildExit(ctx, c, journal, execution, now)
+	if guard := execution.ChildExitGuard; guard != nil && guard.AutoContinue == "pending" &&
+		execution.Adapter == "opencode" && openCodeCapacityFailure(result) {
+		// Keep the outstanding-child receipt without sending another prompt
+		// when backoff, the retry cap, or the deadline ruled out recovery.
+		guard.AutoContinue = model.ChildExitOpenCodeRecoverySuppressed
+	}
 	outcome := buildOutcome(execution, result, now, noStoreResult)
 	outcome.ChildExitRecheck = execution.ChildExitRecheck
 	outcome.UncollectedChildren = execution.UncollectedChildren
@@ -2255,6 +2336,13 @@ func (a *app) finalizeResult(ctx context.Context, c common, journal *store.Journ
 	for _, key := range []string{"diagnostic_code", "parse_diagnostic_code", "result_content_source", "terminal_source_state", "session_url"} {
 		if value, ok := result.Data[key].(string); ok && strings.TrimSpace(value) != "" {
 			payload[key] = value
+		}
+	}
+	if execution.Adapter == "opencode" && outcome.Failure != nil && outcome.Failure.Code == "provider_capacity" {
+		for _, key := range []string{"http_status", "retry_after_ms"} {
+			if value, ok := nativeMetadataInt(result.Data[key]); ok {
+				payload[key] = value
+			}
 		}
 	}
 	// ACP session settings the client verified, or the one it could not.
@@ -2361,19 +2449,20 @@ func boundedOutcomeText(value string, max int) (string, bool) {
 }
 
 const (
-	failureMessageCapacity    = "Selected model is at capacity. Please try a different model."
-	failureMessageTrust       = "workspace trust required"
-	failureMessageAuth        = "authentication required"
-	failureMessageApproval    = "approval required"
-	failureMessageQuota       = "quota or rate limit exceeded"
-	failureMessageUnextracted = "native process exited cleanly without an explicit structured terminal result"
-	failureMessageOpenCode    = "opencode exited before emitting any event"
-	failureMessageDetached    = "detached worker failed before native process start"
-	failureMessageProbe       = "native version probe failed"
-	failureMessageProbeTime   = "native version probe timed out; the host may be overloaded"
-	failureMessageProbeKeys   = "native version probe requires an unlocked macOS login keychain"
-	failureMessageJournalBusy = "journal remained busy before native process start"
-	failureMessageGeneric     = "native execution failed"
+	failureMessageCapacity          = "Selected model is at capacity. Please try a different model."
+	failureMessageOpenCodeRateLimit = "Provider rate limit (HTTP 429): retry later; switching models is not required."
+	failureMessageTrust             = "workspace trust required"
+	failureMessageAuth              = "authentication required"
+	failureMessageApproval          = "approval required"
+	failureMessageQuota             = "quota or rate limit exceeded"
+	failureMessageUnextracted       = "native process exited cleanly without an explicit structured terminal result"
+	failureMessageOpenCode          = "opencode exited before emitting any event"
+	failureMessageDetached          = "detached worker failed before native process start"
+	failureMessageProbe             = "native version probe failed"
+	failureMessageProbeTime         = "native version probe timed out; the host may be overloaded"
+	failureMessageProbeKeys         = "native version probe requires an unlocked macOS login keychain"
+	failureMessageJournalBusy       = "journal remained busy before native process start"
+	failureMessageGeneric           = "native execution failed"
 )
 
 // allowlistedFailureMessage returns constant diagnostic templates. Legacy
@@ -2398,6 +2487,10 @@ func allowlistedFailureMessage(failure model.OutcomeFailure) string {
 	case "opencode_provider_invalid_request":
 		return "OpenCode provider rejected the request"
 	case "provider_capacity":
+		// This OpenCode classification requires structured numeric HTTP 429.
+		if failure.Source == "opencode" && failure.Category == "capacity" {
+			return failureMessageOpenCodeRateLimit
+		}
 		return failureMessageCapacity
 	case "workspace_trust_required":
 		return failureMessageTrust
@@ -2612,6 +2705,11 @@ func appendNativeEvent(ctx context.Context, journal *store.Journal, execution mo
 	}
 	payload := safeNativePayload(native.Payload)
 	projection := map[string]any{"authority_scope": execution.Authority, "source_fingerprint": sourceRef(execution).Fingerprint, "kind": kind, "source_state": native.SourceState, "source_position": native.Cursor, "state": state, "payload": payload}
+	if execution.Adapter == "opencode" && len(execution.Supersedes) != 0 {
+		// OpenCode reuses the native session ID across turns, but each CLI
+		// stream starts its event cursor from the beginning.
+		projection["execution_fingerprint"] = execution.ID.String()
+	}
 	key, canonical, err := callback.SemanticDedupeKey(execution.Adapter, 1, projection)
 	if err != nil {
 		return model.Execution{}, &nativeEventWriteError{stage: "semantic_projection", cause: err}

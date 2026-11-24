@@ -134,6 +134,11 @@ exit snapshots, warnings and inbox visibility remain active. See
 [the exit safeguard](child-work.md#native-exit-safeguard) for harness routes,
 waiter evidence, and cancellation bounds.
 
+`delegation.opencode_rate_limit_retry` and
+`delegation.opencode_final_answer_followup` default to `true` for eligible
+native OpenCode delegates. Set either to `false` to disable the corresponding
+[automatic recovery path](follow-up-turns.md#automatic-opencode-recovery).
+
 `delegation.unattended_coding_permissions` is a separate boolean grant that
 lets `delegate` add Cursor `--force`, Codex
 `--dangerously-bypass-approvals-and-sandbox`, Claude Code

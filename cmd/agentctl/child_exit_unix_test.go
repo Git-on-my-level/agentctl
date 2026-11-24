@@ -23,7 +23,7 @@ func TestChildExitThroughBuiltBinary(t *testing.T) {
 	if out, err := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v %s", err, out)
 	}
-	for _, variant := range []string{"resume_once", "disabled", "without_children", "failed_turn", "timeout", "opencode", "opencode_unverified", "codex_failed"} {
+	for _, variant := range []string{"resume_once", "disabled", "without_children", "failed_turn", "timeout", "opencode", "opencode_unverified", "opencode_throttled_deadline", "codex_failed"} {
 		t.Run(variant, func(t *testing.T) {
 			f := newDelegateFixture(t, "")
 			if strings.HasPrefix(variant, "opencode") || variant == "codex_failed" {
@@ -55,7 +55,7 @@ func TestChildExitThroughBuiltBinary(t *testing.T) {
 				script = strings.Replace(script, "echo launch >>", "if [ \"$1\" = session ]; then exit 0; fi\necho launch >>", 1)
 			}
 			if variant == "timeout" {
-				script += "sleep 2\n"
+				script += "sleep 10\n"
 			}
 			if variant == "codex_failed" {
 				script += `case " $* " in
@@ -64,6 +64,8 @@ func TestChildExitThroughBuiltBinary(t *testing.T) {
 esac` + "\n"
 			} else if variant == "failed_turn" {
 				script += "printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"result\":\"parent stopped\"}'\nexit 1\n"
+			} else if variant == "opencode_throttled_deadline" {
+				script += `printf '%s\n' '{"type":"error","sessionID":"s1","error":{"type":"provider.rate-limit","status":429}}'; exit 1` + "\n"
 			} else if strings.HasPrefix(variant, "opencode") {
 				script += `printf '%s\n' '{"type":"step_start","sessionID":"s1","part":{"type":"step-start"}}' '{"type":"text","sessionID":"s1","part":{"type":"text","text":"parent answer","time":{"end":1}}}' '{"type":"step_finish","sessionID":"s1","part":{"type":"step-finish","reason":"stop"}}'` + "\n"
 			} else {
@@ -85,7 +87,12 @@ esac` + "\n"
 			}
 			args := []string{"--config", f.config, "--journal", f.journal, "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin"}
 			if variant == "timeout" {
-				args = append(args, "--timeout", "700ms")
+				// Leave time for the nested CLI to launch and record its child
+				// before testing timeout of the parent turn.
+				args = append(args, "--timeout", "5s")
+			}
+			if variant == "opencode_throttled_deadline" {
+				args = append(args, "--timeout", "10s")
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -133,6 +140,13 @@ esac` + "\n"
 			}
 			if parent.ChildExitGuard == nil || len(parent.UncollectedChildren) != 1 {
 				t.Fatalf("parent guard=%+v children=%+v output=%s", parent.ChildExitGuard, parent.UncollectedChildren, out)
+			}
+			if variant == "opencode_throttled_deadline" {
+				if !parent.NativeRecoveryParked() || *parent.SourceState != "paused_capacity" || parent.OpenCodeRecovery != nil ||
+					parent.ChildExitGuard.AutoContinue != model.ChildExitOpenCodeRecoverySuppressed || len(auto) != 0 {
+					t.Fatalf("child collection bypassed 429 backoff: %+v", parent.ChildExitGuard)
+				}
+				return
 			}
 			outcome, err := j.GetOutcome(context.Background(), parent.ID)
 			if err != nil || len(outcome.UncollectedChildren) != 1 {

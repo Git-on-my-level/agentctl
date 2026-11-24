@@ -37,8 +37,9 @@ const (
 
 type app struct {
 	// Tests inject worker creation/receipt faults without launching a native CLI.
-	startDetachedWorker func(*exec.Cmd) error
-	queuedWorkerOwner   func(int) *model.LaunchIdentity
+	startDetachedWorker   func(*exec.Cmd) error
+	queuedWorkerOwner     func(int) *model.LaunchIdentity
+	openCodeRecoveryDelay func(attempt int, retryAfterMS int64) time.Duration
 	// nativeEventWriter injects storage faults in lifecycle tests; nil uses the journal.
 	nativeEventWriter func(context.Context, *store.Journal, model.Execution, adapter.Event) (model.Execution, error)
 
@@ -665,16 +666,20 @@ func (a *app) status(ctx context.Context, renderer output.Renderer, c common, ar
 		journal.Close()
 		return a.statusRemote(ctx, renderer, execution)
 	}
+	execution, physical, err := a.followOpenCodeRecovery(ctx, journal, execution)
+	if err != nil {
+		return mapStoreError("read automatic recovery chain", err)
+	}
 	var acknowledgement *store.ExecutionAcknowledgement
-	ack, ackErr := journal.GetAcknowledgement(ctx, id)
+	ack, ackErr := journal.GetAcknowledgement(ctx, physical)
 	if ackErr == nil {
 		acknowledgement = &ack
 	} else if !errors.Is(ackErr, store.ErrNotFound) {
 		return mapStoreError("read execution acknowledgement", ackErr)
 	}
-	opts := executionWriteOptions{acknowledgement: acknowledgement}
+	opts := executionWriteOptions{acknowledgement: acknowledgement, failure: parkedOpenCodeRateLimitFailure(execution)}
 	if execution.State == model.StateFailed {
-		outcome, err := journal.GetOutcome(ctx, id)
+		outcome, err := journal.GetOutcome(ctx, physical)
 		if err == nil {
 			opts.failure = projectNativeFailure(outcome.Failure)
 		} else if !errors.Is(err, store.ErrNotFound) {
@@ -826,7 +831,15 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 		return problem
 	}
 	defer journal.Close()
-	execution, outcome, problem := dereferenceResult(ctx, journal, id, opts, renderer.Mode)
+	execution, err := journal.GetExecution(ctx, id)
+	if err != nil {
+		return mapStoreError("read execution result", err)
+	}
+	execution, physical, err := a.followOpenCodeRecovery(ctx, journal, execution)
+	if err != nil {
+		return mapStoreError("read automatic recovery chain", err)
+	}
+	outcome, problem := executionResult(ctx, journal, execution, physical, opts, renderer.Mode)
 	if problem != nil {
 		return problem
 	}
@@ -838,7 +851,7 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 		if _, err := io.WriteString(a.stdout, outcome.Content.Text); err != nil {
 			return output.Wrap(output.CodeInternal, "write result content", false, err)
 		}
-		if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementResult); problem != nil {
+		if problem := a.acknowledgeRecoveredExecution(ctx, c, execution, physical, store.AcknowledgementResult); problem != nil {
 			_, _ = fmt.Fprintln(a.stderr, "agentctl: result delivered but acknowledgement failed:", problem)
 		}
 		return nil
@@ -846,36 +859,42 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 	if problem := writeExecutionOutcome(renderer, execution, outcome); problem != nil {
 		return problem
 	}
-	if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementResult); problem != nil {
+	if problem := a.acknowledgeRecoveredExecution(ctx, c, execution, physical, store.AcknowledgementResult); problem != nil {
 		_, _ = fmt.Fprintln(a.stderr, "agentctl: result delivered but acknowledgement failed:", problem)
 	}
 	return nil
 }
 
-// dereferenceResult is the single-execution result contract. Batch collection
-// routes through it unchanged so conflicted evidence, nonterminal state, and
-// --allow-empty behave identically whether one id or a set was requested.
-func dereferenceResult(ctx context.Context, journal *store.Journal, id ids.ExecutionID, opts resultOptions, mode output.Mode) (model.Execution, model.Outcome, *output.Error) {
-	execution, err := journal.GetExecution(ctx, id)
-	if err != nil {
-		return model.Execution{}, model.Outcome{}, mapStoreError("read execution result", err)
+func executionResult(ctx context.Context, journal *store.Journal, execution model.Execution, physical ids.ExecutionID, opts resultOptions, mode output.Mode) (model.Outcome, *output.Error) {
+	outcome, problem := physicalExecutionResult(ctx, journal, execution, physical, opts, mode)
+	if problem != nil {
+		return outcome, withRecoveryChain(problem, execution)
 	}
+	if physical != execution.ID {
+		outcome.ExecutionID = execution.ID
+		outcome.ResultRef = fmt.Sprintf("agentctl://%s/%s", execution.OriginHostID, execution.ID)
+	}
+	return outcome, nil
+}
+
+func physicalExecutionResult(ctx context.Context, journal *store.Journal, execution model.Execution, physical ids.ExecutionID, opts resultOptions, mode output.Mode) (model.Outcome, *output.Error) {
+	id := execution.ID
 	if execution.Observation.Integrity == model.IntegrityConflicted {
-		return execution, model.Outcome{}, outcomeError(output.CodeUnknownState, "execution evidence is conflicted", execution)
+		return model.Outcome{}, outcomeError(output.CodeUnknownState, "execution evidence is conflicted", execution)
 	}
 	if !execution.State.Terminal() {
 		problem := output.NewError(output.CodeInvalidState, "execution is not terminal", false).WithDetail("execution_id", id.String()).WithDetail("state", execution.State).WithDetail("last_operation_failure", execution.LastOperationFailure)
 		if execution.State == model.StateAttention {
 			// A plain wait stops on attention, so recommending it here would
 			// return attention_required immediately and loop the caller.
-			return execution, model.Outcome{}, problem.WithActions(attentionNextActions(mode, execution)...)
+			return model.Outcome{}, problem.WithActions(attentionNextActions(mode, execution)...)
 		}
 		if execution.State == model.StateStarting && execution.LastOperationFailure != nil {
-			return execution, model.Outcome{}, problem.WithActions(output.NextAction{Label: "Inspect dispatch failure before replaying the original key and inputs", Argv: []string{"agentctl", "status", id.String()}, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
+			return model.Outcome{}, problem.WithActions(output.NextAction{Label: "Inspect dispatch failure before replaying the original key and inputs", Argv: []string{"agentctl", "status", id.String()}, SideEffectClass: output.ReadOnly, Preconditions: []string{}})
 		}
-		return execution, model.Outcome{}, problem.WithActions(output.NextAction{Label: "Wait for completion or attention", Argv: []string{"agentctl", "await", id.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}})
+		return model.Outcome{}, problem.WithActions(output.NextAction{Label: "Wait for completion or attention", Argv: []string{"agentctl", "await", id.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{}})
 	}
-	outcome, err := journal.GetOutcome(ctx, id)
+	outcome, err := journal.GetOutcome(ctx, physical)
 	if errors.Is(err, store.ErrNotFound) {
 		recordedAt := execution.UpdatedAt
 		if execution.TerminalAt != nil {
@@ -887,7 +906,7 @@ func dereferenceResult(ctx context.Context, journal *store.Journal, id ids.Execu
 		}
 		outcome = model.Outcome{SchemaVersion: model.SchemaVersion, ExecutionID: id, Revision: 1, State: execution.State, Availability: availability, RecordedAt: recordedAt, Source: execution.Adapter, ResultRef: fmt.Sprintf("agentctl://%s/%s", execution.OriginHostID, execution.ID)}
 	} else if err != nil {
-		return execution, model.Outcome{}, mapStoreError("read execution outcome", err)
+		return model.Outcome{}, mapStoreError("read execution outcome", err)
 	}
 	if outcome.Availability == model.OutcomeUnavailableAtSource && outcome.UnavailableReason == "" {
 		outcome.UnavailableReason = "native_answer_missing"
@@ -896,7 +915,7 @@ func dereferenceResult(ctx context.Context, journal *store.Journal, id ids.Execu
 		}
 	}
 	if opts.requireContent && outcome.Content == nil && outcome.Failure == nil {
-		return execution, outcome, output.NewError(output.CodeNotFound, "execution has no stored result content", false).WithDetail("execution_id", id.String()).WithDetail("availability", outcome.Availability).WithDetail("unavailable_reason", outcome.UnavailableReason)
+		return outcome, output.NewError(output.CodeNotFound, "execution has no stored result content", false).WithDetail("execution_id", id.String()).WithDetail("availability", outcome.Availability).WithDetail("unavailable_reason", outcome.UnavailableReason)
 	}
 	if opts.requireSource != "" {
 		if outcome.Content == nil || !resultSourceSatisfies(outcome.Content.Source, opts.requireSource) {
@@ -904,7 +923,7 @@ func dereferenceResult(ctx context.Context, journal *store.Journal, id ids.Execu
 			if outcome.Content != nil {
 				actual = outcome.Content.Source
 			}
-			return execution, outcome, output.NewError(output.CodeInvalidState, "result content source does not satisfy requirement", false).WithDetail("execution_id", id.String()).WithDetail("required_source", opts.requireSource).WithDetail("actual_source", actual)
+			return outcome, output.NewError(output.CodeInvalidState, "result content source does not satisfy requirement", false).WithDetail("execution_id", id.String()).WithDetail("required_source", opts.requireSource).WithDetail("actual_source", actual)
 		}
 	}
 	if opts.minResultBytes > 0 && (outcome.Content == nil || outcome.Content.Bytes < opts.minResultBytes) {
@@ -912,7 +931,7 @@ func dereferenceResult(ctx context.Context, journal *store.Journal, id ids.Execu
 		if outcome.Content != nil {
 			actual = outcome.Content.Bytes
 		}
-		return execution, outcome, output.NewError(output.CodeInvalidState, "result content is shorter than required", false).WithDetail("execution_id", id.String()).WithDetail("minimum_bytes", opts.minResultBytes).WithDetail("actual_bytes", actual)
+		return outcome, output.NewError(output.CodeInvalidState, "result content is shorter than required", false).WithDetail("execution_id", id.String()).WithDetail("minimum_bytes", opts.minResultBytes).WithDetail("actual_bytes", actual)
 	}
 	if opts.summary && outcome.Content != nil {
 		bounded := *outcome.Content
@@ -923,21 +942,22 @@ func dereferenceResult(ctx context.Context, journal *store.Journal, id ids.Execu
 		}
 		outcome.Content = &bounded
 	}
-	return execution, outcome, nil
+	return outcome, nil
 }
 
 type unreconciledResultItem struct {
-	ExecutionID  string          `json:"execution_id"`
-	Labels       []string        `json:"labels"`
-	Adapter      string          `json:"adapter"`
-	Authority    model.Authority `json:"authority"`
-	State        model.State     `json:"state"`
-	TerminalAt   *time.Time      `json:"terminal_at,omitempty"`
-	Status       string          `json:"status"`
-	Acknowledged bool            `json:"acknowledged"`
-	Outcome      *model.Outcome  `json:"outcome,omitempty"`
-	SkipReason   string          `json:"skip_reason,omitempty"`
-	SkipMessage  string          `json:"skip_message,omitempty"`
+	ExecutionID   string            `json:"execution_id"`
+	Labels        []string          `json:"labels"`
+	Adapter       string            `json:"adapter"`
+	Authority     model.Authority   `json:"authority"`
+	State         model.State       `json:"state"`
+	TerminalAt    *time.Time        `json:"terminal_at,omitempty"`
+	Status        string            `json:"status"`
+	Acknowledged  bool              `json:"acknowledged"`
+	Outcome       *model.Outcome    `json:"outcome,omitempty"`
+	RecoveryChain []ids.ExecutionID `json:"recovery_chain,omitempty"`
+	SkipReason    string            `json:"skip_reason,omitempty"`
+	SkipMessage   string            `json:"skip_message,omitempty"`
 }
 
 // resultUnreconciled collects the terminal executions whose result nobody has
@@ -979,7 +999,20 @@ func (a *app) resultUnreconciled(ctx context.Context, renderer output.Renderer, 
 	total := 0
 	for i := end - 1; i >= 0; i-- {
 		execution := executions[i]
-		if !acks.Unreconciled(execution) {
+		if execution.RetryOf != nil {
+			continue
+		}
+		eligibility := execution
+		if execution.OpenCodeRecovery != nil {
+			logical, physical, err := a.followOpenCodeRecovery(ctx, journal, execution)
+			if err == nil && logical.State.Terminal() {
+				// Older or physical-turn collectors may have stamped only
+				// one member. Eligibility follows the delivered outcome.
+				logical.ID = physical
+				eligibility = logical
+			}
+		}
+		if !acks.Unreconciled(eligibility) {
 			continue
 		}
 		matched := true
@@ -1005,7 +1038,15 @@ func (a *app) resultUnreconciled(ctx context.Context, renderer output.Renderer, 
 			labels = []string{}
 		}
 		item := unreconciledResultItem{ExecutionID: execution.ID.String(), Labels: labels, Adapter: execution.Adapter, Authority: execution.Authority, State: execution.State, TerminalAt: execution.TerminalAt}
-		_, outcome, problem := dereferenceResult(ctx, journal, execution.ID, opts, renderer.Mode)
+		logical, physical, err := a.followOpenCodeRecovery(ctx, journal, execution)
+		var outcome model.Outcome
+		var problem *output.Error
+		if err != nil {
+			problem = mapStoreError("read automatic recovery chain", err)
+		} else {
+			item.State, item.TerminalAt, item.RecoveryChain = logical.State, logical.TerminalAt, logical.RecoveryChain
+			outcome, problem = executionResult(ctx, journal, logical, physical, opts, renderer.Mode)
+		}
 		if problem != nil {
 			item.Status = "skipped"
 			item.SkipReason = string(problem.Code)
@@ -1016,7 +1057,7 @@ func (a *app) resultUnreconciled(ctx context.Context, renderer output.Renderer, 
 		bounded := outcome
 		item.Status = "collected"
 		item.Outcome = &bounded
-		collect = append(collect, execution.ID)
+		collect = append(collect, collectionIDs(logical, physical)...)
 		items = append(items, item)
 	}
 	_ = journal.Close()
@@ -1266,7 +1307,7 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		deadline = a.now().Add(timeout)
 	}
 	var waiter *store.Waiter
-	waiterAttempted := false
+	var waiterID ids.ExecutionID
 	defer func() {
 		if waiter != nil {
 			_ = waiter.Close()
@@ -1292,15 +1333,22 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 			return a.fail(renderer, openErr)
 		}
 		execution, err := journal.GetExecution(ctx, id)
+		physical := id
+		if err == nil {
+			execution, physical, err = a.followOpenCodeRecovery(ctx, journal, execution)
+		}
 		_ = journal.Close()
 		if err != nil {
 			return a.fail(renderer, mapStoreError("read awaited execution", err))
 		}
-		if !waiterAttempted && !execution.State.Terminal() && execution.Observation.Integrity != model.IntegrityConflicted {
+		if waiterID != physical && !execution.State.Terminal() && execution.Observation.Integrity != model.IntegrityConflicted {
 			// Coverage evidence is best effort; a read-only/full state volume
 			// must not break the primary wait. Unknown coverage stays actionable.
-			waiterAttempted = true
-			waiter, _ = store.RegisterWaiter(ctx, journal.Path(), id)
+			if waiter != nil {
+				_ = waiter.Close()
+			}
+			waiterID = physical
+			waiter, _ = store.RegisterWaiter(ctx, journal.Path(), physical)
 		}
 		poll = nextAwaitPoll(poll, execution.Revision != lastRevision)
 		lastRevision = execution.Revision
@@ -1325,6 +1373,9 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		if execution.Observation.Integrity == model.IntegrityConflicted {
 			return a.fail(renderer, outcomeError(output.CodeUnknownState, "execution evidence is conflicted", execution))
 		}
+		if len(execution.RecoveryChain) > 1 && execution.State == model.StateStarting && execution.Liveness == model.LivenessUnreachable {
+			return a.fail(renderer, outcomeError(output.CodeExecutionUnknown, "OpenCode recovery owner exited before recording the native launch", execution))
+		}
 		if execution.Authority == model.AuthorityMultica && execution.State.Terminal() {
 			// Await is a mutating observation path. Queue lifecycle evidence
 			// before collection; the helper never acknowledges the result.
@@ -1333,24 +1384,28 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		switch execution.State {
 		case model.StateCompleted:
 			if contentOnly {
-				if problem := a.writeAwaitContent(ctx, renderer, c, id); problem != nil {
-					return a.fail(renderer, problem)
+				if problem := a.writeAwaitContent(ctx, renderer, c, execution, physical); problem != nil {
+					return a.fail(renderer, withRecoveryChain(problem, execution))
 				}
 				return 0
 			}
 			if problem := writeExecution(renderer, execution, "await"); problem != nil {
 				return a.fail(renderer, problem)
 			}
-			if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementAwait); problem != nil {
+			if problem := a.acknowledgeRecoveredExecution(ctx, c, execution, physical, store.AcknowledgementAwait); problem != nil {
 				_, _ = fmt.Fprintln(a.stderr, "agentctl: terminal state delivered but acknowledgement failed:", problem)
 			}
 			return 0
 		case model.StateFailed:
-			return a.deliverAwaitError(ctx, renderer, c, id, store.AcknowledgementAwait, outcomeError(output.CodeExecutionFailed, "execution failed", execution))
+			problem := outcomeError(output.CodeExecutionFailed, "execution failed", execution)
+			if execution.Adapter == "opencode" {
+				a.attachNativeFailure(ctx, c, physical, problem)
+			}
+			return a.deliverAwaitError(ctx, renderer, c, execution, physical, problem)
 		case model.StateCancelled:
-			return a.deliverAwaitError(ctx, renderer, c, id, store.AcknowledgementAwait, outcomeError(output.CodeExecutionCancelled, "execution was cancelled", execution))
+			return a.deliverAwaitError(ctx, renderer, c, execution, physical, outcomeError(output.CodeExecutionCancelled, "execution was cancelled", execution))
 		case model.StateOrphaned:
-			return a.deliverAwaitError(ctx, renderer, c, id, store.AcknowledgementAwait, outcomeError(output.CodeExecutionUnknown, "execution is orphaned", execution))
+			return a.deliverAwaitError(ctx, renderer, c, execution, physical, outcomeError(output.CodeExecutionUnknown, "execution is orphaned", execution))
 		case model.StateAttention:
 			if stopAttention {
 				// The stop is only useful if the caller can escape it: point at
@@ -1404,23 +1459,23 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 
 // Content collection succeeds only after delivery; missing content and output
 // errors leave the terminal visible for recovery through recent --unreconciled.
-func (a *app) writeAwaitContent(ctx context.Context, renderer output.Renderer, c common, id ids.ExecutionID) *output.Error {
+func (a *app) writeAwaitContent(ctx context.Context, renderer output.Renderer, c common, execution model.Execution, id ids.ExecutionID) *output.Error {
 	journal, problem := a.openRead(c)
 	if problem != nil {
 		return problem
 	}
-	_, outcome, problem := dereferenceResult(ctx, journal, id, resultOptions{requireContent: true}, renderer.Mode)
+	outcome, problem := executionResult(ctx, journal, execution, id, resultOptions{requireContent: true}, renderer.Mode)
 	journal.Close()
 	if problem != nil {
 		return problem
 	}
 	if outcome.Content == nil {
-		return output.NewError(output.CodeNotFound, "execution has no stored text content", false).WithDetail("execution_id", id.String()).WithDetail("availability", outcome.Availability).WithDetail("unavailable_reason", outcome.UnavailableReason)
+		return output.NewError(output.CodeNotFound, "execution has no stored text content", false).WithDetail("execution_id", execution.ID.String()).WithDetail("availability", outcome.Availability).WithDetail("unavailable_reason", outcome.UnavailableReason)
 	}
 	if _, err := io.WriteString(renderer.Writer, outcome.Content.Text); err != nil {
 		return output.Wrap(output.CodeInternal, "write awaited content", false, err)
 	}
-	if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementAwait); problem != nil {
+	if problem := a.acknowledgeRecoveredExecution(ctx, c, execution, id, store.AcknowledgementAwait); problem != nil {
 		_, _ = fmt.Fprintln(a.stderr, "agentctl: answer delivered but acknowledgement failed:", problem)
 	}
 	return nil
@@ -1436,12 +1491,12 @@ func boolCount(values ...bool) int {
 	return count
 }
 
-func (a *app) deliverAwaitError(ctx context.Context, renderer output.Renderer, c common, id ids.ExecutionID, source string, problem *output.Error) int {
+func (a *app) deliverAwaitError(ctx context.Context, renderer output.Renderer, c common, execution model.Execution, id ids.ExecutionID, problem *output.Error) int {
 	exitCode := a.fail(renderer, problem)
 	if exitCode != problem.ExitCode {
 		return exitCode
 	}
-	if acknowledgement := a.acknowledgeExecution(ctx, c, id, source); acknowledgement != nil {
+	if acknowledgement := a.acknowledgeRecoveredExecution(ctx, c, execution, id, store.AcknowledgementAwait); acknowledgement != nil {
 		_, _ = fmt.Fprintln(a.stderr, "agentctl: terminal state delivered but acknowledgement failed:", acknowledgement)
 	}
 	return exitCode
@@ -1492,15 +1547,13 @@ func (a *app) waitOpenContext(ctx context.Context, deadline time.Time) (context.
 }
 
 func (a *app) acknowledgeExecution(ctx context.Context, c common, id ids.ExecutionID, source string) *output.Error {
-	journal, problem := a.openWriteContext(ctx, c)
-	if problem != nil {
-		return problem
-	}
-	defer journal.Close()
-	if _, _, err := journal.AcknowledgeExecution(ctx, id, source); err != nil {
-		return mapStoreError("acknowledge terminal execution", err)
-	}
-	return nil
+	_, problem := a.acknowledgeExecutions(ctx, c, []ids.ExecutionID{id}, source)
+	return problem
+}
+
+func (a *app) acknowledgeRecoveredExecution(ctx context.Context, c common, execution model.Execution, physical ids.ExecutionID, source string) *output.Error {
+	_, problem := a.acknowledgeExecutions(ctx, c, collectionIDs(execution, physical), source)
+	return problem
 }
 
 func openJournalWithRetry(path string, options store.Options) (*store.Journal, error) {
@@ -1648,6 +1701,9 @@ func writeExecutionReported(renderer output.Renderer, e model.Execution, operati
 		reported.Failure = opts.failure
 		fields = append(fields, output.Field{Name: "failure", Value: opts.failure.Message})
 	}
+	if len(e.RecoveryChain) != 0 {
+		fields = append(fields, output.Field{Name: "recovery_chain", Value: e.RecoveryChain})
+	}
 	if err := renderer.Success(output.Success{Result: reported, Lines: []output.Line{{Lead: e.ID.String(), Fields: fields}}, Warnings: warnings, NextActions: actions}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
@@ -1700,6 +1756,9 @@ func writeExecutionOutcome(renderer output.Renderer, e model.Execution, outcome 
 		Outcome model.Outcome `json:"outcome"`
 	}{Execution: redacted, Outcome: outcome}
 	fields := []output.Field{{Name: "state", Value: e.State}, {Name: "availability", Value: outcome.Availability}, {Name: "content", Value: outcome.Content != nil}, {Name: "result_ref", Value: outcome.ResultRef}}
+	if len(e.RecoveryChain) != 0 {
+		fields = append(fields, output.Field{Name: "recovery_chain", Value: e.RecoveryChain})
+	}
 	if outcome.Failure != nil {
 		fields = append(fields, output.Field{Name: "failure", Value: outcome.Failure.Message})
 	}
@@ -1761,9 +1820,16 @@ func nativeApprovalAttention(e model.Execution) bool {
 // states can be observed again after the authority decides.
 func attentionNextActions(mode output.Mode, e model.Execution) []output.NextAction {
 	if e.NativeRecoveryParked() {
+		if e.RemoteForwarded() {
+			return remoteCheckpointActions(mode, e.ID)
+		}
+		physical := e.ID
+		if len(e.RecoveryChain) != 0 {
+			physical = e.RecoveryChain[len(e.RecoveryChain)-1]
+		}
 		return []output.NextAction{
-			{Label: "Read the parked failure receipt", Argv: []string{"agentctl", "events", e.ID.String(), "--kind", "attention"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}},
-			{Label: "Plan native checkpoint recovery", Argv: []string{"agentctl", "continue", e.ID.String(), "--request-key", "<new-key>", "--prompt-file", "<recovery-instruction>", "--plan"}, SideEffectClass: output.ReadOnly, Preconditions: []string{"reconcile prior tool effects and recover from the latest parked turn"}},
+			{Label: "Read the parked failure receipt", Argv: []string{"agentctl", "events", physical.String(), "--kind", "attention"}, SideEffectClass: output.ReadOnly, Preconditions: []string{}},
+			checkpointRecoveryPlan(e.ID),
 			{Label: "Cancel the idle parked turn", Argv: []string{"agentctl", "cancel", e.ID.String()}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{"no recovery turn is active"}},
 		}
 	}
@@ -1784,6 +1850,10 @@ func attentionNextActions(mode output.Mode, e model.Execution) []output.NextActi
 	}
 }
 
+func checkpointRecoveryPlan(id ids.ExecutionID) output.NextAction {
+	return output.NextAction{Label: "Plan native checkpoint recovery", Argv: []string{"agentctl", "continue", id.String(), "--request-key", "<new-key>", "--prompt-file", "<recovery-instruction>", "--plan"}, SideEffectClass: output.ReadOnly, Preconditions: []string{"reconcile prior tool effects and recover from the latest parked turn"}}
+}
+
 func taskContractAcceptanceWarning() output.Warning {
 	return output.Warning{Code: "acceptance_external_required", Message: "the execution state does not prove the task contract's expected artifacts or acceptance; verify them through their named authority"}
 }
@@ -1796,7 +1866,13 @@ func outcomeError(code output.Code, message string, e model.Execution) *output.E
 	if e.RateLimit != nil {
 		problem.WithDetail("rate_limit", e.RateLimit)
 	}
-	return problem
+	if e.NativeRecoveryParked() {
+		problem.WithDetail("recovery_state", *e.SourceState)
+	}
+	if failure := parkedOpenCodeRateLimitFailure(e); failure != nil {
+		problem.WithDetail("failure", failure)
+	}
+	return withRecoveryChain(problem, e)
 }
 func mapStoreError(message string, err error) *output.Error {
 	switch {

@@ -263,12 +263,13 @@ meaning.
   rate-limit wording alone does not qualify. When the run ends with a local
   completion/extraction diagnostic (for example `incomplete_terminal_result`
   after a retry), that diagnostic is kept and the retry stays separate
-  `rate_limit` metadata.
+  `rate_limit` metadata. OpenCode's `provider_capacity` message identifies HTTP
+  429 and advises waiting before retrying with the same model.
 - Sum `step_finish.part.tokens` counters across the execution into numeric
   `token_usage` metadata: input, output, cache read/write, and reasoning when
   present. Cost, text, reasoning content, and raw token objects are not retained.
-- Native continuation and failed-turn parking are verified only for CLI 2.2.6.
-  Both the recorded execution version and freshly probed executable must match.
+- Native continuation and failed-turn parking support CLI 2.2.6 and 2.3.2.
+  Both the recorded and freshly probed CLI versions must be allowlisted.
   Explicit `--server` and `--standalone` recipes remain unverified and refused.
 - Delegated completed and exited failed turns continue with the frozen recipe
   plus `--session <recorded-id>` before `--`. Only the recorded binding selects
@@ -281,13 +282,15 @@ meaning.
   nonzero exit or timeout fails closed as `continue_opencode_session_unverified`.
   Plans probe the version but do not export history. Concurrent external deletion
   between this check and launch is outside agentctl's control.
-- Known-session network and explicit provider-capacity failures park as
+- Known-session network failures and capacity failures that have no eligible automatic retry park as
   `attention`/`blocked` with `paused_network`/`paused_capacity` after client exit.
   Same-key replay never relaunches. Use a new-key `continue` instruction to
   inspect native history, reconcile prior tool effects, and return the previous
-  final answer if the background turn already finished. There is no automatic
-  replay, background-session polling, or transcript/database import; `await`
-  alone cannot collect a late background answer. See [follow-up turns](follow-up-turns.md).
+  final answer if the background turn already finished. Eligible native
+  delegates recover structured 429s and stopped turns without text through
+  [bounded automatic continuation](follow-up-turns.md#automatic-opencode-recovery).
+  A late answer after transport loss remains in native history until a
+  continuation can retrieve it.
 - Cancellation and observation are limited to the owned local process. A
   shared background turn can outlive that process, so interruption and live
   steering remain unavailable. Recovery was verified with OpenCode 2.2.6 native
@@ -296,7 +299,15 @@ meaning.
   A concurrent `models` command reported an unresponsive background service
   before replacement `serve --service` startup. The cause of unresponsiveness
   was not established. `--standalone` is not added: private-server recovery has
-  not been verified. Expert `run` adds no permission flag.
+  not been verified. On 2026-11-24, the installed 2.3.2 Morph wrapper exported
+  and resumed a completed turn and a failed turn from a disposable SQLite
+  copy. Both answers recalled a synthetic value from the earlier turn under
+  the exact recorded session ID. The failed source exited 1 with
+  `provider.no-route` for a deliberately unavailable model, then resumed
+  using the configured DeepSeek model. Unknown-session export exited 1 with
+  empty stdout and the session count stayed at two. An isolated managed
+  service used a separate localhost port and was stopped after each stage.
+  Expert `run` adds no permission flag.
   Granted coding delegation adds OpenCode v2 `--auto` and reports
   `permissions: constrained` because explicitly denied permissions remain denied.
   `read_only` delegation remains unavailable rather than inferring an enforcement

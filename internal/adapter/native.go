@@ -131,6 +131,7 @@ type processRecord struct {
 	opencodeFinishReason      string
 	opencodeTokenUsage        *TokenUsage
 	opencodeHTTPStatus        int64
+	opencodeRetryAfterMS      int64
 	opencodeProviderErrorType string
 	opencodeProviderError     bool
 
@@ -390,10 +391,12 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 		switch obs.SourceState {
 		case "opencode.retry", "opencode.error":
 			p.opencodeHTTPStatus, _ = obs.Data["http_status"].(int64)
+			p.opencodeRetryAfterMS, _ = obs.Data["retry_after_ms"].(int64)
 			p.opencodeProviderErrorType, _ = obs.Data["provider_error_type"].(string)
 			p.opencodeProviderError = obs.SourceState == "opencode.error"
 		default:
 			p.opencodeHTTPStatus = 0
+			p.opencodeRetryAfterMS = 0
 			p.opencodeProviderErrorType = ""
 			p.opencodeProviderError = false
 		}
@@ -708,6 +711,9 @@ func (p *processRecord) finish(err error) {
 			p.result.Data["failure_structured"] = true
 			p.result.Data["failure_category"] = "capacity"
 			p.result.Data["http_status"] = p.opencodeHTTPStatus
+			if p.opencodeRetryAfterMS > 0 {
+				p.result.Data["retry_after_ms"] = p.opencodeRetryAfterMS
+			}
 			if p.opencodeProviderErrorType != "" {
 				p.result.Data["provider_error_type"] = p.opencodeProviderErrorType
 			}
@@ -918,7 +924,7 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 				resume.Status, resume.Reason = CapabilityUnavailable, "ZCode continuation is verified only for CLI 0.17.0"
 			}
 			if a.Name() == "opencode" && !OpenCodeResumeVersionSupported(backendVersion) {
-				resume.Status, resume.Reason = CapabilityUnavailable, "OpenCode continuation is verified only for CLI 2.2.6"
+				resume.Status, resume.Reason = CapabilityUnavailable, "OpenCode continuation is verified only for CLI 2.2.6 and 2.3.2"
 			}
 			capabilities = append(capabilities, resume)
 			continue
