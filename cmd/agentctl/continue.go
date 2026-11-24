@@ -620,6 +620,7 @@ func writeContinuePlan(renderer output.Renderer, source ids.ExecutionID, binding
 		"request_sha256": binding.RequestSHA256, "side_effect_class": output.ReadOnly, "reused": reusedID != ""}
 	if native != nil {
 		result["native"] = native
+		projectAdmissionPlan(result, native)
 	} else if binding.NativePlan != nil {
 		result["native"] = map[string]any{"env": binding.NativePlan.Env, "prompt_delivery": binding.NativePlan.PromptDelivery, "permissions": binding.NativePlan.Permissions, "source": "frozen_admission", "preflight_repeated": false}
 	}
@@ -627,6 +628,9 @@ func writeContinuePlan(renderer output.Renderer, source ids.ExecutionID, binding
 		result["id"] = reusedID
 	}
 	var actions []output.NextAction
+	if len(replay) != 0 && replay[0].Admission != nil {
+		result["admission"] = replay[0].Admission
+	}
 	if len(replay) != 0 && failedResultReplay(replay[0], true) {
 		result["replayed"] = true
 		actions = append(actions, retryWithNewKeyAction(replay[0]))

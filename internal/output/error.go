@@ -41,6 +41,7 @@ type Error struct {
 	Details     map[string]any `json:"details"`
 	NextActions []NextAction   `json:"next_actions"`
 	Cause       error          `json:"-"`
+	Warnings    []Warning      `json:"-"`
 }
 
 func NewError(code Code, message string, retryable bool) *Error {

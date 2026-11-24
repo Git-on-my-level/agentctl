@@ -394,6 +394,7 @@
       }
     },
     "token_usage": {"$ref": "#/$defs/token_usage"},
+    "admission": {"$ref": "#/$defs/provider_admission"},
     "rate_limit": {"$ref": "#/$defs/native_rate_limit"},
     "created_at": {"type": "string", "format": "date-time"},
     "started_at": {"type": ["string", "null"], "format": "date-time"},
@@ -445,6 +446,20 @@
     }
   ],
   "$defs": {
+    "provider_admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bucket", "priority", "phase"],
+      "properties": {
+        "bucket": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+        "priority": {"enum": ["interactive", "background"]},
+        "phase": {"enum": ["planned", "queued", "granted", "bypassed", "disabled", "cancelled", "aborted"]},
+        "position": {"type": "integer", "minimum": 1},
+        "window": {"type": "integer", "minimum": 1},
+        "granted_at": {"type": "string", "format": "date-time"},
+        "warning": {"type": "string"}
+      }
+    },
     "token_usage": {
       "type": "object",
       "additionalProperties": false,

@@ -142,6 +142,74 @@ func TestLinuxStartTicksDoNotUseWallClock(t *testing.T) {
 	}
 }
 
+func TestLinuxQueuedProcessStartRetriesWithoutPIDOneAccess(t *testing.T) {
+	const pid = 42
+	const ticks = 5000
+	calls, retries := 0, 0
+	read := func(path string) ([]byte, error) {
+		switch path {
+		case "/proc/self/status":
+			return []byte("Name:\tagentctl\nNSpid:\t123\n"), nil
+		case "/proc/42/stat":
+			calls++
+			if calls == 1 {
+				return nil, os.ErrNotExist
+			}
+			return procStatLine(pid, 123, ticks), nil
+		default:
+			t.Fatalf("unexpected procfs read %s", path)
+			return nil, os.ErrPermission
+		}
+	}
+	ownView := func() (uint64, error) {
+		return linuxOwnProcNamespace(123, read, func(path string) (uint64, error) {
+			if path != "/proc/self/ns/pid" {
+				t.Fatalf("unexpected namespace lookup %s", path)
+			}
+			return 7, nil
+		})
+	}
+	got := linuxProcessStart(pid, read, ownView, func() { retries++ })
+	if !got.present || !got.startKnown || got.startTicks != ticks || got.nsInode != 7 || !got.started.IsZero() || got.err != nil || retries != 1 {
+		t.Fatalf("queued identity = %+v after %d retries", got, retries)
+	}
+	id := processIdentity{PID: pid, StartTicks: got.startTicks, PIDNamespaceIno: got.nsInode, ProcfsPIDNamespaceIno: got.nsInode, exactStart: true}
+	if proof := linuxProof(id, read, ownView); !proof.Alive {
+		t.Fatalf("matching queued worker = %+v", proof)
+	}
+	id.StartTicks++
+	if proof := linuxProof(id, read, ownView); !proof.Gone || proof.Proof != "pid_reused" {
+		t.Fatalf("reused queued worker PID = %+v", proof)
+	}
+}
+
+func TestLinuxAdmissionChildLivenessDistinguishesExitedState(t *testing.T) {
+	for _, state := range []byte{'S', 'T', 'Z', 'X', 'x'} {
+		t.Run(string(state), func(t *testing.T) {
+			read := func(path string) ([]byte, error) {
+				if path != "/proc/42/stat" {
+					t.Fatalf("unexpected read of %s", path)
+				}
+				return []byte(fmt.Sprintf("42 (opencode (task)) %c 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 5000\n", state)), nil
+			}
+			absent := func(int) bool {
+				t.Fatal("readable procfs stat was checked for absence")
+				return false
+			}
+			want := "boot/7/5000"
+			if generation, err := linuxAdmissionProcessStart(42, "boot/7", false, read, absent); err != nil || generation != want {
+				t.Fatalf("bind generation=%q err=%v", generation, err)
+			}
+			if state == 'Z' || state == 'X' || state == 'x' {
+				want = ""
+			}
+			if generation, err := linuxAdmissionProcessStart(42, "boot/7", true, read, absent); err != nil || generation != want {
+				t.Fatalf("live lease generation=%q err=%v, want %q", generation, err, want)
+			}
+		})
+	}
+}
+
 func procStatLine(pid, ppid int, ticks int64) []byte {
 	return []byte(fmt.Sprintf("%d (cmd) S %d 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 %d\n", pid, ppid, ticks))
 }

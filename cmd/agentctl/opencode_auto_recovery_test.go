@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Git-on-my-level/agentctl/internal/admission"
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
@@ -253,6 +254,49 @@ func TestOpenCodeAutomaticRecoveryChain(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestOpenCodeRecoveryReleasesProviderAdmissionSlot(t *testing.T) {
+	f := automaticOpenCodeFixture(t, "es")
+	cfg, err := config.Load(f.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := cfg.Profiles["test"]
+	enabled := true
+	profile.Admission = &admission.Config{Buckets: map[string]admission.Bucket{
+		"recovery": {Harness: "opencode", Model: "provider/test-model", Enabled: &enabled, MinWindow: 1, InitialWindow: 1, MaxWindow: 1},
+	}}
+	cfg.Profiles["test"] = profile
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.config, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	code, out := invokeAutomaticOpenCode(ctx, f, nil, "--wait", "--timeout", "8s")
+	chain := openCodeChain(t, out)
+	if code != 0 || len(chain) != 2 || !strings.Contains(out, `"admission":`) || !strings.Contains(out, `"deadline_at":`) {
+		t.Fatalf("recovery with admission exit=%d: %s", code, out)
+	}
+	journal, err := store.Open(f.journal, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	for i, id := range chain {
+		row, err := journal.GetExecution(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.Admission == nil || row.Admission.Phase != "granted" || (i > 0 && row.Admission.Warning != "") {
+			t.Fatalf("execution %s admission=%+v, want an ordinary grant", id, row.Admission)
+		}
 	}
 }
 

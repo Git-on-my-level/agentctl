@@ -288,6 +288,31 @@ payloads are skipped. The local process gets a fresh session key at launch. A su
 version probe does not prove provider authentication; inspect the run result
 for CLI errors. Gateway-backed `acp` is outside this adapter.
 
+### OpenCode provider admission
+
+- Run `agentctl admission match --harness opencode --model MODEL` to discover a
+  configured bucket. An enabled bucket covers native delegate, continue, expert
+  run, and fanout by exact recipe model. Set
+  `AGENTCTL_ADMISSION_PRIORITY=interactive` on the invoking agentctl to put an
+  interactive launch ahead of background FIFO work. Priority is caller
+  metadata and is stripped from native children.
+- A plan reports admission without reserving a slot. `status` and `recent`
+  report `admission.phase=queued` and queue position. A detached receipt can
+  report `launch_status=queued`. Collect with `await` or cancel with `cancel`.
+  Execution timeout starts at grant. At `max_wait`, native work receives a
+  counted over-window lease and a warning. A broken slot sidecar permits an
+  uncounted launch with a warning. Reuse the execution ID and request key on
+  replay.
+- External launchers share the same journal directory and bucket. Call
+  `admission acquire --bucket B --holder ID --pid OWNER_PID --no-wait` before
+  claiming, check `result.granted`, and release on claim failure or completion.
+  Use a stable holder for retries while the owner PID is alive. Feed
+  `admission observe --bucket B --attempts N --throttled M --idempotency-key ID`
+  with a stable key per batch. Replay the same inputs within one hour to
+  recover the receipt as `duplicate: true`.
+  `admission status [--bucket B]` is read-only. Add `--format prom` for
+  Prometheus text. See `agentctl help admission` and `schema show admission-result`.
+
 ## Expert native path
 
 `run` is for an exact argv you already decided. It does not apply delegate
@@ -623,12 +648,14 @@ do not establish completion. Do not auto-acknowledge or infer failure.
 `agentctl reconcile` is the explicit journal repair. Read `help reconcile`,
 then `--plan` before `--apply --plan-digest`. `--plan` writes nothing and
 returns `plan_digest` over the candidate ids, actions, and proofs. Apply
-writes nothing if that digest no longer matches, then proves each row again
-before writing. It orphans a native execution only when the launcher-recorded
-PID is provably gone and the last observation is older than `--stale-after`.
-A numeric session id is not a PID. `journal_host_match` is the journal's stored
-host id, not a machine fingerprint. The state is `orphaned` with `owner_lost`:
-the outcome is unknown, not success or failure. Rows with no launch record stay
+writes nothing if that digest no longer matches, then rechecks each row before
+writing. A launcher-recorded PID that is provably gone after `--stale-after`
+produces an `orphaned` execution with `owner_lost`. A provider queue with no
+owner or launch identity can expire after its observation freshness window plus
+10 seconds. Unclaimed detached reservations also get the maximum journal retry
+budget plus bounded preflight time. Recovery records `orphaned` with
+`admission_owner_lease_expired` and heartbeat evidence. A numeric session id is not a PID. `journal_host_match`
+compares the journal's stored host id. Other rows without a launch record stay
 `ownership_unproven` unless `--include-legacy-unproven` is set. Eligible rows
 are native, match the journal host, and are older than `--legacy-stale-after`
 (default 168h, minimum 72h). They are listed under `legacy_orphan` with evidence

@@ -329,9 +329,13 @@ func (a *app) followOpenCodeRecovery(ctx context.Context, journal *store.Journal
 		active.OpenCodeRecovery = prelaunchFailure
 	}
 	if active.RetryOf != nil && active.State == model.StateStarting && len(active.SourceBindings) == 0 && active.OwnerLaunch != nil {
-		owner := active.OwnerLaunch
-		if a.proveProcess(processIdentity{PID: owner.PID, StartedAt: owner.StartedAt, StartTicks: owner.StartTicks,
-			PIDNamespaceIno: owner.PIDNamespaceIno, ProcfsPIDNamespaceIno: owner.ProcfsPIDNamespaceIno}).Gone {
+		if active.Admission == nil {
+			owner := active.OwnerLaunch
+			if a.proveProcess(processIdentity{PID: owner.PID, StartedAt: owner.StartedAt, StartTicks: owner.StartTicks,
+				PIDNamespaceIno: owner.PIDNamespaceIno, ProcfsPIDNamespaceIno: owner.ProcfsPIDNamespaceIno}).Gone {
+				active.Liveness = model.LivenessUnreachable
+			}
+		} else if launch, ok := recordedLaunch(active); ok && a.proveProcess(launch).Gone {
 			active.Liveness = model.LivenessUnreachable
 		}
 	}
@@ -341,7 +345,10 @@ func (a *app) followOpenCodeRecovery(ctx context.Context, journal *store.Journal
 		active.TerminalAt, active.SourceState = nil, &state
 		active.Observation.FreshForSeconds = nil
 	}
-	active.ID, active.Delegation, active.DeadlineAt = original.ID, original.Delegation, original.DeadlineAt
+	active.ID, active.Delegation = original.ID, original.Delegation
+	if !active.ProviderQueued() {
+		active.DeadlineAt = original.DeadlineAt
+	}
 	active.Supersedes, active.SupersededBy, active.RetryOf = original.Supersedes, original.SupersededBy, original.RetryOf
 	active.RecoveryChain = chain
 	return active, physical, nil
