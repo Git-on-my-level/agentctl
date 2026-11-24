@@ -855,6 +855,9 @@ func configCanBeEnrichedBy(existing, desired Config) bool {
 		if current.Capacity != nil && !reflect.DeepEqual(current.Capacity, target.Capacity) {
 			return false
 		}
+		if current.Admission != nil && !reflect.DeepEqual(current.Admission, target.Admission) {
+			return false
+		}
 		for adapterName, adapter := range current.Adapters {
 			if targetAdapter, ok := target.Adapters[adapterName]; !ok || targetAdapter != adapter {
 				return false

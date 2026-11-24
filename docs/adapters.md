@@ -353,7 +353,8 @@ directory. The owner-only sidecar under `<journal directory>/admission/` holds
 controller state and leases separately from the execution journal. Native
 leases and waiting tickets hold per-ticket flocks. Process exit releases those
 locks. External grants verify the recorded PID and kernel start identity
-across separate CLI calls. A missing or reused PID releases the grant. If
+across separate CLI calls. Linux launchers sharing a bucket use the same PID
+namespace and procfs view. A missing or reused PID releases the grant. If
 inspection becomes unavailable, the last verified identity expires after one
 minute. Native reservations last through child cleanup during normal
 operation. A provider service that continues work after its local client exits
@@ -364,7 +365,8 @@ interval, a five-minute sample window and a five-minute maximum wait. The
 static fallback defaults to the initial window. If the controller file is
 missing or corrupt, acquisitions use the static cap while rebuilding state
 under the bucket lock. At `max_wait`, native invocations proceed without a
-reservation and record a warning. That exception can exceed the window. The
+reservation and record a warning. A permanent slot-state error takes the
+same fallback immediately. These exceptions can exceed the window. The
 external CLI reports denied or a typed error, so the external claimant can
 defer its claim. Each host owns its window independently.
 

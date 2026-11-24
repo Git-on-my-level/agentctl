@@ -20,23 +20,6 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/route"
 )
 
-func admissionProcessStart(pid int) (string, error) {
-	obs := processStart(pid)
-	if obs.err != nil {
-		return "", obs.err
-	}
-	if !obs.present {
-		return "", nil
-	}
-	if !obs.startKnown {
-		return "", errors.New("process start unavailable")
-	}
-	if obs.startTicks != 0 {
-		return fmt.Sprintf("%d/%d", obs.nsInode, obs.startTicks), nil
-	}
-	return obs.started.UTC().Format(time.RFC3339Nano), nil
-}
-
 func (a *app) admissionStore(c common) (*admission.Store, error) {
 	path, err := a.journalPath(c)
 	if err != nil {
@@ -75,9 +58,18 @@ func admissionWarnings(meta *model.ProviderAdmission) []output.Warning {
 	if meta == nil || meta.Warning == "" {
 		return nil
 	}
-	message := "Admission used the configured static fallback window."
-	if meta.Phase == "bypassed" {
-		message = "Admission could not reserve a slot before max_wait. The native launch proceeded without a slot."
+	var message string
+	switch meta.Warning {
+	case "admission_max_wait":
+		message = "Admission reached max_wait. The native launch proceeded without a slot."
+	case "admission_state_unavailable":
+		message = "Admission slot state was unavailable. The native launch proceeded without a slot."
+	case "admission_lock_timeout":
+		message = "Admission used the configured static fallback after a bucket lock timeout."
+	case "admission_state_write_failed":
+		message = "Admission used the configured static fallback after a controller write failed."
+	default:
+		message = "Admission used the configured static fallback window."
 	}
 	return []output.Warning{{Code: meta.Warning, Message: message, Details: map[string]any{"bucket": meta.Bucket}}}
 }
@@ -92,8 +84,7 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 	if stateErr == nil {
 		pid := os.Getpid()
 		start, err := admissionProcessStart(pid)
-		stateErr = err
-		if start != "" {
+		if err == nil && start != "" {
 			owner := admission.Owner{PID: pid, Start: start}
 			queue = slots.Queue(meta.Bucket, b, execution.ID.String(), meta.Priority, owner, owner, false)
 		}
@@ -105,26 +96,27 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 		}
 	}()
 	var adjustment *admission.Adjustment
-	for {
+	stateUnavailable := queue == nil
+	for !stateUnavailable {
 		a.serviceCancelInbox(inbox, interrupt)
 		if ctx.Err() != nil || waitCtx.Err() != nil {
 			break
 		}
-		if queue != nil {
-			decision, err := queue.Try(waitCtx, true)
-			stateErr = err
-			if err == nil {
-				adjustment = decision.Adjustment
-				meta.Window = decision.Window
-				if decision.Warning != "" {
-					meta.Warning = decision.Warning
-				}
-				meta.Position = decision.Position
-				if decision.Granted {
-					meta.Phase, meta.GrantedAt = "granted", decision.AcquiredAt
-					break
-				}
+		decision, err := queue.Try(waitCtx, true)
+		if err == nil {
+			adjustment = decision.Adjustment
+			meta.Window = decision.Window
+			if decision.Warning != "" {
+				meta.Warning = decision.Warning
 			}
+			meta.Position = decision.Position
+			if decision.Granted {
+				meta.Phase, meta.GrantedAt = "granted", decision.AcquiredAt
+				break
+			}
+		} else if !errors.Is(err, admission.ErrLockBusy) {
+			stateUnavailable = waitCtx.Err() == nil
+			break
 		}
 		if meta.Position != execution.Admission.Position || a.now().Sub(execution.Observation.ObservedAt) >= nativeRunnerHeartbeatEvery {
 			var problem *output.Error
@@ -163,7 +155,7 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 	if meta.Phase != "granted" {
 		now := a.now().UTC()
 		meta.Phase, meta.Position, meta.GrantedAt, meta.Warning = "bypassed", 0, &now, "admission_max_wait"
-		if stateErr != nil || queue == nil {
+		if stateUnavailable {
 			meta.Warning = "admission_state_unavailable"
 		}
 		if queue != nil {

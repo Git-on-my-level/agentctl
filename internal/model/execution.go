@@ -414,7 +414,7 @@ func (a *ProviderAdmission) Validate() error {
 		return errors.New("invalid provider admission metadata")
 	}
 	switch a.Phase {
-	case "queued", "granted", "bypassed", "disabled", "cancelled", "aborted":
+	case "planned", "queued", "granted", "bypassed", "disabled", "cancelled", "aborted":
 		return nil
 	default:
 		return errors.New("invalid provider admission phase")

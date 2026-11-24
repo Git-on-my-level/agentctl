@@ -176,7 +176,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	}
 	operationCtx := ctx
 	var operationCancel context.CancelFunc
-	if opts.timeout > 0 {
+	if opts.timeout > 0 && meta == nil {
 		operationCtx, operationCancel = context.WithTimeout(ctx, opts.timeout)
 		defer operationCancel()
 	}
@@ -432,6 +432,11 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	var slots *admission.Store
 	var slot *admission.Queue
 	if meta != nil {
+		if opts.collectionWaiter {
+			closeWaiter := a.registerWaiter(ownerCtx, c, execution.ID)
+			defer closeWaiter()
+			opts.collectionWaiter = false
+		}
 		if opts.started != nil && cancels != nil {
 			opts.started(execution, false)
 			opts.started = nil
@@ -525,7 +530,11 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			return mapStoreError("record resumed native session", err)
 		}
 	}
-	if err := appendSynthetic(context.Background(), writeJournal, execution, model.EventStarted, execution.State, map[string]any{"accepted": true}, "launch"); err != nil {
+	startedPayload := map[string]any{"accepted": true}
+	if execution.Admission != nil && execution.Admission.Warning != "" {
+		startedPayload["admission_warning"] = execution.Admission.Warning
+	}
+	if err := appendSynthetic(context.Background(), writeJournal, execution, model.EventStarted, execution.State, startedPayload, "launch"); err != nil {
 		writeJournal.Close()
 		return mapStoreError("record started event", err)
 	}

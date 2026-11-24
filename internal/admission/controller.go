@@ -48,10 +48,14 @@ func (s *controller) counts(now time.Time) (attempts, throttled int64) {
 }
 
 func (s *controller) observe(sample Sample) {
-	// Bound the ledger by the lookback in seconds even under bursty fanout.
-	sample.At = sample.At.Truncate(time.Second)
-	i := sort.Search(len(s.Samples), func(i int) bool { return !s.Samples[i].At.Before(sample.At) })
-	if i < len(s.Samples) && s.Samples[i].At.Equal(sample.At) {
+	// Aggregate by second, retaining the latest actual timestamp in each
+	// bucket so a recently accepted sample never expires prematurely.
+	second := sample.At.Truncate(time.Second)
+	i := sort.Search(len(s.Samples), func(i int) bool { return !s.Samples[i].At.Before(second) })
+	if i < len(s.Samples) && s.Samples[i].At.Truncate(time.Second).Equal(second) {
+		if sample.At.After(s.Samples[i].At) {
+			s.Samples[i].At = sample.At
+		}
 		s.Samples[i].Attempts += sample.Attempts
 		s.Samples[i].Throttled += sample.Throttled
 	} else {

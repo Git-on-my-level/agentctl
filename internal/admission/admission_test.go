@@ -315,3 +315,22 @@ func TestExternalWaiterReplayUsesSameTicket(t *testing.T) {
 		t.Fatalf("%#v %v", d, err)
 	}
 }
+
+func TestControllerRetainsFreshSamplesAtLookbackBoundary(t *testing.T) {
+	b := testConfig()
+	cutoff := time.Unix(100, 650_000_000).UTC()
+	old := cutoff.Add(-150 * time.Millisecond)
+	newest := cutoff.Add(150 * time.Millisecond)
+	s := controller{}
+	// Out-of-order timestamps within one second keep the freshest point.
+	s.observe(Sample{At: newest, Attempts: 2, Throttled: 1})
+	s.observe(Sample{At: old, Attempts: 1, Throttled: 1})
+	s.expire(cutoff.Add(b.lookback()), b)
+	if a, tCount := s.counts(cutoff.Add(b.lookback())); a != 3 || tCount != 2 || len(s.Samples) != 1 {
+		t.Fatalf("fresh throttle sample was lost: %#v", s.Samples)
+	}
+	s.expire(newest.Add(b.lookback()), b)
+	if len(s.Samples) != 0 {
+		t.Fatalf("expired sample retained: %#v", s.Samples)
+	}
+}

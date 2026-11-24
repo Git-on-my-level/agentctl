@@ -17,6 +17,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/admission"
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/model"
+	"github.com/Git-on-my-level/agentctl/internal/output"
 )
 
 func admissionFixture(t *testing.T, enabled bool, maxWait string) (delegateFixture, string) {
@@ -128,10 +129,15 @@ func TestProviderAdmissionDetachedQueueCancelAndDeadline(t *testing.T) {
 	if cancelled.State != model.StateCancelled || cancelled.Admission.Phase != "cancelled" || cancelled.Launch != nil {
 		t.Fatalf("cancel: %#v", cancelled)
 	}
-	// Hold the external reservation beyond the previous 60-second unknown
-	// cutoff and well beyond the new run's five-second execution budget.
-	until := queued.CreatedAt.Add(62 * time.Second)
-	poll := time.NewTicker(time.Second)
+	// The default case exercises real processes and cancellation without
+	// adding a minute to every suite. Release qualification can run a real
+	// hold beyond the old cutoff using ADMISSION_TEST_REAL_QUEUE_WAIT=1.
+	hold := time.Second
+	if os.Getenv("ADMISSION_TEST_REAL_QUEUE_WAIT") == "1" {
+		hold = 62 * time.Second
+	}
+	until := queued.CreatedAt.Add(hold)
+	poll := time.NewTicker(250 * time.Millisecond)
 	defer poll.Stop()
 	for time.Now().Before(until) {
 		select {
@@ -141,7 +147,7 @@ func TestProviderAdmissionDetachedQueueCancelAndDeadline(t *testing.T) {
 		}
 	}
 	current := status()
-	if !current.ProviderQueued() || current.Admission.Position != 1 || current.DeadlineAt != nil || time.Since(current.CreatedAt) <= time.Minute {
+	if !current.ProviderQueued() || current.Admission.Position != 1 || current.DeadlineAt != nil || time.Since(current.CreatedAt) < hold {
 		t.Fatalf("long queue: %#v", current)
 	}
 	if _, err := os.Stat(f.count); !errors.Is(err, os.ErrNotExist) {
@@ -251,4 +257,132 @@ func TestProviderAdmissionObservedAdjustment(t *testing.T) {
 	if strings.Count(events, `"source_state":"admission.window_adjusted"`) != 1 || strings.Contains(events, "private-provider-text") {
 		t.Fatal(events)
 	}
+}
+
+func TestProviderAdmissionRunBudgetStartsAfterProbe(t *testing.T) {
+	f, script := admissionFixture(t, true, "5s")
+	body, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = bytes.Replace(body, []byte("echo 'opencode 2.3.2'"), []byte("sleep 2\n  echo 'opencode 2.3.2'"), 1)
+	if err := os.WriteFile(script, body, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--config", f.config, "--journal", f.journal, "run",
+		"--cwd", f.root, "--timeout", "1s", "--", script, "run", "--format", "json",
+		"--model", "morph/morph-dsv41flash", "--", "native prompt"}); code != 0 {
+		t.Fatalf("run: %d %s", code, stdout.String())
+	}
+	var doc struct{ Result model.Execution }
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	row := doc.Result
+	if row.Admission == nil || row.Admission.Phase != "granted" || row.Admission.GrantedAt == nil ||
+		row.DeadlineAt == nil || row.DeadlineAt.Sub(*row.Admission.GrantedAt) != time.Second {
+		t.Fatalf("deadline was not assigned at admission: %s", stdout.String())
+	}
+}
+
+func TestProviderAdmissionLongQueueRemainsCollectable(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	now := time.Now().UTC()
+	a.now = func() time.Time { return now }
+	fresh := nativeRunnerLeaseSeconds
+	queued := model.Execution{
+		State: model.StateStarting, CreatedAt: now.Add(-61 * time.Second),
+		Admission:   &model.ProviderAdmission{Phase: "queued", Bucket: "morph", Priority: admission.Background},
+		Observation: model.Observation{ObservedAt: now, FreshForSeconds: &fresh},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	problem := a.collectDelegation(ctx, output.Renderer{Mode: output.JSON, Writer: &stdout}, common{}, queued, delegateOptions{wait: true}, false)
+	if problem == nil || problem.Code != output.CodeTimeout {
+		t.Fatalf("live queue past one minute must reach caller cancellation: %v", problem)
+	}
+}
+
+func TestProviderAdmissionFallbackWarnings(t *testing.T) {
+	for _, tc := range []struct{ name, wait, warning string }{
+		{"full", "500ms", "admission_max_wait"},
+		{"unavailable", "30s", "admission_state_unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, script := admissionFixture(t, true, tc.wait)
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			invoke := func(wantCode int, args ...string) string {
+				t.Helper()
+				stdout.Reset()
+				code := a.run(ctx, append([]string{"--config", f.config, "--journal", f.journal}, args...))
+				if code != wantCode {
+					t.Fatalf("%v: exit %d want %d: %s", args, code, wantCode, stdout.String())
+				}
+				return stdout.String()
+			}
+			if tc.name == "full" {
+				if got := invoke(0, "admission", "acquire", "--bucket", "morph", "--holder", "fixture", "--pid", strconv.Itoa(os.Getpid()), "--no-wait"); !strings.Contains(got, `"granted":true`) {
+					t.Fatal(got)
+				}
+			} else {
+				if err := os.MkdirAll(filepath.Dir(f.journal), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(filepath.Join(filepath.Dir(f.journal), "admission"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			run := invoke(0, "run", "--cwd", f.root, "--", script, "run", "--format", "json", "--model", "morph/morph-dsv41flash", "--", "native prompt")
+			var doc struct {
+				Result   model.Execution
+				Warnings []output.Warning
+			}
+			if err := json.Unmarshal([]byte(run), &doc); err != nil {
+				t.Fatal(err)
+			}
+			row := doc.Result
+			if row.State != model.StateCompleted || row.Admission == nil || row.Admission.Phase != "bypassed" ||
+				row.Admission.Warning != tc.warning || len(doc.Warnings) == 0 || doc.Warnings[0].Code != tc.warning {
+				t.Fatalf("missing fallback evidence: %s", run)
+			}
+			if events := invoke(0, "events", row.ID.String()); !strings.Contains(events, `"admission_warning":"`+tc.warning+`"`) {
+				t.Fatal(events)
+			}
+		})
+	}
+}
+
+func TestProviderAdmissionExternalCLI(t *testing.T) {
+	f, _ := admissionFixture(t, true, "5s")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	invoke := func(wantCode int, want string, args ...string) {
+		t.Helper()
+		stdout.Reset()
+		code := a.run(context.Background(), append([]string{"--config", f.config, "--journal", f.journal, "admission"}, args...))
+		if code != wantCode || !strings.Contains(stdout.String(), want) {
+			t.Fatalf("%v: exit %d want %d and %s: %s", args, code, wantCode, want, stdout.String())
+		}
+	}
+	invoke(0, `"matched":true`, "match", "--harness", "opencode", "--model", "morph/morph-dsv41flash")
+	invoke(0, `"matched":false`, "match", "--harness", "opencode", "--model", "another/model")
+	invoke(2, `"admission_invalid_arguments"`, "observe", "--bucket", "morph", "--attempts", "1", "--throttled", "2")
+	invoke(0, `"recorded":true`, "observe", "--bucket", "morph", "--attempts", "5", "--throttled", "1")
+	invoke(0, `"throttle_rate":0.2`, "status", "--bucket", "morph")
+	pid := strconv.Itoa(os.Getpid())
+	invoke(0, `"granted":true`, "acquire", "--bucket", "morph", "--holder", "fixture", "--pid", pid, "--no-wait")
+	invoke(0, `"granted":false`, "acquire", "--bucket", "morph", "--holder", "another", "--pid", pid, "--no-wait")
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = child.Process.Kill(); _ = child.Wait() }()
+	invoke(8, `"admission_holder_conflict"`, "acquire", "--bucket", "morph", "--holder", "fixture", "--pid", strconv.Itoa(child.Process.Pid), "--no-wait")
+	invoke(0, `"released":true`, "release", "--bucket", "morph", "--holder", "fixture")
 }
