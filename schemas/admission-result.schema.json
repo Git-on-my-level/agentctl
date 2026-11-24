@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentctl:schema:admission-result:v1",
+  "x-agentctl-docs": "../docs/adapters.md#opencode-provider-admission",
+  "title": "Agentctl admission result",
+  "description": "Result member of the admission success envelope. Prometheus output has its own text format.",
+  "oneOf": [
+    {"$ref": "#/$defs/match"},
+    {"$ref": "#/$defs/status"},
+    {"$ref": "#/$defs/acquire"},
+    {"$ref": "#/$defs/release"},
+    {"$ref": "#/$defs/observe"}
+  ],
+  "$defs": {
+    "priority": {"enum": ["interactive", "background"]},
+    "count": {"type": "integer", "minimum": 0},
+    "window": {"type": "integer", "minimum": 1, "maximum": 256},
+    "bucket": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+    "time": {"type": "string", "format": "date-time"},
+    "adjustment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["at", "from", "to", "reason"],
+      "properties": {
+        "at": {"$ref": "#/$defs/time"},
+        "from": {"$ref": "#/$defs/window"},
+        "to": {"$ref": "#/$defs/window"},
+        "reason": {"enum": ["above_target", "below_target_with_demand"]}
+      }
+    },
+    "ticket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["holder", "pid", "process_start", "priority", "queued_at", "acquired_at", "sequence"],
+      "properties": {
+        "holder": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$"},
+        "pid": {"type": "integer", "minimum": 1},
+        "process_start": {"type": "string"},
+        "priority": {"$ref": "#/$defs/priority"},
+        "queued_at": {"$ref": "#/$defs/time"},
+        "acquired_at": {"$ref": "#/$defs/time"},
+        "external": {"type": "boolean"},
+        "sequence": {"type": "integer", "minimum": 1},
+        "verified_at": {"$ref": "#/$defs/time"}
+      }
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bucket", "enabled", "window", "in_use", "queued", "holders", "throttle_rate", "attempts", "goodput_rpm", "admitted", "total_attempts", "throttled_attempts"],
+      "properties": {
+        "bucket": {"$ref": "#/$defs/bucket"},
+        "enabled": {"type": "boolean"},
+        "window": {"$ref": "#/$defs/window"},
+        "in_use": {"$ref": "#/$defs/count"},
+        "queued": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["interactive", "background"],
+          "properties": {
+            "interactive": {"$ref": "#/$defs/count"},
+            "background": {"$ref": "#/$defs/count"}
+          }
+        },
+        "holders": {"type": "array", "items": {"$ref": "#/$defs/ticket"}},
+        "throttle_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "attempts": {"$ref": "#/$defs/count"},
+        "goodput_rpm": {"type": "number", "minimum": 0},
+        "admitted": {"$ref": "#/$defs/count"},
+        "total_attempts": {"$ref": "#/$defs/count"},
+        "throttled_attempts": {"$ref": "#/$defs/count"},
+        "last_adjustment": {"$ref": "#/$defs/adjustment"}
+      }
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["buckets"],
+      "properties": {"buckets": {"type": "array", "items": {"$ref": "#/$defs/snapshot"}}}
+    },
+    "match": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["matched", "bucket", "enabled"],
+      "properties": {
+        "matched": {"type": "boolean"},
+        "bucket": {"anyOf": [{"$ref": "#/$defs/bucket"}, {"const": ""}]},
+        "enabled": {"type": "boolean"}
+      }
+    },
+    "acquire": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bucket", "priority", "granted", "window", "reason"],
+      "properties": {
+        "bucket": {"$ref": "#/$defs/bucket"},
+        "priority": {"$ref": "#/$defs/priority"},
+        "granted": {"type": "boolean"},
+        "position": {"type": "integer", "minimum": 1},
+        "window": {"$ref": "#/$defs/count"},
+        "reason": {"enum": ["slot", "reused", "at_capacity", "already_queued", "wait_timeout", "disabled"]},
+        "acquired_at": {"$ref": "#/$defs/time"}
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bucket", "released"],
+      "properties": {"bucket": {"$ref": "#/$defs/bucket"}, "released": {"type": "boolean"}}
+    },
+    "observe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bucket", "recorded", "adjustment"],
+      "properties": {
+        "bucket": {"$ref": "#/$defs/bucket"},
+        "recorded": {"type": "boolean"},
+        "adjustment": {"anyOf": [{"$ref": "#/$defs/adjustment"}, {"type": "null"}]}
+      }
+    }
+  }
+}

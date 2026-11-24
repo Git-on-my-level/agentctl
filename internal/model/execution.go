@@ -393,6 +393,38 @@ func (r NativeRateLimit) Validate() error {
 // never valid; unknown provider namespaces become "unclassified" at the parser.
 var nativeRateLimitProviderErrorType = regexp.MustCompile(`^(?:unclassified|provider\.[a-z0-9][a-z0-9._-]{0,54})$`)
 
+// ProviderAdmission is local scheduling evidence for a matched native launch.
+type ProviderAdmission struct {
+	Bucket    string     `json:"bucket"`
+	Priority  string     `json:"priority"`
+	Phase     string     `json:"phase"`
+	Position  int        `json:"position,omitempty"`
+	Window    int        `json:"window,omitempty"`
+	GrantedAt *time.Time `json:"granted_at,omitempty"`
+	Warning   string     `json:"warning,omitempty"`
+}
+
+func (a *ProviderAdmission) Validate() error {
+	if a == nil {
+		return nil
+	}
+	if !namePattern.MatchString(a.Bucket) || strings.Contains(a.Bucket, ".") ||
+		a.Priority != "interactive" && a.Priority != "background" || a.Position < 0 || a.Window < 0 || a.Window > 256 ||
+		a.GrantedAt != nil && a.GrantedAt.IsZero() || a.Warning != "" && !namePattern.MatchString(a.Warning) {
+		return errors.New("invalid provider admission metadata")
+	}
+	switch a.Phase {
+	case "queued", "granted", "bypassed", "disabled", "cancelled", "aborted":
+		return nil
+	default:
+		return errors.New("invalid provider admission phase")
+	}
+}
+
+func (e Execution) ProviderQueued() bool {
+	return !e.State.Terminal() && e.Admission != nil && e.Admission.Phase == "queued"
+}
+
 type Execution struct {
 	UncollectedChildren  []UncollectedChild `json:"uncollected_children,omitempty"`
 	ChildExitRecheck     bool               `json:"child_exit_recheck,omitempty"`
@@ -433,9 +465,10 @@ type Execution struct {
 	Launch *LaunchIdentity `json:"launch,omitempty"`
 	// OwnerLaunch identifies the agentctl process collecting this native child.
 	// A gone child alone does not prove its live owner lost the result.
-	OwnerLaunch *LaunchIdentity `json:"owner_launch,omitempty"`
-	DeadlineAt  *time.Time      `json:"deadline_at,omitempty"`
-	UpdatedAt   time.Time       `json:"updated_at"`
+	OwnerLaunch *LaunchIdentity    `json:"owner_launch,omitempty"`
+	Admission   *ProviderAdmission `json:"admission,omitempty"`
+	DeadlineAt  *time.Time         `json:"deadline_at,omitempty"`
+	UpdatedAt   time.Time          `json:"updated_at"`
 	// ProgressAt is newly recorded task progress, not a probe or heartbeat.
 	// Nil preserves unknown history; UpdatedAt is never a backfill source.
 	ProgressAt  *time.Time  `json:"progress_at"`
@@ -526,6 +559,9 @@ func (e Execution) Validate() error {
 	}
 	if e.CreatedAt.IsZero() || e.UpdatedAt.IsZero() || e.Observation.ObservedAt.IsZero() {
 		return errors.New("required timestamp is zero")
+	}
+	if err := e.Admission.Validate(); err != nil {
+		return err
 	}
 	if e.DeadlineAt != nil && e.DeadlineAt.IsZero() {
 		return errors.New("deadline_at is zero")

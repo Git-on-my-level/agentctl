@@ -67,7 +67,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-    "capacity": {"$ref": "#/$defs/capacity"},
+        "capacity": {"$ref": "#/$defs/capacity"},
+        "admission": {"$ref": "#/$defs/admission"},
         "adapters": {
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/adapter" }
@@ -78,11 +79,46 @@
         "delegation": { "$ref": "#/$defs/delegation" }
       },
       "anyOf": [
-        { "required": ["adapters"] }, {"required": ["capacity"]},
+        { "required": ["adapters"] }, {"required": ["capacity"]}, {"required": ["admission"]},
         { "required": ["multica"] },
         { "required": ["agent_preferences"] },
         { "required": ["route"] }
       ]
+    },
+    "admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["buckets"],
+      "properties": {
+        "buckets": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 32,
+          "propertyNames": {"pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+          "additionalProperties": {"$ref": "#/$defs/admission_bucket"}
+        }
+      }
+    },
+    "admission_bucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness", "initial_window", "min_window", "max_window"],
+      "oneOf": [{"required": ["model"]}, {"required": ["model_prefix"]}],
+      "properties": {
+        "harness": {"const": "opencode"},
+        "model": {"type": "string", "maxLength": 192, "pattern": "^[^\\s]*/[^\\s]*$"},
+        "model_prefix": {"type": "string", "maxLength": 192, "pattern": "^[^\\s]*/[^\\s]*$"},
+        "enabled": {"type": "boolean", "default": true},
+        "initial_window": {"type": "integer", "minimum": 1, "maximum": 256},
+        "min_window": {"type": "integer", "minimum": 1, "maximum": 256},
+        "max_window": {"type": "integer", "minimum": 1, "maximum": 256},
+        "static_fallback_window": {"type": "integer", "minimum": 1, "maximum": 256, "description": "Defaults to initial_window."},
+        "target_throttle_rate": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.08},
+        "decrease_factor": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1, "default": 0.7},
+        "increase_interval_seconds": {"type": "integer", "minimum": 1, "maximum": 3600, "default": 60},
+        "sample_window_seconds": {"type": "integer", "minimum": 1, "maximum": 3600, "default": 300},
+        "max_wait": {"type": "string", "minLength": 1, "default": "5m", "description": "Positive Go duration, at most one hour."}
+      }
     },
     "adapter": {
       "type": "object",

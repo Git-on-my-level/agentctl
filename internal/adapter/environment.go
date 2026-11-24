@@ -2,7 +2,10 @@ package adapter
 
 import (
 	"runtime"
+
 	"strings"
+
+	"github.com/Git-on-my-level/agentctl/internal/admission"
 )
 
 const CallerHarnessEnv = "AGENTCTL_CALLER_HARNESS"
@@ -34,7 +37,7 @@ func WithoutCallerDeclaration(env []string) []string {
 	for _, entry := range env {
 		key, _, _ := strings.Cut(entry, "=")
 		declared := false
-		for _, name := range []string{CallerHarnessEnv, CallerProviderEnv, CallerSessionEnv} {
+		for _, name := range []string{CallerHarnessEnv, CallerProviderEnv, CallerSessionEnv, admission.PriorityEnv} {
 			if key == name || (runtime.GOOS == "windows" && strings.EqualFold(key, name)) {
 				declared = true
 			}

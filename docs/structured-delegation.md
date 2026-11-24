@@ -299,6 +299,27 @@ account, because those failures are attributed to a harness rather than an accou
 today; the recorded account makes that possible later. Multica delegation remains
 refused.
 
+## Provider admission for native OpenCode
+
+An enabled [provider bucket](adapters.md#opencode-provider-admission) queues
+matching native `delegate`, `continue`, `run`, and fanout launches before
+starting OpenCode. Matching uses the explicit native model argument.
+`AGENTCTL_ADMISSION_PRIORITY=interactive` puts a new launch ahead of background
+waiters. The launch records priority independently of the request key and
+labels. Agentctl strips the variable from native child processes.
+
+A queued execution appears as `state: starting` with `admission.phase: queued`,
+its bucket, priority and position once enqueued. Detached receipts can report
+`launch_status: queued`. Use `status` or `recent` to see progress, and `cancel`
+to remove a queued launch. `delegate --wait` and `await` follow a live queued
+owner. `--timeout` starts when the execution receives its slot or proceeds on
+the configured maximum-wait exception. `await --through-execution-deadline`
+waits for that deadline to be assigned. A collector's explicit await timeout
+still measures collector wait. A keyed replay reuses the recorded execution.
+Queued native work is owned by its agentctl process and does not resume after
+owner death. `--plan` reports a matching bucket and priority without opening
+the slot state.
+
 ## Native and Multica boundaries
 
 Cursor, Codex, and Claude Code have recipes for exact requested models and

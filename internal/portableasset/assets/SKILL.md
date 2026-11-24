@@ -288,6 +288,27 @@ payloads are skipped. The local process gets a fresh session key at launch. A su
 version probe does not prove provider authentication; inspect the run result
 for CLI errors. Gateway-backed `acp` is outside this adapter.
 
+### OpenCode provider admission
+
+- Run `agentctl admission match --harness opencode --model MODEL` to discover a
+  configured bucket. An enabled bucket covers native delegate, continue, expert
+  run, and fanout by exact recipe model. Set
+  `AGENTCTL_ADMISSION_PRIORITY=interactive` on the invoking agentctl to put an
+  interactive launch ahead of background FIFO work. Priority is caller
+  metadata and is stripped from native children.
+- A plan reports admission without reserving a slot. `status` and `recent`
+  report `admission.phase=queued` and queue position. A detached receipt can
+  report `launch_status=queued`. Collect with `await` or cancel with `cancel`.
+  Execution timeout starts at grant. The native maximum-wait exception proceeds
+  with a warning. Reuse the execution ID and request key on replay.
+- External launchers share the same journal directory and bucket. Call
+  `admission acquire --bucket B --holder ID --pid OWNER_PID --no-wait` before
+  claiming, check `result.granted`, and release on claim failure or completion.
+  Use a stable holder for retries while the owner PID is alive. Feed
+  `admission observe --bucket B --attempts N --throttled M` once per batch.
+  `admission status [--bucket B]` is read-only. Add `--format prom` for
+  Prometheus text. See `agentctl help admission` and `schema show admission-result`.
+
 ## Expert native path
 
 `run` is for an exact argv you already decided. It does not apply delegate

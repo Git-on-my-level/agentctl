@@ -7,6 +7,7 @@ import "strings"
 // "--help" or "--plan" is not itself a flag. Inline help and prompt repairs use
 // this grammar instead of scanning raw token shapes.
 var commandValueFlags = map[string]map[string]bool{
+	"admission": flagSet("--bucket", "--harness", "--model", "--priority", "--holder", "--wait", "--pid", "--attempts", "--throttled", "--at", "--format", "--output"),
 	"run": flagSet("--execution-id", "--label", "--anx-card", "--task-contract", "--adapter",
 		"--timeout", "--prompt-file", "--prompt-delivery", "--cwd", "--idempotency-key",
 		"--issue", "--run"),
@@ -62,7 +63,7 @@ func flagSet(flags ...string) map[string]bool {
 }
 
 // goFlagCommands parse with Go's flag package, which accepts -name as well as --name.
-var goFlagCommands = map[string]bool{"context": true, "knowledge": true}
+var goFlagCommands = map[string]bool{"context": true, "knowledge": true, "admission": true}
 
 func commandFlagTakesValue(command, flag string) bool {
 	if goFlagCommands[command] && strings.HasPrefix(flag, "-") && !strings.HasPrefix(flag, "--") {

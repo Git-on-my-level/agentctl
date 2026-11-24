@@ -303,6 +303,99 @@ meaning.
   mode. Multica retains its own issue/run and result authority; this native
   parser does not establish Multica OpenCode runtime support.
 
+#### OpenCode provider admission
+
+Configure an optional `admission.buckets` map on the active profile. This
+example starts a Morph DeepSeek bucket at two host-local slots, with a one-slot
+fallback and a ceiling of four:
+
+```json
+{
+  "admission": {
+    "buckets": {
+      "morph-deepseek": {
+        "harness": "opencode",
+        "model_prefix": "morph/morph-dsv41flash",
+        "enabled": true,
+        "initial_window": 2,
+        "min_window": 1,
+        "max_window": 4,
+        "static_fallback_window": 1,
+        "target_throttle_rate": 0.08,
+        "decrease_factor": 0.7,
+        "increase_interval_seconds": 60,
+        "sample_window_seconds": 300,
+        "max_wait": "5m"
+      }
+    }
+  }
+}
+```
+
+Use `model` for an exact ID or `model_prefix` for a prefix. An exact selector
+wins, then the longest prefix wins. Set `enabled: false` to disable a bucket,
+including when it shadows a broader rule. An absent block leaves launches
+unchanged. Deploy the compatible binary before adding the block. Remove the
+block before rolling a binary back to a version that rejects it.
+
+The controller increases by one when the observed throttle rate is below the
+target and all slots were occupied. Above target it multiplies the window by
+the decrease factor, rounds down, and clamps at the minimum. Zero observations
+and a rate exactly at target leave the window unchanged. It evaluates on
+admission and observation writes, at most once per interval. Attempts count
+OpenCode `step_start` events plus structured 429 `retry` and `error` events.
+Goodput is successful step starts divided by the lookback in minutes. This
+telemetry is a proxy for provider requests and does not measure the shared
+provider key's output-token budget.
+
+Every launcher on a host must use the same profile bucket and journal
+directory. The owner-only sidecar under `<journal directory>/admission/` holds
+controller state and leases separately from the execution journal. Native
+leases and waiting tickets hold per-ticket flocks. Process exit releases those
+locks. External grants verify the recorded PID and kernel start identity
+across separate CLI calls. A missing or reused PID releases the grant. If
+inspection becomes unavailable, the last verified identity expires after one
+minute. Native reservations last through child cleanup during normal
+operation. A provider service that continues work after its local client exits
+is outside the reservation's visibility.
+
+The defaults are an 8% target, a 0.7 decrease factor, a 60-second adjustment
+interval, a five-minute sample window and a five-minute maximum wait. The
+static fallback defaults to the initial window. If the controller file is
+missing or corrupt, acquisitions use the static cap while rebuilding state
+under the bucket lock. At `max_wait`, native invocations proceed without a
+reservation and record a warning. That exception can exceed the window. The
+external CLI reports denied or a typed error, so the external claimant can
+defer its claim. Each host owns its window independently.
+
+- `admission match --harness opencode --model ID` returns the bucket and enabled
+  flag. With no match, `matched` is false and `bucket` is empty.
+- `admission acquire --bucket B --holder ID --pid PID --no-wait` is the claim-loop
+  interface. A successful reply may contain `granted: false`. Launch only on a
+  grant. Use a stable holder for each claim and pass the long-lived owner PID.
+  Without `--pid`, the immediate parent owns the grant. Retry with the same
+  holder and owner generation to recover a grant or observe its existing queue
+  position. Omit `--no-wait` to queue up
+  to `max_wait`, or set `--wait DURATION` for a shorter wait. Priority defaults
+  to background. `--priority interactive` moves the ticket ahead of background
+  waiters. Each priority uses FIFO. A holder owned by another process returns
+  `admission_holder_conflict` (exit 8).
+- `admission release --bucket B --holder ID` releases an external reservation.
+  Repeat release is safe. Release after a failed claim, cancellation, or
+  terminal outcome. Native leases are managed by the native owner.
+- `admission observe --bucket B --attempts N --throttled M [--at RFC3339]`
+  accepts one batch of counts within the sample window. Each call adds counts,
+  so retry only after establishing that the previous call failed. Observe
+  adjusts the sidecar controller. Native adjustments also produce a
+  content-free `admission.window_adjusted` health event on the observing
+  execution, when the execution journal is available.
+- `admission status [--bucket B]` reads the bucket without updating it. It
+  reports active holders, queue depth by priority, rate, goodput, and the last
+  adjustment. `--format prom` emits duration-window gauges and lifetime
+  counters with bucket and host labels only. Counters reset if controller state
+  is rebuilt. See the [result schema](../schemas/admission-result.schema.json).
+
+
 ### ZCode
 
 - Consume the final `--json` result document when present.

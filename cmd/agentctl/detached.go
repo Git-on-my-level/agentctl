@@ -38,6 +38,7 @@ type detachedReply struct {
 	OK          bool                `json:"ok"`
 	Result      json.RawMessage     `json:"result"`
 	Error       *output.Error       `json:"error"`
+	Warnings    []output.Warning    `json:"warnings"`
 	NextActions []output.NextAction `json:"next_actions"`
 }
 
@@ -150,6 +151,7 @@ func (a *app) startReservedDetachedNative(ctx context.Context, renderer output.R
 			// parent's exact admission known and terminal when no native
 			// process was accepted.
 			a.settleDetachedAdmission(c, execution.ID, response.reply.Error)
+			response.reply.Error.Warnings = response.reply.Warnings
 			return response.reply.Error
 		}
 		if len(response.reply.Result) == 0 {
@@ -163,7 +165,7 @@ func (a *app) startReservedDetachedNative(ctx context.Context, renderer output.R
 		if err := json.Unmarshal(response.reply.Result, &metadata); err != nil || metadata.ID != execution.ID.String() {
 			return known()
 		}
-		if err := renderer.Success(output.Success{Result: response.reply.Result, NextActions: response.reply.NextActions,
+		if err := renderer.Success(output.Success{Result: response.reply.Result, Warnings: response.reply.Warnings, NextActions: response.reply.NextActions,
 			Lines: []output.Line{{Lead: metadata.ID, Fields: []output.Field{{Name: "state", Value: metadata.State}, {Name: "reused", Value: metadata.Reused}}}}}); err != nil {
 			return output.Wrap(output.CodeInternal, "write detached receipt", false, err)
 		}

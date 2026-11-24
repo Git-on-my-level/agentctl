@@ -84,10 +84,15 @@ func absDuration(value time.Duration) time.Duration {
 }
 
 func recordedLaunch(execution model.Execution) (processIdentity, bool) {
-	if execution.Launch == nil {
+	launch := execution.Launch
+	if launch == nil && execution.ProviderQueued() {
+		// Until Launch is recorded, only the queued agentctl process can
+		// own the row. Never use its PID in place of a launched child's.
+		launch = execution.OwnerLaunch
+	}
+	if launch == nil {
 		return processIdentity{}, false
 	}
-	launch := execution.Launch
 	if launch.PID <= 0 || launch.PID > model.MaxLaunchPID || launch.StartedAt.IsZero() {
 		return processIdentity{}, false
 	}

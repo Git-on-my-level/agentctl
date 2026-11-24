@@ -79,6 +79,7 @@
           "unreconciled"
         ],
         "properties": {
+		"admission": {"$ref": "execution.schema.json#/$defs/provider_admission"},
 		"capacity": {"$ref": "delegate-result.schema.json#/properties/capacity"},
           "host": {"type": "string", "minLength": 1, "maxLength": 256},
           "remote": {"$ref": "delegate-result.schema.json#/properties/remote"},

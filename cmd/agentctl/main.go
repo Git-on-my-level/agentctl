@@ -212,6 +212,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		err = a.runNative(ctx, renderer, commonArgs, rest[1:])
 	case "dispatch":
 		err = a.dispatchCommand(ctx, renderer, commonArgs, rest[1:])
+	case "admission":
+		err = a.admissionCommand(ctx, renderer, commonArgs, rest[1:])
 	case "delegate":
 		err = a.delegateCommand(ctx, renderer, commonArgs, rest[1:])
 	case "fanout":
@@ -1301,13 +1303,17 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		}
 		poll = nextAwaitPoll(poll, execution.Revision != lastRevision)
 		lastRevision = execution.Revision
-		if throughExecutionDeadline && deadline.IsZero() {
+		if throughExecutionDeadline && deadline.IsZero() && !execution.ProviderQueued() && !(execution.Admission != nil && execution.State.Terminal()) {
 			if execution.DeadlineAt == nil {
 				return a.fail(renderer, output.NewError(output.CodeCapabilityUnavailable, "execution has no recorded deadline", false).WithDetail("execution_id", id.String()).WithDetail("diagnostic_code", "execution_deadline_unavailable"))
 			}
 			// Allow bounded cancellation and terminal journaling after the native
 			// execution deadline itself elapses.
 			deadline = execution.DeadlineAt.Add(10 * time.Second)
+		}
+		if execution.ProviderQueued() && execution.Observation.FreshForSeconds != nil &&
+			a.now().After(execution.Observation.ObservedAt.Add(time.Duration(*execution.Observation.FreshForSeconds+10)*time.Second)) {
+			return a.fail(renderer, outcomeError(output.CodeExecutionUnknown, "provider admission owner lease expired", execution))
 		}
 		if execution.RemoteForwarded() {
 			problem := a.awaitRemote(ctx, renderer, c, execution, args[1:], contentOnly, deadline)
@@ -1589,6 +1595,10 @@ func writeExecutionReported(renderer output.Renderer, e model.Execution, operati
 	}
 	actions := []output.NextAction{}
 	warnings := append(childExitWarnings(e), extraWarnings...)
+	if e.Admission != nil {
+		fields = append(fields, admissionTextFields(e.Admission)...)
+		warnings = append(warnings, admissionWarnings(e.Admission)...)
+	}
 	if e.TaskContract != nil {
 		fields = append(fields, output.Field{Name: "task_contract", Value: "retained"}, output.Field{Name: "acceptance", Value: "external_required"})
 		warnings = append(warnings, taskContractAcceptanceWarning())

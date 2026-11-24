@@ -14,6 +14,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/Git-on-my-level/agentctl/internal/admission"
 )
 
 const SchemaVersion = 1
@@ -81,6 +83,7 @@ type Profile struct {
 	AgentPreferences *AgentPreferences  `json:"agent_preferences,omitempty"`
 	Route            *Route             `json:"route,omitempty"`
 	Delegation       *DelegationPolicy  `json:"delegation,omitempty"`
+	Admission        *admission.Config  `json:"admission,omitempty"`
 	Capacity         *Capacity          `json:"capacity,omitempty"`
 }
 
@@ -237,6 +240,9 @@ func (c Config) Validate() error {
 			if err := profile.Route.Validate(); err != nil {
 				return fmt.Errorf("profile %q route: %w", name, err)
 			}
+		}
+		if err := profile.Admission.Validate(); err != nil {
+			return fmt.Errorf("profile %q: %w", name, err)
 		}
 		if profile.Capacity != nil {
 			if err := profile.Capacity.Validate(); err != nil {

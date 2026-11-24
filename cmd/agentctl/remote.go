@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Git-on-my-level/agentctl/internal/admission"
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/contracts"
 	"github.com/Git-on-my-level/agentctl/internal/delegation"
@@ -168,6 +169,8 @@ func remoteResult(body []byte) (json.RawMessage, *output.Error) {
 }
 
 type remoteReceipt struct {
+	Admission    *model.ProviderAdmission    `json:"admission"`
+	DeadlineAt   *time.Time                  `json:"deadline_at"`
 	ID           ids.ExecutionID             `json:"id"`
 	OriginHostID ids.HostID                  `json:"origin_host_id"`
 	State        model.State                 `json:"state"`
@@ -211,7 +214,8 @@ func parseRemoteReceipt(body []byte) (remoteReceipt, *output.Error) {
 			validIntegrity = false
 		}
 	}
-	if err != nil || idErr != nil || hostErr != nil || !validState || !validLiveness || !validIntegrity {
+	if err != nil || idErr != nil || hostErr != nil || !validState || !validLiveness || !validIntegrity ||
+		receipt.Admission.Validate() != nil || receipt.DeadlineAt != nil && receipt.DeadlineAt.IsZero() {
 		return receipt, delegateError(output.CodeRemoteFailure, "delegate_remote_receipt_invalid", "remote receipt lacks a valid execution identity or state")
 	}
 	return receipt, nil
@@ -254,6 +258,7 @@ func (a *app) delegateRemote(ctx context.Context, renderer output.Renderer, c co
 	if len(replay) != 0 {
 		destination = replay[0].Delegation.RemotePlan.SSHDestination
 	}
+	launch := a.remoteNativeCommand("agentctl", "delegate", "--output", "json", "--cwd", opts.cwd)
 	// mktemp creates a fresh 0700 directory; shared TMPDIR entries cannot
 	// redirect the request write. Only the remote request key provides replay.
 	stage, problem := sshStep(ctx, destination, `umask 077 && dir=$(mktemp -d "${TMPDIR:-/tmp}/agentctl-delegate.XXXXXXXXXX") && { cat > "$dir/request.json" && printf '%s\n' "$dir" || { rm -f -- "$dir/request.json"; rmdir -- "$dir"; exit 1; }; }`, requestBody)
@@ -266,9 +271,9 @@ func (a *app) delegateRemote(ctx context.Context, renderer output.Renderer, c co
 	}
 	staged := shellQuote(dir + "/request.json")
 	args := append(remoteLaunchFlags(opts), "--authority", "native", "--journal-busy-budget", c.journalBusyBudget.String())
-	command := "cd " + shellQuote(opts.cwd) + " && " + remoteCommand("agentctl", "delegate", "--output", "json", "--cwd", opts.cwd) + " --request-file " + staged + " " + remoteCommand(args...)
+	command := "cd " + shellQuote(opts.cwd) + " && " + launch + " --request-file " + staged + " " + remoteCommand(args...)
 	// Let agentctl classify a missing cwd rather than allowing shell cd to hide it.
-	command = "if [ -d " + shellQuote(opts.cwd) + " ]; then " + command + "; else " + remoteCommand("agentctl", "delegate", "--output", "json", "--cwd", opts.cwd) + " --request-file " + staged + " " + remoteCommand(args...) + "; fi"
+	command = "if [ -d " + shellQuote(opts.cwd) + " ]; then " + command + "; else " + launch + " --request-file " + staged + " " + remoteCommand(args...) + "; fi"
 	// Preserve the launch's status while cleaning up on success, failure, or plan.
 	cleanup := "rm -f -- " + staged + "; rmdir -- " + shellQuote(dir)
 	command = "trap " + shellQuote(cleanup) + " 0; " + command
@@ -359,7 +364,10 @@ func (a *app) recordRemote(ctx context.Context, renderer output.Renderer, c comm
 	if state.Terminal() {
 		execution.TerminalAt = &now
 	}
-	if opts.timeout > 0 {
+	execution.Admission = receipt.Admission
+	if execution.Admission != nil {
+		execution.DeadlineAt = receipt.DeadlineAt
+	} else if opts.timeout > 0 {
 		deadline := now.Add(opts.timeout)
 		execution.DeadlineAt = &deadline
 	}
@@ -420,6 +428,9 @@ func (a *app) statusRemote(ctx context.Context, renderer output.Renderer, execut
 		return problem
 	}
 	execution.State = receipt.State
+	if receipt.Admission != nil {
+		execution.Admission, execution.DeadlineAt = receipt.Admission, receipt.DeadlineAt
+	}
 	if receipt.Liveness != "" {
 		execution.Liveness = receipt.Liveness
 	}
@@ -494,6 +505,9 @@ func (a *app) observeRemoteTerminal(ctx context.Context, c common, execution mod
 	now := a.now().UTC()
 	next := latest
 	next.State, next.Liveness, next.UpdatedAt, next.TerminalAt = receipt.State, model.LivenessExited, now, &now
+	if receipt.Admission != nil {
+		next.Admission, next.DeadlineAt = receipt.Admission, receipt.DeadlineAt
+	}
 	if receipt.TerminalAt != nil {
 		next.TerminalAt = receipt.TerminalAt
 	} else if execution.TerminalAt != nil {
@@ -621,7 +635,7 @@ func (a *app) continueRemote(ctx context.Context, renderer output.Renderer, c co
 	for _, label := range opts.labels {
 		args = append(args, "--label", label)
 	}
-	body, problem := sshStep(ctx, plan.SSHDestination, remoteCommand(args...), prompt)
+	body, problem := sshStep(ctx, plan.SSHDestination, a.remoteNativeCommand(args...), prompt)
 	if problem != nil {
 		return remoteErrorLocal(problem, source)
 	}
@@ -636,3 +650,11 @@ func (a *app) continueRemote(ctx context.Context, renderer output.Renderer, c co
 }
 
 var _ io.Writer = (*sshCapture)(nil)
+
+func (a *app) remoteNativeCommand(args ...string) string {
+	command := remoteCommand(args...)
+	if priority := a.getenv(admission.PriorityEnv); priority != "" {
+		command = admission.PriorityEnv + "=" + shellQuote(priority) + " " + command
+	}
+	return command
+}

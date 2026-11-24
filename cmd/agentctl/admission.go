@@ -1,0 +1,514 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strconv"
+	"time"
+
+	"github.com/Git-on-my-level/agentctl/internal/adapter"
+	"github.com/Git-on-my-level/agentctl/internal/admission"
+	"github.com/Git-on-my-level/agentctl/internal/callback"
+	"github.com/Git-on-my-level/agentctl/internal/model"
+	"github.com/Git-on-my-level/agentctl/internal/output"
+	"github.com/Git-on-my-level/agentctl/internal/route"
+)
+
+func admissionProcessStart(pid int) (string, error) {
+	obs := processStart(pid)
+	if obs.err != nil {
+		return "", obs.err
+	}
+	if !obs.present {
+		return "", nil
+	}
+	if !obs.startKnown {
+		return "", errors.New("process start unavailable")
+	}
+	if obs.startTicks != 0 {
+		return fmt.Sprintf("%d/%d", obs.nsInode, obs.startTicks), nil
+	}
+	return obs.started.UTC().Format(time.RFC3339Nano), nil
+}
+
+func (a *app) admissionStore(c common) (*admission.Store, error) {
+	path, err := a.journalPath(c)
+	if err != nil {
+		return nil, err
+	}
+	return admission.New(path, a.now, admissionProcessStart), nil
+}
+
+func (a *app) nativeAdmission(c common, harness string, argv []string) (*model.ProviderAdmission, admission.Bucket, *output.Error) {
+	if harness != "opencode" {
+		return nil, admission.Bucket{}, nil
+	}
+	modelID := route.NativeArgvModel(harness, argv)
+	if modelID == "" {
+		return nil, admission.Bucket{}, nil
+	}
+	_, profile, problem := a.resolveProfile(c)
+	if problem != nil {
+		return nil, admission.Bucket{}, nil
+	} // Expert run also works without a profile.
+	name, bucket := profile.Admission.Match(harness, modelID)
+	if name == "" || !bucket.Active() {
+		return nil, admission.Bucket{}, nil
+	}
+	priority := a.getenv(admission.PriorityEnv)
+	if priority == "" {
+		priority = admission.Background
+	}
+	if !admission.ValidPriority(priority) {
+		return nil, bucket, delegateError(output.CodeUsage, "admission_invalid_priority", "AGENTCTL_ADMISSION_PRIORITY must be interactive or background")
+	}
+	return &model.ProviderAdmission{Bucket: name, Priority: priority, Phase: "planned"}, bucket, nil
+}
+
+func admissionWarnings(meta *model.ProviderAdmission) []output.Warning {
+	if meta == nil || meta.Warning == "" {
+		return nil
+	}
+	message := "Admission used the configured static fallback window."
+	if meta.Phase == "bypassed" {
+		message = "Admission could not reserve a slot before max_wait. The native launch proceeded without a slot."
+	}
+	return []output.Warning{{Code: meta.Warning, Message: message, Details: map[string]any{"bucket": meta.Bucket}}}
+}
+
+func (a *app) waitProviderAdmission(ctx context.Context, c common, execution model.Execution, b admission.Bucket,
+	inbox *cancelInbox, interrupt context.CancelFunc, timeout time.Duration, noStore bool) (model.Execution, *admission.Queue, *output.Error) {
+	waitCtx, cancel := context.WithTimeout(ctx, b.Wait())
+	defer cancel()
+	meta := *execution.Admission
+	slots, stateErr := a.admissionStore(c)
+	var queue *admission.Queue
+	if stateErr == nil {
+		pid := os.Getpid()
+		start, err := admissionProcessStart(pid)
+		stateErr = err
+		if start != "" {
+			owner := admission.Owner{PID: pid, Start: start}
+			queue = slots.Queue(meta.Bucket, b, execution.ID.String(), meta.Priority, owner, owner, false)
+		}
+	}
+	keep := false
+	defer func() {
+		if queue != nil && !keep {
+			queue.Close()
+		}
+	}()
+	var adjustment *admission.Adjustment
+	for {
+		a.serviceCancelInbox(inbox, interrupt)
+		if ctx.Err() != nil || waitCtx.Err() != nil {
+			break
+		}
+		if queue != nil {
+			decision, err := queue.Try(waitCtx, true)
+			stateErr = err
+			if err == nil {
+				adjustment = decision.Adjustment
+				meta.Window = decision.Window
+				if decision.Warning != "" {
+					meta.Warning = decision.Warning
+				}
+				meta.Position = decision.Position
+				if decision.Granted {
+					meta.Phase, meta.GrantedAt = "granted", decision.AcquiredAt
+					break
+				}
+			}
+		}
+		if meta.Position != execution.Admission.Position || a.now().Sub(execution.Observation.ObservedAt) >= nativeRunnerHeartbeatEvery {
+			var problem *output.Error
+			execution, problem = a.updateProviderAdmission(c, execution, meta, false, 0)
+			if problem != nil {
+				return execution, nil, problem
+			}
+		}
+		a.journalAdmissionAdjustment(c, execution, adjustment)
+		adjustment = nil
+		select {
+		case <-waitCtx.Done():
+		case <-time.After(admission.PollInterval):
+		}
+	}
+	a.serviceCancelInbox(inbox, interrupt)
+	if err := ctx.Err(); err != nil {
+		if queue != nil {
+			queue.Close()
+		}
+		writeJournal, current, problem := a.openExecutionWriteOwned(c, execution.ID)
+		if problem != nil {
+			return execution, nil, problem
+		}
+		current.Admission = &meta
+		meta.Phase, meta.Position = "cancelled", 0
+		final, finalizeErr := a.finalizeResult(context.Background(), c, writeJournal, current,
+			adapter.Result{State: adapter.StateCancelled, Error: "cancelled during provider admission"}, a.now().UTC(), noStore)
+		writeJournal.Close()
+		if finalizeErr != nil {
+			return execution, nil, mapStoreError("record cancelled provider admission", finalizeErr)
+		}
+		a.anxRegisterTerminal(c, final.ID)
+		return final, nil, interruptedRunError(err, final)
+	}
+	if meta.Phase != "granted" {
+		now := a.now().UTC()
+		meta.Phase, meta.Position, meta.GrantedAt, meta.Warning = "bypassed", 0, &now, "admission_max_wait"
+		if stateErr != nil || queue == nil {
+			meta.Warning = "admission_state_unavailable"
+		}
+		if queue != nil {
+			queue.Close()
+		}
+	}
+	execution, problem := a.updateProviderAdmission(c, execution, meta, true, timeout)
+	if problem != nil {
+		return execution, nil, problem
+	}
+	a.journalAdmissionAdjustment(c, execution, adjustment)
+	keep = true
+	return execution, queue, nil
+}
+
+func (a *app) updateProviderAdmission(c common, execution model.Execution, meta model.ProviderAdmission, granted bool, timeout time.Duration) (model.Execution, *output.Error) {
+	journal, current, problem := a.openExecutionWriteOwned(c, execution.ID)
+	if problem != nil {
+		return execution, problem
+	}
+	defer journal.Close()
+	if current.State.Terminal() {
+		return current, delegateExecutionError(output.CodeInvalidState, "execution settled during provider admission", current)
+	}
+	current.Admission = &meta
+	now := a.now().UTC()
+	current.UpdatedAt, current.Observation.ObservedAt = now, now
+	if granted {
+		current.SourceState = nil
+		if timeout > 0 {
+			deadline := meta.GrantedAt.Add(timeout)
+			current.DeadlineAt = &deadline
+		}
+	}
+	updated, err := journal.UpdateExecution(context.Background(), current, current.Revision)
+	if err != nil {
+		return execution, mapStoreError("record provider admission", err)
+	}
+	return updated, nil
+}
+
+func (a *app) journalAdmissionAdjustment(c common, execution model.Execution, adjustment *admission.Adjustment) {
+	if adjustment == nil {
+		return
+	}
+	journal, _, problem := a.openExecutionWriteOwned(c, execution.ID)
+	if problem != nil {
+		return
+	}
+	defer journal.Close()
+	payload := map[string]any{"bucket": execution.Admission.Bucket, "from": adjustment.From, "to": adjustment.To, "reason": adjustment.Reason, "at": adjustment.At}
+	key, canonical, err := callback.SemanticDedupeKey(execution.Adapter, 1, payload)
+	if err != nil {
+		return
+	}
+	_, _, _ = journal.AppendEvent(context.Background(), model.Event{
+		ExecutionID: execution.ID, OriginHostID: execution.OriginHostID, Authority: execution.Authority, Adapter: execution.Adapter,
+		Kind: model.EventHealth, Ordering: model.OrderingObservation, ObservedAt: adjustment.At,
+		SourceState: stringPointer("admission.window_adjusted"), Payload: payload, DedupeKey: key, DedupeVersion: 1,
+	}, canonical)
+}
+
+func (a *app) admissionCommand(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
+	usage := func() *output.Error {
+		return delegateError(output.CodeUsage, "admission_invalid_arguments", "see agentctl help admission for command arguments")
+	}
+	if len(args) == 0 {
+		return usage()
+	}
+	command := args[0]
+	fs := flag.NewFlagSet(command, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var name, harness, modelID, holder, priority, format, at string
+	var wait time.Duration
+	var noWait bool
+	var pid int
+	var attempts, throttled int64
+	if command == "match" {
+		fs.StringVar(&harness, "harness", "", "")
+		fs.StringVar(&modelID, "model", "", "")
+	} else {
+		fs.StringVar(&name, "bucket", "", "")
+	}
+	switch command {
+	case "match":
+	case "status":
+		fs.StringVar(&format, "format", "", "")
+	case "acquire":
+		fs.StringVar(&holder, "holder", "", "")
+		fs.StringVar(&priority, "priority", admission.Background, "")
+		fs.IntVar(&pid, "pid", os.Getppid(), "")
+		fs.DurationVar(&wait, "wait", 0, "")
+		fs.BoolVar(&noWait, "no-wait", false, "")
+	case "release":
+		fs.StringVar(&holder, "holder", "", "")
+	case "observe":
+		fs.Int64Var(&attempts, "attempts", -1, "")
+		fs.Int64Var(&throttled, "throttled", -1, "")
+		fs.StringVar(&at, "at", "", "")
+	default:
+		return usage()
+	}
+	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 0 {
+		return usage()
+	}
+	if command == "match" && (harness == "" || modelID == "") ||
+		command != "match" && command != "status" && name == "" ||
+		name != "" && !admission.ValidBucket(name) ||
+		command == "status" && format != "" && format != "prom" ||
+		(command == "acquire" || command == "release") && !admission.ValidHolder(holder) {
+		return usage()
+	}
+	_, profile, problem := a.resolveProfile(c)
+	if problem != nil {
+		return problem
+	}
+	write := func(result any, fields ...output.Field) *output.Error {
+		if err := renderer.Success(output.Success{Result: result, Lines: []output.Line{{Lead: "admission." + command, Fields: fields}}}); err != nil {
+			return output.Wrap(output.CodeInternal, "write provider admission result", false, err)
+		}
+		return nil
+	}
+	if command == "match" {
+		name, bucket := profile.Admission.Match(harness, modelID)
+		return write(map[string]any{"matched": name != "", "bucket": name, "enabled": name != "" && bucket.Active()}, output.Field{Name: "bucket", Value: name}, output.Field{Name: "enabled", Value: name != "" && bucket.Active()})
+	}
+	buckets := map[string]admission.Bucket{}
+	if profile.Admission != nil {
+		buckets = profile.Admission.Buckets
+	}
+	bucket, present := buckets[name]
+	if name != "" && !present && command != "release" {
+		return delegateError(output.CodeNotFound, "admission_unknown_bucket", "admission bucket is not configured")
+	}
+	slots, stateErr := a.admissionStore(c)
+	stateProblem := func(err error) *output.Error {
+		code, diagnostic := output.CodeDependencyUnavailable, "admission_state_unavailable"
+		if errors.Is(err, admission.ErrHolderOwned) {
+			code, diagnostic = output.CodeConflict, "admission_holder_conflict"
+		}
+		if ctx.Err() != nil {
+			code, diagnostic = output.CodeExecutionCancelled, "admission_cancelled"
+		}
+		problem := delegateError(code, diagnostic, "provider admission operation could not be completed").WithDetail("bucket", name)
+		problem.Retryable = code == output.CodeDependencyUnavailable
+		return problem
+	}
+	if stateErr != nil {
+		return stateProblem(stateErr)
+	}
+	switch command {
+	case "status":
+		names := []string{}
+		for key := range buckets {
+			if name == "" || key == name {
+				names = append(names, key)
+			}
+		}
+		sort.Strings(names)
+		views := make([]admission.Snapshot, 0, len(names))
+		lines := []output.Line{}
+		for _, key := range names {
+			status, err := slots.Status(ctx, key, buckets[key])
+			if err != nil {
+				if format == "prom" {
+					return stateProblem(err)
+				}
+				status.Warning = "admission_state_unavailable"
+			}
+			if status.Warning != "" && status.Enabled && format == "" {
+				renderer = renderer.WithWarnings(output.Warning{Code: status.Warning, Message: "Admission status is using the configured fallback window.", Details: map[string]any{"bucket": key}})
+			}
+			views = append(views, status)
+			lines = append(lines, output.Line{Lead: "admission.bucket", Fields: []output.Field{
+				{Name: "bucket", Value: key}, {Name: "enabled", Value: status.Enabled}, {Name: "window", Value: status.Window}, {Name: "in_use", Value: status.InUse}, {Name: "queued", Value: status.Queued[admission.Interactive] + status.Queued[admission.Background]},
+			}})
+		}
+		if format == "prom" {
+			if err := writeAdmissionMetrics(renderer.Writer, views); err != nil {
+				return output.Wrap(output.CodeInternal, "write admission metrics", false, err)
+			}
+			return nil
+		}
+		if err := renderer.Success(output.Success{Result: map[string]any{"buckets": views}, Lines: lines}); err != nil {
+			return output.Wrap(output.CodeInternal, "write admission status", false, err)
+		}
+		return nil
+	case "release":
+		released, err := slots.Release(ctx, name, holder)
+		if err != nil {
+			return stateProblem(err)
+		}
+		return write(map[string]any{"bucket": name, "released": released}, output.Field{Name: "released", Value: released})
+	case "observe":
+		now := a.now().UTC()
+		observedAt := now
+		if at != "" {
+			parsed, err := time.Parse(time.RFC3339Nano, at)
+			if err != nil {
+				return usage()
+			}
+			observedAt = parsed.UTC()
+		}
+		sample := admission.Sample{At: observedAt, Attempts: attempts, Throttled: throttled}
+		if !bucket.ValidSample(now, sample) {
+			return usage()
+		}
+		adjustment, warning, err := slots.Observe(ctx, name, bucket, sample)
+		if err != nil {
+			return stateProblem(err)
+		}
+		if warning != "" {
+			renderer = renderer.WithWarnings(output.Warning{Code: warning, Message: "Admission used the configured static fallback window."})
+		}
+		return write(map[string]any{"bucket": name, "recorded": bucket.Active(), "adjustment": adjustment}, output.Field{Name: "recorded", Value: bucket.Active()})
+	case "acquire":
+		waitSet := false
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "wait" {
+				waitSet = true
+			}
+		})
+		if !admission.ValidPriority(priority) || pid <= 0 || pid > model.MaxLaunchPID || waitSet && (wait <= 0 || noWait) {
+			return usage()
+		}
+		if !bucket.Active() {
+			return write(admission.Decision{Bucket: name, Priority: priority, Granted: true, Reason: "disabled"}, output.Field{Name: "granted", Value: true}, output.Field{Name: "reason", Value: "disabled"})
+		}
+		if !noWait && !waitSet {
+			wait = bucket.Wait()
+		}
+		wait = min(wait, bucket.Wait())
+		start, err := admissionProcessStart(pid)
+		self, selfErr := admissionProcessStart(os.Getpid())
+		if err != nil || selfErr != nil || start == "" || self == "" {
+			return stateProblem(admission.ErrHolderOwned)
+		}
+		queue := slots.Queue(name, bucket, holder, priority, admission.Owner{PID: os.Getpid(), Start: self}, admission.Owner{PID: pid, Start: start}, true)
+		defer queue.Close()
+		waitCtx := ctx
+		if wait > 0 {
+			var cancel context.CancelFunc
+			waitCtx, cancel = context.WithTimeout(ctx, wait)
+			defer cancel()
+		}
+		var decision admission.Decision
+		for {
+			decision, err = queue.Try(waitCtx, wait > 0)
+			if ctx.Err() != nil && !decision.Granted {
+				return stateProblem(ctx.Err())
+			}
+			if waitCtx.Err() != nil && !decision.Granted {
+				decision.Reason = "wait_timeout"
+				break
+			}
+			if err != nil && (wait == 0 || !errors.Is(err, admission.ErrLockBusy)) {
+				return stateProblem(err)
+			}
+			if decision.Granted || wait == 0 {
+				break
+			}
+			select {
+			case <-waitCtx.Done():
+			case <-time.After(admission.PollInterval):
+			}
+		}
+		if decision.Warning != "" {
+			renderer = renderer.WithWarnings(output.Warning{Code: decision.Warning, Message: "Admission used the configured static fallback window."})
+		}
+		return write(decision, output.Field{Name: "bucket", Value: name}, output.Field{Name: "granted", Value: decision.Granted}, output.Field{Name: "reason", Value: decision.Reason})
+	}
+	return usage()
+}
+
+func writeAdmissionMetrics(w io.Writer, views []admission.Snapshot) error {
+	host, err := os.Hostname()
+	if err != nil {
+		return err
+	}
+	type metric struct {
+		name, kind string
+		value      func(admission.Snapshot) string
+	}
+	number := func(v float64) string { return strconv.FormatFloat(v, 'g', -1, 64) }
+	metrics := []metric{
+		{"window", "gauge", func(v admission.Snapshot) string { return strconv.Itoa(v.Window) }},
+		{"in_use", "gauge", func(v admission.Snapshot) string { return strconv.Itoa(v.InUse) }},
+		{"queued", "gauge", func(v admission.Snapshot) string {
+			return strconv.Itoa(v.Queued[admission.Interactive] + v.Queued[admission.Background])
+		}},
+		{"throttle_rate", "gauge", func(v admission.Snapshot) string { return number(v.ThrottleRate) }},
+		{"goodput_rpm", "gauge", func(v admission.Snapshot) string { return number(v.GoodputRPM) }},
+		{"admitted_total", "counter", func(v admission.Snapshot) string { return strconv.FormatInt(v.Admitted, 10) }},
+		{"throttled_attempts_total", "counter", func(v admission.Snapshot) string { return strconv.FormatInt(v.ThrottledAttempts, 10) }},
+		{"attempts_total", "counter", func(v admission.Snapshot) string { return strconv.FormatInt(v.TotalAttempts, 10) }},
+	}
+	for _, m := range metrics {
+		if _, err := fmt.Fprintf(w, "# TYPE agentctl_admission_%s %s\n", m.name, m.kind); err != nil {
+			return err
+		}
+		for _, v := range views {
+			if !v.Enabled {
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "agentctl_admission_%s{bucket=%q,host=%q} %s\n", m.name, v.Bucket, host, m.value(v)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func countAdmissionAttempt(event adapter.Event, sample *admission.Sample) {
+	switch event.SourceState {
+	case "opencode.step_start":
+		sample.Attempts++
+	case "opencode.retry", "opencode.error":
+		if status, ok := nativeMetadataInt(event.Payload["http_status"]); ok && status == 429 {
+			sample.Attempts++
+			sample.Throttled++
+		}
+	}
+}
+
+func projectAdmissionPlan(result map[string]any, native any) {
+	fields, ok := native.(map[string]any)
+	if !ok {
+		return
+	}
+	raw, ok := fields["preflight"].(json.RawMessage)
+	if !ok {
+		return
+	}
+	var preflight struct {
+		Admission *model.ProviderAdmission `json:"admission"`
+	}
+	if json.Unmarshal(raw, &preflight) == nil && preflight.Admission != nil {
+		result["admission"] = preflight.Admission
+	}
+}
+
+func admissionTextFields(meta *model.ProviderAdmission) []output.Field {
+	fields := []output.Field{{Name: "admission", Value: meta.Phase}, {Name: "bucket", Value: meta.Bucket}, {Name: "priority", Value: meta.Priority}}
+	if meta.Position != 0 {
+		fields = append(fields, output.Field{Name: "position", Value: meta.Position})
+	}
+	return fields
+}
