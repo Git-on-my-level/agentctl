@@ -618,6 +618,11 @@ func commitOwnerLost(ctx context.Context, journal *store.Journal, execution mode
 
 func commitOwnerLostEvidence(ctx context.Context, journal *store.Journal, execution model.Execution, proof processProof, age time.Duration, now time.Time, ownerEvidence map[string]any) (model.Execution, error) {
 	sourceState := reconcileOwnerLost
+	if execution.ProviderQueued() {
+		meta := *execution.Admission
+		meta.Phase, meta.Position = "aborted", 0
+		execution.Admission = &meta
+	}
 	execution.State = model.StateOrphaned
 	execution.Liveness = model.LivenessUnreachable
 	execution.SourceState = &sourceState

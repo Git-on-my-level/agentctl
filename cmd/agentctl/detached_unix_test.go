@@ -36,6 +36,77 @@ func retryLifecycleJournalBusy(invoke func() (int, string)) (int, string) {
 	return code, out
 }
 
+func TestDetachedQueuedWorkerCrashBeforeClaim(t *testing.T) {
+	for _, recovery := range []string{"reconcile", "supervisor"} {
+		t.Run(recovery, func(t *testing.T) {
+			f, _ := admissionFixture(t, true, "90s")
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr)
+			a.stdin = strings.NewReader("private queued task")
+			var workerPID int
+			a.startDetachedWorker = func(cmd *exec.Cmd) error {
+				// Consume the launch payload and then crash before claiming the row.
+				cmd.Path, cmd.Args = "/bin/sh", []string{"sh", "-c", "cat >/dev/null && kill -KILL $$"}
+				if err := cmd.Start(); err != nil {
+					return err
+				}
+				workerPID = cmd.Process.Pid
+				return nil
+			}
+			ctx := context.Background()
+			args := []string{"--config", f.config, "--journal", f.journal}
+			if code := a.run(ctx, append(args, "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin", "--detach")); code != 0 {
+				t.Fatalf("delegate exit=%d %s", code, stdout.String())
+			}
+			id, err := ids.ParseExecutionID(resultID(t, stdout.String()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			journal := scopedJournal{path: f.journal}
+			row, err := journal.GetExecution(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity, ok := recordedLaunch(row)
+			if !row.ProviderQueued() || row.SourceState != nil || row.Launch != nil || !ok || identity.PID != workerPID {
+				t.Fatalf("queued admission lost preflight worker identity: %+v, proof identity=%+v", row, identity)
+			}
+			// Receipt EOF may arrive just before the parent's Wait reaps the worker.
+			for until := time.Now().Add(3 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+				if proof := inspectProcess(identity); proof.Gone {
+					break
+				} else if time.Now().After(until) {
+					t.Fatalf("worker exit unproven: %+v", proof)
+				}
+			}
+			now := row.Observation.ObservedAt.Add(10 * time.Minute)
+			a.now = func() time.Time { return now }
+			if recovery == "reconcile" {
+				world := reconcileWorld{path: f.journal}
+				report := world.apply(t, &reconcileTestApp{app: a}, &stdout, "--stale-after", "1m")
+				if report.Orphan.Count != 1 || report.Orphan.Executions[0].ID != id {
+					t.Fatalf("reconcile did not report dead worker: %+v", report.Orphan)
+				}
+			} else {
+				bridge := pathSupervisorExecutions{path: f.journal, app: a}
+				if _, handled, err := bridge.probeNativeOwner(ctx, id.String()); err != nil || !handled {
+					t.Fatalf("supervisor handled=%v err=%v", handled, err)
+				}
+			}
+			row, err = journal.GetExecution(ctx, id)
+			if err != nil || row.State != model.StateOrphaned || row.Admission == nil || row.Admission.Phase != "aborted" || row.Admission.Position != 0 {
+				t.Fatalf("dead worker left admission unsettled: %+v err=%v", row, err)
+			}
+			reader := openReconcileJournal(t, f.journal)
+			defer reader.Close()
+			outcome, err := reader.GetOutcome(ctx, id)
+			if err != nil || outcome.Failure == nil || outcome.Failure.Code != reconcileOwnerLost {
+				t.Fatalf("missing owner-lost outcome: %+v err=%v", outcome, err)
+			}
+		})
+	}
+}
+
 func TestDetachedLifecycleThroughBuiltBinary(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "agentctl")
 	if out, err := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, ".").CombinedOutput(); err != nil {

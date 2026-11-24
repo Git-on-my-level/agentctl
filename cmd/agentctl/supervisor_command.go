@@ -384,7 +384,8 @@ func (b pathSupervisorExecutions) probeNativeOwner(ctx context.Context, id strin
 	if current.State.Terminal() || current.NativeRecoveryParked() || runnerLeaseActive(current, now) {
 		return result, true, nil
 	}
-	if current.State == model.StateStarting && len(current.SourceBindings) == 0 {
+	pending := current.State == model.StateStarting && len(current.SourceBindings) == 0
+	if pending && !current.ProviderQueued() {
 		// Admission is durable before the worker has a native status binding.
 		// There is no authority route to probe yet; an unchanged pending row
 		// is not a failed reprobe and never authorizes another launch.
@@ -392,7 +393,7 @@ func (b pathSupervisorExecutions) probeNativeOwner(ctx context.Context, id strin
 	}
 	identity, recorded := recordedLaunch(current)
 	if !recorded || current.OwnerLaunch == nil || observationAge(current, now) < 5*time.Minute {
-		return supervisor.ProbeResult{}, false, nil
+		return result, pending, nil
 	}
 	// Proof is outside the database lock. The subsequent writer rechecks the
 	// whole revision and lease; a renewed owner always wins that race.
@@ -402,12 +403,15 @@ func (b pathSupervisorExecutions) probeNativeOwner(ctx context.Context, id strin
 	}
 	proof := prove(identity)
 	if !proof.Gone {
-		return supervisor.ProbeResult{}, false, nil
+		return result, pending, nil
 	}
 	// Wall-clock boot comparisons cannot establish a legacy collector's
 	// absence after clock corrections. Only its recorded identity can.
 	owner := current.OwnerLaunch
-	ownerProof := prove(processIdentity{PID: owner.PID, StartedAt: owner.StartedAt, StartTicks: owner.StartTicks, PIDNamespaceIno: owner.PIDNamespaceIno, ProcfsPIDNamespaceIno: owner.ProcfsPIDNamespaceIno})
+	ownerProof := proof
+	if current.Launch != nil {
+		ownerProof = prove(processIdentity{PID: owner.PID, StartedAt: owner.StartedAt, StartTicks: owner.StartTicks, PIDNamespaceIno: owner.PIDNamespaceIno, ProcfsPIDNamespaceIno: owner.ProcfsPIDNamespaceIno})
+	}
 	if !ownerProof.Gone {
 		return supervisor.ProbeResult{}, false, nil
 	}

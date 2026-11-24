@@ -8,19 +8,21 @@ import (
 )
 
 func retainNativeOwner(execution *model.Execution) {
-	if execution.OwnerLaunch != nil {
-		return
+	if execution.OwnerLaunch == nil {
+		execution.OwnerLaunch = nativeOwnerLaunch(os.Getpid())
 	}
-	pid := os.Getpid()
+}
+
+func nativeOwnerLaunch(pid int) *model.LaunchIdentity {
 	observed := processStart(pid)
 	if observed.err != nil || !observed.present || !observed.startKnown {
-		return
+		return nil
 	}
 	started := observed.started
 	if started.IsZero() {
 		started = time.Now().UTC()
 	} // Linux identity uses kernel ticks and namespace.
-	execution.OwnerLaunch = &model.LaunchIdentity{PID: pid, StartedAt: started, StartTicks: observed.startTicks, PIDNamespaceIno: observed.nsInode, ProcfsPIDNamespaceIno: observed.nsInode}
+	return &model.LaunchIdentity{PID: pid, StartedAt: started, StartTicks: observed.startTicks, PIDNamespaceIno: observed.nsInode, ProcfsPIDNamespaceIno: observed.nsInode}
 }
 
 const processStartTolerance = 5 * time.Second
@@ -32,6 +34,7 @@ type processIdentity struct {
 	StartTicks            int64
 	PIDNamespaceIno       uint64
 	ProcfsPIDNamespaceIno uint64
+	exactStart            bool
 }
 
 // processProof is identity evidence for one recorded launch PID. Gone is proof
@@ -85,7 +88,8 @@ func absDuration(value time.Duration) time.Duration {
 
 func recordedLaunch(execution model.Execution) (processIdentity, bool) {
 	launch := execution.Launch
-	if launch == nil && execution.ProviderQueued() {
+	queuedOwner := launch == nil && execution.ProviderQueued()
+	if queuedOwner {
 		// A queued row cannot have launched. After grant, the owner can
 		// disappear with a live child whose launch has not been recorded.
 		launch = execution.OwnerLaunch
@@ -96,5 +100,5 @@ func recordedLaunch(execution model.Execution) (processIdentity, bool) {
 	if launch.PID <= 0 || launch.PID > model.MaxLaunchPID || launch.StartedAt.IsZero() {
 		return processIdentity{}, false
 	}
-	return processIdentity{PID: launch.PID, StartedAt: launch.StartedAt, StartTicks: launch.StartTicks, PIDNamespaceIno: launch.PIDNamespaceIno, ProcfsPIDNamespaceIno: launch.ProcfsPIDNamespaceIno}, true
+	return processIdentity{PID: launch.PID, StartedAt: launch.StartedAt, StartTicks: launch.StartTicks, PIDNamespaceIno: launch.PIDNamespaceIno, ProcfsPIDNamespaceIno: launch.ProcfsPIDNamespaceIno, exactStart: queuedOwner}, true
 }

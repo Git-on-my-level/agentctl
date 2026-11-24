@@ -58,7 +58,7 @@ func linuxProof(id processIdentity, read func(string) ([]byte, error), nsInode f
 		proof.Alive = true
 		return proof
 	}
-	if ticks > id.StartTicks {
+	if ticks > id.StartTicks || id.exactStart {
 		proof.Proof = "pid_reused"
 		proof.Gone = true
 		return proof

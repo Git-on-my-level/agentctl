@@ -67,3 +67,20 @@ func TestInspectProcessProvesPidIdentity(t *testing.T) {
 		t.Fatalf("exited process was not absent: %+v start=%+v", absent, processStart(gonePID))
 	}
 }
+
+func TestQueuedOwnerProcessProofDetectsStartMismatch(t *testing.T) {
+	owner := nativeOwnerLaunch(os.Getpid())
+	if owner == nil {
+		t.Skip("kernel process identity unavailable")
+	}
+	id := processIdentity{PID: owner.PID, StartedAt: owner.StartedAt, StartTicks: owner.StartTicks,
+		PIDNamespaceIno: owner.PIDNamespaceIno, ProcfsPIDNamespaceIno: owner.ProcfsPIDNamespaceIno, exactStart: true}
+	if proof := inspectProcess(id); !proof.Alive || proof.Gone {
+		t.Fatalf("matching queued owner: %+v", proof)
+	}
+	id.StartedAt = id.StartedAt.Add(time.Microsecond)
+	id.StartTicks++
+	if proof := inspectProcess(id); !proof.Gone || proof.Alive || proof.Proof != "pid_reused" {
+		t.Fatalf("mismatched queued owner: %+v", proof)
+	}
+}
