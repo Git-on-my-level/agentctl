@@ -996,7 +996,20 @@ func (a *app) resultUnreconciled(ctx context.Context, renderer output.Renderer, 
 	total := 0
 	for i := end - 1; i >= 0; i-- {
 		execution := executions[i]
-		if execution.RetryOf != nil || !acks.Unreconciled(execution) {
+		if execution.RetryOf != nil {
+			continue
+		}
+		eligibility := execution
+		if execution.OpenCodeRecovery != nil {
+			logical, physical, err := a.followOpenCodeRecovery(ctx, journal, execution)
+			if err == nil && logical.State.Terminal() {
+				// Older or physical-turn collectors may have stamped only
+				// one member. Eligibility follows the delivered outcome.
+				logical.ID = physical
+				eligibility = logical
+			}
+		}
+		if !acks.Unreconciled(eligibility) {
 			continue
 		}
 		matched := true

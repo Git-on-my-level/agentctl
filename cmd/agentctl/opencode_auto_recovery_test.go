@@ -270,25 +270,44 @@ func TestOpenCodeRecoveredLogicalIDCanContinue(t *testing.T) {
 }
 
 func TestOpenCodeBulkResultCollectsOneLogicalExecution(t *testing.T) {
-	f := automaticOpenCodeFixture(t, "es")
-	code, out := f.invoke("private-original-task")
-	chain := openCodeChain(t, out)
-	if code != 0 || len(chain) != 2 {
-		t.Fatalf("recovery exit=%d: %s", code, out)
-	}
-	code, out = f.command(t, "", "result", "--unreconciled")
-	var doc struct {
-		Result struct {
-			Items []unreconciledResultItem `json:"executions"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal([]byte(out), &doc); err != nil || code != 0 || len(doc.Result.Items) != 1 {
-		t.Fatalf("bulk result exit=%d: %s", code, out)
-	}
-	item := doc.Result.Items[0]
-	if item.ExecutionID != chain[0].String() || !slices.Equal(item.RecoveryChain, chain) ||
-		!item.Acknowledged || item.Outcome == nil || item.Outcome.Content == nil || item.Outcome.Content.Text != "recovered answer" {
-		t.Fatalf("bulk result did not collect the logical chain: %s", out)
+	for _, prior := range []string{"unacknowledged", "original_acknowledged", "final_acknowledged"} {
+		t.Run(prior, func(t *testing.T) {
+			f := automaticOpenCodeFixture(t, "es")
+			code, out := f.invoke("private-original-task")
+			chain := openCodeChain(t, out)
+			if code != 0 || len(chain) != 2 {
+				t.Fatalf("recovery exit=%d: %s", code, out)
+			}
+			want := 1
+			switch prior {
+			case "original_acknowledged":
+				if code, out = f.command(t, "", "await-any", "--execution", chain[0].String()); code != 11 {
+					t.Fatalf("physical await-any exit=%d: %s", code, out)
+				}
+			case "final_acknowledged":
+				if code, out = f.command(t, "", "result", chain[1].String(), "--content"); code != 0 {
+					t.Fatalf("physical result exit=%d: %s", code, out)
+				}
+				want = 0
+			}
+			code, out = f.command(t, "", "result", "--unreconciled")
+			var doc struct {
+				Result struct {
+					Items []unreconciledResultItem `json:"executions"`
+				} `json:"result"`
+			}
+			if err := json.Unmarshal([]byte(out), &doc); err != nil || code != 0 || len(doc.Result.Items) != want {
+				t.Fatalf("bulk result exit=%d: %s", code, out)
+			}
+			if want == 0 {
+				return
+			}
+			item := doc.Result.Items[0]
+			if item.ExecutionID != chain[0].String() || !slices.Equal(item.RecoveryChain, chain) ||
+				!item.Acknowledged || item.Outcome == nil || item.Outcome.Content == nil || item.Outcome.Content.Text != "recovered answer" {
+				t.Fatalf("bulk result did not collect the logical chain: %s", out)
+			}
+		})
 	}
 }
 
