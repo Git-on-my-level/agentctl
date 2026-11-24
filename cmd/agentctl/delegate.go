@@ -896,7 +896,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 
 func delegateExecutionError(code output.Code, message string, execution model.Execution) *output.Error {
 	if nativeApprovalAttention(execution) {
-		return delegateError(code, "native_approval_required", message).WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State).WithDetail("repair_action", "Cancel the parked run, review its native permission policy, and retry with a new request key; agentctl cannot approve a native prompt.").WithActions(attentionNextActions(output.JSON, execution)...)
+		return withRecoveryChain(delegateError(code, "native_approval_required", message).WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State).WithDetail("repair_action", "Cancel the parked run, review its native permission policy, and retry with a new request key; agentctl cannot approve a native prompt.").WithActions(attentionNextActions(output.JSON, execution)...), execution)
 	}
 
 	problem := delegateError(code, "delegate_"+string(code), message).WithDetail("execution_id", execution.ID.String()).WithDetail("state", execution.State).
@@ -908,7 +908,7 @@ func delegateExecutionError(code output.Code, message string, execution model.Ex
 	if failure := parkedOpenCodeRateLimitFailure(execution); failure != nil {
 		problem.WithDetail("failure", failure)
 	}
-	return problem
+	return withRecoveryChain(problem, execution)
 }
 
 func (a *app) attachNativeFailure(ctx context.Context, c common, id ids.ExecutionID, problem *output.Error) {

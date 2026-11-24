@@ -507,3 +507,16 @@ func TestOpenCodeProviderInvalidRequestOutcome(t *testing.T) {
 		t.Fatalf("%+v", outcome.Failure)
 	}
 }
+
+func TestDelegateExecutionErrorReportsRecoveryChain(t *testing.T) {
+	chain := []ids.ExecutionID{"exec-root", "exec-retry"}
+	execution := model.Execution{ID: "exec-root", State: model.StateFailed, RecoveryChain: chain}
+	problem := delegateExecutionError(output.CodeExecutionFailed, "delegated execution failed", execution)
+	if got, ok := problem.Details["recovery_chain"].([]ids.ExecutionID); !ok || len(got) != 2 || got[1] != "exec-retry" {
+		t.Fatalf("recovery_chain detail = %#v", problem.Details["recovery_chain"])
+	}
+	execution.RecoveryChain = nil
+	if _, ok := delegateExecutionError(output.CodeExecutionFailed, "delegated execution failed", execution).Details["recovery_chain"]; ok {
+		t.Fatal("recovery_chain reported without recovery")
+	}
+}
