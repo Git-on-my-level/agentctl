@@ -40,6 +40,18 @@ func TestOpenCodeBackoff(t *testing.T) {
 	}
 }
 
+func TestOpenCodeRetryFloorPreservesFutureRetryTime(t *testing.T) {
+	now := time.Date(2026, 11, 24, 1, 0, 0, 0, time.UTC)
+	future := now.Add(120*time.Second + time.Nanosecond)
+	retry := &model.NativeRateLimit{RetryAfterMS: 65_000, NextRetryAt: &future}
+	if got := openCodeRetryFloorMS(90_000, retry, now); got != 120_001 {
+		t.Fatalf("retry floor=%d, want 120001", got)
+	}
+	if got := openCodeRetryFloorMS(90_000, retry, future); got != 90_000 {
+		t.Fatalf("retry floor after next_retry_at=%d, want 90000", got)
+	}
+}
+
 func automaticOpenCodeFixture(t *testing.T, turns string) delegateFixture {
 	t.Helper()
 	f := carryFixture(t, "opencode")

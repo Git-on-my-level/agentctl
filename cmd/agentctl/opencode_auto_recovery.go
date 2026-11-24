@@ -85,9 +85,7 @@ func (a *app) planOpenCodeRecovery(c common, journal *store.Journal, source mode
 			return nil, true
 		}
 		retryAfter, _ := nativeMetadataInt(result.Data["retry_after_ms"])
-		if source.RateLimit != nil {
-			retryAfter = max(retryAfter, source.RateLimit.RetryAfterMS)
-		}
+		retryAfter = openCodeRetryFloorMS(retryAfter, source.RateLimit, now)
 		// A longer provider embargo is outside this short quota recovery
 		// path. Never schedule an earlier retry by truncating the embargo.
 		if retryAfter > time.Hour.Milliseconds() {
@@ -111,6 +109,22 @@ func (a *app) planOpenCodeRecovery(c common, journal *store.Journal, source mode
 		return nil, autoCapacity
 	}
 	return &model.OpenCodeRecovery{Kind: kind, Attempt: attempt, NotBefore: notBefore, ExpiresAt: expires}, autoCapacity
+}
+
+func openCodeRetryFloorMS(terminalRetryAfter int64, retry *model.NativeRateLimit, now time.Time) int64 {
+	if retry == nil {
+		return terminalRetryAfter
+	}
+	floor := max(terminalRetryAfter, retry.RetryAfterMS)
+	if retry.NextRetryAt != nil && retry.NextRetryAt.After(now) {
+		remaining := retry.NextRetryAt.Sub(now)
+		millis := remaining.Milliseconds()
+		if remaining%time.Millisecond != 0 {
+			millis++
+		}
+		floor = max(floor, millis)
+	}
+	return floor
 }
 
 func openCodeCapacityFailure(result adapter.Result) bool {

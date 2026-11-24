@@ -123,7 +123,8 @@ checks the exact session with sanitized export before sending the fixed
 instruction.
 
 - Structured HTTP 429 gets up to three retries per native lineage. The first
-  delay is the greater of the provider's retry-after and 60 seconds, plus
+  delay is the greatest of the provider's retry-after, any remaining wait
+  until its absolute retry time, and 60 seconds, plus
   jitter of up to that base. Later attempts double the base delay per attempt.
   A retry-after over one hour leaves the failure for explicit recovery.
 - A stopped turn without assistant text (`empty_terminal_result`) gets one
