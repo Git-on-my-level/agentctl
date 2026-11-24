@@ -37,11 +37,27 @@ func retryLifecycleJournalBusy(invoke func() (int, string)) (int, string) {
 }
 
 func TestDetachedQueuedWorkerCrashBeforeClaim(t *testing.T) {
+	testDetachedQueuedWorkerCrashBeforeClaim(t, false)
+}
+
+func TestDetachedQueuedWorkerWithoutIdentityExpires(t *testing.T) {
+	testDetachedQueuedWorkerCrashBeforeClaim(t, true)
+}
+
+func testDetachedQueuedWorkerCrashBeforeClaim(t *testing.T, missingIdentity bool) {
+	t.Helper()
 	for _, recovery := range []string{"reconcile", "supervisor"} {
 		t.Run(recovery, func(t *testing.T) {
 			f, _ := admissionFixture(t, true, "90s")
 			var stdout, stderr bytes.Buffer
 			a := testApp(&stdout, &stderr)
+			if missingIdentity {
+				a.queuedWorkerOwner = func(int) *model.LaunchIdentity { return nil }
+				a.processProof = func(processIdentity) processProof {
+					t.Fatal("unrecorded identity was passed to the process prover")
+					return processProof{}
+				}
+			}
 			a.stdin = strings.NewReader("private queued task")
 			var workerPID int
 			a.startDetachedWorker = func(cmd *exec.Cmd) error {
@@ -58,6 +74,9 @@ func TestDetachedQueuedWorkerCrashBeforeClaim(t *testing.T) {
 			if code := a.run(ctx, append(args, "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin", "--detach")); code != 0 {
 				t.Fatalf("delegate exit=%d %s", code, stdout.String())
 			}
+			if missingIdentity && !strings.Contains(stdout.String(), `"code":"admission_identity_unavailable"`) {
+				t.Fatalf("missing identity warning: %s", stdout.String())
+			}
 			id, err := ids.ParseExecutionID(resultID(t, stdout.String()))
 			if err != nil {
 				t.Fatal(err)
@@ -68,31 +87,60 @@ func TestDetachedQueuedWorkerCrashBeforeClaim(t *testing.T) {
 				t.Fatal(err)
 			}
 			identity, ok := recordedLaunch(row)
-			if !row.ProviderQueued() || row.SourceState != nil || row.Launch != nil || !ok || identity.PID != workerPID {
+			wantIdentity := !missingIdentity
+			if !row.ProviderQueued() || row.SourceState != nil || row.Launch != nil ||
+				ok != wantIdentity || ok && identity.PID != workerPID {
 				t.Fatalf("queued admission lost preflight worker identity: %+v, proof identity=%+v", row, identity)
 			}
-			// Receipt EOF may arrive just before the parent's Wait reaps the worker.
-			for until := time.Now().Add(3 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-				if proof := inspectProcess(identity); proof.Gone {
-					break
-				} else if time.Now().After(until) {
-					t.Fatalf("worker exit unproven: %+v", proof)
+			if !missingIdentity {
+				// Receipt EOF may arrive just before the parent's Wait reaps the worker.
+				for until := time.Now().Add(3 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+					if proof := inspectProcess(identity); proof.Gone {
+						break
+					} else if time.Now().After(until) {
+						t.Fatalf("worker exit unproven: %+v", proof)
+					}
 				}
 			}
-			now := row.Observation.ObservedAt.Add(10 * time.Minute)
+			now := row.Observation.ObservedAt
 			a.now = func() time.Time { return now }
-			if recovery == "reconcile" {
-				world := reconcileWorld{path: f.journal}
-				report := world.apply(t, &reconcileTestApp{app: a}, &stdout, "--stale-after", "1m")
-				if report.Orphan.Count != 1 || report.Orphan.Executions[0].ID != id {
-					t.Fatalf("reconcile did not report dead worker: %+v", report.Orphan)
+			recoverRow := func(reason string) {
+				t.Helper()
+				if recovery == "reconcile" {
+					world := reconcileWorld{path: f.journal}
+					report := world.apply(t, &reconcileTestApp{app: a}, &stdout, "--stale-after", "1m")
+					if reason == "" && report.Orphan.Count != 0 || reason != "" &&
+						(report.Orphan.Count != 1 || report.Orphan.Executions[0].ID != id || report.Orphan.Executions[0].Reason != reason) {
+						t.Fatalf("unexpected reconciliation report: %+v", report.Orphan)
+					}
+					if reason == reconcileQueueLeaseExpired && (strings.Contains(stdout.String(), `"pid":`) ||
+						strings.Contains(stdout.String(), `"recorded_started_at":`)) {
+						t.Fatalf("unrecorded owner reported process identity: %s", stdout.String())
+					}
+					return
 				}
-			} else {
 				bridge := pathSupervisorExecutions{path: f.journal, app: a}
 				if _, handled, err := bridge.probeNativeOwner(ctx, id.String()); err != nil || !handled {
 					t.Fatalf("supervisor handled=%v err=%v", handled, err)
 				}
 			}
+			reason := reconcileOwnerLost
+			if missingIdentity {
+				if row.Observation.FreshForSeconds == nil {
+					t.Fatal("queued row has no observation window")
+				}
+				now = now.Add(time.Duration(*row.Observation.FreshForSeconds)*time.Second + nativeRunnerHeartbeatEvery)
+				recoverRow("")
+				fresh, err := journal.GetExecution(ctx, id)
+				if err != nil || fresh.Revision != row.Revision || !fresh.ProviderQueued() {
+					t.Fatalf("row settled before its lease expired: %+v err=%v", fresh, err)
+				}
+				now = now.Add(time.Second)
+				reason = reconcileQueueLeaseExpired
+			} else {
+				now = now.Add(10 * time.Minute)
+			}
+			recoverRow(reason)
 			row, err = journal.GetExecution(ctx, id)
 			if err != nil || row.State != model.StateOrphaned || row.Admission == nil || row.Admission.Phase != "aborted" || row.Admission.Position != 0 {
 				t.Fatalf("dead worker left admission unsettled: %+v err=%v", row, err)
@@ -100,10 +148,78 @@ func TestDetachedQueuedWorkerCrashBeforeClaim(t *testing.T) {
 			reader := openReconcileJournal(t, f.journal)
 			defer reader.Close()
 			outcome, err := reader.GetOutcome(ctx, id)
-			if err != nil || outcome.Failure == nil || outcome.Failure.Code != reconcileOwnerLost {
-				t.Fatalf("missing owner-lost outcome: %+v err=%v", outcome, err)
+			if err != nil || outcome.Failure == nil || outcome.Failure.Code != reason {
+				t.Fatalf("missing %s outcome: %+v err=%v", reason, outcome, err)
 			}
 		})
+	}
+}
+
+func TestDetachedQueuedWorkerClaimsAfterBucketDisabled(t *testing.T) {
+	f, _ := admissionFixture(t, true, "90s")
+	binary := filepath.Join(t.TempDir(), "agentctl")
+	if out, err := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v %s", err, out)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	journal := scopedJournal{path: f.journal}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	a.stdin = strings.NewReader("private queued task")
+	a.queuedWorkerOwner = func(int) *model.LaunchIdentity { return nil }
+	var reserved model.Execution
+	var disabledAt time.Time
+	a.startDetachedWorker = func(cmd *exec.Cmd) error {
+		rows, err := journal.ListExecutions(ctx, false)
+		if err != nil || len(rows) != 1 || !rows[0].ProviderQueued() || rows[0].DeadlineAt != nil {
+			t.Fatalf("expected one queued reservation before worker start: %+v err=%v", rows, err)
+		}
+		reserved = rows[0]
+		cfg, err := config.Load(f.config)
+		if err != nil {
+			return err
+		}
+		buckets := cfg.Profiles["test"].Admission.Buckets
+		bucket := buckets["morph"]
+		enabled := false
+		bucket.Enabled = &enabled
+		buckets["morph"] = bucket
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(f.config, data, 0600); err != nil {
+			return err
+		}
+		disabledAt = time.Now().UTC()
+		cmd.Path = binary
+		cmd.Env = append(cmd.Env, "AGENTCTL_UPDATE_MODE=off")
+		return cmd.Start()
+	}
+	args := []string{"--config", f.config, "--journal", f.journal}
+	if code := a.run(ctx, append(args, "delegate", "--cwd", f.root, "--request-file", f.request,
+		"--prompt-stdin", "--timeout", "5s", "--detach")); code != 0 {
+		t.Fatalf("delegate exit=%d %s", code, stdout.String())
+	}
+	if resultID(t, stdout.String()) != reserved.ID.String() || !strings.Contains(stdout.String(), `"code":"admission_identity_unavailable"`) {
+		t.Fatalf("worker did not launch from its original reservation with a warning: %s", stdout.String())
+	}
+	stdout.Reset()
+	if code := a.run(ctx, append(args, "await", reserved.ID.String(), "--content", "--timeout", "8s")); code != 0 || stdout.String() != "fixture answer" {
+		t.Fatalf("await exit=%d %s", code, stdout.String())
+	}
+	row, err := journal.GetExecution(ctx, reserved.ID)
+	if err != nil || row.State != model.StateCompleted || row.Admission == nil || row.Admission.Phase != "disabled" ||
+		row.DeadlineAt == nil || row.Admission.GrantedAt == nil || row.Admission.GrantedAt.Before(disabledAt) ||
+		row.DeadlineAt.Sub(*row.Admission.GrantedAt) != 5*time.Second {
+		t.Fatalf("disabled claim should set the deadline from claim time: %+v err=%v", row, err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(f.journal), "admission")); !os.IsNotExist(err) {
+		t.Fatalf("disabled launch created admission slot state: %v", err)
+	}
+	if launches := f.launches(t); launches != 1 {
+		t.Fatalf("native launches=%d", launches)
 	}
 }
 

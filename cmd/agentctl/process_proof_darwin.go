@@ -9,6 +9,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func queuedProcessStart(pid int) processObservation {
+	return processStart(pid)
+}
+
 func processStart(pid int) processObservation {
 	info, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	if err != nil {

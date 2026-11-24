@@ -4,9 +4,62 @@ import (
 	"errors"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/Git-on-my-level/agentctl/internal/adapter"
 )
+
+func linuxProcessStart(pid int, read func(string) ([]byte, error), namespace func() (uint64, error), retry func()) processObservation {
+	path := "/proc/" + strconv.Itoa(pid) + "/stat"
+	data, err := read(path)
+	for attempt := 0; retry != nil && errors.Is(err, os.ErrNotExist) && attempt < 4; attempt++ {
+		retry()
+		data, err = read(path)
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return processObservation{}
+	}
+	if err != nil {
+		return processObservation{err: err}
+	}
+	ticks, err := adapter.ProcStartTicks(data)
+	if err != nil {
+		return processObservation{present: true, err: err}
+	}
+	ino, err := namespace()
+	if err != nil {
+		return processObservation{present: true, err: err}
+	}
+	return processObservation{present: true, startKnown: ticks > 0 && ino != 0, startTicks: ticks, nsInode: ino}
+}
+
+// Validate the launcher's numeric procfs view without reading PID 1's ns
+// symlink, which ordinary users may lack permission to follow.
+func linuxOwnProcNamespace(pid int, read func(string) ([]byte, error), inode func(string) (uint64, error)) (uint64, error) {
+	status, err := read("/proc/self/status")
+	if err != nil {
+		return 0, err
+	}
+	if err := validateAdmissionProcView(string(status), pid); err != nil {
+		return 0, err
+	}
+	return inode("/proc/self/ns/pid")
+}
+
+func validateAdmissionProcView(status string, pid int) error {
+	for line := range strings.SplitSeq(status, "\n") {
+		if value, found := strings.CutPrefix(line, "NSpid:"); found {
+			ids := strings.Fields(value)
+			// The leftmost value is relative to the procfs mount. Additional
+			// values indicate an ancestor view, even when the numbers match.
+			if len(ids) == 1 && ids[0] == strconv.Itoa(pid) {
+				return nil
+			}
+			break
+		}
+	}
+	return errors.New("procfs PID namespace does not match the launcher")
+}
 
 // linuxProof decides Linux process identity from an injected /proc reader.
 // Absence is pid_absent only when the recorded pid namespace matches

@@ -41,7 +41,7 @@
     "include_failures": {"type": "boolean"},
     "include_legacy_unproven": {
       "type": "boolean",
-      "description": "When false, rows with no launch record stay ownership_unproven. When true, eligible native rows are listed under legacy_orphan."
+      "description": "Enables the legacy heartbeat check for native rows without a launch record. Expired provider queues also have a separate recovery path."
     },
     "legacy_stale_after_seconds": {
       "type": "number",
@@ -120,10 +120,13 @@
         "adapter": {"type": "string"},
         "state": {"type": "string"},
         "liveness": {"type": "string"},
-        "reason": {"const": "owner_lost"},
+        "reason": {"enum": ["owner_lost", "admission_owner_lease_expired"]},
         "observation_age_seconds": {"type": "number", "minimum": 0},
-        "evidence": {"$ref": "#/$defs/process_evidence"}
-      }
+        "evidence": {"type": "object"}
+      },
+      "if": {"properties": {"reason": {"const": "owner_lost"}}},
+      "then": {"properties": {"evidence": {"$ref": "#/$defs/process_evidence"}}},
+      "else": {"properties": {"evidence": {"$ref": "#/$defs/queue_expiry_evidence"}}}
     },
     "legacy_orphan_item": {
       "type": "object",
@@ -159,6 +162,16 @@
         "process_started_at": {"type": "string", "format": "date-time"},
         "process_present": {"type": "boolean"},
         "proof": {"type": "string"}
+      }
+    },
+    "queue_expiry_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "An expired admission observation without a recorded owner. The evidence carries no PID.",
+      "required": ["proof", "process_present"],
+      "properties": {
+        "proof": {"const": "heartbeat_absent"},
+        "process_present": {"const": false}
       }
     },
     "collect_item": {

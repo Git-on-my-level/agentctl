@@ -27,6 +27,7 @@ const (
 	maximumReconcileStaleAfter   = 30 * 24 * time.Hour
 	maximumReconcileCollectAfter = 365 * 24 * time.Hour
 	reconcileOwnerLost           = "owner_lost"
+	reconcileQueueLeaseExpired   = "admission_owner_lease_expired"
 	reconcileOwnerUnprovenLegacy = "owner_unproven_legacy"
 	reconcileHeartbeatAbsent     = "heartbeat_absent"
 	reconcileLegacyPIDPresent    = "legacy_pid_present"
@@ -201,7 +202,11 @@ func (a *app) reconcile(ctx context.Context, renderer output.Renderer, c common,
 		{Name: "unproven", Value: len(report.Unproven)},
 	}}}
 	for _, item := range report.Orphan.Executions {
-		lines = append(lines, output.Line{Lead: item.ID.String(), Fields: []output.Field{{Name: "action", Value: "orphan"}, {Name: "state", Value: item.State}, {Name: "proof", Value: item.Evidence.Proof}, {Name: "pid", Value: item.Evidence.PID}}})
+		fields := []output.Field{{Name: "action", Value: "orphan"}, {Name: "state", Value: item.State}, {Name: "proof", Value: item.Evidence.Proof}}
+		if item.Evidence.PID > 0 {
+			fields = append(fields, output.Field{Name: "pid", Value: item.Evidence.PID})
+		}
+		lines = append(lines, output.Line{Lead: item.ID.String(), Fields: fields})
 	}
 	for _, item := range report.LegacyOrphan.Executions {
 		lines = append(lines, output.Line{Lead: item.ID.String(), Fields: []output.Field{{Name: "action", Value: "legacy_orphan"}, {Name: "state", Value: item.State}, {Name: "proof", Value: item.Evidence.Proof}, {Name: "pid", Value: item.Evidence.PID}, {Name: "reason", Value: item.Reason}}})
@@ -213,10 +218,10 @@ func (a *app) reconcile(ctx context.Context, renderer output.Renderer, c common,
 		lines = append(lines, output.Line{Lead: item.ID.String(), Fields: []output.Field{{Name: "action", Value: "report"}, {Name: "state", Value: item.State}, {Name: "bindings", Value: item.Bindings}, {Name: "next", Value: item.NextAction.Argv}}})
 	}
 	warnings := []output.Warning{
-		{Code: "outcome_unknown", Message: "orphaned means the recorded owner is gone and the outcome was not recovered; it is not success or failure"},
+		{Code: "outcome_unknown", Message: "orphaned means the outcome was not recovered"},
 		{Code: "multica_not_mutated", Message: "Multica issue state is not changed; local collection stamps are written"},
 		{Code: "journal_host_match", Message: "journal_host_match compares origin_host_id with the host id stored in this journal; it is not a machine fingerprint, so a copied or restored journal still matches"},
-		{Code: "legacy_unproven", Message: "rows with no launch record stay unchanged unless --include-legacy-unproven; that path records heartbeat_absent and owner_unproven_legacy, and leaves a legacy numeric PID unchanged when that process currently exists"},
+		{Code: "legacy_unproven", Message: "the opt-in legacy path records heartbeat_absent and owner_unproven_legacy and leaves a legacy numeric PID unchanged when that process currently exists"},
 	}
 	actions := []output.NextAction{}
 	if opts.plan {
@@ -359,6 +364,13 @@ func classifyReconcile(executions []model.Execution, acks store.AcknowledgementI
 			continue
 		}
 		age := observationAge(execution, now)
+		if expiredUnownedProviderQueue(execution, now) {
+			report.Orphan.Executions = append(report.Orphan.Executions, reconcileOrphanItem{
+				ID: execution.ID, Adapter: execution.Adapter, State: execution.State, Liveness: execution.Liveness,
+				Reason: reconcileQueueLeaseExpired, Evidence: processProof{Proof: reconcileHeartbeatAbsent}, ObservationAgeSeconds: age.Seconds(),
+			})
+			continue
+		}
 		if identity, ok := recordedLaunch(execution); ok {
 			if age < opts.staleAfter {
 				report.Unchanged.Recent++
@@ -531,24 +543,32 @@ func (a *app) applyReconcile(ctx context.Context, journal *store.Journal, host i
 			continue
 		}
 		age := observationAge(current, now)
-		if age < opts.staleAfter || runnerLeaseActive(current, now) {
+		if runnerLeaseActive(current, now) {
 			continue
 		}
-		identity, ok := recordedLaunch(current)
-		if !ok {
-			continue
+		if item.Reason == reconcileQueueLeaseExpired {
+			if !expiredUnownedProviderQueue(current, now) {
+				continue
+			}
+			_, err = commitExpiredProviderQueue(ctx, journal, current, now)
+		} else {
+			identity, ok := recordedLaunch(current)
+			if !ok || age < opts.staleAfter {
+				continue
+			}
+			proof := a.proveProcess(identity)
+			if !proof.Gone {
+				continue
+			}
+			item.Evidence = proof
+			_, err = commitOwnerLost(ctx, journal, current, proof, age, now)
 		}
-		proof := a.proveProcess(identity)
-		if !proof.Gone {
-			continue
-		}
-		if _, err := commitOwnerLost(ctx, journal, current, proof, age, now); err != nil {
+		if err != nil {
 			if errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrTerminalConflict) {
 				continue
 			}
-			return mapStoreError("record owner lost", err)
+			return mapStoreError("record orphaned execution", err)
 		}
-		item.Evidence = proof
 		item.ObservationAgeSeconds = age.Seconds()
 		orphans = append(orphans, item)
 	}
@@ -617,7 +637,22 @@ func commitOwnerLost(ctx context.Context, journal *store.Journal, execution mode
 }
 
 func commitOwnerLostEvidence(ctx context.Context, journal *store.Journal, execution model.Execution, proof processProof, age time.Duration, now time.Time, ownerEvidence map[string]any) (model.Execution, error) {
-	sourceState := reconcileOwnerLost
+	payload := map[string]any{"proof": proof.Proof, "pid": proof.PID, "observation_age_seconds": int(age.Seconds())}
+	if ownerEvidence != nil {
+		payload["owner_evidence"] = ownerEvidence
+	}
+	if !proof.RecordedStartedAt.IsZero() {
+		payload["recorded_started_at"] = proof.RecordedStartedAt.Format(time.RFC3339Nano)
+	}
+	return commitNativeOrphan(ctx, journal, execution, reconcileOwnerLost, "owning process is gone; outcome unknown", payload, now)
+}
+
+func commitExpiredProviderQueue(ctx context.Context, journal *store.Journal, execution model.Execution, now time.Time) (model.Execution, error) {
+	payload := map[string]any{"proof": reconcileHeartbeatAbsent, "observation_age_seconds": int(observationAge(execution, now).Seconds())}
+	return commitNativeOrphan(ctx, journal, execution, reconcileQueueLeaseExpired, "provider admission owner lease expired without a recorded process identity", payload, now)
+}
+
+func commitNativeOrphan(ctx context.Context, journal *store.Journal, execution model.Execution, reason, message string, payload map[string]any, now time.Time) (model.Execution, error) {
 	if execution.ProviderQueued() {
 		meta := *execution.Admission
 		meta.Phase, meta.Position = "aborted", 0
@@ -625,7 +660,7 @@ func commitOwnerLostEvidence(ctx context.Context, journal *store.Journal, execut
 	}
 	execution.State = model.StateOrphaned
 	execution.Liveness = model.LivenessUnreachable
-	execution.SourceState = &sourceState
+	execution.SourceState = &reason
 	execution.TerminalAt = &now
 	execution.UpdatedAt = now
 	execution.Observation = model.Observation{Source: model.ObservationReconciled, Integrity: model.IntegrityDegraded, ObservedAt: now}
@@ -633,18 +668,9 @@ func commitOwnerLostEvidence(ctx context.Context, journal *store.Journal, execut
 		SchemaVersion: model.SchemaVersion, ExecutionID: execution.ID, Revision: 1, State: model.StateOrphaned,
 		Availability: model.OutcomeStored, RecordedAt: now, Source: execution.Adapter,
 		ResultRef: fmt.Sprintf("agentctl://%s/%s", execution.OriginHostID, execution.ID),
-		Failure:   &model.OutcomeFailure{Code: reconcileOwnerLost, Kind: "observation", Source: execution.Adapter, Message: "owning process is gone; outcome unknown"},
+		Failure:   &model.OutcomeFailure{Code: reason, Kind: "observation", Source: execution.Adapter, Message: message},
 	}
-	payload := map[string]any{
-		"diagnostic_code": reconcileOwnerLost, "reason": reconcileOwnerLost, "proof": proof.Proof, "pid": proof.PID,
-		"observation_age_seconds": int(age.Seconds()),
-	}
-	if ownerEvidence != nil {
-		payload["owner_evidence"] = ownerEvidence
-	}
-	if !proof.RecordedStartedAt.IsZero() {
-		payload["recorded_started_at"] = proof.RecordedStartedAt.Format(time.RFC3339Nano)
-	}
+	payload["diagnostic_code"], payload["reason"] = reason, reason
 	event, canonical, err := syntheticEvent(execution, model.EventTerminal, execution.State, payload, "reconcile", now)
 	if err != nil {
 		return model.Execution{}, err

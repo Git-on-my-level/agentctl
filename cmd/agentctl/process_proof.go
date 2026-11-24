@@ -9,12 +9,20 @@ import (
 
 func retainNativeOwner(execution *model.Execution) {
 	if execution.OwnerLaunch == nil {
-		execution.OwnerLaunch = nativeOwnerLaunch(os.Getpid())
+		pid := os.Getpid()
+		if execution.ProviderQueued() {
+			execution.OwnerLaunch = queuedNativeOwnerLaunch(pid)
+		} else {
+			execution.OwnerLaunch = nativeOwnerLaunch(pid, processStart(pid))
+		}
 	}
 }
 
-func nativeOwnerLaunch(pid int) *model.LaunchIdentity {
-	observed := processStart(pid)
+func queuedNativeOwnerLaunch(pid int) *model.LaunchIdentity {
+	return nativeOwnerLaunch(pid, queuedProcessStart(pid))
+}
+
+func nativeOwnerLaunch(pid int, observed processObservation) *model.LaunchIdentity {
 	if observed.err != nil || !observed.present || !observed.startKnown {
 		return nil
 	}
@@ -41,8 +49,8 @@ type processIdentity struct {
 // the recorded process cannot be the live PID. Alive is proof it still is.
 // Anything else is not proof, and reconcile must not change the execution.
 type processProof struct {
-	PID               int        `json:"pid"`
-	RecordedStartedAt time.Time  `json:"recorded_started_at,omitempty"`
+	PID               int        `json:"pid,omitempty"`
+	RecordedStartedAt time.Time  `json:"recorded_started_at,omitzero"`
 	ProcessStartedAt  *time.Time `json:"process_started_at,omitempty"`
 	Present           bool       `json:"process_present"`
 	Proof             string     `json:"proof"`

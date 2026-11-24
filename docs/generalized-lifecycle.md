@@ -102,14 +102,17 @@ New launches record `owner_launch`; legacy rows without it remain unknown for
 explicit operator reconciliation. Wall-clock boot comparisons do not prove
 collector absence after clock corrections. Linux PID evidence requires a
 matching recorded PID namespace and `procfs_pid_namespace_ino` attestation
-before consulting either presence or absence. At launch and inspection,
-`/proc/1/ns/pid` must match `/proc/self/ns/pid`; inherited or hidden procfs
-views and legacy unattested Linux identities remain unproven.
-This records an unknown outcome and
-does not kill processes or delete records. Live, recently observed, parked,
-foreign-host and legacy rows without launch identity are preserved. A parent
-that dies after admission but before worker creation leaves a known starting
-row; without process identity its absence cannot safely be inferred.
+before consulting either presence or absence. Queued provider owners verify
+their own numeric procfs view through `/proc/self/status` and compare kernel
+start ticks in that namespace. The launched-child path uses matching
+`/proc/1/ns/pid` and `/proc/self/ns/pid`. Inherited or hidden procfs views and
+legacy unattested Linux identities remain unproven.
+
+Recovery records an unknown outcome and preserves the execution for collection.
+A provider queue with no recorded worker or launch identity can be abandoned
+after its observation freshness window plus ten seconds. That path records
+`admission_owner_lease_expired` with heartbeat evidence. It applies only while
+the execution is still queued, before a worker can start a native child.
 
 The owner survives parent exit, parent restart, and termination of the parent's
 process group. It does not survive reboot, explicit termination of the owner,

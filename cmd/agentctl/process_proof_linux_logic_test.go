@@ -142,6 +142,47 @@ func TestLinuxStartTicksDoNotUseWallClock(t *testing.T) {
 	}
 }
 
+func TestLinuxQueuedProcessStartRetriesWithoutPIDOneAccess(t *testing.T) {
+	const pid = 42
+	const ticks = 5000
+	calls, retries := 0, 0
+	read := func(path string) ([]byte, error) {
+		switch path {
+		case "/proc/self/status":
+			return []byte("Name:\tagentctl\nNSpid:\t123\n"), nil
+		case "/proc/42/stat":
+			calls++
+			if calls == 1 {
+				return nil, os.ErrNotExist
+			}
+			return procStatLine(pid, 123, ticks), nil
+		default:
+			t.Fatalf("unexpected procfs read %s", path)
+			return nil, os.ErrPermission
+		}
+	}
+	ownView := func() (uint64, error) {
+		return linuxOwnProcNamespace(123, read, func(path string) (uint64, error) {
+			if path != "/proc/self/ns/pid" {
+				t.Fatalf("unexpected namespace lookup %s", path)
+			}
+			return 7, nil
+		})
+	}
+	got := linuxProcessStart(pid, read, ownView, func() { retries++ })
+	if !got.present || !got.startKnown || got.startTicks != ticks || got.nsInode != 7 || !got.started.IsZero() || got.err != nil || retries != 1 {
+		t.Fatalf("queued identity = %+v after %d retries", got, retries)
+	}
+	id := processIdentity{PID: pid, StartTicks: got.startTicks, PIDNamespaceIno: got.nsInode, ProcfsPIDNamespaceIno: got.nsInode, exactStart: true}
+	if proof := linuxProof(id, read, ownView); !proof.Alive {
+		t.Fatalf("matching queued worker = %+v", proof)
+	}
+	id.StartTicks++
+	if proof := linuxProof(id, read, ownView); !proof.Gone || proof.Proof != "pid_reused" {
+		t.Fatalf("reused queued worker PID = %+v", proof)
+	}
+}
+
 func procStatLine(pid, ppid int, ticks int64) []byte {
 	return []byte(fmt.Sprintf("%d (cmd) S %d 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 %d\n", pid, ppid, ticks))
 }

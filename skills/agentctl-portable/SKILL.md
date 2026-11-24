@@ -636,12 +636,13 @@ do not establish completion. Do not auto-acknowledge or infer failure.
 `agentctl reconcile` is the explicit journal repair. Read `help reconcile`,
 then `--plan` before `--apply --plan-digest`. `--plan` writes nothing and
 returns `plan_digest` over the candidate ids, actions, and proofs. Apply
-writes nothing if that digest no longer matches, then proves each row again
-before writing. It orphans a native execution only when the launcher-recorded
-PID is provably gone and the last observation is older than `--stale-after`.
-A numeric session id is not a PID. `journal_host_match` is the journal's stored
-host id, not a machine fingerprint. The state is `orphaned` with `owner_lost`:
-the outcome is unknown, not success or failure. Rows with no launch record stay
+writes nothing if that digest no longer matches, then rechecks each row before
+writing. A launcher-recorded PID that is provably gone after `--stale-after`
+produces an `orphaned` execution with `owner_lost`. A provider queue with no
+owner or launch identity can expire after its observation freshness window plus
+10 seconds. It becomes `orphaned` with `admission_owner_lease_expired` and
+heartbeat evidence. A numeric session id is not a PID. `journal_host_match`
+compares the journal's stored host id. Other rows without a launch record stay
 `ownership_unproven` unless `--include-legacy-unproven` is set. Eligible rows
 are native, match the journal host, and are older than `--legacy-stale-after`
 (default 168h, minimum 72h). They are listed under `legacy_orphan` with evidence

@@ -54,6 +54,18 @@ func (a *app) nativeAdmission(c common, harness string, argv []string) (*model.P
 	return &model.ProviderAdmission{Bucket: name, Priority: priority, Phase: "planned"}, bucket, nil
 }
 
+func providerQueueLeaseExpired(execution model.Execution, now time.Time) bool {
+	fresh := execution.Observation.FreshForSeconds
+	return fresh != nil && *fresh > 0 &&
+		observationAge(execution, now).Seconds() > float64(*fresh)+nativeRunnerHeartbeatEvery.Seconds()
+}
+
+func expiredUnownedProviderQueue(execution model.Execution, now time.Time) bool {
+	return execution.ProviderQueued() && execution.State == model.StateStarting &&
+		execution.OwnerLaunch == nil && execution.Launch == nil && len(execution.SourceBindings) == 0 &&
+		providerQueueLeaseExpired(execution, now)
+}
+
 func admissionWarnings(meta *model.ProviderAdmission) []output.Warning {
 	if meta == nil || meta.Warning == "" {
 		return nil

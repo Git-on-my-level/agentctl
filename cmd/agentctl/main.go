@@ -38,6 +38,7 @@ const (
 type app struct {
 	// Tests inject worker creation/receipt faults without launching a native CLI.
 	startDetachedWorker func(*exec.Cmd) error
+	queuedWorkerOwner   func(int) *model.LaunchIdentity
 	// nativeEventWriter injects storage faults in lifecycle tests; nil uses the journal.
 	nativeEventWriter func(context.Context, *store.Journal, model.Execution, adapter.Event) (model.Execution, error)
 
@@ -1311,8 +1312,7 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 			// execution deadline itself elapses.
 			deadline = execution.DeadlineAt.Add(10 * time.Second)
 		}
-		if execution.ProviderQueued() && execution.Observation.FreshForSeconds != nil &&
-			a.now().After(execution.Observation.ObservedAt.Add(time.Duration(*execution.Observation.FreshForSeconds+10)*time.Second)) {
+		if execution.ProviderQueued() && providerQueueLeaseExpired(execution, a.now()) {
 			return a.fail(renderer, outcomeError(output.CodeExecutionUnknown, "provider admission owner lease expired", execution))
 		}
 		if execution.RemoteForwarded() {

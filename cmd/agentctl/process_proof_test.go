@@ -69,7 +69,7 @@ func TestInspectProcessProvesPidIdentity(t *testing.T) {
 }
 
 func TestQueuedOwnerProcessProofDetectsStartMismatch(t *testing.T) {
-	owner := nativeOwnerLaunch(os.Getpid())
+	owner := queuedNativeOwnerLaunch(os.Getpid())
 	if owner == nil {
 		t.Skip("kernel process identity unavailable")
 	}

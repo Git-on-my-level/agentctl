@@ -318,8 +318,12 @@ unavailable. `await --through-execution-deadline`
 waits for that deadline to be assigned. A collector's explicit await timeout
 still measures collector wait. A keyed replay reuses the recorded execution.
 Queued native work is owned by its agentctl process and does not resume after
-owner death. If the journal stays busy through the grant-write budget, the slot
-is released and the invocation returns its execution ID with
+owner death. When a recorded owner is provably gone, recovery records
+`owner_lost`. Without a recorded process identity, the supervisor and
+`reconcile` can abandon the queue once the observation freshness window plus
+10 seconds has elapsed. They record `admission_owner_lease_expired` with
+heartbeat evidence. If the journal stays busy through the grant-write budget,
+the slot is released and the invocation returns its execution ID with
 `native_launch_started: false`. The queued row remains available for later
 reconciliation. After a grant is recorded, owner loss before the native PID is
 recorded leaves the outcome unknown because a child may still be running.

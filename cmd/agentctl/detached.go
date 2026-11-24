@@ -15,7 +15,6 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/ids"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
-	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
 // This private, same-binary protocol exists only in an anonymous pipe. In
@@ -52,11 +51,15 @@ func (a *app) startDetachedNative(ctx context.Context, renderer output.Renderer,
 
 func (a *app) startReservedDetachedNative(ctx context.Context, renderer output.Renderer, c common, run runOptions, execution model.Execution) (problem *output.Error) {
 	workerStarted := false
+	var ownerWarning *output.Warning
 	defer func() {
 		if problem == nil {
 			return
 		}
 		problem.WithDetail("execution_id", execution.ID.String())
+		if ownerWarning != nil {
+			problem.Warnings = append(problem.Warnings, *ownerWarning)
+		}
 		if !workerStarted {
 			a.settleDetachedAdmission(c, execution.ID, problem)
 		}
@@ -101,7 +104,7 @@ func (a *app) startReservedDetachedNative(ctx context.Context, renderer output.R
 	prepareDetachedCommand(command)
 	var launchGate *io.PipeWriter
 	if execution.ProviderQueued() {
-		// The worker cannot enter preflight until its identity is durable.
+		// Attempt to persist the worker's identity before it can enter preflight.
 		var ready *io.PipeReader
 		ready, launchGate = io.Pipe()
 		defer launchGate.CloseWithError(io.ErrClosedPipe)
@@ -122,12 +125,9 @@ func (a *app) startReservedDetachedNative(ctx context.Context, renderer output.R
 		return output.Wrap(output.CodeDependencyUnavailable, "start detached owner", false, err)
 	}
 	if launchGate != nil {
-		if problem := a.recordQueuedDetachedWorker(c, execution.ID, command.Process.Pid); problem != nil {
-			_ = launchGate.CloseWithError(io.ErrClosedPipe)
-			_ = command.Process.Kill()
-			_ = replyPipe.Close()
-			_ = command.Wait()
-			return problem
+		ownerWarning = a.recordQueuedDetachedWorker(c, execution.ID, command.Process.Pid)
+		if ownerWarning != nil {
+			renderer = renderer.WithWarnings(*ownerWarning)
 		}
 		_ = launchGate.Close()
 	}
@@ -193,23 +193,33 @@ func (a *app) startReservedDetachedNative(ctx context.Context, renderer output.R
 	}
 }
 
-func (a *app) recordQueuedDetachedWorker(c common, id ids.ExecutionID, pid int) *output.Error {
-	owner := nativeOwnerLaunch(pid)
-	if owner == nil {
-		return delegateError(output.CodeDependencyUnavailable, "admission_identity_unavailable", "could not establish the detached admission owner")
+func (a *app) recordQueuedDetachedWorker(c common, id ids.ExecutionID, pid int) *output.Warning {
+	capture := a.queuedWorkerOwner
+	if capture == nil {
+		capture = queuedNativeOwnerLaunch
 	}
-	ctx := context.Background()
-	journal, current, problem := a.openExecutionWrite(ctx, c, id)
+	owner := capture(pid)
+	if owner == nil {
+		return &output.Warning{Code: "admission_identity_unavailable", Message: "Could not establish the detached admission owner's process identity. The worker can still claim the queued execution."}
+	}
+	warning := &output.Warning{Code: "admission_owner_record_failed", Message: "Could not record the detached admission owner's process identity. The worker can still attempt to claim the queued execution."}
+	ctx, cancel := context.WithTimeout(context.Background(), journalBusyAttemptLock)
+	defer cancel()
+	journal, problem := a.openWriteContext(ctx, c)
 	if problem != nil {
-		return problem
+		return warning
 	}
 	defer journal.Close()
+	current, err := journal.GetExecution(ctx, id)
+	if err != nil {
+		return warning
+	}
 	if !current.ProviderQueued() || current.State != model.StateStarting || len(current.SourceBindings) != 0 || current.SourceState != nil || current.OwnerLaunch != nil {
-		return mapStoreError("record detached admission owner", store.ErrConflict)
+		return warning
 	}
 	current.OwnerLaunch = owner
 	if _, err := journal.UpdateExecution(ctx, current, current.Revision); err != nil {
-		return mapStoreError("record detached admission owner", err)
+		return warning
 	}
 	return nil
 }

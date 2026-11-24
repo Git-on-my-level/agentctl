@@ -360,9 +360,8 @@ func (b pathSupervisorExecutions) Reprobe(ctx context.Context, execution supervi
 
 // A verified runner lease needs no adapter construction or write-back. Once a
 // native launch has been silent for five minutes, kernel proof of its absence
-// may close it as orphaned (unknown outcome), never as success or failure.
-// Legacy rows without launch/collector identity and parked recoveries stay
-// untouched; wall-clock age cannot prove an unknown collector's absence.
+// may close it as orphaned. Unowned provider queues can also expire before any
+// native launch. Legacy rows and parked recoveries stay untouched.
 func (b pathSupervisorExecutions) probeNativeOwner(ctx context.Context, id string) (supervisor.ProbeResult, bool, error) {
 	executionID, err := ids.ParseExecutionID(id)
 	if err != nil {
@@ -391,31 +390,34 @@ func (b pathSupervisorExecutions) probeNativeOwner(ctx context.Context, id strin
 		// is not a failed reprobe and never authorizes another launch.
 		return result, true, nil
 	}
-	identity, recorded := recordedLaunch(current)
-	if !recorded || current.OwnerLaunch == nil || observationAge(current, now) < 5*time.Minute {
-		return result, pending, nil
+	expiredQueue := expiredUnownedProviderQueue(current, now)
+	var proof processProof
+	var ownerEvidence map[string]any
+	if !expiredQueue {
+		identity, recorded := recordedLaunch(current)
+		if !recorded || current.OwnerLaunch == nil || observationAge(current, now) < 5*time.Minute {
+			return result, pending, nil
+		}
+		prove := inspectProcess
+		if b.app != nil {
+			prove = b.app.proveProcess
+		}
+		proof = prove(identity)
+		if !proof.Gone {
+			return result, pending, nil
+		}
+		owner := current.OwnerLaunch
+		ownerProof := proof
+		if current.Launch != nil {
+			ownerProof = prove(processIdentity{PID: owner.PID, StartedAt: owner.StartedAt, StartTicks: owner.StartTicks, PIDNamespaceIno: owner.PIDNamespaceIno, ProcfsPIDNamespaceIno: owner.ProcfsPIDNamespaceIno})
+		}
+		if !ownerProof.Gone {
+			return supervisor.ProbeResult{}, false, nil
+		}
+		ownerEvidence = map[string]any{"kind": "process_absence", "proof": ownerProof.Proof, "pid": owner.PID, "recorded_started_at": owner.StartedAt.UTC().Format(time.RFC3339Nano)}
 	}
-	// Proof is outside the database lock. The subsequent writer rechecks the
-	// whole revision and lease; a renewed owner always wins that race.
-	prove := inspectProcess
-	if b.app != nil {
-		prove = b.app.proveProcess
-	}
-	proof := prove(identity)
-	if !proof.Gone {
-		return result, pending, nil
-	}
-	// Wall-clock boot comparisons cannot establish a legacy collector's
-	// absence after clock corrections. Only its recorded identity can.
-	owner := current.OwnerLaunch
-	ownerProof := proof
-	if current.Launch != nil {
-		ownerProof = prove(processIdentity{PID: owner.PID, StartedAt: owner.StartedAt, StartTicks: owner.StartTicks, PIDNamespaceIno: owner.PIDNamespaceIno, ProcfsPIDNamespaceIno: owner.ProcfsPIDNamespaceIno})
-	}
-	if !ownerProof.Gone {
-		return supervisor.ProbeResult{}, false, nil
-	}
-	ownerEvidence := map[string]any{"kind": "process_absence", "proof": ownerProof.Proof, "pid": owner.PID, "recorded_started_at": owner.StartedAt.UTC().Format(time.RFC3339Nano)}
+	// Recheck the revision under the writer lock so a concurrent claim,
+	// heartbeat, or grant wins over evidence gathered from an older row.
 	err = journal.with(ctx, false, func(j *store.Journal) error {
 		host, err := j.HostID(ctx)
 		if err != nil {
@@ -428,7 +430,12 @@ func (b pathSupervisorExecutions) probeNativeOwner(ctx context.Context, id strin
 		if latest.Revision != current.Revision || latest.OriginHostID != host || latest.State.Terminal() || runnerLeaseActive(latest, now) {
 			return nil
 		}
-		updated, err := commitOwnerLostEvidence(ctx, j, latest, proof, observationAge(latest, now), now, ownerEvidence)
+		var updated model.Execution
+		if expiredQueue {
+			updated, err = commitExpiredProviderQueue(ctx, j, latest, now)
+		} else {
+			updated, err = commitOwnerLostEvidence(ctx, j, latest, proof, observationAge(latest, now), now, ownerEvidence)
+		}
 		if err != nil {
 			return err
 		}
