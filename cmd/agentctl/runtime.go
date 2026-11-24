@@ -2161,6 +2161,12 @@ func (a *app) finalizeResult(ctx context.Context, c common, journal *store.Journ
 		execution.TokenUsage = &model.TokenUsage{Input: result.TokenUsage.Input, Output: result.TokenUsage.Output, CacheRead: result.TokenUsage.CacheRead, CacheWrite: result.TokenUsage.CacheWrite, Reasoning: result.TokenUsage.Reasoning, Saturated: result.TokenUsage.Saturated}
 	}
 	execution = a.checkChildExit(ctx, c, journal, execution, now)
+	if guard := execution.ChildExitGuard; guard != nil && guard.AutoContinue == "pending" &&
+		execution.Adapter == "opencode" && openCodeCapacityFailure(result) {
+		// Keep the outstanding-child receipt without sending another prompt
+		// when backoff, the retry cap, or the deadline ruled out recovery.
+		guard.AutoContinue = "parent_not_completed"
+	}
 	outcome := buildOutcome(execution, result, now, noStoreResult)
 	outcome.ChildExitRecheck = execution.ChildExitRecheck
 	outcome.UncollectedChildren = execution.UncollectedChildren

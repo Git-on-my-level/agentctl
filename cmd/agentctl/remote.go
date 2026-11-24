@@ -577,7 +577,7 @@ func (a *app) awaitRemote(ctx context.Context, renderer output.Renderer, c commo
 	switch execution.State {
 	case model.StateCompleted:
 		if content {
-			return a.writeAwaitContent(ctx, renderer, c, execution.ID)
+			return a.writeAwaitContent(ctx, renderer, c, execution, execution.ID)
 		}
 		if problem := writeExecution(renderer, execution, "await"); problem != nil {
 			return problem

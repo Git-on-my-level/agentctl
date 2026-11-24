@@ -45,10 +45,8 @@ func (a *app) planOpenCodeRecovery(c common, journal *store.Journal, source mode
 		nativeSessionID(source) == "" || c.contextFile != "" || a.getenv("MULTICA_TASK_ID") != "" {
 		return nil, false
 	}
-	status, _ := nativeMetadataInt(result.Data["http_status"])
 	kind := model.OpenCodeRateLimit
-	if status != 429 || stringData(result.Data, "failure_category") != "capacity" ||
-		localCompletionDiagnostic(stringData(result.Data, "diagnostic_code")) {
+	if !openCodeCapacityFailure(result) {
 		if stringData(result.Data, "diagnostic_code") != "empty_terminal_result" {
 			return nil, false
 		}
@@ -113,6 +111,13 @@ func (a *app) planOpenCodeRecovery(c common, journal *store.Journal, source mode
 		return nil, autoCapacity
 	}
 	return &model.OpenCodeRecovery{Kind: kind, Attempt: attempt, NotBefore: notBefore, ExpiresAt: expires}, autoCapacity
+}
+
+func openCodeCapacityFailure(result adapter.Result) bool {
+	status, _ := nativeMetadataInt(result.Data["http_status"])
+	return result.State == adapter.StateFailed && status == 429 &&
+		stringData(result.Data, "failure_category") == "capacity" &&
+		!localCompletionDiagnostic(stringData(result.Data, "diagnostic_code"))
 }
 
 func openCodeBackoff(attempt int, retryAfterMS int64, jitter func(time.Duration) time.Duration) time.Duration {

@@ -56,6 +56,7 @@ if [ "$1" = session ]; then
 fi
 launches="$TEST_OPENCODE_DIR/launches"
 echo launch >> "$launches"
+printf '%s\n' "$PPID" >> "$TEST_OPENCODE_DIR/owner-pids"
 step=$(( $(wc -l < "$launches") + 0 ))
 for arg do instruction="$arg"; done
 case "$step" in
@@ -67,7 +68,7 @@ case "$step" in
      case "$reason" in
        r) [ "$instruction" = '` + openCodeRateLimitInstruction + `' ] || exit 26 ;;
        e) [ "$instruction" = '` + openCodeFinalAnswerInstruction + `' ] || exit 27 ;;
-       *) exit 28 ;;
+       *) [ "$instruction" = 'manual native follow-up' ] || exit 28 ;;
      esac ;;
 esac
 printf '%s\n' '{"type":"step_start","sessionID":"ses_recover","part":{"type":"step-start"}}'
@@ -192,6 +193,10 @@ func TestOpenCodeAutomaticRecoveryChain(t *testing.T) {
 						t.Fatalf("%s --content exit=%d: %q", command, code, out)
 					}
 				}
+				code, out = f.invoke("private-original-task")
+				if code != 0 || !strings.Contains(out, `"state":"completed"`) || !strings.Contains(out, `"reused":true`) || !slices.Equal(openCodeChain(t, out), chain) {
+					t.Fatalf("receipt replay exit=%d: %s", code, out)
+				}
 			}
 			code, out = f.invoke("private-original-task", "--wait")
 			if code != tt.exit || !slices.Equal(openCodeChain(t, out), chain) || f.launches(t) != tt.launches {
@@ -200,6 +205,17 @@ func TestOpenCodeAutomaticRecoveryChain(t *testing.T) {
 			if code, events := f.command(t, "", "events", root); code != 0 || !strings.Contains(events, `"relation":"opencode_recovery"`) || strings.Contains(events, last) != (len(chain) == 2) {
 				t.Fatalf("root event exit=%d: %s", code, events)
 			}
+			j, err := store.Open(f.journal, store.Options{ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range chain {
+				if _, err := j.GetAcknowledgement(ctx, id); err != nil {
+					j.Close()
+					t.Fatalf("chain member %s remains uncollected: %v", id, err)
+				}
+			}
+			j.Close()
 			journal, err := os.ReadFile(f.journal)
 			if err != nil {
 				t.Fatal(err)
@@ -210,6 +226,34 @@ func TestOpenCodeAutomaticRecoveryChain(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestOpenCodeRecoveredLogicalIDCanContinue(t *testing.T) {
+	f := automaticOpenCodeFixture(t, "es")
+	code, out := f.invoke("private-original-task", "--wait")
+	chain := openCodeChain(t, out)
+	if code != 0 || len(chain) != 2 {
+		t.Fatalf("recovery exit=%d: %s", code, out)
+	}
+	root, physical := chain[0].String(), chain[1].String()
+	code, out = f.command(t, "manual carry-forward", "continue", root, "--request-key", "carry", "--mode", "carry_forward", "--prompt-stdin", "--plan")
+	if code != 0 || !strings.Contains(out, `"continues":"`+physical+`"`) || !strings.Contains(out, `"native_session_reused":false`) {
+		t.Fatalf("carry-forward plan exit=%d: %s", code, out)
+	}
+	args := []string{"continue", root, "--request-key", "manual", "--prompt-stdin", "--wait"}
+	code, out = f.command(t, "manual native follow-up", args...)
+	if code != 0 || !strings.Contains(out, `"continues":"`+physical+`"`) || f.launches(t) != 3 {
+		t.Fatalf("native follow-up exit=%d: %s", code, out)
+	}
+	successor := resultID(t, out)
+	code, out = f.command(t, "manual native follow-up", args...)
+	if code != 0 || resultID(t, out) != successor || !strings.Contains(out, `"reused":true`) || f.launches(t) != 3 {
+		t.Fatalf("native follow-up replay exit=%d: %s", code, out)
+	}
+	code, out = f.command(t, "", "status", root)
+	if code != 0 || !slices.Equal(openCodeChain(t, out), chain) {
+		t.Fatalf("logical status followed manual turn: %s", out)
 	}
 }
 

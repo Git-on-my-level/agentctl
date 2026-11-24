@@ -143,7 +143,7 @@ func helpTopics() map[string]commandHelp {
 				"eligible delegated Codex/ZCode/OpenCode transport or capacity failures with a known checkpoint park as attention/blocked (paused_network or paused_capacity) after child exit; same-key replay never relaunches; supply a new-key recovery instruction that reconciles prior tool effects",
 				"OpenCode native continuation requires recorded and current CLI versions on the 2.2.6/2.3.2 allowlist; execution checks session existence via a bounded native export with discarded output (plans do not); run --session uses only the recorded id; a background turn can finish after client loss, so ask recovery to inspect history and return its prior final answer if complete; await does not reconnect; process-interruption steering is unavailable",
 				"ZCode native continuation is verified for CLI 0.17.0 coding sessions only; disposable read_only session storage cannot be resumed; interrupted-process steering stays unavailable",
-				"continue from the latest completed turn; an older turn reports the latest execution to use",
+				"continue on a recovered OpenCode logical ID uses its final automatic turn as the source; other older turns report the latest execution to use",
 				"one follow-up runs at a time per session; a concurrent attempt is refused without launching and does not use up its request key",
 				"result shape: schemas/continue-result.schema.json",
 				"--request-key makes a retry of the same prompt and mode recover the same turn instead of sending it twice; FAILED/CANCELLED replay reports replayed=true and a deliberate new-key retry action, including in --plan and --wait errors",

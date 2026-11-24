@@ -23,7 +23,7 @@ func TestChildExitThroughBuiltBinary(t *testing.T) {
 	if out, err := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v %s", err, out)
 	}
-	for _, variant := range []string{"resume_once", "disabled", "without_children", "failed_turn", "timeout", "opencode", "opencode_unverified", "codex_failed"} {
+	for _, variant := range []string{"resume_once", "disabled", "without_children", "failed_turn", "timeout", "opencode", "opencode_unverified", "opencode_throttled_deadline", "codex_failed"} {
 		t.Run(variant, func(t *testing.T) {
 			f := newDelegateFixture(t, "")
 			if strings.HasPrefix(variant, "opencode") || variant == "codex_failed" {
@@ -64,6 +64,8 @@ func TestChildExitThroughBuiltBinary(t *testing.T) {
 esac` + "\n"
 			} else if variant == "failed_turn" {
 				script += "printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"result\":\"parent stopped\"}'\nexit 1\n"
+			} else if variant == "opencode_throttled_deadline" {
+				script += `printf '%s\n' '{"type":"error","sessionID":"s1","error":{"type":"provider.rate-limit","status":429}}'; exit 1` + "\n"
 			} else if strings.HasPrefix(variant, "opencode") {
 				script += `printf '%s\n' '{"type":"step_start","sessionID":"s1","part":{"type":"step-start"}}' '{"type":"text","sessionID":"s1","part":{"type":"text","text":"parent answer","time":{"end":1}}}' '{"type":"step_finish","sessionID":"s1","part":{"type":"step-finish","reason":"stop"}}'` + "\n"
 			} else {
@@ -88,6 +90,9 @@ esac` + "\n"
 				// Leave time for the nested CLI to launch and record its child
 				// before testing timeout of the parent turn.
 				args = append(args, "--timeout", "5s")
+			}
+			if variant == "opencode_throttled_deadline" {
+				args = append(args, "--timeout", "10s")
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -135,6 +140,9 @@ esac` + "\n"
 			}
 			if parent.ChildExitGuard == nil || len(parent.UncollectedChildren) != 1 {
 				t.Fatalf("parent guard=%+v children=%+v output=%s", parent.ChildExitGuard, parent.UncollectedChildren, out)
+			}
+			if variant == "opencode_throttled_deadline" && (parent.State != model.StateFailed || parent.OpenCodeRecovery != nil || parent.ChildExitGuard.AutoContinue != "parent_not_completed") {
+				t.Fatalf("child collection bypassed 429 backoff: %+v", parent.ChildExitGuard)
 			}
 			outcome, err := j.GetOutcome(context.Background(), parent.ID)
 			if err != nil || len(outcome.UncollectedChildren) != 1 {

@@ -650,5 +650,5 @@ func (a *app) deliverAwaitAny(ctx context.Context, renderer output.Renderer, c c
 	if !acknowledge {
 		return a.fail(renderer, problem)
 	}
-	return a.deliverAwaitError(ctx, renderer, c, execution.ID, store.AcknowledgementAwait, problem)
+	return a.deliverAwaitError(ctx, renderer, c, execution, execution.ID, problem)
 }

@@ -735,7 +735,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 			return remoteProblem
 		}
 	}
-	if opts.wait && execution.OpenCodeRecovery != nil {
+	if execution.OpenCodeRecovery != nil {
 		journal, problem := a.openReadContext(ctx, c)
 		if problem != nil {
 			return problem
@@ -886,7 +886,7 @@ func (a *app) collectDelegation(ctx context.Context, renderer output.Renderer, c
 		}
 	}
 	if opts.wait {
-		if problem := a.acknowledgeExecution(ctx, c, physical, store.AcknowledgementResult); problem != nil {
+		if problem := a.acknowledgeRecoveredExecution(ctx, c, execution, physical, store.AcknowledgementResult); problem != nil {
 			_, _ = io.WriteString(a.stderr, "agentctl: answer delivered but collection acknowledgement failed\n")
 		}
 	}

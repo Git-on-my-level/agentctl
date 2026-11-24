@@ -422,7 +422,8 @@ when a stopped turn has no final text. The owner waits for the child to exit
 and keeps the same native session and model. Use the original ID with
 `delegate --wait`, `await`, `status` or `result`; JSON reports the ordered
 `recovery_chain`, and `--content` returns the final answer. Pending recovery
-shows up as waiting. Same-key replay observes that chain. Terminal failure
+shows up as waiting. New `continue` turns can use the same logical ID.
+Same-key replay observes that chain. Terminal failure
 still exits 11. Set `delegation.opencode_rate_limit_retry` or
 `delegation.opencode_final_answer_followup` to false to turn off either path.
 

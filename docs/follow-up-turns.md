@@ -137,8 +137,11 @@ instruction.
   order from the original ID through the current attempt. Exact `--content`
   returns the final text. While backoff or preflight is pending, status reports
   `waiting`, await keeps waiting and result directs callers to await.
-  Terminal failure remains exit 11. Events still describe their physical
-  turns. Manual and child-collection successors have their own results.
+  A terminal failure still exits 11 from `delegate --wait` and `await`.
+  After delivery, collection acknowledges the recovered turns and the
+  terminal result. Events still describe their physical turns. A new
+  `continue` on the logical ID uses the last recovered turn as its source.
+  Manual and child-collection successors have their own results.
 - Cancel closes a pending retry and preserves the observed failure. After
   admission, cancel addresses the active successor. Same-key replay only
   observes the existing chain. If the owner disappears before admitting a

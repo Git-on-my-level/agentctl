@@ -245,6 +245,9 @@ func (a *app) continuePrepared(ctx context.Context, renderer output.Renderer, c 
 		if previous.Delegation == nil {
 			return delegateError(output.CodeInternal, "delegate_binding_missing", "continued execution is missing its resolution binding").WithDetail("execution_id", previous.ID.String())
 		}
+		if len(previous.Supersedes) == 1 {
+			id = previous.Supersedes[0]
+		}
 		if opts.plan {
 			return writeContinuePlan(renderer, id, *previous.Delegation, nil, previous.ID.String(), previous)
 		}
@@ -256,6 +259,15 @@ func (a *app) continuePrepared(ctx context.Context, renderer output.Renderer, c 
 		return problem
 	}
 	source, err := journal.GetExecution(ctx, id)
+	if err == nil && !opts.automaticRecovery && automaticOf == nil && source.OpenCodeRecovery != nil {
+		_, physical, followErr := a.followOpenCodeRecovery(ctx, journal, source)
+		if followErr != nil {
+			err = followErr
+		} else if physical != id {
+			id = physical
+			source, err = journal.GetExecution(ctx, id)
+		}
+	}
 	var all []model.Execution
 	if err == nil {
 		all, err = journal.ListExecutions(ctx, false)

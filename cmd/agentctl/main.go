@@ -848,7 +848,7 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 		if _, err := io.WriteString(a.stdout, outcome.Content.Text); err != nil {
 			return output.Wrap(output.CodeInternal, "write result content", false, err)
 		}
-		if problem := a.acknowledgeExecution(ctx, c, physical, store.AcknowledgementResult); problem != nil {
+		if problem := a.acknowledgeRecoveredExecution(ctx, c, execution, physical, store.AcknowledgementResult); problem != nil {
 			_, _ = fmt.Fprintln(a.stderr, "agentctl: result delivered but acknowledgement failed:", problem)
 		}
 		return nil
@@ -856,7 +856,7 @@ func (a *app) result(ctx context.Context, renderer output.Renderer, c common, ar
 	if problem := writeExecutionOutcome(renderer, execution, outcome); problem != nil {
 		return problem
 	}
-	if problem := a.acknowledgeExecution(ctx, c, physical, store.AcknowledgementResult); problem != nil {
+	if problem := a.acknowledgeRecoveredExecution(ctx, c, execution, physical, store.AcknowledgementResult); problem != nil {
 		_, _ = fmt.Fprintln(a.stderr, "agentctl: result delivered but acknowledgement failed:", problem)
 	}
 	return nil
@@ -1368,7 +1368,7 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 		switch execution.State {
 		case model.StateCompleted:
 			if contentOnly {
-				if problem := a.writeAwaitContent(ctx, renderer, c, physical); problem != nil {
+				if problem := a.writeAwaitContent(ctx, renderer, c, execution, physical); problem != nil {
 					return a.fail(renderer, withRecoveryChain(problem, execution))
 				}
 				return 0
@@ -1376,7 +1376,7 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 			if problem := writeExecution(renderer, execution, "await"); problem != nil {
 				return a.fail(renderer, problem)
 			}
-			if problem := a.acknowledgeExecution(ctx, c, physical, store.AcknowledgementAwait); problem != nil {
+			if problem := a.acknowledgeRecoveredExecution(ctx, c, execution, physical, store.AcknowledgementAwait); problem != nil {
 				_, _ = fmt.Fprintln(a.stderr, "agentctl: terminal state delivered but acknowledgement failed:", problem)
 			}
 			return 0
@@ -1385,11 +1385,11 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 			if execution.Adapter == "opencode" {
 				a.attachNativeFailure(ctx, c, physical, problem)
 			}
-			return a.deliverAwaitError(ctx, renderer, c, physical, store.AcknowledgementAwait, problem)
+			return a.deliverAwaitError(ctx, renderer, c, execution, physical, problem)
 		case model.StateCancelled:
-			return a.deliverAwaitError(ctx, renderer, c, physical, store.AcknowledgementAwait, outcomeError(output.CodeExecutionCancelled, "execution was cancelled", execution))
+			return a.deliverAwaitError(ctx, renderer, c, execution, physical, outcomeError(output.CodeExecutionCancelled, "execution was cancelled", execution))
 		case model.StateOrphaned:
-			return a.deliverAwaitError(ctx, renderer, c, physical, store.AcknowledgementAwait, outcomeError(output.CodeExecutionUnknown, "execution is orphaned", execution))
+			return a.deliverAwaitError(ctx, renderer, c, execution, physical, outcomeError(output.CodeExecutionUnknown, "execution is orphaned", execution))
 		case model.StateAttention:
 			if stopAttention {
 				// The stop is only useful if the caller can escape it: point at
@@ -1443,23 +1443,23 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 
 // Content collection succeeds only after delivery; missing content and output
 // errors leave the terminal visible for recovery through recent --unreconciled.
-func (a *app) writeAwaitContent(ctx context.Context, renderer output.Renderer, c common, id ids.ExecutionID) *output.Error {
+func (a *app) writeAwaitContent(ctx context.Context, renderer output.Renderer, c common, execution model.Execution, id ids.ExecutionID) *output.Error {
 	journal, problem := a.openRead(c)
 	if problem != nil {
 		return problem
 	}
-	_, outcome, problem := dereferenceResult(ctx, journal, id, resultOptions{requireContent: true}, renderer.Mode)
+	outcome, problem := executionResult(ctx, journal, execution, id, resultOptions{requireContent: true}, renderer.Mode)
 	journal.Close()
 	if problem != nil {
 		return problem
 	}
 	if outcome.Content == nil {
-		return output.NewError(output.CodeNotFound, "execution has no stored text content", false).WithDetail("execution_id", id.String()).WithDetail("availability", outcome.Availability).WithDetail("unavailable_reason", outcome.UnavailableReason)
+		return output.NewError(output.CodeNotFound, "execution has no stored text content", false).WithDetail("execution_id", execution.ID.String()).WithDetail("availability", outcome.Availability).WithDetail("unavailable_reason", outcome.UnavailableReason)
 	}
 	if _, err := io.WriteString(renderer.Writer, outcome.Content.Text); err != nil {
 		return output.Wrap(output.CodeInternal, "write awaited content", false, err)
 	}
-	if problem := a.acknowledgeExecution(ctx, c, id, store.AcknowledgementAwait); problem != nil {
+	if problem := a.acknowledgeRecoveredExecution(ctx, c, execution, id, store.AcknowledgementAwait); problem != nil {
 		_, _ = fmt.Fprintln(a.stderr, "agentctl: answer delivered but acknowledgement failed:", problem)
 	}
 	return nil
@@ -1475,12 +1475,12 @@ func boolCount(values ...bool) int {
 	return count
 }
 
-func (a *app) deliverAwaitError(ctx context.Context, renderer output.Renderer, c common, id ids.ExecutionID, source string, problem *output.Error) int {
+func (a *app) deliverAwaitError(ctx context.Context, renderer output.Renderer, c common, execution model.Execution, id ids.ExecutionID, problem *output.Error) int {
 	exitCode := a.fail(renderer, problem)
 	if exitCode != problem.ExitCode {
 		return exitCode
 	}
-	if acknowledgement := a.acknowledgeExecution(ctx, c, id, source); acknowledgement != nil {
+	if acknowledgement := a.acknowledgeRecoveredExecution(ctx, c, execution, id, store.AcknowledgementAwait); acknowledgement != nil {
 		_, _ = fmt.Fprintln(a.stderr, "agentctl: terminal state delivered but acknowledgement failed:", acknowledgement)
 	}
 	return exitCode
@@ -1531,15 +1531,16 @@ func (a *app) waitOpenContext(ctx context.Context, deadline time.Time) (context.
 }
 
 func (a *app) acknowledgeExecution(ctx context.Context, c common, id ids.ExecutionID, source string) *output.Error {
-	journal, problem := a.openWriteContext(ctx, c)
-	if problem != nil {
+	_, problem := a.acknowledgeExecutions(ctx, c, []ids.ExecutionID{id}, source)
+	return problem
+}
+
+func (a *app) acknowledgeRecoveredExecution(ctx context.Context, c common, execution model.Execution, physical ids.ExecutionID, source string) *output.Error {
+	if len(execution.RecoveryChain) > 1 && !execution.RemoteForwarded() {
+		_, problem := a.acknowledgeExecutions(ctx, c, execution.RecoveryChain, source)
 		return problem
 	}
-	defer journal.Close()
-	if _, _, err := journal.AcknowledgeExecution(ctx, id, source); err != nil {
-		return mapStoreError("acknowledge terminal execution", err)
-	}
-	return nil
+	return a.acknowledgeExecution(ctx, c, physical, source)
 }
 
 func openJournalWithRetry(path string, options store.Options) (*store.Journal, error) {
