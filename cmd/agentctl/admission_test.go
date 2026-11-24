@@ -18,6 +18,7 @@ import (
 	"github.com/Git-on-my-level/agentctl/internal/config"
 	"github.com/Git-on-my-level/agentctl/internal/model"
 	"github.com/Git-on-my-level/agentctl/internal/output"
+	"github.com/Git-on-my-level/agentctl/internal/store"
 )
 
 func admissionFixture(t *testing.T, enabled bool, maxWait string) (delegateFixture, string) {
@@ -338,7 +339,7 @@ func TestProviderAdmissionFallbackWarnings(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			run := invoke(0, "run", "--cwd", f.root, "--", script, "run", "--format", "json", "--model", "morph/morph-dsv41flash", "--", "native prompt")
+			run := invoke(0, "run", "--cwd", f.root, "--timeout", "2s", "--", script, "run", "--format", "json", "--model", "morph/morph-dsv41flash", "--", "native prompt")
 			var doc struct {
 				Result   model.Execution
 				Warnings []output.Warning
@@ -348,7 +349,8 @@ func TestProviderAdmissionFallbackWarnings(t *testing.T) {
 			}
 			row := doc.Result
 			if row.State != model.StateCompleted || row.Admission == nil || row.Admission.Phase != "bypassed" ||
-				row.Admission.Warning != tc.warning || len(doc.Warnings) == 0 || doc.Warnings[0].Code != tc.warning {
+				row.Admission.Warning != tc.warning || row.Admission.GrantedAt == nil || row.DeadlineAt == nil ||
+				row.DeadlineAt.Sub(*row.Admission.GrantedAt) != 2*time.Second || len(doc.Warnings) == 0 || doc.Warnings[0].Code != tc.warning {
 				t.Fatalf("missing fallback evidence: %s", run)
 			}
 			if events := invoke(0, "events", row.ID.String()); !strings.Contains(events, `"admission_warning":"`+tc.warning+`"`) {
@@ -373,11 +375,13 @@ func TestProviderAdmissionExternalCLI(t *testing.T) {
 	invoke(0, `"matched":true`, "match", "--harness", "opencode", "--model", "morph/morph-dsv41flash")
 	invoke(0, `"matched":false`, "match", "--harness", "opencode", "--model", "another/model")
 	invoke(2, `"admission_invalid_arguments"`, "observe", "--bucket", "morph", "--attempts", "1", "--throttled", "2")
-	invoke(0, `"recorded":true`, "observe", "--bucket", "morph", "--attempts", "5", "--throttled", "1")
+	invoke(2, `"admission_invalid_arguments"`, "observe", "--bucket", "morph", "--attempts", "1", "--throttled", "0", "--at", "invalid")
+	invoke(0, `"recorded":true`, "observe", "--bucket", "morph", "--attempts", "5", "--throttled", "1", "--at", time.Now().Add(-time.Second).UTC().Format(time.RFC3339Nano))
 	invoke(0, `"throttle_rate":0.2`, "status", "--bucket", "morph")
 	pid := strconv.Itoa(os.Getpid())
 	invoke(0, `"granted":true`, "acquire", "--bucket", "morph", "--holder", "fixture", "--pid", pid, "--no-wait")
 	invoke(0, `"granted":false`, "acquire", "--bucket", "morph", "--holder", "another", "--pid", pid, "--no-wait")
+	invoke(0, `"reason":"wait_timeout"`, "acquire", "--bucket", "morph", "--holder", "another", "--pid", pid, "--wait", "200ms")
 	child := exec.Command("sleep", "30")
 	if err := child.Start(); err != nil {
 		t.Fatal(err)
@@ -385,4 +389,57 @@ func TestProviderAdmissionExternalCLI(t *testing.T) {
 	defer func() { _ = child.Process.Kill(); _ = child.Wait() }()
 	invoke(8, `"admission_holder_conflict"`, "acquire", "--bucket", "morph", "--holder", "fixture", "--pid", strconv.Itoa(child.Process.Pid), "--no-wait")
 	invoke(0, `"released":true`, "release", "--bucket", "morph", "--holder", "fixture")
+	slots := admission.New(f.journal, time.Now, admissionProcessStart)
+	cfg, err := config.Load(f.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := admission.Owner{PID: os.Getpid(), Start: "native fixture"}
+	queue := slots.Queue("morph", cfg.Profiles["test"].Admission.Buckets["morph"], "native-fixture", admission.Background, owner, owner, false)
+	defer queue.Close()
+	if decision, err := queue.Try(context.Background(), false); err != nil || !decision.Granted {
+		t.Fatalf("native slot: %#v %v", decision, err)
+	}
+	invoke(8, `"admission_holder_conflict"`, "release", "--bucket", "morph", "--holder", "native-fixture")
+}
+
+func TestProviderAdmissionJournalUpdateRespectsContext(t *testing.T) {
+	f, _ := admissionFixture(t, true, "5s")
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	holder, err := store.Open(f.journal, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	c := common{journalPath: f.journal, journalBusyBudget: defaultJournalBusyBudget}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan *output.Error, 1)
+	go func() {
+		_, problem := a.updateProviderAdmission(ctx, c, model.Execution{}, model.ProviderAdmission{}, false, 0)
+		done <- problem
+	}()
+	select {
+	case problem := <-done:
+		if problem == nil || ctx.Err() != context.DeadlineExceeded {
+			t.Fatalf("busy write returned before the configured deadline: %v", problem)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("busy journal pinned the admission writer past its deadline")
+	}
+}
+
+func TestProviderAdmissionCrashGapUsesStartingOwner(t *testing.T) {
+	start := time.Now().UTC()
+	owner := &model.LaunchIdentity{PID: 42, StartedAt: start}
+	row := model.Execution{State: model.StateStarting, OwnerLaunch: owner,
+		Admission: &model.ProviderAdmission{Phase: "granted", Bucket: "morph", Priority: admission.Background}}
+	if identity, ok := recordedLaunch(row); !ok || identity.PID != owner.PID {
+		t.Fatalf("prelaunch crash lost owner identity: %+v (%v)", identity, ok)
+	}
+	row.Launch = &model.LaunchIdentity{PID: 43, StartedAt: start}
+	if identity, ok := recordedLaunch(row); !ok || identity.PID != row.Launch.PID {
+		t.Fatalf("recorded child must take precedence: %+v (%v)", identity, ok)
+	}
 }

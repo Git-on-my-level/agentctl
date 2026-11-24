@@ -334,3 +334,24 @@ func TestControllerRetainsFreshSamplesAtLookbackBoundary(t *testing.T) {
 		t.Fatalf("expired sample retained: %#v", s.Samples)
 	}
 }
+
+func TestQueueResumesAdaptiveWindowAfterLockTimeout(t *testing.T) {
+	ctx := context.Background()
+	s := New(filepath.Join(t.TempDir(), "journal.db"), time.Now, nil)
+	b := testConfig()
+	b.StaticFallbackWindow = 1
+	active := s.Queue(testBucket, b, "active", Background, testOwner, testOwner, false)
+	defer active.Close()
+	if d, err := active.Try(ctx, false); err != nil || !d.Granted {
+		t.Fatalf("seed slot: %#v %v", d, err)
+	}
+	waiter := s.Queue(testBucket, b, "waiter", Background, testOwner, testOwner, false)
+	defer waiter.Close()
+	waiter.lockTimedOut = true
+	if d, err := waiter.Try(ctx, true); err != nil || d.Granted || d.Window != 1 || d.Warning != "admission_lock_timeout" {
+		t.Fatalf("first recovered poll: %#v %v", d, err)
+	}
+	if d, err := waiter.Try(ctx, true); err != nil || !d.Granted || d.Window != 2 {
+		t.Fatalf("adaptive window did not recover: %#v %v", d, err)
+	}
+}

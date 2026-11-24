@@ -112,11 +112,11 @@
         "initial_window": {"type": "integer", "minimum": 1, "maximum": 256},
         "min_window": {"type": "integer", "minimum": 1, "maximum": 256},
         "max_window": {"type": "integer", "minimum": 1, "maximum": 256},
-        "static_fallback_window": {"type": "integer", "minimum": 1, "maximum": 256, "description": "Defaults to initial_window."},
+        "static_fallback_window": {"type": "integer", "minimum": 0, "maximum": 256, "description": "Zero or omission uses initial_window."},
         "target_throttle_rate": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.08},
-        "decrease_factor": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1, "default": 0.7},
-        "increase_interval_seconds": {"type": "integer", "minimum": 1, "maximum": 3600, "default": 60},
-        "sample_window_seconds": {"type": "integer", "minimum": 1, "maximum": 3600, "default": 300},
+        "decrease_factor": {"type": "number", "minimum": 0, "exclusiveMaximum": 1, "default": 0.7, "description": "Zero uses the default."},
+        "increase_interval_seconds": {"type": "integer", "minimum": 0, "maximum": 3600, "default": 60, "description": "Zero uses the default."},
+        "sample_window_seconds": {"type": "integer", "minimum": 0, "maximum": 3600, "default": 300, "description": "Zero uses the default."},
         "max_wait": {"type": "string", "minLength": 1, "default": "5m", "description": "Positive Go duration, at most one hour."}
       }
     },

@@ -711,7 +711,7 @@ func (a *app) recordNativeEvents(c common, execution model.Execution, nativeEven
 			sample.At = a.now().UTC()
 			adjustment, _, err := slots.Observe(context.Background(), execution.Admission.Bucket, bucket, sample)
 			if err == nil {
-				a.journalAdmissionAdjustment(c, execution, adjustment)
+				a.journalAdmissionAdjustment(context.Background(), c, execution, adjustment)
 			}
 		}
 		if problem != nil || terminal {

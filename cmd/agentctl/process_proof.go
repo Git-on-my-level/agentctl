@@ -85,9 +85,9 @@ func absDuration(value time.Duration) time.Duration {
 
 func recordedLaunch(execution model.Execution) (processIdentity, bool) {
 	launch := execution.Launch
-	if launch == nil && execution.ProviderQueued() {
-		// Until Launch is recorded, only the queued agentctl process can
-		// own the row. Never use its PID in place of a launched child's.
+	if launch == nil && execution.State == model.StateStarting && execution.Admission != nil {
+		// If the owner vanished before recording Launch, the outcome is
+		// unknown. Its identity does not prove any native child has exited.
 		launch = execution.OwnerLaunch
 	}
 	if launch == nil {

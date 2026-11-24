@@ -119,13 +119,17 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 			break
 		}
 		if meta.Position != execution.Admission.Position || a.now().Sub(execution.Observation.ObservedAt) >= nativeRunnerHeartbeatEvery {
-			var problem *output.Error
-			execution, problem = a.updateProviderAdmission(c, execution, meta, false, 0)
-			if problem != nil {
+			refreshCtx, stop := context.WithTimeout(waitCtx, admission.PollInterval)
+			updated, problem := a.updateProviderAdmission(refreshCtx, c, execution, meta, false, 0)
+			expired := refreshCtx.Err() != nil
+			stop()
+			if problem == nil {
+				execution = updated
+			} else if !expired && !problem.Retryable {
 				return execution, nil, problem
 			}
 		}
-		a.journalAdmissionAdjustment(c, execution, adjustment)
+		a.journalAdmissionAdjustment(waitCtx, c, execution, adjustment)
 		adjustment = nil
 		select {
 		case <-waitCtx.Done():
@@ -134,23 +138,9 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 	}
 	a.serviceCancelInbox(inbox, interrupt)
 	if err := ctx.Err(); err != nil {
-		if queue != nil {
-			queue.Close()
-		}
-		writeJournal, current, problem := a.openExecutionWriteOwned(c, execution.ID)
-		if problem != nil {
-			return execution, nil, problem
-		}
-		current.Admission = &meta
-		meta.Phase, meta.Position = "cancelled", 0
-		final, finalizeErr := a.finalizeResult(context.Background(), c, writeJournal, current,
-			adapter.Result{State: adapter.StateCancelled, Error: "cancelled during provider admission"}, a.now().UTC(), noStore)
-		writeJournal.Close()
-		if finalizeErr != nil {
-			return execution, nil, mapStoreError("record cancelled provider admission", finalizeErr)
-		}
-		a.anxRegisterTerminal(c, final.ID)
-		return final, nil, interruptedRunError(err, final)
+		queue.Close()
+		cancelled, problem := a.cancelProviderAdmission(c, execution, meta, noStore, err)
+		return cancelled, nil, problem
 	}
 	if meta.Phase != "granted" {
 		now := a.now().UTC()
@@ -162,21 +152,71 @@ func (a *app) waitProviderAdmission(ctx context.Context, c common, execution mod
 			queue.Close()
 		}
 	}
-	execution, problem := a.updateProviderAdmission(c, execution, meta, true, timeout)
+	execution, problem := a.commitProviderAdmission(ctx, c, execution, meta, timeout, inbox, interrupt)
+	if err := ctx.Err(); err != nil {
+		queue.Close()
+		cancelled, problem := a.cancelProviderAdmission(c, execution, meta, noStore, err)
+		return cancelled, nil, problem
+	}
 	if problem != nil {
 		return execution, nil, problem
 	}
-	a.journalAdmissionAdjustment(c, execution, adjustment)
+	a.journalAdmissionAdjustment(ctx, c, execution, adjustment)
 	keep = true
 	return execution, queue, nil
 }
 
-func (a *app) updateProviderAdmission(c common, execution model.Execution, meta model.ProviderAdmission, granted bool, timeout time.Duration) (model.Execution, *output.Error) {
-	journal, current, problem := a.openExecutionWriteOwned(c, execution.ID)
+// The reservation decision ends the capacity wait. Its journal commit has the
+// normal journal retry budget, with short lock attempts so the owner continues
+// to service cancellation before any native child starts.
+func (a *app) commitProviderAdmission(ctx context.Context, c common, execution model.Execution, meta model.ProviderAdmission, timeout time.Duration, inbox *cancelInbox, interrupt context.CancelFunc) (model.Execution, *output.Error) {
+	budget := c.journalBusyBudget
+	if budget <= 0 {
+		budget = journalBusyAttemptLock
+	}
+	writeCtx, stop := context.WithTimeout(ctx, budget)
+	defer stop()
+	for {
+		attemptCtx, cancel := context.WithTimeout(writeCtx, admission.PollInterval)
+		current, problem := a.updateProviderAdmission(attemptCtx, c, execution, meta, true, timeout)
+		expired := attemptCtx.Err() != nil
+		cancel()
+		a.serviceCancelInbox(inbox, interrupt)
+		if problem == nil || writeCtx.Err() != nil || !expired && !problem.Retryable {
+			return current, problem
+		}
+	}
+}
+
+func (a *app) cancelProviderAdmission(c common, execution model.Execution, meta model.ProviderAdmission, noStore bool, cause error) (model.Execution, *output.Error) {
+	// The queue ticket is already released. Preserve the outcome when the
+	// journal is writable within its configured budget.
+	journal, current, problem := a.openExecutionWrite(context.Background(), c, execution.ID)
+	if problem != nil {
+		return execution, problem
+	}
+	meta.Phase, meta.Position = "cancelled", 0
+	current.Admission = &meta
+	final, err := a.finalizeResult(context.Background(), c, journal, current,
+		adapter.Result{State: adapter.StateCancelled, Error: "cancelled during provider admission"}, a.now().UTC(), noStore)
+	journal.Close()
+	if err != nil {
+		return execution, mapStoreError("record cancelled provider admission", err)
+	}
+	a.anxRegisterTerminal(c, final.ID)
+	return final, interruptedRunError(cause, final)
+}
+
+func (a *app) updateProviderAdmission(ctx context.Context, c common, execution model.Execution, meta model.ProviderAdmission, granted bool, timeout time.Duration) (model.Execution, *output.Error) {
+	journal, problem := a.openWriteContext(ctx, c)
 	if problem != nil {
 		return execution, problem
 	}
 	defer journal.Close()
+	current, err := journal.GetExecution(ctx, execution.ID)
+	if err != nil {
+		return execution, mapStoreError("read provider admission", err)
+	}
 	if current.State.Terminal() {
 		return current, delegateExecutionError(output.CodeInvalidState, "execution settled during provider admission", current)
 	}
@@ -190,18 +230,20 @@ func (a *app) updateProviderAdmission(c common, execution model.Execution, meta 
 			current.DeadlineAt = &deadline
 		}
 	}
-	updated, err := journal.UpdateExecution(context.Background(), current, current.Revision)
+	updated, err := journal.UpdateExecution(ctx, current, current.Revision)
 	if err != nil {
 		return execution, mapStoreError("record provider admission", err)
 	}
 	return updated, nil
 }
 
-func (a *app) journalAdmissionAdjustment(c common, execution model.Execution, adjustment *admission.Adjustment) {
+func (a *app) journalAdmissionAdjustment(ctx context.Context, c common, execution model.Execution, adjustment *admission.Adjustment) {
 	if adjustment == nil {
 		return
 	}
-	journal, _, problem := a.openExecutionWriteOwned(c, execution.ID)
+	writeCtx, cancel := context.WithTimeout(ctx, admission.PollInterval)
+	defer cancel()
+	journal, problem := a.openWriteContext(writeCtx, c)
 	if problem != nil {
 		return
 	}
@@ -211,7 +253,7 @@ func (a *app) journalAdmissionAdjustment(c common, execution model.Execution, ad
 	if err != nil {
 		return
 	}
-	_, _, _ = journal.AppendEvent(context.Background(), model.Event{
+	_, _, _ = journal.AppendEvent(writeCtx, model.Event{
 		ExecutionID: execution.ID, OriginHostID: execution.OriginHostID, Authority: execution.Authority, Adapter: execution.Adapter,
 		Kind: model.EventHealth, Ordering: model.OrderingObservation, ObservedAt: adjustment.At,
 		SourceState: stringPointer("admission.window_adjusted"), Payload: payload, DedupeKey: key, DedupeVersion: 1,
@@ -326,7 +368,11 @@ func (a *app) admissionCommand(ctx context.Context, renderer output.Renderer, c 
 				status.Warning = "admission_state_unavailable"
 			}
 			if status.Warning != "" && status.Enabled && format == "" {
-				renderer = renderer.WithWarnings(output.Warning{Code: status.Warning, Message: "Admission status is using the configured fallback window.", Details: map[string]any{"bucket": key}})
+				message := "Admission status is using the configured fallback window."
+				if status.Warning == "admission_state_missing" {
+					message = "This bucket has no controller state yet. The configured fallback window applies."
+				}
+				renderer = renderer.WithWarnings(output.Warning{Code: status.Warning, Message: message, Details: map[string]any{"bucket": key}})
 			}
 			views = append(views, status)
 			lines = append(lines, output.Line{Lead: "admission.bucket", Fields: []output.Field{

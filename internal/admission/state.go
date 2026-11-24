@@ -141,6 +141,7 @@ func (q *Queue) Try(ctx context.Context, enqueue bool) (Decision, error) {
 	d.Adjustment = state.tick(now, q.bucket, inUse)
 	d.Window = state.Window
 	if q.lockTimedOut {
+		q.lockTimedOut = false
 		d.Window = min(d.Window, q.bucket.fallback())
 		if d.Warning == "" {
 			d.Warning = "admission_lock_timeout"
