@@ -160,6 +160,40 @@ func TestDetachedLifecycleThroughBuiltBinary(t *testing.T) {
 		})
 	}
 
+	t.Run("opencode_recovery", func(t *testing.T) {
+		f := automaticOpenCodeFixture(t, "es")
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		launch := exec.CommandContext(ctx, binary, "--config", f.config, "--journal", f.journal, "delegate", "--cwd", f.root,
+			"--request-file", f.request, "--prompt-stdin", "--detach", "--timeout", "10s")
+		launch.Env = append(os.Environ(), "AGENTCTL_UPDATE_MODE=off")
+		launch.Stdin = strings.NewReader("private-original-task")
+		out, err := launch.CombinedOutput()
+		if err != nil {
+			t.Fatalf("OpenCode admission: %v %s", err, out)
+		}
+		id := resultID(t, string(out))
+		await := exec.CommandContext(ctx, binary, "--journal", f.journal, "await", id, "--timeout", "10s")
+		if out, err = await.CombinedOutput(); err != nil {
+			t.Fatalf("detached recovery: %v %s", err, out)
+		}
+		chain := openCodeChain(t, string(out))
+		if len(chain) != 2 || chain[0].String() != id || f.launches(t) != 2 {
+			t.Fatalf("detached chain: %s", out)
+		}
+		journal, err := store.Open(f.journal, store.Options{ReadOnly: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer journal.Close()
+		first, firstErr := journal.GetExecution(ctx, chain[0])
+		final, finalErr := journal.GetExecution(ctx, chain[1])
+		if firstErr != nil || finalErr != nil || first.OwnerLaunch == nil || final.OwnerLaunch == nil ||
+			first.OwnerLaunch.PID != final.OwnerLaunch.PID {
+			t.Fatalf("successor changed owner: %v %v", firstErr, finalErr)
+		}
+	})
+
 	t.Run("devin_acp", func(t *testing.T) {
 		f := newDevinACPDelegateFixture(t)
 		launch := exec.Command(binary, "--config", f.config, "--journal", f.journal, "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-stdin", "--detach", "--timeout", "5s")

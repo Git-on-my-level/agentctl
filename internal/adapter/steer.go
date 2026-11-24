@@ -237,7 +237,7 @@ func FailedContinuationArgv(adapterName string, base []string, promptDelivery, s
 	return ContinuationArgv(adapterName, base, promptDelivery, sessionID)
 }
 
-// opencodeResumeArgv is verified against OpenCode 2.2.6. Read-only inspection
+// opencodeResumeArgv is verified against OpenCode 2.2.6 and 2.3.2. Read-only inspection
 // of native history after client failure found recovered tool results and a
 // successful final turn. This proves exited-turn recovery, not interruption of
 // the background service. Only the caller's recorded binding selects a session.
@@ -262,7 +262,8 @@ func opencodeResumeArgv(base []string, sessionID, delivery string) ([]string, er
 // contract, not a guess based on the presence of --session in CLI help.
 func OpenCodeResumeVersionSupported(version string) bool {
 	switch strings.TrimSpace(version) {
-	case "2.2.6", "v2.2.6", "opencode 2.2.6", "opencode v2.2.6":
+	case "2.2.6", "v2.2.6", "opencode 2.2.6", "opencode v2.2.6",
+		"2.3.2", "v2.3.2", "opencode 2.3.2", "opencode v2.3.2":
 		return true
 	}
 	return false

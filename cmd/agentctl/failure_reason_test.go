@@ -123,7 +123,8 @@ printf '%s\n' '{"type":"turn.failed","thread_id":"thread-1","error":{"message":"
 	if err != nil {
 		t.Fatal(err)
 	}
-	problem := a.delegateFailedExecution(ctx, common{journalPath: journalPath}, execution)
+	problem := delegateExecutionError(output.CodeExecutionFailed, "delegated execution failed", execution)
+	a.attachNativeFailure(ctx, common{journalPath: journalPath}, execution.ID, problem)
 	if problem == nil || problem.Code != output.CodeExecutionFailed || !problem.Retryable {
 		t.Fatalf("delegate failure=%v", problem)
 	}

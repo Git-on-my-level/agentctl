@@ -168,17 +168,18 @@ func remoteResult(body []byte) (json.RawMessage, *output.Error) {
 }
 
 type remoteReceipt struct {
-	ID           ids.ExecutionID             `json:"id"`
-	OriginHostID ids.HostID                  `json:"origin_host_id"`
-	State        model.State                 `json:"state"`
-	Liveness     model.Liveness              `json:"liveness"`
-	UpdatedAt    time.Time                   `json:"updated_at"`
-	TerminalAt   *time.Time                  `json:"terminal_at"`
-	Observation  *model.Observation          `json:"observation"`
-	Resolved     model.DelegationTarget      `json:"resolved"`
-	Capacity     *model.DelegationCapacity   `json:"capacity"`
-	Continuation *model.FollowUpContinuation `json:"continuation"`
-	Provenance   struct {
+	ID            ids.ExecutionID             `json:"id"`
+	RecoveryChain []ids.ExecutionID           `json:"recovery_chain"`
+	OriginHostID  ids.HostID                  `json:"origin_host_id"`
+	State         model.State                 `json:"state"`
+	Liveness      model.Liveness              `json:"liveness"`
+	UpdatedAt     time.Time                   `json:"updated_at"`
+	TerminalAt    *time.Time                  `json:"terminal_at"`
+	Observation   *model.Observation          `json:"observation"`
+	Resolved      model.DelegationTarget      `json:"resolved"`
+	Capacity      *model.DelegationCapacity   `json:"capacity"`
+	Continuation  *model.FollowUpContinuation `json:"continuation"`
+	Provenance    struct {
 		ConfigurationSHA256 string   `json:"configuration_sha256"`
 		Defaulted           []string `json:"defaulted"`
 	} `json:"provenance"`
@@ -211,7 +212,8 @@ func parseRemoteReceipt(body []byte) (remoteReceipt, *output.Error) {
 			validIntegrity = false
 		}
 	}
-	if err != nil || idErr != nil || hostErr != nil || !validState || !validLiveness || !validIntegrity {
+	if err != nil || idErr != nil || hostErr != nil || !validState || !validLiveness || !validIntegrity ||
+		!model.ValidOpenCodeRecoveryChain(receipt.RecoveryChain, receipt.ID) {
 		return receipt, delegateError(output.CodeRemoteFailure, "delegate_remote_receipt_invalid", "remote receipt lacks a valid execution identity or state")
 	}
 	return receipt, nil
@@ -408,7 +410,8 @@ func remoteObservation(ctx context.Context, execution model.Execution, command s
 		return remoteReceipt{}, remoteErrorLocal(problem, execution)
 	}
 	receipt, problem := body.receipt()
-	if problem == nil && (receipt.ID != plan.ExecutionID || receipt.OriginHostID != plan.OriginHostID) {
+	if problem == nil && (receipt.ID != plan.ExecutionID || receipt.OriginHostID != plan.OriginHostID ||
+		(len(receipt.RecoveryChain) > 0 && execution.Adapter != "opencode")) {
 		problem = delegateError(output.CodeRemoteFailure, "delegate_remote_receipt_invalid", "remote observation identity disagrees with admitted execution")
 	}
 	return receipt, remoteErrorLocal(body.problem(problem), execution)
@@ -420,6 +423,7 @@ func (a *app) statusRemote(ctx context.Context, renderer output.Renderer, execut
 		return problem
 	}
 	execution.State = receipt.State
+	execution.RecoveryChain = receipt.RecoveryChain
 	if receipt.Liveness != "" {
 		execution.Liveness = receipt.Liveness
 	}
@@ -494,6 +498,7 @@ func (a *app) observeRemoteTerminal(ctx context.Context, c common, execution mod
 	now := a.now().UTC()
 	next := latest
 	next.State, next.Liveness, next.UpdatedAt, next.TerminalAt = receipt.State, model.LivenessExited, now, &now
+	next.RecoveryChain = receipt.RecoveryChain
 	if receipt.TerminalAt != nil {
 		next.TerminalAt = receipt.TerminalAt
 	} else if execution.TerminalAt != nil {

@@ -725,7 +725,7 @@ func TestOpenCodeInvalidRequestRetainsClassifier(t *testing.T) {
 }
 
 func TestOpenCodeProbeGatesResumeOnVerifiedVersion(t *testing.T) {
-	for _, version := range []string{"opencode 2.2.6", "opencode v2.2.6", "opencode 1.17.13", "opencode 2.2.7"} {
+	for _, version := range []string{"opencode 2.2.6", "opencode v2.2.6", "opencode v2.3.2", "opencode 2.3.3", "opencode 1.17.13", "opencode 2.2.7"} {
 		path := fixtureExecutable(t, `printf '%s\n' '`+version+`'`)
 		got, err := NewOpenCode().Probe(context.Background(), ProbeRequest{Executable: path, Argv: []string{path, "run", "--format", "json", "--", "task"}, PromptDelivery: PromptDeliveryArgv, PromptArgs: 1})
 		if err != nil {

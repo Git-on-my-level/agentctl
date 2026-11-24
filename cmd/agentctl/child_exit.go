@@ -92,6 +92,10 @@ func (a *app) checkChildExit(ctx context.Context, c common, journal *store.Journ
 	switch {
 	case execution.AutoContinuationOf != nil:
 		guard.AutoContinue = "suppressed_recursive"
+	case execution.OpenCodeRecoveryPending(now):
+		// The failure already scheduled a same-session turn. Keep child
+		// collection evidence without starting a competing continuation.
+		guard.AutoContinue = "parent_not_completed"
 	case execution.State != model.StateCompleted && execution.State != model.StateFailed:
 		guard.AutoContinue = "parent_not_completed"
 	default:

@@ -49,7 +49,7 @@
             "kind": {"type": "string", "minLength": 1},
             "source": {"type": "string", "minLength": 1},
             "retryable": {"type": "boolean"},
-            "message": {"type": "string", "maxLength": 4096},
+            "message": {"type": "string", "maxLength": 4096, "description": "Fixed OpenCode provider_capacity wording identifies structured HTTP 429 and advises waiting before retrying with the same model."},
             "message_source": {"enum": ["stderr"], "deprecated": true, "description": "Legacy read compatibility only; never authorizes free-form stderr text. New writes omit it."},
             "stderr": {
               "type": "object", "additionalProperties": false, "required": ["code", "hash", "bytes"],

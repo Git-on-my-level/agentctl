@@ -204,6 +204,7 @@ func TestOpenCodeTransientFailuresParkAndCollectLateAnswer(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := opencodeRecoveryFixture(t, tc.event, true)
+			disableOpenCodeRecovery(t, f, true, false)
 			code, out := f.invoke("original-private-task", "--wait")
 			if code != 10 || !strings.Contains(out, tc.state) || !strings.Contains(out, `"retryable":true`) {
 				t.Fatalf("park %d: %s", code, out)

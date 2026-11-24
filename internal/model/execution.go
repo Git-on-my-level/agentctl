@@ -398,6 +398,9 @@ type Execution struct {
 	ChildExitRecheck     bool               `json:"child_exit_recheck,omitempty"`
 	ChildExitGuard       *ChildExitGuard    `json:"child_exit_guard,omitempty"`
 	AutoContinuationOf   *ids.ExecutionID   `json:"auto_continuation_of,omitempty"`
+	RetryOf              *ids.ExecutionID   `json:"retry_of,omitempty"`
+	OpenCodeRecovery     *OpenCodeRecovery  `json:"opencode_recovery,omitempty"`
+	RecoveryChain        []ids.ExecutionID  `json:"recovery_chain,omitempty"`
 	CallerIdentity       *CallerIdentity    `json:"caller_identity,omitempty"`
 	Caller               *ExecutionCaller   `json:"caller,omitempty"`
 	LastOperationFailure *OperationFailure  `json:"last_operation_failure,omitempty"`
@@ -619,12 +622,31 @@ func (e Execution) Validate() error {
 			return fmt.Errorf("rate_limit: %w", err)
 		}
 	}
+	if e.RetryOf != nil {
+		if _, err := ids.ParseExecutionID(e.RetryOf.String()); err != nil || *e.RetryOf == e.ID ||
+			e.Adapter != "opencode" || e.Authority != AuthorityNative || len(e.Supersedes) != 1 || e.Supersedes[0] != *e.RetryOf {
+			return errors.New("invalid OpenCode recovery predecessor")
+		}
+	}
+	if r := e.OpenCodeRecovery; r != nil {
+		if e.Adapter != "opencode" || e.Authority != AuthorityNative || e.State != StateFailed ||
+			!r.Kind.validAttempt(r.Attempt) || r.NotBefore.IsZero() || !r.ExpiresAt.After(r.NotBefore) {
+			return errors.New("invalid OpenCode recovery schedule")
+		}
+	}
+	if len(e.RecoveryChain) != 0 && (e.Adapter != "opencode" || !e.RemoteForwarded() ||
+		!ValidOpenCodeRecoveryChain(e.RecoveryChain, e.Delegation.RemotePlan.ExecutionID)) {
+		return errors.New("invalid remote OpenCode recovery chain")
+	}
 	return nil
 }
 
 func ValidateTransition(previous, next Execution) error {
 	if !reflect.DeepEqual(previous.AutoContinuationOf, next.AutoContinuationOf) {
 		return errors.New("automatic continuation provenance is immutable")
+	}
+	if !reflect.DeepEqual(previous.RetryOf, next.RetryOf) {
+		return errors.New("automatic recovery provenance is immutable")
 	}
 	if !reflect.DeepEqual(previous.ParentExecutionID, next.ParentExecutionID) || !reflect.DeepEqual(previous.CallerIdentity, next.CallerIdentity) {
 		return errors.New("execution launch attribution is immutable")

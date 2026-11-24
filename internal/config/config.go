@@ -90,6 +90,8 @@ type Profile struct {
 type DelegationPolicy struct {
 	// Nil defaults to enabled. False disables automatic child-collection turns, not warnings.
 	ChildExitAutoContinue       *bool `json:"child_exit_auto_continue,omitempty"`
+	OpenCodeRateLimitRetry      *bool `json:"opencode_rate_limit_retry,omitempty"`
+	OpenCodeFinalAnswerFollowup *bool `json:"opencode_final_answer_followup,omitempty"`
 	CursorWorkspaceTrust        bool  `json:"cursor_workspace_trust,omitempty"`
 	UnattendedCodingPermissions bool  `json:"unattended_coding_permissions,omitempty"`
 }

@@ -213,7 +213,7 @@ func (a *app) detachedNativeWorker(ctx context.Context) int {
 	}
 	run := runOptions{resumeSession: payload.ResumeSession, env: payload.Env, adapter: payload.Adapter, cwd: payload.CWD, argv: payload.Argv, labels: payload.Labels,
 		timeout: payload.Timeout, delegation: payload.Binding, mutationOverride: &payload.Mutation, preparedPrompt: &payload.Prompt, started: sendReceipt, reservedExecution: payload.ReservedExecution}
-	problem := a.runNativeOptions(ctx, output.Renderer{Mode: output.JSON, Writer: io.Discard}, c, nil, run)
+	problem := a.runNativeRecovering(ctx, output.Renderer{Mode: output.JSON, Writer: io.Discard}, c, run)
 	if problem != nil {
 		if !sent {
 			if !payload.ReservedExecution.IsZero() {

@@ -56,8 +56,8 @@ A failed or cancelled follow-up does not block the session: continue again
 from the same completed turn with a new request key.
 
 OpenCode v2 uses `run --format json --session <recorded-id> -- <instruction>`
-with the original frozen recipe. Native recovery requires CLI 2.2.6 in both the
-recorded execution and the current version probe. Before actual continuation,
+with the original frozen recipe. Both the recorded CLI version and current
+version probe must be allowlisted (2.2.6 or 2.3.2). Before actual continuation,
 a bounded native `session export --sanitize` checks existence; its output is
 discarded. A missing or unprovable session refuses without sending the prompt.
 Plans do not run that export. Never use latest-session selection or invent a
@@ -70,8 +70,8 @@ remain outside agentctl's lineage admission. See [adapter evidence](adapters.md#
 
 ## Transient failure parking
 
-Delegated Codex/ZCode/OpenCode children that exit with an explicit network or capacity
-failure and a recorded native session park as `attention`/`blocked`, with
+Delegated Codex/ZCode/OpenCode children that exit with an eligible network or capacity
+failure and a recorded native session can park as `attention`/`blocked`, with
 `source_state=paused_network` or `paused_capacity`. The attention event carries
 the fixed failure diagnostic and an exited-child receipt. The execution/event
 commit is atomic. `delegate --wait` exits 10 with `retryable=true` and a recovery
@@ -88,8 +88,9 @@ cancelled/superseded; their original attention receipts remain in history.
 Reconcile and supervisor preserve this intentional exited-child pause instead
 of inferring owner loss. `cancel` can close a still-idle parked execution locally
 under a fresh revision/lineage check; it refuses if a recovery turn is active.
-There is no timer, auto-resume, native process retained, or provider substitution.
-No-session, unknown, auth and real quota errors keep existing failure behavior.
+The parked owner exits. OpenCode's eligible structured 429s use the automatic
+path below when enabled. No-session, unknown, auth and real quota errors keep
+existing failure behavior.
 The parked marker describes execution state, not provider health or successful
 work. Multica issue/run authority and continuation are unchanged.
 
@@ -112,6 +113,43 @@ continues to mean the existing execution was recovered. Idempotency never
 relaunches failed work. Refused admissions still release their key.
 
 The result shape is the [continue-result schema](../schemas/continue-result.schema.json).
+
+## Automatic OpenCode recovery
+
+The foreground or detached owner waits for OpenCode to exit after its own
+retries. With verified native continuation and a recorded session, it may
+admit a successor through the same frozen native launch recipe. Each launch
+checks the exact session with sanitized export before sending the fixed
+instruction.
+
+- Structured HTTP 429 gets up to three retries per native lineage. The first
+  delay is the greater of the provider's retry-after and 60 seconds, plus
+  jitter of up to that base. Later attempts double the base delay per attempt.
+  A retry-after over one hour leaves the failure for explicit recovery.
+- A stopped turn without assistant text (`empty_terminal_result`) gets one
+  follow-up per lineage, asking for the final answer in the required format.
+- Both paths claim the schedule before launch, use distinct deterministic
+  continuation keys, and link each admitted successor with `retry_of`,
+  `supersedes` and `superseded_by`. No prompt or native export is journaled.
+  The original execution deadline covers backoff and all resumed turns.
+- `delegate --wait`, `await`, `status` and single-ID `result` keep the requested
+  logical ID and follow automatic successors. JSON reports `recovery_chain` in
+  order from the original ID through the current attempt. Exact `--content`
+  returns the final text. While backoff or preflight is pending, status reports
+  `waiting`, await keeps waiting and result directs callers to await.
+  Terminal failure remains exit 11. Events still describe their physical
+  turns. Manual and child-collection successors have their own results.
+- Cancel closes a pending retry and preserves the observed failure. After
+  admission, cancel addresses the active successor. Same-key replay only
+  observes the existing chain. If the owner disappears before admitting a
+  successor, the claim expires no later than one minute after backoff and
+  callers can collect the physical failure. A refused preflight also exposes
+  the physical failure. Neither starts an unverified session.
+
+Set `profiles.<name>.delegation.opencode_rate_limit_retry` or
+`profiles.<name>.delegation.opencode_final_answer_followup` to `false` to
+disable the corresponding automatic path. Both default to `true`. Rate-limit
+parking for explicit recovery remains available with automatic retry disabled.
 
 ## Explicit carry-forward rounds
 
@@ -222,6 +260,7 @@ build their argv from the same verified route, so an adapter that reports
 | OMP | yes, for expert launches only in practice | `--resume <session>` after a completed turn kept context when run by hand. It has no delegate recipe on a host that does not list it as preferred. |
 | Devin ACP, Devin cloud ACP | conditional | Loads the recorded session only when initialize advertises loadSession, then verifies the same ACP config options again; print-mode runs cannot continue. A cloud continuation recalled the prior turn live. |
 | OpenCode 2.2.6 | yes | `run --session <recorded-id>`; completed and exited failed turns retain native context, including server recovery after client loss. No process-interruption steering. |
+| OpenCode 2.3.2 | yes | Completed and exited failed turns resumed from an isolated database copy. Sanitized export rejected an unknown session without creating one. See [adapter evidence](adapters.md#opencode). |
 | ZCode 0.17.0 coding | yes | `--resume <sessionId> --prompt`; synthetic continuity smoke recorded with the resilience change. Failed-turn recovery requires the recorded session; read_only storage is disposable and refused. No process-interruption steering. |
 | Generic process, Multica | no | No native session to resume; Multica owns its own continuation. |
 

@@ -305,6 +305,7 @@
         }
       }
     },
+    "recovery_chain": {"$ref": "execution.schema.json#/properties/recovery_chain"},
     "outcome": {
       "$ref": "outcome.schema.json"
     },

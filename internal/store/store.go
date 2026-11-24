@@ -359,6 +359,11 @@ func (j *Journal) CreateExecution(ctx context.Context, execution model.Execution
 				return err
 			}
 		}
+		if execution.RetryOf != nil {
+			if err := j.linkOpenCodeRecovery(tx, execution, now); err != nil {
+				return err
+			}
+		}
 		result = execution
 		return nil
 	})

@@ -400,14 +400,14 @@ recorded native checkpoint park as `attention`/`blocked`, with source state
 exits 10 with `retryable=true`; same-key replay returns the pause without
 relaunching. Inspect events, reconcile already-applied tool effects, then plan
 `continue` from the latest parked turn with a new key and recovery instruction.
-There is no automatic prompt/tool replay or provider switch. Missing checkpoints,
+A parked turn requires a new-key continuation. Missing checkpoints,
 unknown errors, authentication and quota failures are not parked. Cancel can
 close an idle parked execution locally. ZCode coding-session continuation is
 verified only for CLI 0.17.0; its disposable read_only session storage cannot
 resume. ZCode process-interruption steering remains unavailable. Carry-forward
 still requires a completed turn with a verified stored answer. OpenCode recovery
 uses only the recorded session and frozen recipe; both recorded and current
-CLI versions must be 2.2.6. Before sending the prompt, actual continuation checks
+CLI versions must be 2.2.6 or 2.3.2. Before sending the prompt, actual continuation checks
 existence through a bounded native `session export --sanitize` with both streams
 discarded. Missing or unprovable sessions refuse; plans do not export history.
 External deletion racing the check and launch remains outside agentctl's control.
@@ -415,6 +415,16 @@ Its background turn may finish
 after client transport loss: inspect native history and return the prior final
 answer if already complete; do not repeat completed work. `await` does not
 reconnect to the background service. Process-interruption steering is unavailable.
+
+Eligible OpenCode delegates automatically resume a structured HTTP 429 up to
+three times per lineage with growing jittered backoff, or send one follow-up
+when a stopped turn has no final text. The owner waits for the child to exit
+and keeps the same native session and model. Use the original ID with
+`delegate --wait`, `await`, `status` or `result`; JSON reports the ordered
+`recovery_chain`, and `--content` returns the final answer. Pending recovery
+shows up as waiting. Same-key replay observes that chain. Terminal failure
+still exits 11. Set `delegation.opencode_rate_limit_retry` or
+`delegation.opencode_final_answer_followup` to false to turn off either path.
 
 For a harness with no verified resume route, choose an explicit carry-forward
 round. The same choice is available for resumable harnesses when a fresh session
@@ -509,7 +519,7 @@ Native owners flag outstanding children on terminal execution/outcome with
 `uncollected_children`, exact `collect_argv`, and a warning. Completed parents
 with a frozen recipe and verified native resume route receive one automatic
 collection turn using ordinary keyed `continue` admission. The successor carries
-`auto_continuation_of`, preventing recursive automatic turns. OpenCode 2.2.6 may use #150's verified background-service recipe with version
+`auto_continuation_of`, preventing recursive automatic turns. OpenCode 2.2.6 and 2.3.2 may use #150's verified background-service recipe with version
 and session-existence checks; other non-resumable routes stay flagged in `inbox`. Hermes remains
 unverified and Devin ACP must advertise session loading. Cancelled/timed-out
 parents never auto-continue; childless runs do not change. A profile's
@@ -738,7 +748,8 @@ at most 200 characters, native code) to status, result, and a failed
 ZCode provider code `1308` and parsed HTTP `responseStatus: 429` qualify and may
 include the provider reset time. OpenCode's structured numeric `error.status: 429`
 also qualifies and records attempt/delay/provider-type metadata on `rate_limit`
-in `status` and `await` outcome details. A bare native/provider code `429` is not HTTP
+in `status` and `await` outcome details. Its failure message identifies HTTP
+429 and advises waiting before retrying with the same model. A bare native/provider code `429` is not HTTP
 evidence. Authentication is classified before capacity; generic usage-limit,
 quota and rate-limit wording is `quota_exceeded`. Raw stderr transcripts and
 request/trace identifiers are not stored. Explicit `result` is the supported
