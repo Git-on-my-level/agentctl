@@ -330,7 +330,8 @@ func samePoolCandidates(pools map[string]config.CapacityPool, names []string) bo
 
 func poolCandidateRuns(candidate config.CapacityCandidate, entry delegation.Entry) bool {
 	harness, err := launchrecipe.CanonicalHarness(candidate.Harness)
-	return err == nil && harness == entry.Harness && strings.TrimSpace(candidate.Model) == entry.Model
+	// Resolve trims catalog model IDs, so compare them the same way.
+	return err == nil && harness == entry.Harness && strings.TrimSpace(candidate.Model) == strings.TrimSpace(entry.Model)
 }
 
 // inferredPoolDefaulted reports what the caller left out. A pool candidate's

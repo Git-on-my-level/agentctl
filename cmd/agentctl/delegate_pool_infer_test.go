@@ -311,3 +311,15 @@ func TestRemoteModelSelectorKeepsTheRemotelyInferredPool(t *testing.T) {
 		t.Fatalf("requested=%s capacity=%+v", e.Delegation.Requested, e.Delegation.Capacity)
 	}
 }
+
+// Resolve trims catalog model IDs, so a padded catalog or pool model must
+// still match its pool rather than silently take the default account.
+func TestPoolCandidateRunsIgnoresModelPadding(t *testing.T) {
+	candidate := config.CapacityCandidate{Harness: "cursor", Model: " cursor-grok-4.6-high "}
+	if !poolCandidateRuns(candidate, delegation.Entry{Harness: "cursor", Model: "cursor-grok-4.6-high  "}) {
+		t.Fatal("padded model IDs did not match")
+	}
+	if poolCandidateRuns(candidate, delegation.Entry{Harness: "cursor", Model: "cursor-grok-4.7-high"}) {
+		t.Fatal("a different model matched")
+	}
+}
