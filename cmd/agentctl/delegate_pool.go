@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Git-on-my-level/agentctl/internal/capacity"
@@ -20,8 +21,8 @@ import (
 // recentLaunchScanLimit bounds the journal read a pool does before launching.
 const recentLaunchScanLimit = 3 * time.Second
 
-// poolSelection is one pool's outcome. The zero value means no pool was named,
-// so a request naming a family or model takes today's path unchanged.
+// poolSelection is one pool's outcome. The zero value means no pool was named
+// or inferred, so a request naming a family or model takes the default account.
 type poolSelection struct {
 	resolution delegation.Resolution
 	executable string
@@ -219,4 +220,123 @@ func pooledJournalSelector(requested delegation.Selector, selected delegation.En
 		journaled.Settings = &settings
 	}
 	return journaled
+}
+
+// poolInference is the outcome of matching a family or model request to a
+// pool. An empty pool means the request keeps its catalog resolution.
+type poolInference struct {
+	pool     string
+	from     string
+	warnings []output.Warning
+}
+
+// inferDelegatePool finds the one pool whose candidates all run the harness and
+// model a family or model request resolved to, so the account is chosen by
+// capacity just as if selector.pool had been given. No match changes nothing.
+// A match it cannot honour exactly, because several pools hold the model, the
+// pool mixes models, or the request pins a setting a candidate decides
+// differently, keeps the default account and warns rather than guessing.
+func inferDelegatePool(profile config.Profile, selector delegation.Selector, resolution delegation.Resolution) poolInference {
+	if profile.Capacity == nil || len(profile.Capacity.Pools) == 0 {
+		return poolInference{}
+	}
+	got := resolution.Resolved
+	var matched []string
+	for name, pool := range profile.Capacity.Pools {
+		for _, candidate := range pool.Candidates {
+			if poolCandidateRuns(candidate, got) {
+				matched = append(matched, name)
+				break
+			}
+		}
+	}
+	if len(matched) == 0 {
+		return poolInference{}
+	}
+	sort.Strings(matched)
+	from := model.CapacityInferredFromFamily
+	if strings.TrimSpace(selector.Model) != "" {
+		from = model.CapacityInferredFromModel
+	}
+	details := map[string]any{"harness": got.Harness, "model": got.Model, "pools": matched, "inferred_from": from}
+	if len(matched) > 1 {
+		return poolInference{warnings: []output.Warning{{Code: "capacity_pool_inference_ambiguous",
+			Message: "the resolved model is in more than one capacity pool, so the default account will run; name selector.pool to choose an account by capacity", Details: details}}}
+	}
+	name := matched[0]
+	conflict := func(reason, field string) poolInference {
+		details["pool"] = name
+		details["reason"] = reason
+		if field != "" {
+			details["field"] = field
+		}
+		return poolInference{warnings: []output.Warning{{Code: "capacity_pool_inference_conflict",
+			Message: "the resolved model is in a capacity pool that cannot honour this request exactly, so the default account will run", Details: details}}}
+	}
+	var pinned delegation.Settings
+	if selector.Settings != nil {
+		pinned = *selector.Settings
+	}
+	entries := delegateEntries(profile)
+	viable := 0
+	for _, candidate := range profile.Capacity.Pools[name].Candidates {
+		if !poolCandidateRuns(candidate, got) {
+			return conflict("pool_mixes_models", "model")
+		}
+		candidateResolution, err := resolvePoolCandidate(candidate, entries)
+		if err != nil {
+			// Pool selection skips it with capacity_candidate_unresolved.
+			continue
+		}
+		viable++
+		chosen := candidateResolution.Resolved
+		for _, check := range []struct{ field, want, have, gotValue string }{
+			{"settings.effort", pinned.Effort, chosen.Effort, got.Effort},
+			{"settings.speed", pinned.Speed, chosen.Speed, got.Speed},
+			{"family", selector.Family, chosen.Family, got.Family},
+			{"version", selector.Version, chosen.Version, got.Version},
+		} {
+			if strings.TrimSpace(check.want) != "" && !strings.EqualFold(strings.TrimSpace(check.have), strings.TrimSpace(check.gotValue)) {
+				return conflict("pinned_setting", check.field)
+			}
+		}
+	}
+	if viable == 0 {
+		return conflict("no_resolvable_candidate", "")
+	}
+	return poolInference{pool: name, from: from}
+}
+
+func poolCandidateRuns(candidate config.CapacityCandidate, entry delegation.Entry) bool {
+	harness, err := launchrecipe.CanonicalHarness(candidate.Harness)
+	return err == nil && harness == entry.Harness && strings.TrimSpace(candidate.Model) == entry.Model
+}
+
+// inferredPoolDefaulted reports what the caller left out. A pool candidate's
+// own resolution starts from harness and model, so it never marks those, and a
+// field the caller pinned stays caller-supplied.
+func inferredPoolDefaulted(requested delegation.Resolution, chosen delegation.Resolution) []string {
+	pinned := map[string]bool{}
+	for _, field := range []struct {
+		name  string
+		value string
+	}{{"harness", requested.Requested.Harness}, {"family", requested.Requested.Family}, {"version", requested.Requested.Version}, {"model", requested.Requested.Model}} {
+		pinned[field.name] = strings.TrimSpace(field.value) != ""
+	}
+	if settings := requested.Requested.Settings; settings != nil {
+		pinned["speed"] = strings.TrimSpace(settings.Speed) != ""
+		pinned["effort"] = strings.TrimSpace(settings.Effort) != ""
+	}
+	fields := append([]string(nil), requested.Defaulted...)
+	seen := map[string]bool{}
+	for _, field := range fields {
+		seen[field] = true
+	}
+	for _, field := range chosen.Defaulted {
+		if !seen[field] && !pinned[field] {
+			fields = append(fields, field)
+			seen[field] = true
+		}
+	}
+	return fields
 }

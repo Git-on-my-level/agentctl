@@ -24,7 +24,9 @@ type Selector struct {
 	Model   string `json:"model,omitempty"`
 	Host    string `json:"host,omitempty"`
 	// Pool names a configured candidate list, as an alternative to Family or
-	// Model. Naming a family or model never falls over to a pool.
+	// Model. The delegate command may also route a family or model through
+	// the one pool that runs exactly that harness and model; this package
+	// never does.
 	Pool     string    `json:"pool,omitempty"`
 	Settings *Settings `json:"settings,omitempty"`
 }

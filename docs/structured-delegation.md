@@ -233,8 +233,28 @@ do not automatically weaken a failed structured request into an expert launch.
 
 A pool lets `delegate` choose an account from plan usage, so a caller can ask for
 work rather than for a model. Request it with `{"pool":"work"}` in place of a
-family or model. A request naming a family or model never takes a pool, and pool
-requests refuse harness, family, version, model, speed and effort.
+family or model. Pool requests refuse harness, family, version, model, speed and
+effort.
+
+A family or model request is also routed through a pool when its resolved
+harness and model appear in exactly one pool and every candidate of that pool
+runs that harness and model. The account is then chosen by capacity exactly as
+if `selector.pool` had been given, and `capacity.inferred_from` records `model`
+or `family`. The stored selector is the request as written. Otherwise the
+request keeps its catalog resolution and the default executable:
+
+- no pool runs the model: nothing changes and nothing warns;
+- several pools run it: warning `capacity_pool_inference_ambiguous` lists them;
+  name `selector.pool` to choose;
+- the one pool also runs other models, the request pins `settings.effort`,
+  `settings.speed`, `family` or `version` that a candidate resolves differently,
+  or no candidate resolves through `agent_preferences`: warning
+  `capacity_pool_inference_conflict` with `pool`, `reason` and `field`.
+
+A remote delegation forwards the request unchanged, so the remote host infers
+from its own pools and its receipt carries the choice. `continue` reuses the
+recorded launch plan, so a follow-up turn stays on the account holding the
+session.
 
 agentctl never measures usage or calls a provider. Another tool publishes a facts
 file (`schemas/capacity-facts.schema.json`), and agentctl reads it at launch:
@@ -299,7 +319,15 @@ triggers legacy selection (`capacity_window_unusable`), which ignores that
 observation. A failed journal scan triggers legacy selection without launch
 debits (`capacity_recent_launches_unread`). If every candidate is over its limit,
 the account with the lowest maximum pressure runs with reason `all_over_threshold`
-and warning `capacity_all_over_threshold`. The refusals are an unknown pool name
+and warning `capacity_all_over_threshold`.
+
+Paid credits are a fallback. An account with any fresh reported window at
+`used_ratio` 1.0 or more, including a window outside the candidate's `windows`
+list, is exhausted. An exhausted account never wins while another candidate is
+eligible: `cutoff_exempt` keeps it eligible only when no other account is, and
+its `considered` entry then reports `eligible: false`. Among candidates that are
+all over their limits, accounts that are not exhausted rank first, so launch
+debits cannot push work onto an exhausted account. The refusals are an unknown pool name
 (`delegate_unknown_pool`) and no candidate matching the allowlist
 (`delegate_pool_no_candidate`).
 

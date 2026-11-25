@@ -444,6 +444,29 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 		if err != nil {
 			return recoverAdmission(mapDelegationError(err, delegateRepairArgv(c, args)))
 		}
+		// A family or model that only one pool runs still chooses its account
+		// by capacity; otherwise every such launch lands on the default login.
+		inferred := inferDelegatePool(profile, selector, resolution)
+		renderer = renderer.WithWarnings(inferred.warnings...)
+		if inferred.pool != "" {
+			poolSelector := selector
+			poolSelector.Pool = inferred.pool
+			chosen, poolProblem := a.selectDelegatePool(ctx, c, profile, poolSelector)
+			if poolProblem != nil {
+				// Inference already checked the pool; keep the catalog
+				// resolution rather than refuse a launch that named a model.
+				renderer = renderer.WithWarnings(output.Warning{Code: "capacity_pool_inference_conflict",
+					Message: "the inferred capacity pool could not choose an account, so the default account will run", Details: map[string]any{"pool": inferred.pool, "reason": "selection_failed", "inferred_from": inferred.from}})
+			} else {
+				pool = chosen
+				pool.capacity.InferredFrom = inferred.from
+				defaulted := inferredPoolDefaulted(resolution, pool.resolution)
+				resolution = pool.resolution
+				resolution.Requested = selector
+				resolution.Defaulted = defaulted
+				renderer = renderer.WithWarnings(pool.warnings...)
+			}
+		}
 	}
 	if opts.authority == "multica" {
 		return recoverAdmission(multicaDelegationUnavailable(host))
