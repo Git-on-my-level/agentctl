@@ -131,7 +131,9 @@ func TestModelInTwoPoolsKeepsDefaultAccountAndWarns(t *testing.T) {
 	f.writeFacts(t, map[string]float64{"account-a": 1.0, "account-b": 0.1})
 	f.updateCapacity(t, func(c map[string]any) {
 		pools := c["pools"].(map[string]any)
-		pools["review"] = pools["work"]
+		// A second pool holding the model with a different candidate list.
+		work := pools["work"].(map[string]any)["candidates"].([]any)
+		pools["review"] = map[string]any{"candidates": []any{work[0]}}
 	})
 	f.selectRequest(t, `{"model":"cursor-grok-4.6-high"}`)
 	code, out := f.invoke("work", "--wait")
@@ -144,6 +146,22 @@ func TestModelInTwoPoolsKeepsDefaultAccountAndWarns(t *testing.T) {
 	}
 	if codes := warningCodes(document.Warnings); codes != "capacity_pool_inference_ambiguous" || !strings.Contains(out, `"pools":["review","work"]`) {
 		t.Fatalf("warnings=%s out=%s", codes, out)
+	}
+}
+
+// ui and council both run Opus on the same Claude accounts: pools with
+// identical candidate lists choose alike, so the model still routes by capacity.
+func TestModelInIdenticalPoolsStillInfers(t *testing.T) {
+	f := newPoolFixture(t)
+	f.writeFacts(t, map[string]float64{"account-a": 1.0, "account-b": 0.1})
+	f.updateCapacity(t, func(c map[string]any) {
+		pools := c["pools"].(map[string]any)
+		pools["review"] = pools["work"]
+	})
+	f.selectRequest(t, `{"model":"cursor-grok-4.6-high"}`)
+	capacity, warnings := f.plan(t)
+	if capacity["pool"] != "review" || capacity["account"] != "account-b" || capacity["inferred_from"] != "model" || len(warnings) != 0 {
+		t.Fatalf("capacity=%v warnings=%v", capacity, warnings)
 	}
 }
 

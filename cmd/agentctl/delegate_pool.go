@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -259,7 +261,10 @@ func inferDelegatePool(profile config.Profile, selector delegation.Selector, res
 		from = model.CapacityInferredFromModel
 	}
 	details := map[string]any{"harness": got.Harness, "model": got.Model, "pools": matched, "inferred_from": from}
-	if len(matched) > 1 {
+	// Pools with identical candidate lists choose the same account, so holding
+	// the model in several of them (ui and council both run Opus on the same
+	// two Claude accounts) is not ambiguous: the first by name stands for all.
+	if len(matched) > 1 && !samePoolCandidates(profile.Capacity.Pools, matched) {
 		return poolInference{warnings: []output.Warning{{Code: "capacity_pool_inference_ambiguous",
 			Message: "the resolved model is in more than one capacity pool, so the default account will run; name selector.pool to choose an account by capacity", Details: details}}}
 	}
@@ -305,6 +310,22 @@ func inferDelegatePool(profile config.Profile, selector delegation.Selector, res
 		return conflict("no_resolvable_candidate", "")
 	}
 	return poolInference{pool: name, from: from}
+}
+
+// samePoolCandidates reports whether every named pool lists exactly the same
+// candidates in the same order, so selection among them cannot differ.
+func samePoolCandidates(pools map[string]config.CapacityPool, names []string) bool {
+	first, err := json.Marshal(pools[names[0]].Candidates)
+	if err != nil {
+		return false
+	}
+	for _, name := range names[1:] {
+		other, err := json.Marshal(pools[name].Candidates)
+		if err != nil || !bytes.Equal(first, other) {
+			return false
+		}
+	}
+	return true
 }
 
 func poolCandidateRuns(candidate config.CapacityCandidate, entry delegation.Entry) bool {
