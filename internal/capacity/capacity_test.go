@@ -47,10 +47,60 @@ func TestHeadroomFloorExcludesNearlyFullAccount(t *testing.T) {
 }
 
 func TestExemptRunsPastLimit(t *testing.T) {
-	choice := Select(input(factsWith(weekly("a", 1.4), weekly("b", 0)),
+	choice := Select(input(factsWith(weekly("a", 1.4), weekly("b", 0.99)),
 		Candidate{Account: "a", Exempt: true, Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95}))
-	if !choice.Evaluations[0].Eligible {
+	if choice.Index != 0 || !choice.Evaluations[0].Eligible || choice.Reason == ReasonAllOverThreshold {
 		t.Fatalf("choice=%+v", choice)
+	}
+}
+
+// Paid credits are only a fallback: an account at or past a window limit never
+// wins while another account is below its threshold, even when cutoff_exempt
+// makes it eligible and its reset is sooner.
+func TestExhaustedAccountNeverBeatsOneWithRoom(t *testing.T) {
+	soon, late := testNow.Add(time.Hour), testNow.Add(150*time.Hour)
+	full := Account{ID: "a", Windows: []Window{{Name: "weekly", UsedRatio: 1.0, ResetsAt: &soon}}}
+	room := Account{ID: "b", Windows: []Window{{Name: "weekly", UsedRatio: 0.28, ResetsAt: &late}}}
+	for _, policy := range []Policy{ModeSoonestReset, ModeDrainBeforeReset} {
+		for _, exempt := range []bool{false, true} {
+			in := input(factsWith(full, room), Candidate{Account: "a", Exempt: exempt, Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95})
+			in.Policy, in.Epsilon, in.ExpectedCost = policy, 0.03, 0.01
+			choice := Select(in)
+			if choice.Index != 1 || choice.Evaluations[0].Eligible || !choice.Evaluations[0].Exhausted || choice.Reason == ReasonAllOverThreshold {
+				t.Fatalf("policy=%s exempt=%v choice=%+v", policy, exempt, choice)
+			}
+		}
+	}
+}
+
+// A window the candidate does not rank by still marks the account exhausted.
+func TestExhaustionCountsWindowsOutsideTheRankingList(t *testing.T) {
+	soon, late := testNow.Add(time.Hour), testNow.Add(150*time.Hour)
+	full := Account{ID: "a", Windows: []Window{{Name: "5h", UsedRatio: 0.1, ResetsAt: &soon}, {Name: "weekly", UsedRatio: 1.0, ResetsAt: &late}}}
+	room := Account{ID: "b", Windows: []Window{{Name: "5h", UsedRatio: 0.5, ResetsAt: &late}}}
+	choice := Select(input(factsWith(full, room), Candidate{Account: "a", Windows: []string{"5h"}, Exempt: true, Threshold: 0.95}, Candidate{Account: "b", Windows: []string{"5h"}, Threshold: 0.95}))
+	if choice.Index != 1 {
+		t.Fatalf("choice=%+v", choice)
+	}
+}
+
+// When nothing has room, launch debits must not move work onto an account
+// that is already exhausted; only when all are exhausted does the least-used run.
+func TestAllOverThresholdPrefersAccountsNotExhausted(t *testing.T) {
+	full := weekly("a", 1.0)
+	nearly := weekly("b", 0.95)
+	running := []Launch{{Account: "b"}, {Account: "b"}, {Account: "b"}, {Account: "b"}}
+	for _, policy := range []Policy{ModeSoonestReset, ModeDrainBeforeReset} {
+		in := input(factsWith(full, nearly), Candidate{Account: "a", Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95})
+		in.Policy, in.Epsilon, in.ExpectedCost, in.Launches = policy, 0.03, 0.01, running
+		choice := Select(in)
+		if choice.Index != 1 || choice.Reason != ReasonAllOverThreshold {
+			t.Fatalf("policy=%s choice=%+v", policy, choice)
+		}
+	}
+	in := input(factsWith(weekly("a", 1.2), weekly("b", 1.0)), Candidate{Account: "a", Threshold: 0.95}, Candidate{Account: "b", Threshold: 0.95})
+	if choice := Select(in); choice.Index != 1 || choice.Reason != ReasonAllOverThreshold {
+		t.Fatalf("all exhausted choice=%+v", choice)
 	}
 }
 
