@@ -148,9 +148,12 @@ profile or pool restores the legacy limiting-window reset and 5% headroom below
 `switch_threshold` (default 0.95). Unusable facts, a window observation outside
 the freshness bounds, or an unreadable journal make the default policy fall back
 to `soonest_reset` with a warning. If every candidate is over its limit, the
-least-used account runs. Never combine a pool with harness,
-family, version, model, speed or effort, and never use a pool when the user named
-a model.
+least-used account runs, with exhausted accounts last. Never combine a pool with
+harness, family, version, model, speed or effort. When the user named a model,
+name the model: if exactly one pool runs it, agentctl chooses the account by
+capacity and records `capacity.inferred_from`; warnings
+`capacity_pool_inference_ambiguous` or `capacity_pool_inference_conflict` mean
+the default account ran.
 Labels are command metadata: pass `--label <value>` (repeatable) to `delegate`,
 never as request fields. Accounts are not selectable; a request that names one is
 refused with a repair to `pool` or an exact model.

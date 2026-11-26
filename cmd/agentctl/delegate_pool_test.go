@@ -409,19 +409,6 @@ func TestPoolCannotWidenTheAllowlist(t *testing.T) {
 	}
 }
 
-func TestNamingAModelIgnoresPools(t *testing.T) {
-	f := newPoolFixture(t)
-	f.writeFacts(t, map[string]float64{"account-a": 0.9, "account-b": 0.1})
-	f.selectRequest(t, `{"family":"grok"}`)
-	code, out := f.invoke("work", "--plan")
-	if code != 0 {
-		t.Fatalf("exit=%d %s", code, out)
-	}
-	if strings.Contains(out, `"capacity"`) || strings.Contains(out, "account-b") {
-		t.Fatalf("named model took a pool: %s", out)
-	}
-}
-
 func TestPoolCandidateEffortCountsAsDefaulted(t *testing.T) {
 	entries := []delegation.Entry{{Harness: "zcode", Model: "m", Effort: "high"}, {Harness: "zcode", Model: "m", Effort: "low"}}
 	resolution, err := resolvePoolCandidate(config.CapacityCandidate{Harness: "zcode", Model: "m", Effort: "high", Account: "a"}, entries)
@@ -430,18 +417,6 @@ func TestPoolCandidateEffortCountsAsDefaulted(t *testing.T) {
 	}
 	if resolution.Resolved.Effort != "high" || !strings.Contains(strings.Join(resolution.Defaulted, ","), "effort") {
 		t.Fatalf("resolution=%+v", resolution)
-	}
-}
-
-func TestPoolDoesNotAddCapacityToNamedModelResults(t *testing.T) {
-	f := newPoolFixture(t)
-	f.selectRequest(t, `{"family":"grok"}`)
-	code, out := f.invoke("work", "--wait")
-	if code != 0 {
-		t.Fatalf("exit=%d %s", code, out)
-	}
-	if strings.Contains(out, `"capacity"`) {
-		t.Fatalf("named model result gained capacity: %s", out)
 	}
 }
 

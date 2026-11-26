@@ -226,7 +226,7 @@ func misplacedFieldRepair(path, name string) (fieldRepair, bool) {
 		return fieldRepair{suggestion: "labels are not request fields: pass them with --label <value> on the delegate command (repeatable)",
 			flag: "--label", flagValue: "<label>"}, true
 	case (path == "$" || path == "$.selector") && name == "account":
-		return fieldRepair{suggestion: "accounts are not selectable in a request: accounts come from a capacity pool, so use {\"pool\":\"<name>\"} for capacity-balanced selection, or name a model with $.selector.model",
+		return fieldRepair{suggestion: "accounts are not selectable in a request: accounts come from a capacity pool, so use {\"pool\":\"<name>\"} for capacity-balanced selection, or name a model with $.selector.model (a model that exactly one pool runs is capacity-balanced too)",
 			target:  "$.selector.pool",
 			example: &Request{SchemaVersion: 1, RequestKey: "<unique-request-key>", Selector: Selector{Pool: "<configured-pool>"}}}, true
 	case path == "$":

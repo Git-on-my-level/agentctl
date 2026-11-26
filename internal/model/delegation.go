@@ -54,7 +54,17 @@ type DelegationCapacity struct {
 	FactsStatus     string               `json:"facts_status"`
 	FactsAgeSeconds *int64               `json:"facts_age_seconds,omitempty"`
 	Considered      []CapacityEvaluation `json:"considered"`
+	// InferredFrom is set when the request named no pool: "model" or
+	// "family" says which selector field resolved into the pool's only
+	// harness and model. Older binaries ignore it.
+	InferredFrom string `json:"inferred_from,omitempty"`
 }
+
+// Values for DelegationCapacity.InferredFrom.
+const (
+	CapacityInferredFromModel  = "model"
+	CapacityInferredFromFamily = "family"
+)
 
 // CapacityEvaluation is one candidate as it looked at selection time. UsedRatio
 // is absent when usage was unknown. RecentLaunches counts running work and
@@ -73,6 +83,9 @@ type CapacityEvaluation struct {
 func (c DelegationCapacity) validate() error {
 	if len(c.Considered) == 0 || len(c.Considered) > 16 {
 		return errors.New("invalid delegation capacity")
+	}
+	if c.InferredFrom != "" && c.InferredFrom != CapacityInferredFromModel && c.InferredFrom != CapacityInferredFromFamily {
+		return errors.New("invalid delegation capacity inference")
 	}
 	values := []string{c.Pool, c.Mode, c.Account, c.Reason, c.FactsStatus}
 	for _, considered := range c.Considered {

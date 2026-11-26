@@ -63,15 +63,18 @@ type Input struct {
 // Evaluation explains how one candidate looked at selection time. Pressure is
 // the used ratio plus the debit for recent launches, the figure eligibility uses.
 type Evaluation struct {
-	Account         string
-	UsageKnown      bool
-	UsedRatio       float64
-	Window          string
-	ResetsAt        *time.Time
-	Threshold       float64
-	Exempt          bool
-	Eligible        bool
-	RecentLaunches  int
+	Account        string
+	UsageKnown     bool
+	UsedRatio      float64
+	Window         string
+	ResetsAt       *time.Time
+	Threshold      float64
+	Exempt         bool
+	Eligible       bool
+	RecentLaunches int
+	// Exhausted means a fresh observation reports a window at or past its
+	// limit, where further work can spend paid credits.
+	Exhausted       bool
 	pressure        float64
 	drainPressure   *big.Rat
 	rankingReset    *time.Time
@@ -112,6 +115,16 @@ func Select(input Input) Choice {
 		if evaluation.Eligible {
 			eligible = append(eligible, i)
 		}
+	}
+	// Paid credits are a fallback. An exhausted account stays eligible only
+	// through cutoff_exempt, and then only when no account with room is.
+	if withRoom := slices.DeleteFunc(slices.Clone(eligible), func(i int) bool { return evaluations[i].Exhausted }); len(withRoom) != 0 && len(withRoom) != len(eligible) {
+		for _, i := range eligible {
+			if evaluations[i].Exhausted {
+				evaluations[i].Eligible = false
+			}
+		}
+		eligible = withRoom
 	}
 	if len(eligible) == 0 {
 		choice.Index, choice.Reason = leastUsed(evaluations), ReasonAllOverThreshold
@@ -181,15 +194,15 @@ func evaluate(candidate Candidate, input Input, budget *drainBudget) Evaluation 
 				continue
 			}
 			for _, window := range account.Windows {
-				if !drain && !limits(candidate.Windows, window.Name) {
-					continue
-				}
+				limiting := drain || limits(candidate.Windows, window.Name)
 				observed := input.Facts.GeneratedAt
 				if window.ObservedAt != nil {
 					observed = *window.ObservedAt
 				}
 				if input.Now.Sub(observed) > input.MaxAge || observed.After(input.Now.Add(maxClockSkew)) {
-					evaluation.unusableWindow = true
+					if limiting {
+						evaluation.unusableWindow = true
+					}
 					continue
 				}
 				ratio, resets := window.UsedRatio, window.ResetsAt
@@ -199,6 +212,14 @@ func evaluate(candidate Candidate, input Input, budget *drainBudget) Evaluation 
 						observed = *resets
 					}
 					resets = nil
+				}
+				// Any fresh window at its limit means further work may spend
+				// paid credits, whichever windows the candidate ranks by.
+				if ratio >= 1 {
+					evaluation.Exhausted = true
+				}
+				if !limiting {
+					continue
 				}
 				// A small tolerated clock skew must not erase reservations for
 				// launches that have not happened at selection time.
@@ -298,8 +319,9 @@ func soonestReset(evaluations []Evaluation, indexes []int) int {
 	return ranked[0]
 }
 
-// leastUsed picks the lowest pressure, with unknown usage last. It runs only
-// when every candidate is over its limit.
+// leastUsed picks the lowest pressure, with exhausted accounts and then unknown
+// usage last. It runs only when every candidate is over its limit, so launch
+// debits never push work onto an account already at its limit.
 func leastUsed(evaluations []Evaluation) int {
 	ranked := make([]int, len(evaluations))
 	for i := range ranked {
@@ -307,6 +329,9 @@ func leastUsed(evaluations []Evaluation) int {
 	}
 	sort.SliceStable(ranked, func(i, j int) bool {
 		a, b := evaluations[ranked[i]], evaluations[ranked[j]]
+		if a.Exhausted != b.Exhausted {
+			return b.Exhausted
+		}
 		if a.UsageKnown != b.UsageKnown {
 			return a.UsageKnown
 		}
