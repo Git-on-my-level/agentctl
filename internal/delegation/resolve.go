@@ -129,6 +129,9 @@ func collapseEntries(entries []Entry) []Entry {
 	return out
 }
 
+// DefaultedFields lists the tuple fields got supplies that sel left out.
+func DefaultedFields(sel Selector, got Entry) []string { return defaultedFields(sel, got) }
+
 func defaultedFields(sel Selector, got Entry) []string {
 	var fields []string
 	if strings.TrimSpace(sel.Harness) == "" && strings.TrimSpace(got.Harness) != "" {

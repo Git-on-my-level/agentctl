@@ -264,7 +264,7 @@ func inferDelegatePool(profile config.Profile, selector delegation.Selector, res
 	// Pools with identical candidate lists choose the same account, so holding
 	// the model in several of them (ui and council both run Opus on the same
 	// two Claude accounts) is not ambiguous: the first by name stands for all.
-	if len(matched) > 1 && !samePoolCandidates(profile.Capacity.Pools, matched) {
+	if len(matched) > 1 && !samePoolSelection(*profile.Capacity, matched) {
 		return poolInference{warnings: []output.Warning{{Code: "capacity_pool_inference_ambiguous",
 			Message: "the resolved model is in more than one capacity pool, so the default account will run; name selector.pool to choose an account by capacity", Details: details}}}
 	}
@@ -312,16 +312,25 @@ func inferDelegatePool(profile config.Profile, selector delegation.Selector, res
 	return poolInference{pool: name, from: from}
 }
 
-// samePoolCandidates reports whether every named pool lists exactly the same
-// candidates in the same order, so selection among them cannot differ.
-func samePoolCandidates(pools map[string]config.CapacityPool, names []string) bool {
-	first, err := json.Marshal(pools[names[0]].Candidates)
+// samePoolSelection reports whether every named pool lists exactly the same
+// candidates in the same order under the same effective policy, so selection
+// among them cannot differ. An unset policy runs as drain_before_reset.
+func samePoolSelection(c config.Capacity, names []string) bool {
+	effective := func(pool config.CapacityPool) capacity.Policy {
+		if c.PoolPolicy(pool) == capacity.ModeSoonestReset {
+			return capacity.ModeSoonestReset
+		}
+		return capacity.ModeDrainBeforeReset
+	}
+	firstPool := c.Pools[names[0]]
+	first, err := json.Marshal(firstPool.Candidates)
 	if err != nil {
 		return false
 	}
 	for _, name := range names[1:] {
-		other, err := json.Marshal(pools[name].Candidates)
-		if err != nil || !bytes.Equal(first, other) {
+		pool := c.Pools[name]
+		other, err := json.Marshal(pool.Candidates)
+		if err != nil || !bytes.Equal(first, other) || effective(pool) != effective(firstPool) {
 			return false
 		}
 	}
@@ -332,33 +341,4 @@ func poolCandidateRuns(candidate config.CapacityCandidate, entry delegation.Entr
 	harness, err := launchrecipe.CanonicalHarness(candidate.Harness)
 	// Resolve trims catalog model IDs, so compare them the same way.
 	return err == nil && harness == entry.Harness && strings.TrimSpace(candidate.Model) == strings.TrimSpace(entry.Model)
-}
-
-// inferredPoolDefaulted reports what the caller left out. A pool candidate's
-// own resolution starts from harness and model, so it never marks those, and a
-// field the caller pinned stays caller-supplied.
-func inferredPoolDefaulted(requested delegation.Resolution, chosen delegation.Resolution) []string {
-	pinned := map[string]bool{}
-	for _, field := range []struct {
-		name  string
-		value string
-	}{{"harness", requested.Requested.Harness}, {"family", requested.Requested.Family}, {"version", requested.Requested.Version}, {"model", requested.Requested.Model}} {
-		pinned[field.name] = strings.TrimSpace(field.value) != ""
-	}
-	if settings := requested.Requested.Settings; settings != nil {
-		pinned["speed"] = strings.TrimSpace(settings.Speed) != ""
-		pinned["effort"] = strings.TrimSpace(settings.Effort) != ""
-	}
-	fields := append([]string(nil), requested.Defaulted...)
-	seen := map[string]bool{}
-	for _, field := range fields {
-		seen[field] = true
-	}
-	for _, field := range chosen.Defaulted {
-		if !seen[field] && !pinned[field] {
-			fields = append(fields, field)
-			seen[field] = true
-		}
-	}
-	return fields
 }

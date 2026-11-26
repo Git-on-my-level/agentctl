@@ -237,15 +237,15 @@ family or model. Pool requests refuse harness, family, version, model, speed and
 effort.
 
 A family or model request is also routed through a pool when its resolved
-harness and model appear in exactly one pool (or in several pools whose
-candidate lists are identical, which choose alike; the first by name is
-recorded) and every candidate of that pool runs that harness and model. The account is then chosen by capacity exactly as
+harness and model appear in exactly one pool (or in several pools with
+identical candidate lists and the same effective policy, which choose alike;
+the first by name is recorded) and every candidate of that pool runs that harness and model. The account is then chosen by capacity exactly as
 if `selector.pool` had been given, and `capacity.inferred_from` records `model`
 or `family`. The stored selector is the request as written. Otherwise the
 request keeps its catalog resolution and the default executable:
 
 - no pool runs the model: nothing changes and nothing warns;
-- several pools with different candidates run it: warning
+- several pools with different candidates or policies run it: warning
   `capacity_pool_inference_ambiguous` lists them;
   name `selector.pool` to choose;
 - the one pool also runs other models, the request pins `settings.effort`,

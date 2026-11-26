@@ -323,3 +323,77 @@ func TestPoolCandidateRunsIgnoresModelPadding(t *testing.T) {
 		t.Fatal("a different model matched")
 	}
 }
+
+// Identical candidate lists under different effective policies can choose
+// different accounts, so they stay ambiguous. An unset policy and an explicit
+// drain_before_reset are the same policy.
+func TestIdenticalPoolsWithDifferentPoliciesStayAmbiguous(t *testing.T) {
+	for _, tc := range []struct {
+		name, policy string
+		ambiguous    bool
+	}{
+		{"soonest_reset differs", "soonest_reset", true},
+		{"explicit default matches unset", "drain_before_reset", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPoolFixture(t)
+			f.writeFacts(t, map[string]float64{"account-a": 1.0, "account-b": 0.1})
+			f.updateCapacity(t, func(c map[string]any) {
+				pools := c["pools"].(map[string]any)
+				pools["review"] = map[string]any{"policy": tc.policy, "candidates": pools["work"].(map[string]any)["candidates"]}
+			})
+			f.selectRequest(t, `{"model":"cursor-grok-4.6-high"}`)
+			if tc.ambiguous {
+				code, out := f.invoke("work", "--plan")
+				document := decodeDelegateDocument(t, out)
+				if code != 0 || document.Result.Capacity != nil || warningCodes(document.Warnings) != "capacity_pool_inference_ambiguous" {
+					t.Fatalf("exit=%d %s", code, out)
+				}
+				return
+			}
+			capacity, warnings := f.plan(t)
+			if capacity["pool"] != "review" || capacity["account"] != "account-b" || len(warnings) != 0 {
+				t.Fatalf("capacity=%v warnings=%v", capacity, warnings)
+			}
+		})
+	}
+}
+
+// The alias resolves to a catalog entry with a speed default, but the pool
+// candidate runs the plain entry, which sets none. The record must describe
+// the tuple that runs, so the catalog's default is not carried into it.
+func TestInferredLaunchRecordsDefaultsOfTheTupleThatRuns(t *testing.T) {
+	f := newPoolFixture(t)
+	f.writeFacts(t, map[string]float64{"account-a": 1.0, "account-b": 0.1})
+	f.updateProfile(t, func(profile map[string]any) {
+		prefs := profile["agent_preferences"].(map[string]any)
+		plain := prefs["preferred"].([]any)[0].(map[string]any)
+		alias := map[string]any{}
+		for k, v := range plain {
+			alias[k] = v
+		}
+		delete(plain, "speed")
+		delete(alias, "default")
+		alias["use_for"] = "alias:analysis"
+		prefs["preferred"] = []any{plain, alias}
+	})
+	f.selectRequest(t, `{"family":"analysis"}`)
+	code, out := f.invoke("work", "--plan")
+	document := decodeDelegateDocument(t, out)
+	if code != 0 || document.Result.Capacity == nil || document.Result.Capacity.Pool != "work" || document.Result.Capacity.Account != "account-b" {
+		t.Fatalf("exit=%d %s", code, out)
+	}
+	var plan struct {
+		Result struct {
+			Provenance struct {
+				Defaulted []string `json:"defaulted"`
+			} `json:"provenance"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &plan); err != nil || len(plan.Result.Provenance.Defaulted) == 0 {
+		t.Fatalf("no provenance.defaulted (%v): %s", err, out)
+	}
+	if defaulted := strings.Join(plan.Result.Provenance.Defaulted, ","); strings.Contains(defaulted, "speed") {
+		t.Fatalf("catalog speed default leaked into the pooled tuple: %s", defaulted)
+	}
+}

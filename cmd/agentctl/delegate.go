@@ -460,7 +460,9 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 			} else {
 				pool = chosen
 				pool.capacity.InferredFrom = inferred.from
-				defaulted := inferredPoolDefaulted(resolution, pool.resolution)
+				// Defaults come from the request and the tuple that will run, not
+				// the catalog entry the pool replaced.
+				defaulted := delegation.DefaultedFields(selector, pool.resolution.Resolved)
 				resolution = pool.resolution
 				resolution.Requested = selector
 				resolution.Defaulted = defaulted
