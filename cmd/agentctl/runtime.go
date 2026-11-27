@@ -2735,6 +2735,8 @@ func appendNativeEvent(ctx context.Context, journal *store.Journal, execution mo
 			if status, ok := nativeMetadataInt(native.Payload["http_status"]); !ok || status != 429 {
 				next.RateLimit = nil
 			}
+		case "opencode.reasoning":
+			// Reconciliation can emit reasoning for a step that already failed.
 		default:
 			next.RateLimit = nil
 		}

@@ -1259,14 +1259,17 @@ func TestCleanExitWithoutTerminalJournalsExtractionFailure(t *testing.T) {
 	}
 }
 
-func TestAssistantResultSourceAcceptsCursorTerminalAndFallback(t *testing.T) {
-	for _, source := range []string{"assistant", "assistant_terminal_result", "assistant_message_fallback"} {
+func TestAssistantResultSourceAcceptsTerminalAndFallback(t *testing.T) {
+	for _, source := range []string{"assistant", "assistant_terminal_result", "assistant_message_fallback", "assistant_reasoning_fallback"} {
 		if !resultSourceSatisfies(source, "assistant") {
 			t.Fatalf("assistant requirement rejected %q", source)
 		}
 	}
 	if resultSourceSatisfies("terminal_result", "assistant") {
 		t.Fatal("generic terminal result satisfied assistant requirement")
+	}
+	if resultSourceSatisfies("assistant_reasoning_fallback", "assistant_terminal_result") {
+		t.Fatal("reasoning fallback satisfied a normal-text source requirement")
 	}
 }
 

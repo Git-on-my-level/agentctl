@@ -897,11 +897,11 @@ func opencodeAnswerPrefix(value string, remaining int) string {
 	return value
 }
 
-type opencodeJSONParser struct{}
+type opencodeJSONParser struct{ reasoningFallback bool }
 
 func (opencodeJSONParser) Name() string { return "opencode-json" }
 
-func (opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
+func (p opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 	if stderr {
 		return parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "stderr", Data: map[string]any{"stream": "stderr", "structured": false}}
 	}
@@ -926,11 +926,16 @@ func (opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 		obs.Data["part_type"] = boundedString(strings.ToLower(partType), 128)
 	}
 	switch typ {
+	case "step_start":
+		if firstString(part, "type") == "step-start" {
+			obs.openCodeMessageID = firstString(part, "messageID")
+		}
 	case "text":
 		if !opencodeTextPartComplete(part) {
 			break
 		}
 		obs.Data["completed"] = true
+		obs.openCodeMessageID = firstString(part, "messageID")
 		text, _ := part["text"].(string)
 		trimmed := strings.TrimSpace(text)
 		if trimmed == "" {
@@ -940,6 +945,16 @@ func (opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 		obs.ContentType = "text/plain"
 		obs.ContentSource = "assistant"
 		obs.ContentTruncated = len(trimmed) > len(obs.Content)
+	case "reasoning":
+		if !p.reasoningFallback {
+			break
+		}
+		timing, _ := part["time"].(map[string]any)
+		end, _ := opencodeNonnegativeInt(timing["end"])
+		if firstString(part, "type") == "reasoning" && end > 0 && firstString(part, "sessionID") == obs.SessionID {
+			obs.openCodeMessageID = firstString(part, "messageID")
+			obs.openCodeReasoning, _ = part["text"].(string)
+		}
 	case "step_finish":
 		if firstString(part, "type") != "step-finish" {
 			break
@@ -947,6 +962,7 @@ func (opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 		if reason := firstString(part, "reason"); reason != "" {
 			obs.Data["reason"] = boundedString(strings.ToLower(reason), 64)
 		}
+		obs.openCodeMessageID = firstString(part, "messageID")
 		obs.TokenUsage = opencodeTokenUsage(part)
 	case "retry":
 		opencodeProviderEventMetadata(value, obs.Data)

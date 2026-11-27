@@ -232,24 +232,37 @@ meaning.
 
 - Launch `opencode run --format json`; `--model` takes an exact `provider/model`
   ID. Prompt delivery is one positional argument (use `--` before the prompt).
-- Capture only completed `text` parts (`part.type: "text"` with `part.time.end`)
-  from the final step. Require exit 0, nonempty text, and that step's
+- Prefer completed `text` parts (`part.type: "text"` with `part.time.end`)
+  from the final step. Require exit 0, an answer, and that step's
   `step_finish` event (`part.type: "step-finish"`, `part.reason: "stop"`).
   Missing or non-stop finishes fail with `incomplete_terminal_result`; a
-  stopped step without text fails with `empty_terminal_result`. Neither stores
+  stopped step without an answer fails with `empty_terminal_result`. Neither stores
   partial answer content. Error events and nonzero exits remain failures. An
   exit before any OpenCode event, including a zero exit, fails with
   `opencode_exited_before_any_event` unless stderr carried a recognized cause
   (authentication, network, capacity), which keeps its own classification. The
   outcome retains the native exit code and any content-free stderr fingerprint.
+- Morph DeepSeek V4.1 Flash delegations (`morph/morph-dsv41flash` and
+  `morph/morph-dsv41flash-1017`) add `--thinking` to expose completed
+  `reasoning` parts in the JSON stream. This is a CLI display option. Expert
+  `run` supports recovery when the caller supplies that flag. When there is no
+  completed text, the adapter can recover the answer after the model's literal
+  `</think>` marker in a completed reasoning part from the same session and
+  assistant message as the stopped step. Unmarked reasoning, blank or
+  punctuation-only suffixes, and further thinking markers are ineligible.
+  Stored JSON results identify recovered content with
+  `outcome.content.source: "assistant_reasoning_fallback"`. Callers may assert
+  that source with `--require-result-source` or omit the flag to accept either
+  answer form. `assistant_terminal_result` still selects normal text.
 - Bound cumulative answer buffering to a 1 MiB UTF-8 prefix (including part
   separators) and mark truncated results. Discard excess text while retaining
   final step controls; observations retain metadata rather than another text copy.
-  Repeatable reasoning and tool-progress metadata coalesce to one event, and
-  only `retry`, `step_start`, and `step_finish` bypass the stdout budget.
+  Repeatable reasoning and tool-progress metadata coalesce to one event.
+  Completed parts needed for answer extraction and the `retry`, `step_start`,
+  and `step_finish` controls can still be processed beyond the stdout budget.
 - Reset answer and completion evidence at each `step_start`; non-stop finishes
-  discard earlier narration. Tool payloads and reasoning never enter results
-  or metadata-only events.
+  discard earlier narration. Tool payloads and the reasoning before the answer
+  boundary are discarded. Events carry metadata only.
 - Structured `retry` events emit metadata-only progress and update the latest
   `rate_limit` record with attempt, retry delay/time, provider error type and
   explicit numeric HTTP status. Provider messages never enter these events.
@@ -287,7 +300,7 @@ meaning.
   Same-key replay never relaunches. Use a new-key `continue` instruction to
   inspect native history, reconcile prior tool effects, and return the previous
   final answer if the background turn already finished. Eligible native
-  delegates recover structured 429s and stopped turns without text through
+  delegates recover structured 429s and stopped turns without an answer through
   [bounded automatic continuation](follow-up-turns.md#automatic-opencode-recovery).
   A late answer after transport loss remains in native history until a
   continuation can retrieve it.

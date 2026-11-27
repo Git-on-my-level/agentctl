@@ -573,11 +573,13 @@ profile edits or later native overrides. Static config compatibility does not re
 ZCode profiles. `fast` service speed remains unsupported.
 
 OpenCode recipes pass `opencode run --format json --model provider/model --`
-with the exact configured model ID and positional prompt delivery. Explicit
+with the exact configured model ID and positional prompt delivery. Morph
+DeepSeek V4.1 Flash recipes add `--thinking` before the prompt separator to
+support [reasoning-channel answer recovery](adapters.md#opencode). Explicit
 service speed, effort, and read-only access are refused because no reviewed
 recipe guarantees those settings. No auto-approval flags are added. A native
-answer requires completed text from the final step, a final `step_finish` with
-`part.reason: "stop"`, and exit 0. Missing/non-stop finishes fail rather than
+answer requires completed text or a recoverable answer from the final step,
+a final `step_finish` with `part.reason: "stop"`, and exit 0. Missing/non-stop finishes fail rather than
 returning partial text. Native resume and steer remain unavailable; explicit carry-forward rounds
 use a fresh launch. Multica
 structured delegation remains rejected under the existing authority contract.

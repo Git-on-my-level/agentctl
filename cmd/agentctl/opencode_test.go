@@ -229,6 +229,40 @@ func TestDelegateOpenCodePlanAndCollect(t *testing.T) {
 	assertResultMatchesSchemaShape(t, stdout.String(), "recent-result.schema.json", "summary")
 }
 
+func TestDelegateOpenCodeCollectsDeepSeekReasoningAnswer(t *testing.T) {
+	f := newOpenCodeDelegateFixture(t)
+	config, err := os.ReadFile(f.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config = bytes.ReplaceAll(config, []byte("zai/glm-5.3"), []byte("morph/morph-dsv41flash-1017"))
+	if err := os.WriteFile(f.config, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const script = `#!/bin/sh
+if [ "$1" = "--version" ]; then echo 'opencode 2.3.2'; exit 0; fi
+thinking=false
+for arg do
+  [ "$arg" != "--thinking" ] || thinking=true
+done
+printf '%s\n' '{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","messageID":"msg_final"}}'
+if "$thinking"; then
+  printf '%s\n' '{"type":"reasoning","sessionID":"ses_fixture","part":{"type":"reasoning","sessionID":"ses_fixture","messageID":"msg_final","time":{"start":1,"end":2},"text":"private planning</think>\nRecovered answer."}}'
+fi
+printf '%s\n' '{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop","tokens":{"output":0,"reasoning":60}}}'
+`
+	if err := os.WriteFile(filepath.Join(f.root, "opencode"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	code, out := f.invoke("fixture prompt", "--wait", "--require-result-source", "assistant_reasoning_fallback")
+	if code != 0 || !strings.Contains(out, `"text":"Recovered answer."`) || !strings.Contains(out, `"source":"assistant_reasoning_fallback"`) {
+		t.Fatalf("delegate exit=%d %s", code, out)
+	}
+	if raw, err := os.ReadFile(f.journal); err != nil || bytes.Contains(raw, []byte("private planning")) || bytes.Contains(raw, []byte("</think>")) {
+		t.Fatalf("ineligible reasoning data in journal or read failed: %v", err)
+	}
+}
+
 func TestDelegateOpenCodeUnattendedCodingAddsAuto(t *testing.T) {
 	f := newOpenCodeDelegateFixture(t)
 	var config map[string]any
@@ -327,6 +361,7 @@ func TestOpenCodeRateLimitSurfacesMetadataAndCapacity(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = "--version" ]; then echo 'opencode 2.2.6'; exit 0; fi
 printf '%s\n' '{"type":"retry","timestamp":1794251075486,"sessionID":"ses_rate_limit","attempt":2,"nextRetryAt":1794251101486,"error":{"type":"provider.rate-limit","message":"Rate limit exceeded; private-request-details","status":429,"retryAfterMs":26000}}' '{"type":"error","sessionID":"ses_rate_limit","error":{"type":"provider.rate-limit","message":"Rate limit exceeded; private-request-details","status":429}}'
+printf '%s\n' '{"type":"reasoning","sessionID":"ses_rate_limit","part":{"type":"reasoning","sessionID":"ses_rate_limit","messageID":"msg_final","time":{"end":2},"text":"private provider planning"}}'
 `
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)

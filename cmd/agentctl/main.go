@@ -1191,7 +1191,7 @@ func resultSourceSatisfies(actual, required string) bool {
 	if actual == required {
 		return true
 	}
-	return required == "assistant" && (actual == "assistant_message_fallback" || actual == "assistant_terminal_result")
+	return required == "assistant" && (actual == "assistant_message_fallback" || actual == "assistant_terminal_result" || actual == "assistant_reasoning_fallback")
 }
 
 func (a *app) events(ctx context.Context, renderer output.Renderer, c common, args []string) *output.Error {
