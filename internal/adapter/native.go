@@ -136,6 +136,7 @@ type processRecord struct {
 	opencodeUnboundText       bool
 	opencodeFinishReason      string
 	opencodeStep              openCodeStepID
+	opencodeStartPartID       string
 	opencodeEarlierSteps      map[openCodeStepID]struct{}
 	opencodeReasoning         openCodeReasoning
 	opencodeTokenUsage        *TokenUsage
@@ -242,6 +243,14 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 			p.ingestObservation(child)
 		}
 		return
+	}
+	if overLimit && obs.openCodeReasoning != "" {
+		p.mu.Lock()
+		eligible := p.collectableOpenCodeReasoning(obs)
+		p.mu.Unlock()
+		if !eligible {
+			obs.openCodeReasoning = ""
+		}
 	}
 	if overLimit && !retainObservationAfterLimit(obs, openCodeRetryPending) {
 		if strings.HasPrefix(obs.SourceState, "opencode.") {
@@ -384,6 +393,9 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 
 	step := openCodeStepID{session: obs.SessionID, message: obs.openCodeMessageID}
 	_, earlierStep := p.opencodeEarlierSteps[step]
+	if obs.SourceState == "opencode.step_start" && step.known() && step == p.opencodeStep && obs.openCodePartID != "" && obs.openCodePartID == p.opencodeStartPartID {
+		return
+	}
 	if earlierStep && (obs.SourceState == "opencode.step_start" || obs.SourceState == "opencode.text" || obs.SourceState == "opencode.retry") {
 		// Reconciliation can print a missed part from a superseded step.
 		return
@@ -403,7 +415,7 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 		}
 	}
 	if obs.SourceState == "opencode.reasoning" {
-		if p.opencodeText.Len() == 0 && step.known() && step == p.opencodeStep {
+		if p.collectableOpenCodeReasoning(obs) {
 			p.opencodeReasoning.observe(obs.openCodePartID, obs.openCodeReasoning)
 		}
 		// Reasoning cannot rebind a session or enter stored observations.
@@ -442,9 +454,8 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 		}
 		switch obs.SourceState {
 		case "opencode.step_start":
-			if !step.known() || p.opencodeStep != step {
-				p.beginOpenCodeStep(step)
-			}
+			p.beginOpenCodeStep(step)
+			p.opencodeStartPartID = obs.openCodePartID
 		case "opencode.retry":
 			// The renderer may reuse an ID and omit the next step_start.
 			if !step.known() {
@@ -594,6 +605,15 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 	p.updatedAt = time.Now().UTC()
 }
 
+// collectableOpenCodeReasoning is called with p.mu held. After a marked answer,
+// even an unmarked part can disprove completeness for this same step.
+func (p *processRecord) collectableOpenCodeReasoning(obs parsedObservation) bool {
+	step := openCodeStepID{session: obs.SessionID, message: obs.openCodeMessageID}
+	return step.known() && step == p.opencodeStep && p.opencodeText.Len() == 0 && !p.opencodeUnboundText &&
+		obs.openCodePartID != "" && obs.openCodeReasoning != "" && !p.opencodeReasoning.ambiguous &&
+		(p.opencodeReasoning.answer != "" || strings.Contains(obs.openCodeReasoning, deepSeekThinkingEnd))
+}
+
 func (p *processRecord) beginOpenCodeStep(step openCodeStepID) {
 	if p.opencodeStep.known() && p.opencodeStep != step {
 		if p.opencodeEarlierSteps == nil {
@@ -602,6 +622,7 @@ func (p *processRecord) beginOpenCodeStep(step openCodeStepID) {
 		p.opencodeEarlierSteps[p.opencodeStep] = struct{}{}
 	}
 	p.opencodeStep = step
+	p.opencodeStartPartID = ""
 	p.opencodeText.Reset()
 	p.opencodeTruncated = false
 	p.opencodeUnboundText = false

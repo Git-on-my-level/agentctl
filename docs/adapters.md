@@ -250,10 +250,10 @@ meaning.
   completed text, the adapter can recover the answer after the model's literal
   `</think>` marker in a completed reasoning part from the same session and
   assistant message as the stopped step. Repeated candidates with the same
-  answer are idempotent. Each candidate must contain the entire marker and answer suffix
-  in one frame. Separate unmarked parts are discarded, and conflicting marked
-  candidates are ambiguous. Blank or punctuation-only suffixes and suffixes
-  that start with another thinking marker are ineligible.
+  answer are idempotent. Each candidate must contain the marker and answer suffix
+  in one frame. Conflicting marked candidates or later unmarked parts with
+  content leave the answer ambiguous. Blank or punctuation-only suffixes and
+  suffixes that start with another thinking marker are ineligible.
   A first completed text part reconciled after the stop can take precedence
   when it belongs to the stopped message. Once a step has an assistant message
   ID, unbound text and an ambiguous late suffix leave the turn incomplete.
@@ -267,9 +267,10 @@ meaning.
   Repeatable reasoning and tool-progress metadata coalesce to one event.
   Completed parts needed for answer extraction and the `retry`, `step_start`,
   and `step_finish` controls can still be processed beyond the stdout budget.
-- Reset answer and completion evidence at each `step_start`; non-stop finishes
-  discard earlier narration. Tool payloads and the reasoning before the answer
-  boundary are discarded. Events carry metadata only.
+- Reset answer and completion evidence on a new `step_start` or retry. A repeated
+  start for the same message and native part preserves the current answer.
+  Non-stop finishes discard earlier narration. Tool payloads and the reasoning
+  before the answer boundary are discarded. Events carry metadata only.
 - Structured `retry` events emit metadata-only progress and update the latest
   `rate_limit` record with attempt, retry delay/time, provider error type and
   explicit numeric HTTP status. Provider messages never enter these events.

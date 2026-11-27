@@ -29,7 +29,7 @@ func TestOpenCodeParserReadsCompletedTextPart(t *testing.T) {
 func TestOpenCodeReasoningFallback(t *testing.T) {
 	// OpenCode 2.3.2 renders a stored assistant's reasoning part between
 	// step_start and a stop with output=0. It may reconcile parts after stop.
-	const start = `{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","messageID":"msg_final"}}`
+	const start = `{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","id":"prt_start","messageID":"msg_final"}}`
 	const stop = `{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop","tokens":{"output":0,"reasoning":60}}}`
 	const reasonFrame = `{"type":"reasoning","sessionID":"ses_fixture","part":{"id":"prt_final","type":"reasoning","sessionID":"ses_fixture","messageID":"msg_final","time":{"start":1,"end":2},"metadata":{"opaque":"private-native-metadata"},"text":`
 	const text = `{"type":"text","sessionID":"ses_fixture","part":{"type":"text","messageID":"msg_final","time":{"end":2},"text":"ordinary answer"}}`
@@ -59,7 +59,9 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "duplicate completed part", frames: []string{start, reason, reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "same answer replayed under a new part ID", frames: []string{start, reason, otherPart(reason), stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "duplicate start preserves bound answer", frames: []string{start, reason, start, stop}, want: answer, source: openCodeReasoningFallbackSource},
-		{name: "different unmarked part stays private", frames: []string{start, reason, otherPart(reasoning("private reconsideration")), stop}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "new start on the same message resets the attempt", frames: []string{start, text, strings.Replace(start, "prt_start", "prt_retry", 1), strings.Replace(text, "ordinary answer", "fresh answer", 1), stop}, want: "fresh answer", source: "assistant_terminal_result"},
+		{name: "preceding unmarked part stays private", frames: []string{start, otherPart(reasoning("private consideration")), reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "unmarked continuation after a candidate is ambiguous", frames: []string{start, reasoning("private</think>Answ"), otherPart(reasoning("er.")), stop}, diagnostic: "empty_terminal_result"},
 		{name: "two marked parts are ambiguous", frames: []string{start, reason, otherPart(reasoning("private</think>Another answer.")), stop}, diagnostic: "empty_terminal_result"},
 		{name: "reconciled after stop", frames: []string{start, stop, reason}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "ordinary text takes precedence", frames: []string{start, reason, stop, text}, want: "ordinary answer", source: "assistant_terminal_result"},
@@ -130,6 +132,24 @@ func TestOpenCodeReasoningAnswerBound(t *testing.T) {
 	r.observe("part", planning+"</think>"+want+"🌍")
 	if got := r.finalAnswer(); got != want || !r.truncated {
 		t.Fatalf("bounded answer: bytes=%d truncated=%t", len(got), r.truncated)
+	}
+}
+
+func TestOpenCodeReasoningStreamLimitDropsIrrelevantParts(t *testing.T) {
+	record := &processRecord{parser: opencodeJSONParser{reasoningFallback: true}, maxOutput: 1, done: make(chan struct{})}
+	const start = `{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","messageID":"msg_final"}}`
+	const marked = `{"type":"reasoning","sessionID":"ses_fixture","part":{"type":"reasoning","id":"prt_final","messageID":"msg_final","time":{"end":2},"text":"private</think>Answer."}}`
+	record.ingest([]byte(start), false)
+	record.ingest([]byte(strings.Replace(marked, "</think>Answer.", "", 1)), false)
+	record.ingest([]byte(strings.Replace(marked, "msg_final", "msg_earlier", 1)), false)
+	if len(record.observations) != 1 {
+		t.Fatalf("unmarked or foreign parts bypassed the stream limit: %#v", record.observations)
+	}
+	record.ingest([]byte(marked), false)
+	record.ingest([]byte(`{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}`), false)
+	record.finish(nil)
+	if !record.result.Success || record.result.Content != "Answer." {
+		t.Fatalf("bound candidate was lost at the stream limit: %#v", record.result)
 	}
 }
 
@@ -722,6 +742,9 @@ func TestOpenCodeManifestDeclaresBoundedSameProcessContract(t *testing.T) {
 	}
 	if content.Constraints["source"] != "assistant_terminal_result" {
 		t.Fatalf("source = %#v", content.Constraints["source"])
+	}
+	if content.Constraints["fallback_source"] != "assistant_reasoning_fallback" {
+		t.Fatalf("fallback_source = %#v", content.Constraints["fallback_source"])
 	}
 	for name, decl := range status {
 		negotiated := NegotiateInvocation(m, nil, name)

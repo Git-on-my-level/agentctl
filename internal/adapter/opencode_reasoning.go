@@ -35,10 +35,12 @@ func (r *openCodeReasoning) observe(partID, text string) {
 	}
 	_, answer, marked := strings.Cut(text, deepSeekThinkingEnd)
 	if !marked {
+		r.ambiguous = r.answer != "" && strings.TrimSpace(text) != ""
 		return
 	}
 	answer = strings.TrimSpace(answer)
 	if strings.HasPrefix(answer, "<think>") || strings.HasPrefix(answer, deepSeekThinkingEnd) || strings.IndexFunc(answer, answerCharacter) < 0 {
+		r.ambiguous = r.answer != ""
 		return
 	}
 	digest := sha256.Sum256([]byte(answer))

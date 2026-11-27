@@ -929,6 +929,7 @@ func (p opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 	case "step_start":
 		if firstString(part, "type") == "step-start" {
 			obs.openCodeMessageID = firstString(part, "messageID")
+			obs.openCodePartID = firstString(part, "id")
 		}
 	case "text":
 		if !opencodeTextPartComplete(part) {

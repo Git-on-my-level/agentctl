@@ -124,7 +124,8 @@
           "properties": {
             "required_subcommand": {"type": "string"},
             "required_terminal_event": {"type": "string"},
-            "required_finish_reason": {"type": "string"}
+            "required_finish_reason": {"type": "string"},
+            "fallback_source": {"type": "string", "minLength": 1}
           }
         }
       }
