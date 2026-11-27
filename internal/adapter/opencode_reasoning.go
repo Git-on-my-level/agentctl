@@ -33,13 +33,18 @@ func (r *openCodeReasoning) observe(partID, text string) {
 	if partID == "" || r.ambiguous {
 		return
 	}
-	_, answer, marked := strings.Cut(text, deepSeekThinkingEnd)
-	if !marked {
+	before, answer, marked := strings.Cut(text, deepSeekThinkingEnd)
+	quotedBoundary := strings.HasSuffix(before, "`") && strings.HasPrefix(answer, "`")
+	if !marked || quotedBoundary {
 		r.ambiguous = r.answer != "" && strings.TrimSpace(text) != ""
 		return
 	}
 	answer = strings.TrimSpace(answer)
-	if strings.Contains(answer, "<think>") || strings.HasPrefix(answer, deepSeekThinkingEnd) || strings.IndexFunc(answer, answerCharacter) < 0 {
+	// A later bare marker makes it impossible to distinguish an answer
+	// from planning that merely mentioned the first marker. A Markdown
+	// inline-code quote can be retained as part of the answer.
+	bareClose := strings.Contains(strings.ReplaceAll(answer, "`"+deepSeekThinkingEnd+"`", ""), deepSeekThinkingEnd)
+	if strings.Contains(answer, "<think>") || bareClose || strings.IndexFunc(answer, answerCharacter) < 0 {
 		r.ambiguous = r.answer != ""
 		return
 	}

@@ -253,7 +253,8 @@ meaning.
   answer are idempotent. Each candidate must contain the marker and answer suffix
   in one frame. Conflicting marked candidates or later unmarked parts with
   content leave the answer ambiguous. Blank or punctuation-only suffixes and
-  suffixes that reopen thinking or start with another `</think>` are ineligible.
+  suffixes that reopen thinking or contain another unquoted `</think>` are
+  ineligible.
   A first completed text part reconciled after the stop can take precedence
   when it belongs to the stopped message. Once a step has an assistant message
   ID, unbound text and an ambiguous late suffix leave the turn incomplete.

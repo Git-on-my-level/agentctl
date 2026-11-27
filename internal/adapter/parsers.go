@@ -928,10 +928,7 @@ func (p opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 	if partSession := firstString(part, "sessionID"); partSession != "" && partSession != obs.SessionID {
 		// The envelope and part must agree before this frame can supply a
 		// session binding, an assistant message ID, or any result evidence.
-		obs.SessionID = ""
-		delete(obs.Data, "session_id")
-		obs.Data["parse_error"] = "OpenCode part session contradicts its event"
-		return obs
+		return parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "malformed_output", Data: map[string]any{"parse_error": "OpenCode part session contradicts its event"}}
 	}
 	switch typ {
 	case "step_start":

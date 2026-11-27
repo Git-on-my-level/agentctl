@@ -72,6 +72,7 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "foreign session text cannot replace bound answer", frames: []string{start, reason, strings.ReplaceAll(text, "ses_fixture", "ses_foreign"), stop}, diagnostic: "incomplete_terminal_result"},
 		{name: "foreign stop cannot validate bound text", frames: []string{start, text, strings.ReplaceAll(stop, "ses_fixture", "ses_foreign")}, diagnostic: "incomplete_terminal_result"},
 		{name: "start part contradicts its envelope", frames: []string{conflictingSession(start), reason, stop}, diagnostic: "empty_terminal_result"},
+		{name: "contradictory start preserves the valid step", frames: []string{start, reason, conflictingSession(start), stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "text part contradicts its envelope", frames: []string{start, conflictingSession(text), stop}, diagnostic: "empty_terminal_result"},
 		{name: "stop part contradicts its envelope", frames: []string{start, text, conflictingSession(stop)}, diagnostic: "incomplete_terminal_result"},
 		{name: "text without message ID in a bound step", frames: []string{start, strings.Replace(text, `"messageID":"msg_final",`, "", 1), stop}, diagnostic: "incomplete_terminal_result"},
@@ -80,6 +81,8 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "unproved split boundary fails", frames: []string{start, reasoning("private planning</th"), reasoning("ink>\nPlain"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "distinct IDs cannot form a boundary", frames: []string{start, reasoning("private planning</th"), otherPart(reasoning("ink>\nPlain prose.")), stop}, diagnostic: "empty_terminal_result"},
 		{name: "quoted marker in answer", frames: []string{start, reasoning("private planning</think>The tag is `</think>`."), stop}, want: "The tag is `</think>`.", source: openCodeReasoningFallbackSource},
+		{name: "marker quoted in planning supplies no boundary", frames: []string{start, reasoning("private planning about `</think>` and more deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "multiple bare markers are ambiguous", frames: []string{start, reasoning("private planning</think>More private deliberation.</think>Answer."), stop}, diagnostic: "empty_terminal_result"},
 		{name: "unmarked planning", frames: []string{start, reasoning("private planning"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "punctuation only", frames: []string{start, reasoning("private planning</think> ... "), stop}, diagnostic: "empty_terminal_result"},
 		{name: "whitespace suffix", frames: []string{start, reasoning("private planning</think> \n"), stop}, diagnostic: "empty_terminal_result"},
@@ -100,28 +103,30 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "late nonzero exit", frames: []string{start, reason, stop}, exit: errors.New("subprocess failed")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			record := &processRecord{parser: opencodeJSONParser{reasoningFallback: true}, maxOutput: 1, done: make(chan struct{})}
-			for _, frame := range tc.frames {
-				record.ingest([]byte(frame), false)
-			}
-			record.cancelled = tc.cancelled
-			record.finish(tc.exit)
-			got := record.result
-			if got.Success != (tc.want != "") || got.Content != tc.want {
-				t.Fatalf("result = %#v", got)
-			}
-			if source, _ := got.Data["result_content_source"].(string); source != tc.source {
-				t.Fatalf("source = %q, want %q", source, tc.source)
-			}
-			if tc.diagnostic != "" && got.Data["diagnostic_code"] != tc.diagnostic {
-				t.Fatalf("diagnostic = %#v, want %q", got.Data, tc.diagnostic)
-			}
-			if got.SessionRef.OpaqueID == "ses_foreign" {
-				t.Fatal("foreign frame replaced the native session binding")
-			}
-			for _, obs := range record.observations {
-				if obs.openCodeReasoning != "" || obs.Content != "" {
-					t.Fatal("answer or reasoning retained in observation")
+			for _, maxOutput := range []int{0, 1} {
+				record := &processRecord{parser: opencodeJSONParser{reasoningFallback: true}, maxOutput: maxOutput, done: make(chan struct{})}
+				for _, frame := range tc.frames {
+					record.ingest([]byte(frame), false)
+				}
+				record.cancelled = tc.cancelled
+				record.finish(tc.exit)
+				got := record.result
+				if got.Success != (tc.want != "") || got.Content != tc.want {
+					t.Fatalf("result = %#v", got)
+				}
+				if source, _ := got.Data["result_content_source"].(string); source != tc.source {
+					t.Fatalf("source = %q, want %q", source, tc.source)
+				}
+				if tc.diagnostic != "" && got.Data["diagnostic_code"] != tc.diagnostic {
+					t.Fatalf("diagnostic = %#v, want %q", got.Data, tc.diagnostic)
+				}
+				if got.SessionRef.OpaqueID == "ses_foreign" {
+					t.Fatal("foreign frame replaced the native session binding")
+				}
+				for _, obs := range record.observations {
+					if obs.openCodeReasoning != "" || obs.Content != "" {
+						t.Fatal("answer or reasoning retained in observation")
+					}
 				}
 			}
 		})
