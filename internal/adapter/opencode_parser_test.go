@@ -34,6 +34,7 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 	const reasonFrame = `{"type":"reasoning","sessionID":"ses_fixture","part":{"id":"prt_final","type":"reasoning","sessionID":"ses_fixture","messageID":"msg_final","time":{"start":1,"end":2},"metadata":{"opaque":"private-native-metadata"},"text":`
 	const text = `{"type":"text","sessionID":"ses_fixture","part":{"type":"text","messageID":"msg_final","time":{"end":2},"text":"ordinary answer"}}`
 	const answer = "Summary.\n\n```json\n{\"findings\":[]}\n```"
+	legacyStart := strings.Replace(start, `,"messageID":"msg_final"`, "", 1)
 	reasoning := func(text string) string {
 		encoded, err := json.Marshal(text)
 		if err != nil {
@@ -67,11 +68,15 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "unmarked continuation after a candidate is ambiguous", frames: []string{start, reasoning("private</think>Answ"), otherPart(reasoning("er.")), stop}, diagnostic: "empty_terminal_result"},
 		{name: "two marked parts are ambiguous", frames: []string{start, reason, otherPart(reasoning("private</think>Another answer.")), stop}, diagnostic: "empty_terminal_result"},
 		{name: "reconciled after stop", frames: []string{start, stop, reason}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "start without message ID", frames: []string{legacyStart, reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "typed stop identifies a late part after untyped start", frames: []string{legacyStart, stop, reason}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "typed stop rejects another late message after untyped start", frames: []string{legacyStart, stop, earlier(reason)}, diagnostic: "empty_terminal_result"},
+		{name: "reasoning inferred message needs a typed stop", frames: []string{legacyStart, reason, strings.Replace(stop, `"messageID":"msg_final",`, "", 1)}, diagnostic: "incomplete_terminal_result"},
 		{name: "ordinary text takes precedence", frames: []string{start, reason, stop, text}, want: "ordinary answer", source: "assistant_terminal_result"},
 		{name: "unbound message text before a matching stop", frames: []string{start, earlier(text), stop}, diagnostic: "incomplete_terminal_result"},
 		{name: "foreign session text cannot replace bound answer", frames: []string{start, reason, strings.ReplaceAll(text, "ses_fixture", "ses_foreign"), stop}, diagnostic: "incomplete_terminal_result"},
 		{name: "foreign stop cannot validate bound text", frames: []string{start, text, strings.ReplaceAll(stop, "ses_fixture", "ses_foreign")}, diagnostic: "incomplete_terminal_result"},
-		{name: "start part contradicts its envelope", frames: []string{conflictingSession(start), reason, stop}, diagnostic: "empty_terminal_result"},
+		{name: "a contradictory start supplies no identity", frames: []string{conflictingSession(start), reason, strings.Replace(stop, `"messageID":"msg_final",`, "", 1)}, diagnostic: "incomplete_terminal_result"},
 		{name: "contradictory start preserves the valid step", frames: []string{start, reason, conflictingSession(start), stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "text part contradicts its envelope", frames: []string{start, conflictingSession(text), stop}, diagnostic: "empty_terminal_result"},
 		{name: "stop part contradicts its envelope", frames: []string{start, text, conflictingSession(stop)}, diagnostic: "incomplete_terminal_result"},
@@ -91,6 +96,7 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "another message", frames: []string{start, strings.ReplaceAll(reason, "msg_final", "msg_earlier"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "another session", frames: []string{start, strings.ReplaceAll(reason, "ses_fixture", "ses_foreign"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "session from envelope", frames: []string{start, strings.Replace(reason, `,"sessionID":"ses_fixture","messageID"`, `,"messageID"`, 1), stop}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "session from part only", frames: []string{start, strings.Replace(reason, `,"sessionID":"ses_fixture","part"`, `,"part"`, 1), stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "missing part ID", frames: []string{start, strings.Replace(reason, `"id":"prt_final",`, "", 1), stop}, diagnostic: "empty_terminal_result"},
 		{name: "incomplete part", frames: []string{start, strings.Replace(reason, `,"end":2`, "", 1), stop}, diagnostic: "empty_terminal_result"},
 		{name: "earlier step", frames: []string{start, reason, strings.Replace(stop, `"stop"`, `"tool-calls"`, 1), strings.ReplaceAll(start, "msg_final", "msg_next"), strings.ReplaceAll(stop, "msg_final", "msg_next")}, diagnostic: "empty_terminal_result"},

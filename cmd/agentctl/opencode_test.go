@@ -258,6 +258,7 @@ printf '%s\n' '{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"s
 	if code != 0 || !strings.Contains(out, `"text":"Recovered answer."`) || !strings.Contains(out, `"source":"assistant_reasoning_fallback"`) {
 		t.Fatalf("delegate exit=%d %s", code, out)
 	}
+	assertResultMatchesSchemaShape(t, out, "delegate-result.schema.json")
 	if raw, err := os.ReadFile(f.journal); err != nil || bytes.Contains(raw, []byte("private planning")) || bytes.Contains(raw, []byte("</think>")) {
 		t.Fatalf("ineligible reasoning data in journal or read failed: %v", err)
 	}

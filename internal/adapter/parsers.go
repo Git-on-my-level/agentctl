@@ -918,17 +918,19 @@ func (p opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 	if typ != "" {
 		obs.Data["type"] = boundedString(typ, 128)
 	}
-	if obs.SessionID != "" {
-		obs.Data["session_id"] = boundedString(obs.SessionID, 256)
-	}
 	part, _ := value["part"].(map[string]any)
 	if partType := firstString(part, "type"); partType != "" {
 		obs.Data["part_type"] = boundedString(strings.ToLower(partType), 128)
 	}
-	if partSession := firstString(part, "sessionID"); partSession != "" && partSession != obs.SessionID {
+	partSession := firstString(part, "sessionID")
+	if partSession != "" && obs.SessionID != "" && partSession != obs.SessionID {
 		// The envelope and part must agree before this frame can supply a
 		// session binding, an assistant message ID, or any result evidence.
 		return parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "malformed_output", Data: map[string]any{"parse_error": "OpenCode part session contradicts its event"}}
+	}
+	obs.SessionID = firstNonEmpty(obs.SessionID, partSession)
+	if obs.SessionID != "" {
+		obs.Data["session_id"] = boundedString(obs.SessionID, 256)
 	}
 	switch typ {
 	case "step_start":
