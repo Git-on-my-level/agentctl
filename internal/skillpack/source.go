@@ -346,7 +346,12 @@ func saveHubState(path string, state HubState, replace bool) error {
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".skill-source-state-")
+	return writePrivateFileAtomic(path, ".skill-source-state-", append(data, '\n'))
+}
+
+// writePrivateFileAtomic replaces path with an owner-only file via rename.
+func writePrivateFileAtomic(path, pattern string, data []byte) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), pattern)
 	if err != nil {
 		return err
 	}
@@ -356,7 +361,7 @@ func saveHubState(path string, state HubState, replace bool) error {
 		temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(append(data, '\n')); err != nil {
+	if _, err := temporary.Write(data); err != nil {
 		temporary.Close()
 		return err
 	}

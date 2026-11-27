@@ -166,3 +166,134 @@ func TestSkillsConflictDoesNotSuggestDriftOnlyDiff(t *testing.T) {
 		t.Fatalf("conflict advertised drift-only diff: %s", stdout.String())
 	}
 }
+
+func TestSkillsDriftedCheckoutIsRecordedAndDoctorStillListsSkills(t *testing.T) {
+	configPath, home := configuredSkillSource(t)
+	t.Setenv("HOME", home)
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr)
+	if code := a.run(context.Background(), []string{"--config", configPath, "skills", "reconcile", "--home", home}); code != 0 {
+		t.Fatalf("reconcile exit=%d output=%s", code, stdout.String())
+	}
+	checkout, statePath, err := skillpack.DefaultHubPaths(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state struct {
+		AppliedCommit string `json:"applied_commit"`
+		Selection     struct {
+			Remote string `json:"remote"`
+		} `json:"selection"`
+	}
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	// Reproduce the 2026-11-18 incident: someone advances the derived cache
+	// with plain git, so HEAD no longer matches the recorded applied commit.
+	hub := state.Selection.Remote
+	if err := os.WriteFile(filepath.Join(hub, "skills", "test-skill", "SKILL.md"), []byte("---\nname: test-skill\n---\n\n# Test v2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitFixtureCommand(t, hub, "-c", "user.name=Agentctl Test", "-c", "user.email=agentctl@example.test", "commit", "--quiet", "-am", "advance")
+	gitFixtureCommand(t, checkout, "fetch", "--quiet", "origin", "main")
+	gitFixtureCommand(t, checkout, "checkout", "--quiet", "--detach", "FETCH_HEAD")
+	// The daily worker runs on the next UTC day.
+	tomorrow := time.Now().Add(24 * time.Hour)
+	a.now = func() time.Time { return tomorrow }
+
+	if _, err := a.updateSkillsAutoClean(context.Background(), common{configPath: configPath}, false); err == nil {
+		t.Fatal("drifted checkout was updated")
+	}
+	attempt, err := skillpack.ReadUpdateAttempt(home)
+	if err != nil || attempt == nil {
+		t.Fatalf("worker failure not recorded: %v %v", attempt, err)
+	}
+	if attempt.Succeeded || attempt.Trigger != "auto" || attempt.ErrorCode != "conflict" || strings.Join(attempt.Drift, ",") != "checkout_revision" || attempt.ConsecutiveFailures != 1 || attempt.FirstFailedAt == nil {
+		t.Fatalf("unexpected record: %+v", attempt)
+	}
+	if _, err := a.updateSkillsAutoClean(context.Background(), common{configPath: configPath}, false); err == nil {
+		t.Fatal("drifted checkout was updated on retry")
+	}
+	if attempt, _ = skillpack.ReadUpdateAttempt(home); attempt == nil || attempt.ConsecutiveFailures != 2 {
+		t.Fatalf("retry did not accumulate: %+v", attempt)
+	}
+
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--config", configPath, "update", "status"}); code != 0 {
+		t.Fatalf("update status exit=%d output=%s", code, stdout.String())
+	}
+	var status struct {
+		Result struct {
+			Skills struct {
+				Healthy     bool                    `json:"healthy"`
+				LastAttempt skillpack.UpdateAttempt `json:"last_attempt"`
+			} `json:"skills"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Result.Skills.Healthy || status.Result.Skills.LastAttempt.Succeeded || status.Result.Skills.LastAttempt.ErrorCode != "conflict" {
+		t.Fatalf("update status hid the failure: %s", stdout.String())
+	}
+
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--config", configPath, "skills", "doctor", "--home", home}); code != 0 {
+		t.Fatalf("doctor refused a drifted checkout: exit=%d output=%s", code, stdout.String())
+	}
+	var doctor struct {
+		Result struct {
+			HubDrift struct {
+				Drift           []string `json:"drift"`
+				SkillsEvaluated bool     `json:"skills_evaluated"`
+				EvaluatedCommit string   `json:"evaluated_commit"`
+			} `json:"hub_drift"`
+			Report     skillpack.Report         `json:"report"`
+			LastUpdate *skillpack.UpdateAttempt `json:"last_update"`
+		} `json:"result"`
+		NextActions []struct {
+			Argv []string `json:"argv"`
+		} `json:"next_actions"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &doctor); err != nil {
+		t.Fatalf("%v: %s", err, stdout.String())
+	}
+	head := gitFixtureCommand(t, checkout, "rev-parse", "HEAD")
+	if strings.Join(doctor.Result.HubDrift.Drift, ",") != "checkout_revision" || !doctor.Result.HubDrift.SkillsEvaluated || doctor.Result.HubDrift.EvaluatedCommit != head {
+		t.Fatalf("doctor drift finding incomplete: %s", stdout.String())
+	}
+	if doctor.Result.Report.Healthy || len(doctor.Result.Report.Actions) != 1 || doctor.Result.Report.Actions[0].Skill != "test-skill" {
+		t.Fatalf("doctor did not list skills: %s", stdout.String())
+	}
+	if doctor.Result.LastUpdate == nil || doctor.Result.LastUpdate.Succeeded {
+		t.Fatalf("doctor omitted the failed update: %s", stdout.String())
+	}
+	repair := false
+	for _, action := range doctor.NextActions {
+		if strings.Join(action.Argv, " ") == "git -C "+checkout+" checkout --quiet --detach "+state.AppliedCommit {
+			repair = true
+		}
+	}
+	if !repair {
+		t.Fatalf("doctor omitted the repair action: %s", stdout.String())
+	}
+
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--config", configPath, "skills", "reconcile", "--home", home}); code == 0 || !strings.Contains(stdout.String(), "drifted Skill Hub checkout") {
+		t.Fatalf("mutating reconcile accepted a drifted checkout: exit=%d output=%s", code, stdout.String())
+	}
+
+	gitFixtureCommand(t, checkout, "checkout", "--quiet", "--detach", state.AppliedCommit)
+	stdout.Reset()
+	if code := a.run(context.Background(), []string{"--config", configPath, "skills", "update", "--home", home}); code != 0 {
+		t.Fatalf("update after repair exit=%d output=%s", code, stdout.String())
+	}
+	attempt, err = skillpack.ReadUpdateAttempt(home)
+	if err != nil || attempt == nil || !attempt.Succeeded || attempt.Trigger != "explicit" || attempt.ConsecutiveFailures != 0 || attempt.FirstFailedAt != nil || attempt.Error != "" {
+		t.Fatalf("successful update did not clear the failure: %+v %v", attempt, err)
+	}
+}

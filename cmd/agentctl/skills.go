@@ -120,6 +120,7 @@ func (a *app) skillsCommand(ctx context.Context, renderer output.Renderer, c com
 	if command == "update" {
 		updated, err := skillpack.UpdateHubSource(ctx, home, selection, a.currentTime())
 		if err != nil {
+			a.recordSkillsUpdateAttempt(ctx, home, selection, true, skillpack.Report{}, err)
 			return mapSkillpackError("update Skill Hub source", skillpack.Report{}, err)
 		}
 		hubStatus = updated.Status
@@ -127,6 +128,9 @@ func (a *app) skillsCommand(ctx context.Context, renderer output.Renderer, c com
 	if !hubStatus.Configured {
 		return output.NewError(output.CodeCapabilityUnavailable, "Skill Hub source is not initialized on this host", false).
 			WithActions(output.NextAction{Label: "Fetch and reconcile the selected Skill Hub pack", Argv: []string{"agentctl", "skills", "update"}, Mutates: true, SideEffectClass: output.ExternalSideEffect, Preconditions: []string{"reviewed non-secret Skill Hub selection"}})
+	}
+	if !hubStatus.InSync && command == "doctor" {
+		return a.skillsDoctorDrifted(renderer, home, detected, cfg.Skills.UpdatePolicy, hubStatus)
 	}
 	if !hubStatus.InSync {
 		problem := output.NewError(output.CodeConflict, "skills refuse a drifted Skill Hub checkout", false).WithDetail("drift", hubStatus.Drift)
@@ -190,6 +194,7 @@ func (a *app) skillsCommand(ctx context.Context, renderer output.Renderer, c com
 		report, err = skillpack.Reconcile(options)
 	} else if command == "update" {
 		report, err = skillpack.ReconcileAutoClean(options)
+		a.recordSkillsUpdateAttempt(ctx, home, selection, true, report, err)
 	} else {
 		report, err = skillpack.Plan(options)
 	}
@@ -215,10 +220,75 @@ func (a *app) skillsCommand(ctx context.Context, renderer output.Renderer, c com
 		}
 		actions = append(actions, output.NextAction{Label: "Review preserved local skill " + action.Skill, Argv: argv, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"decide whether to restore or propose the local edits"}})
 	}
-	if err := renderer.Success(output.Success{Result: map[string]any{"source": hubStatus, "update_policy": cfg.Skills.UpdatePolicy, "report": report}, Lines: lines, NextActions: actions}); err != nil {
+	result := map[string]any{"source": hubStatus, "update_policy": cfg.Skills.UpdatePolicy, "report": report}
+	if command == "doctor" {
+		lines = append(lines, attachLastUpdateAttempt(result, home)...)
+	}
+	if err := renderer.Success(output.Success{Result: result, Lines: lines, NextActions: actions}); err != nil {
 		return output.Wrap(output.CodeInternal, "write output", false, err)
 	}
 	return nil
+}
+
+// skillsDoctorDrifted reports checkout drift as a finding beside the per-skill
+// table instead of refusing. Doctor is diagnostic: a refusal hid every skill's
+// state exactly when the operator most needed it. Mutating commands still
+// refuse a drifted checkout.
+func (a *app) skillsDoctorDrifted(renderer output.Renderer, home string, detected []string, policy string, hubStatus skillpack.HubStatus) *output.Error {
+	drift := map[string]any{"drift": hubStatus.Drift, "applied_commit": hubStatus.AppliedCommit, "checkout_commit": hubStatus.CheckoutCommit, "checkout_clean": hubStatus.CheckoutClean, "skills_evaluated": false}
+	if hubStatus.RecordedSelection != nil {
+		drift["reason"] = skillpack.SelectionDriftReason(*hubStatus.RecordedSelection, hubStatus.Selection)
+	}
+	report := skillpack.Report{}
+	// The installed copies are judged against the tree that is actually on
+	// disk, which is the checkout HEAD, and the result says so.
+	if hubStatus.CheckoutCommit != "" {
+		source := skillpack.SourceFromHubStatus(hubStatus)
+		source.Commit = hubStatus.CheckoutCommit
+		planned, err := skillpack.Plan(skillpack.Options{Source: source, Home: home, DetectedHarnesses: detected})
+		if err == nil {
+			report = planned
+			drift["skills_evaluated"], drift["evaluated_commit"] = true, hubStatus.CheckoutCommit
+			if !hubStatus.CheckoutClean {
+				drift["evaluated_tree"] = "dirty_checkout"
+			}
+		} else {
+			drift["evaluation_error"] = err.Error()
+		}
+	}
+	report.Healthy = false
+	actions := []output.NextAction{}
+	if len(hubStatus.Drift) == 1 && hubStatus.Drift[0] == "checkout_revision" && hubStatus.CheckoutClean && hubStatus.AppliedCommit != "" {
+		actions = append(actions, output.NextAction{Label: "Return the derived Skill Hub cache to its recorded commit, then run agentctl skills update", Argv: []string{"git", "-C", hubStatus.CheckoutPath, "checkout", "--quiet", "--detach", hubStatus.AppliedCommit}, Mutates: true, SideEffectClass: output.LocalOperationalWrite, Preconditions: []string{"something other than agentctl moved the cache checkout", "the checkout has no local edits"}})
+	}
+	if hubStatus.RecordedSelection != nil && drift["reason"] == "remote_changed" {
+		actions = append(actions, output.NextAction{Label: "Plan a Skill Hub remote rebind", Argv: []string{"agentctl", "skills", "source", "rebind", "--plan"}, Mutates: false, SideEffectClass: output.ReadOnly, Preconditions: []string{"the new remote must contain the pinned commit"}})
+	}
+	result := map[string]any{"source": hubStatus, "update_policy": policy, "hub_drift": drift}
+	lines := []output.Line{}
+	if drift["skills_evaluated"] == true {
+		result["report"] = report
+		lines = skillReportLines("skills.doctor", report)
+	}
+	lines = append(lines, output.Line{Lead: "skills.hub_drift", Fields: []output.Field{{Name: "drift", Value: hubStatus.Drift}, {Name: "applied_commit", Value: hubStatus.AppliedCommit}, {Name: "checkout_commit", Value: hubStatus.CheckoutCommit}, {Name: "skills_evaluated", Value: drift["skills_evaluated"]}}})
+	lines = append(lines, attachLastUpdateAttempt(result, home)...)
+	if err := renderer.Success(output.Success{Result: result, Lines: lines, NextActions: actions}); err != nil {
+		return output.Wrap(output.CodeInternal, "write output", false, err)
+	}
+	return nil
+}
+
+func attachLastUpdateAttempt(result map[string]any, home string) []output.Line {
+	attempt, err := skillpack.ReadUpdateAttempt(home)
+	if err != nil {
+		result["last_update_error"] = err.Error()
+		return nil
+	}
+	if attempt == nil {
+		return nil
+	}
+	result["last_update"] = attempt
+	return []output.Line{{Lead: "skills.last_update", Fields: []output.Field{{Name: "attempted_at", Value: attempt.AttemptedAt}, {Name: "trigger", Value: attempt.Trigger}, {Name: "succeeded", Value: attempt.Succeeded}, {Name: "error_code", Value: attempt.ErrorCode}, {Name: "consecutive_failures", Value: attempt.ConsecutiveFailures}}}}
 }
 
 func skillReportLines(lead string, report skillpack.Report) []output.Line {
