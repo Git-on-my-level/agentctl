@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+
+	"github.com/Git-on-my-level/agentctl/internal/launchrecipe"
 )
 
 const (
@@ -70,6 +72,11 @@ func (r *openCodeReasoning) finalAnswer() string {
 
 func answerCharacter(c rune) bool {
 	return unicode.IsLetter(c) || unicode.IsNumber(c) || unicode.IsSymbol(c)
+}
+
+func openCodeReasoningFallbackEnabled(argv []string) bool {
+	model, _ := argvFlagValue(argv, "--model")
+	return launchrecipe.OpenCodeReasoningFallbackModel(model) && openCodeThinkingEnabled(argv[1:])
 }
 
 func openCodeThinkingEnabled(args []string) bool {

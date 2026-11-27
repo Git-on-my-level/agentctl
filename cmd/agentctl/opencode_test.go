@@ -371,7 +371,7 @@ printf '%s\n' '{"type":"step_finish","sessionID":"ses_rate_limit","part":{"type"
 	journal := filepath.Join(root, "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
-	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--", path, "run", "--format", "json", "--thinking", "--", "prompt"}); code != 0 {
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--", path, "run", "--format", "json", "--model", "morph/morph-dsv41flash-1017", "--thinking", "--", "prompt"}); code != 0 {
 		t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	var document struct {

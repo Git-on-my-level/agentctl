@@ -49,8 +49,9 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 	conflictingSession := func(frame string) string {
 		return strings.Replace(frame, `"part":{`, `"part":{"sessionID":"ses_foreign",`, 1)
 	}
-	const retry = `{"type":"retry","sessionID":"ses_fixture","messageID":"msg_retry","error":{"status":429}}`
+	const retry = `{"type":"retry","sessionID":"ses_fixture","error":{"status":429}}`
 	retried := func(frame string) string { return strings.ReplaceAll(frame, "msg_final", "msg_retry") }
+	foreign := func(frame string) string { return strings.ReplaceAll(frame, "ses_fixture", "ses_foreign") }
 	for _, tc := range []struct {
 		name       string
 		frames     []string
@@ -70,6 +71,8 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "two marked parts are ambiguous", frames: []string{start, reason, otherPart(reasoning("private</think>Another answer.")), stop}, diagnostic: "empty_terminal_result"},
 		{name: "reconciled after stop", frames: []string{start, stop, reason}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "start without message ID", frames: []string{legacyStart, reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "anonymous start still binds the session", frames: []string{legacyStart, foreign(text), foreign(stop)}, diagnostic: "incomplete_terminal_result"},
+		{name: "foreign events cannot poison an anonymous start", frames: []string{legacyStart, foreign(text), foreign(stop), reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "anonymous start permits a reused message ID", frames: []string{legacyStart, toolFinish, legacyStart, text, stop}, want: "ordinary answer", source: "assistant_terminal_result"},
 		{name: "binding a new message retires its predecessor", frames: []string{earlier(start), earlier(toolFinish), legacyStart, reason, earlier(text), stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "typed stop identifies a late part after untyped start", frames: []string{legacyStart, stop, reason}, want: answer, source: openCodeReasoningFallbackSource},
@@ -93,11 +96,16 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "marker in quoted planning prose", frames: []string{start, reasoning("private planning about \"</think>\" and more deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker inside a longer quote", frames: []string{start, reasoning("private planning says \"emit the </think> marker during output\" and deliberates"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker inside smart quotes", frames: []string{start, reasoning("private planning says “emit </think> during output” and deliberates"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "nested smart quotes preserve straight outer quote", frames: []string{start, reasoning("The note says \"Use “draft” and write </think> later\"."), stop}, diagnostic: "empty_terminal_result"},
+		{name: "nested straight quotes preserve smart outer quote", frames: []string{start, reasoning("The note says “Use \"draft\" and write </think> later”."), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker inside a blockquote", frames: []string{start, reasoning("private planning:\n> </think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker inside indented code", frames: []string{start, reasoning("private planning:\n\n    </think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker inside tab-indented code", frames: []string{start, reasoning("private planning:\n\n\t</think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "indentation of a continued list paragraph", frames: []string{start, reasoning("1. Check the input.\n    The input is valid.</think>\nAnswer."), stop}, want: "Answer.", source: openCodeReasoningFallbackSource},
+		{name: "indentation of list-nested code", frames: []string{start, reasoning("1. Include an example.\n\n       </think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker inside longer inline code", frames: []string{start, reasoning("private planning in ``code ` </think> more code`` and deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker in a planning code fence", frames: []string{start, reasoning("private planning\n```xml\n</think>\n```\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "closing fence indented four columns is literal code", frames: []string{start, reasoning("```xml\n    ```\nprivate planning continues</think>more deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker in a nested list fence", frames: []string{start, reasoning("private planning:\n1. - ```xml\n     </think>\n     ```\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker in a bullet list fence", frames: []string{start, reasoning("private planning:\n- ```xml\n  </think>\n  ```\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker after a closed list fence", frames: []string{start, reasoning("private planning:\n- ```xml\n  <example/>\n  ```\nEnd of planning.</think>Answer."), stop}, want: "Answer.", source: openCodeReasoningFallbackSource},
@@ -122,7 +130,7 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "earlier step", frames: []string{start, reason, strings.Replace(stop, `"stop"`, `"tool-calls"`, 1), strings.ReplaceAll(start, "msg_final", "msg_next"), strings.ReplaceAll(stop, "msg_final", "msg_next")}, diagnostic: "empty_terminal_result"},
 		{name: "late earlier text and stop", frames: []string{earlier(start), start, stop, earlier(text), earlier(stop), reason}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "retry invalidates earlier candidate", frames: []string{start, reason, `{"type":"retry","sessionID":"ses_fixture","error":{"status":429}}`, stop}, diagnostic: "empty_terminal_result"},
-		{name: "retry updates message", frames: []string{start, reason, retry, retried(reason), retried(stop)}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "retry followed by a new assistant step", frames: []string{start, reason, retry, retried(start), retried(reason), retried(stop)}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "missing stop", frames: []string{start, reason}, diagnostic: "incomplete_terminal_result"},
 		{name: "provider error after stop", frames: []string{start, reason, stop, `{"type":"error","sessionID":"ses_fixture","error":{"type":"provider.rate-limit","status":429}}`}},
 		{name: "cancellation after stop", frames: []string{start, reason, stop}, cancelled: true},
@@ -218,22 +226,29 @@ func TestOpenCodeReasoningRequiresThinkingFlag(t *testing.T) {
 '{"type":"reasoning","sessionID":"ses_fixture","part":{"type":"reasoning","id":"prt_final","messageID":"msg_final","time":{"end":2},"text":"private planning</think>Answer."}}' \
 '{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}'`)
 	for _, tc := range []struct {
-		name string
-		args []string
-		want bool
+		name  string
+		model string
+		args  []string
+		want  bool
 	}{
-		{name: "explicit", args: []string{"--thinking", "--", "prompt"}, want: true},
-		{name: "inline true", args: []string{"--thinking=true", "--", "prompt"}, want: true},
-		{name: "separate true", args: []string{"--thinking", "true", "--", "prompt"}, want: true},
+		{name: "explicit", model: "morph/morph-dsv41flash-1017", args: []string{"--thinking", "--", "prompt"}, want: true},
+		{name: "inline true", model: "morph/morph-dsv41flash", args: []string{"--thinking=true", "--", "prompt"}, want: true},
+		{name: "separate true", model: "morph/morph-dsv41flash-1017", args: []string{"--thinking", "true", "--", "prompt"}, want: true},
 		{name: "absent"},
-		{name: "disabled", args: []string{"--thinking=false", "--", "prompt"}},
-		{name: "separate false", args: []string{"--thinking", "false", "--", "prompt"}},
-		{name: "negated", args: []string{"--no-thinking", "--", "prompt"}},
-		{name: "prompt", args: []string{"--", "--thinking"}},
-		{name: "no prompt separator", args: []string{"prompt", "--thinking"}},
+		{name: "disabled", model: "morph/morph-dsv41flash", args: []string{"--thinking=false", "--", "prompt"}},
+		{name: "separate false", model: "morph/morph-dsv41flash", args: []string{"--thinking", "false", "--", "prompt"}},
+		{name: "negated", model: "morph/morph-dsv41flash", args: []string{"--no-thinking", "--", "prompt"}},
+		{name: "prompt", model: "morph/morph-dsv41flash", args: []string{"--", "--thinking"}},
+		{name: "no prompt separator", model: "morph/morph-dsv41flash", args: []string{"prompt", "--thinking"}},
+		{name: "another model", model: "local/different", args: []string{"--thinking", "--", "prompt"}},
+		{name: "model omitted", args: []string{"--thinking", "--", "prompt"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			argv := append([]string{path, "run", "--format", "json"}, tc.args...)
+			argv := []string{path, "run", "--format", "json"}
+			if tc.model != "" {
+				argv = append(argv, "--model", tc.model)
+			}
+			argv = append(argv, tc.args...)
 			got, err := NewOpenCode().Launch(context.Background(), LaunchRequest{Argv: argv})
 			if err != nil || got.Result == nil || got.Result.Success != tc.want {
 				t.Fatalf("launch = %#v, err = %v", got.Result, err)
@@ -281,6 +296,23 @@ func TestOpenCodeTextWithoutThinkingRetainsLegacyPartialIdentity(t *testing.T) {
 		if !record.result.Success || record.result.Content != "ordinary answer" || record.result.Data["result_content_source"] != "assistant_terminal_result" {
 			t.Fatalf("legacy text rejected: %#v", record.result)
 		}
+	}
+}
+
+func TestOpenCodeRetryWithoutThinkingRetainsLegacyText(t *testing.T) {
+	record := &processRecord{parser: opencodeJSONParser{}, done: make(chan struct{})}
+	for _, frame := range []string{
+		`{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start"}}`,
+		`{"type":"text","sessionID":"ses_fixture","part":{"type":"text","time":{"end":1},"text":"first part"}}`,
+		`{"type":"retry","sessionID":"ses_fixture","error":{"status":429}}`,
+		`{"type":"text","sessionID":"ses_fixture","part":{"type":"text","time":{"end":2},"text":"second part"}}`,
+		`{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","reason":"stop"}}`,
+	} {
+		record.ingest([]byte(frame), false)
+	}
+	record.finish(nil)
+	if !record.result.Success || record.result.Content != "first part\nsecond part" {
+		t.Fatalf("legacy text did not survive retry: %#v", record.result)
 	}
 }
 
@@ -830,7 +862,7 @@ func TestOpenCodeManifestDeclaresBoundedSameProcessContract(t *testing.T) {
 	if content.Constraints["fallback_source"] != "assistant_reasoning_fallback" {
 		t.Fatalf("fallback_source = %#v", content.Constraints["fallback_source"])
 	}
-	if fallback, ok := content.Constraints["fallback_required_argv"].([]string); !ok || strings.Join(fallback, " ") != "--thinking --" {
+	if fallback, ok := content.Constraints["fallback_required_argv"].([]string); !ok || strings.Join(fallback, " ") != "--model --thinking --" {
 		t.Fatalf("fallback_required_argv = %#v", content.Constraints["fallback_required_argv"])
 	}
 	for name, decl := range status {

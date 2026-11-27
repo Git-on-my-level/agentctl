@@ -736,7 +736,7 @@ func ompManifest() Manifest {
 func opencodeManifest() Manifest {
 	resultContent := resultContentDecl(CapabilitySupported, "assistant_terminal_result")
 	resultContent.Constraints["fallback_source"] = openCodeReasoningFallbackSource
-	resultContent.Constraints["fallback_required_argv"] = []string{"--thinking", "--"}
+	resultContent.Constraints["fallback_required_argv"] = []string{"--model", "--thinking", "--"}
 	resultContent.Constraints["required_output_mode"] = "json"
 	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--format", "kind": "value", "value": "json"}
 	resultContent.Constraints["required_subcommand"] = "run"
@@ -895,7 +895,7 @@ func NegotiateInvocation(manifest Manifest, argv []string, name CapabilityName, 
 		} else if len(argv) != 0 && name == CapabilityResultContent {
 			constraints["invocation_satisfied"] = true
 			if manifest.Adapter == "opencode" {
-				constraints["fallback_invocation_satisfied"] = openCodeThinkingEnabled(argv[1:])
+				constraints["fallback_invocation_satisfied"] = openCodeReasoningFallbackEnabled(argv)
 			}
 		}
 		return Capability{Name: name, Status: status, Source: "manifest", SemanticsVersion: declaration.SemanticsVersion, Constraints: constraints, Reason: reason}

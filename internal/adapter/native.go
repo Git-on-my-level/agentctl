@@ -405,12 +405,18 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 		}
 	}
 
+	openCode, isOpenCode := p.parser.(opencodeJSONParser)
+	if isOpenCode && openCode.reasoningFallback && p.sessionKnown && obs.SessionID != "" && obs.SessionID != p.ref.OpaqueID {
+		// The renderer follows one native session. An anonymous message ID
+		// cannot authorize rebinding that session from another frame.
+		return
+	}
 	step := openCodeStepID{session: obs.SessionID, message: obs.openCodeMessageID}
 	_, earlierStep := p.opencodeEarlierSteps[step]
 	if obs.SourceState == "opencode.step_start" && step.known() && step == p.opencodeStep && obs.openCodePartID != "" && obs.openCodePartID == p.opencodeStartPartID {
 		return
 	}
-	if earlierStep && (obs.SourceState == "opencode.step_start" || obs.SourceState == "opencode.text" || obs.SourceState == "opencode.retry") {
+	if earlierStep && (obs.SourceState == "opencode.step_start" || obs.SourceState == "opencode.text") {
 		// Reconciliation can print a missed part from a superseded step.
 		return
 	}
@@ -479,10 +485,9 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 			p.opencodeStartPartID = obs.openCodePartID
 		case "opencode.retry":
 			// The renderer may reuse an ID and omit the next step_start.
-			if !step.known() {
-				step = p.opencodeStep
+			if openCode.reasoningFallback {
+				p.beginOpenCodeStep(p.opencodeStep)
 			}
-			p.beginOpenCodeStep(step)
 		case "opencode.text":
 			if step.known() && !p.opencodeStep.known() {
 				p.beginOpenCodeStep(step)
@@ -1379,7 +1384,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	ref := SourceRef{Adapter: a.Name(), Kind: a.config.LaunchKind, OpaqueID: strconv.Itoa(cmd.Process.Pid), PID: cmd.Process.Pid}
 	parser := a.config.Parser
 	if _, ok := parser.(opencodeJSONParser); ok {
-		parser = opencodeJSONParser{reasoningFallback: openCodeThinkingEnabled(argv[1:])}
+		parser = opencodeJSONParser{reasoningFallback: openCodeReasoningFallbackEnabled(argv)}
 	}
 	record := &processRecord{cmd: cmd, parser: parser, ref: ref, binding: ref.Binding(), startedAt: startedAt, updatedAt: startedAt, done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, outputDir: req.OutputDir, wholeStdout: a.config.WholeStdout, live: live, launchIdentity: captureProcessLaunch(cmd.Process.Pid, startedAt)}
 	if req.ExecutionContext != nil {

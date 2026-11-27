@@ -246,7 +246,8 @@ meaning.
   `morph/morph-dsv41flash-1017`) add `--thinking` to expose completed
   `reasoning` parts in the JSON stream. This CLI display option is available in
   OpenCode 1.17.13 and was exercised with 2.2.6 and 2.3.2. Expert `run` supports
-  recovery with the flag before the native `--` prompt separator. When there is no
+  recovery with one of those exact `--model` values and the flag before the native
+  `--` prompt separator. When there is no
   completed text, the adapter can recover the answer after the model's literal
   `</think>` marker in a completed reasoning part from the same session and
   assistant message as the stopped step. Repeated candidates with the same
@@ -259,7 +260,8 @@ meaning.
   Blank or punctuation-only suffixes and suffixes that reopen thinking or
   contain another unquoted `</think>` are ineligible.
   With reasoning recovery enabled, a first completed text part reconciled after
-  the stop takes precedence when it belongs to the stopped message. Text with
+  the stop takes precedence when it has the stopped part's session and
+  `messageID`, as emitted by OpenCode 2.2.6 and 2.3.2. Text with
   ambiguous identity or an ambiguous late suffix leaves a bound turn incomplete.
   Text from a known foreign session is ignored in that mode. Ordinary invocations
   retain the legacy completed-text and stopped-step contract.
@@ -277,8 +279,9 @@ meaning.
   Reasoning recognition accepts at most 16 MiB of extra candidate frames per
   execution. If that allowance is exhausted, the fallback cannot use an
   incomplete set of reasoning parts.
-- Reset answer and completion evidence on a new `step_start` or retry. A repeated
-  start for the same message and native part preserves the current answer.
+- Reset answer and completion evidence on a new `step_start`. With recovery
+  enabled, a retry also resets the answer and a repeated start for the same
+  message and native part preserves the current answer.
   Non-stop finishes discard earlier narration. Tool payloads and the reasoning
   before the answer boundary are discarded. Events carry metadata only.
 - Structured `retry` events emit metadata-only progress and update the latest

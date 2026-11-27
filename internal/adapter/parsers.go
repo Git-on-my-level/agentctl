@@ -978,9 +978,6 @@ func (p opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 		}
 		obs.TokenUsage = opencodeTokenUsage(part)
 	case "retry":
-		if p.reasoningFallback {
-			obs.openCodeMessageID = firstString(value, "messageID")
-		}
 		opencodeProviderEventMetadata(value, obs.Data)
 		if next, ok := opencodeNonnegativeInt(value["nextRetryAt"]); ok && next > 0 {
 			obs.Data["next_retry_at"] = time.UnixMilli(next).UTC().Format(time.RFC3339Nano)
