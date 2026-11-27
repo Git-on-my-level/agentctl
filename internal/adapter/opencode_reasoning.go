@@ -13,6 +13,7 @@ import (
 
 const (
 	openCodeReasoningFallbackSource = "assistant_reasoning_fallback"
+	deepSeekThinkingStart           = "<think>"
 	deepSeekThinkingEnd             = "</think>"
 )
 
@@ -43,11 +44,9 @@ func (r *openCodeReasoning) observe(partID, text string) {
 		return
 	}
 	answer = strings.TrimSpace(answer)
-	// A later bare marker makes it impossible to distinguish an answer
-	// from planning that merely mentioned the first marker. A Markdown
-	// inline-code quote can be retained as part of the answer.
-	bareClose := strings.Contains(strings.ReplaceAll(answer, "`"+deepSeekThinkingEnd+"`", ""), deepSeekThinkingEnd)
-	if strings.Contains(answer, "<think>") || bareClose || strings.IndexFunc(answer, answerCharacter) < 0 {
+	// A later active marker makes it impossible to distinguish an answer
+	// from planning that merely mentioned the first marker.
+	if strings.IndexFunc(answer, answerCharacter) < 0 || openCodeHasActiveThinkingTag(answer) {
 		r.ambiguous = r.answer != ""
 		return
 	}

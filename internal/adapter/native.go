@@ -546,7 +546,9 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 				p.bindOpenCodeStep(step)
 			}
 			p.opencodeFinishReason, _ = obs.Data["reason"].(string)
-			p.opencodeStopReportedText = obs.TokenUsage != nil && obs.TokenUsage.Output > 0
+			// A combined completion count can be reported as output even when
+			// every token was reasoning. Only split usage is text evidence.
+			p.opencodeStopReportedText = obs.TokenUsage != nil && obs.TokenUsage.Output > 0 && obs.TokenUsage.Reasoning > 0
 			if !step.known() && p.opencodeReasoning.finalAnswer() != "" && p.opencodeText.Len() == 0 {
 				// An anonymous stop cannot validate a provisional answer.
 				p.opencodeFinishReason = ""

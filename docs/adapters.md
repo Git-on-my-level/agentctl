@@ -244,8 +244,8 @@ meaning.
   outcome retains the native exit code and any content-free stderr fingerprint.
 - Morph DeepSeek V4.1 Flash delegations (`morph/morph-dsv41flash` and
   `morph/morph-dsv41flash-1017`) add `--thinking` to expose completed
-  `reasoning` parts in the JSON stream. This CLI display option is available in
-  OpenCode 1.17.13 and was exercised with 2.2.6 and 2.3.2. Expert `run` supports
+  `reasoning` parts in the JSON stream. Recovery and ordinary text precedence
+  were exercised with OpenCode 1.17.13, 2.2.6, and 2.3.2. Expert `run` supports
   recovery with one of those exact model IDs, selected with `--model` or `-m`.
   Put one of `--thinking`, `--thinking=true`, or `--thinking true` before the
   native `--` prompt separator. Conflicting or repeated flags disable fallback
@@ -254,21 +254,22 @@ meaning.
   `</think>` marker in a completed reasoning part from the same session and
   assistant message as the stopped step. The marker must immediately follow
   sentence-ending punctuation. The answer can start immediately or on the
-  next line. A stop that reports positive output tokens disqualifies reasoning
-  recovery. If the start omitted a message ID, a candidate remains provisional
-  until a typed stop confirms its session and message. Repeated candidates with the same
-  answer are idempotent. Each candidate must contain the marker and answer suffix
+  next line. Split usage with positive visible output and reasoning counts
+  disqualifies recovery. An unsplit completion total may count reasoning as
+  output. If the start omitted a message ID, a candidate remains provisional
+  until a typed stop confirms its session and message. Repeated candidates
+  with the same answer are idempotent. Each candidate must contain the marker and answer suffix
   in one frame. The CommonMark parser excludes markers inside code spans,
   blockquotes, fenced or indented code, and verbatim HTML. Same-line prose
   quotes also exclude a marker. A code span crossing the marker makes the
   boundary ambiguous even when the suffix parses on its own. Conflicting marked
   candidates or later unmarked parts with content leave the answer ambiguous.
   An unclosed fence makes a marker inside its Markdown container ineligible.
-  Blank or punctuation-only suffixes and suffixes that reopen thinking or
-  contain another unquoted `</think>` are ineligible.
+  Blank and punctuation-only suffixes are ineligible. Another thinking tag
+  in the answer is accepted only as a literal inside CommonMark code.
   With reasoning recovery enabled, a first completed text part reconciled after
   the stop takes precedence when it has the stopped part's session and
-  `messageID`, as emitted by OpenCode 2.2.6 and 2.3.2. When a message ID has
+  `messageID`, as emitted by the verified OpenCode versions. When a message ID has
   been reused across steps, the first result must arrive before the stop.
   A same-session stop without a message ID can confirm already bound ordinary
   text. It cannot confirm a reasoning-derived answer. Text with ambiguous

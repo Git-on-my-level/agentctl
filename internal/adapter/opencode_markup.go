@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"bytes"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -21,58 +22,83 @@ func protectedOpenCodeMarker(reasoning string, marker int) bool {
 	if openCodeInlineQuote(line, after) {
 		return true
 	}
-	containsMarker := func(segment text.Segment) bool {
+	return walkOpenCodeLiterals(reasoning, func(segment text.Segment, _ bool) bool {
 		return segment.Start <= marker && marker+len(deepSeekThinkingEnd) <= segment.Stop
+	})
+}
+
+// openCodeHasActiveThinkingTag allows literal examples in Markdown code. A
+// second tag outside code is ambiguous, including one in ordinary HTML text.
+func openCodeHasActiveThinkingTag(answer string) bool {
+	if !strings.Contains(answer, deepSeekThinkingStart) && !strings.Contains(answer, deepSeekThinkingEnd) {
+		return false
 	}
-	containsMarkerInLines := func(segments *text.Segments) bool {
+	masked := []byte(answer)
+	walkOpenCodeLiterals(answer, func(segment text.Segment, code bool) bool {
+		if code {
+			for _, marker := range []string{deepSeekThinkingStart, deepSeekThinkingEnd} {
+				region := masked[segment.Start:segment.Stop]
+				for offset := bytes.Index(region, []byte(marker)); offset >= 0; offset = bytes.Index(region, []byte(marker)) {
+					region[offset] = 0
+					region = region[offset+len(marker):]
+				}
+			}
+		}
+		return false
+	})
+	return bytes.Contains(masked, []byte(deepSeekThinkingStart)) || bytes.Contains(masked, []byte(deepSeekThinkingEnd))
+}
+
+// walkOpenCodeLiterals stops when the visitor accepts a segment. The code
+// argument distinguishes Markdown code from HTML and blockquote text.
+func walkOpenCodeLiterals(source string, visit func(segment text.Segment, code bool) bool) bool {
+	visitLines := func(segments *text.Segments, code bool) bool {
 		for i := range segments.Len() {
-			if containsMarker(segments.At(i)) {
+			if visit(segments.At(i), code) {
 				return true
 			}
 		}
 		return false
 	}
-
-	document := openCodeMarkdown.Parse(text.NewReader([]byte(reasoning)))
-	protected := false
+	document := openCodeMarkdown.Parse(text.NewReader([]byte(source)))
+	found := false
 	_ = ast.Walk(document, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
 			return ast.WalkContinue, nil
 		}
 		switch n := node.(type) {
 		case *ast.CodeBlock:
-			protected = containsMarkerInLines(n.Lines())
+			found = visitLines(n.Lines(), true)
 		case *ast.FencedCodeBlock:
-			protected = containsMarkerInLines(n.Lines()) || n.Info != nil && containsMarker(n.Info.Segment)
+			found = visitLines(n.Lines(), true) || n.Info != nil && visit(n.Info.Segment, true)
 		case *ast.Text:
-			protected = n.Parent().Kind() == ast.KindCodeSpan && containsMarker(n.Segment)
+			found = n.Parent().Kind() == ast.KindCodeSpan && visit(n.Segment, true)
 		case *ast.HTMLBlock:
-			protected = containsMarkerInLines(n.Lines()) || containsMarker(n.ClosureLine)
+			found = visitLines(n.Lines(), false) || n.HasClosure() && visit(n.ClosureLine, false)
 		case *ast.RawHTML:
-			// A marker in an attribute or comment is part of a larger
-			// token. An ordinary closing tag is a token of its own.
 			for i := range n.Segments.Len() {
 				segment := n.Segments.At(i)
-				if containsMarker(segment) && segment.Len() != len(deepSeekThinkingEnd) {
-					protected = true
+				raw := source[segment.Start:segment.Stop]
+				if raw != deepSeekThinkingStart && raw != deepSeekThinkingEnd && visit(segment, false) {
+					found = true
 					break
 				}
 			}
 		}
-		if !protected && node.Type() == ast.TypeBlock && containsMarkerInLines(node.Lines()) {
+		if !found && node.Type() == ast.TypeBlock && node.Lines().Len() > 0 {
 			for parent := node.Parent(); parent != nil; parent = parent.Parent() {
 				if parent.Kind() == ast.KindBlockquote {
-					protected = true
+					found = visitLines(node.Lines(), false)
 					break
 				}
 			}
 		}
-		if protected {
+		if found {
 			return ast.WalkStop, nil
 		}
 		return ast.WalkContinue, nil
 	})
-	return protected
+	return found
 }
 
 // Inline prose quoting is local to the marker line. An unbalanced apostrophe
