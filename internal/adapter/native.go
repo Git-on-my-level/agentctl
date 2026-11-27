@@ -541,7 +541,11 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 				obs.Data["provider_capacity_pending"] = true
 			}
 			if step.known() && !p.opencodeStep.known() {
-				p.opencodeUnboundText = p.opencodeUnboundText || p.opencodeText.Len() != 0
+				if p.opencodeText.Len() != 0 {
+					p.opencodeUnboundText = true
+					p.opencodeText.Reset()
+					p.opencodeTruncated = false
+				}
 				// Preserve this identity for a part reconciled after the stop.
 				p.bindOpenCodeStep(step)
 			}

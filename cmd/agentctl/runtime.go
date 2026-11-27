@@ -199,8 +199,13 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		if argv := adapter.OpenCodeLegacyRecipeArgv(plan.RecipeArgv, probe.BackendVersion); argv != nil {
 			plan.RecipeArgv = argv
 		}
-		binding.NativePlan = &plan
-		opts.delegation = &binding
+		if opts.plan {
+			// The caller renders the same prompt-free binding after preflight.
+			opts.delegation.NativePlan = &plan
+		} else {
+			binding.NativePlan = &plan
+			opts.delegation = &binding
+		}
 	}
 	if runtime.Name() == "opencode" && opts.resumeSession != "" && opts.delegation != nil && opts.delegation.NativePlan != nil {
 		if !adapter.OpenCodeResumeVersionSupported(probe.BackendVersion) {

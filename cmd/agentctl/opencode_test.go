@@ -285,6 +285,28 @@ printf '%s\n' '{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"s
 	if err := os.WriteFile(filepath.Join(f.root, "opencode"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	const planPrompt = "private compatibility plan prompt"
+	for _, flags := range [][]string{{"--plan"}, {"--plan", "--detach"}} {
+		code, out := f.invoke(planPrompt, flags...)
+		var plan struct {
+			Result struct {
+				Native struct {
+					Argv []string `json:"argv"`
+				} `json:"native"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal([]byte(out), &plan); code != 0 || err != nil || len(plan.Result.Native.Argv) == 0 {
+			t.Fatalf("legacy plan %v exit=%d err=%v %s", flags, code, err, out)
+		}
+		for _, arg := range plan.Result.Native.Argv {
+			if arg == "--thinking" {
+				t.Fatalf("legacy plan %v shows the unsupported display flag: %v", flags, plan.Result.Native.Argv)
+			}
+		}
+		if strings.Contains(out, planPrompt) {
+			t.Fatalf("legacy plan %v exposed the attached prompt", flags)
+		}
+	}
 	code, out := f.invoke("fixture prompt", "--wait", "--require-result-source", "assistant_terminal_result")
 	if code != 0 || !strings.Contains(out, `"text":"Legacy answer."`) || !strings.Contains(out, `"source":"assistant_terminal_result"`) {
 		t.Fatalf("legacy delegate exit=%d %s", code, out)

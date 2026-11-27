@@ -563,7 +563,8 @@ func (a *app) delegateCommand(ctx context.Context, renderer output.Renderer, c c
 		if opts.detach {
 			return writeDetachedPlan(renderer, *binding, document.Result)
 		}
-		return writeDelegatePlan(renderer, *binding, delegatePlanNative(recipe.Env, recipe.Argv, recipe.PromptDelivery, recipe.Permissions, document.Result), "")
+		plan := binding.NativePlan
+		return writeDelegatePlan(renderer, *binding, delegatePlanNative(plan.Env, plan.Argv, plan.PromptDelivery, plan.Permissions, document.Result), "")
 	}
 	execution, found, problem := a.findDelegation(ctx, c, mutation)
 	if problem != nil {

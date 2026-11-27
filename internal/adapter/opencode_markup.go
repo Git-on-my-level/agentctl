@@ -18,12 +18,32 @@ var openCodeMarkdown = goldmark.DefaultParser()
 // on both sides of the marker, including multiline code spans.
 func protectedOpenCodeMarker(reasoning string, marker int) bool {
 	before, after := reasoning[:marker], reasoning[marker+len(deepSeekThinkingEnd):]
-	if openCodeInlineQuote(openCodeParagraphPrefix(before), after) {
+	document := openCodeMarkdown.Parse(text.NewReader([]byte(reasoning)))
+	start := openCodeParagraphStart(document, before)
+	var prose []byte
+	protected := walkOpenCodeLiterals(reasoning, document, func(segment text.Segment, code bool) bool {
+		if segment.Start <= marker && marker+len(deepSeekThinkingEnd) <= segment.Stop {
+			return true
+		}
+		if code && segment.Start < marker && segment.Stop > start {
+			if prose == nil {
+				prose = []byte(before[start:])
+			}
+			for i := max(segment.Start, start); i < min(segment.Stop, marker); i++ {
+				if prose[i-start] != '\n' {
+					prose[i-start] = ' '
+				}
+			}
+		}
+		return false
+	})
+	if protected {
 		return true
 	}
-	return walkOpenCodeLiterals(reasoning, func(segment text.Segment, _ bool) bool {
-		return segment.Start <= marker && marker+len(deepSeekThinkingEnd) <= segment.Stop
-	})
+	if prose != nil {
+		return openCodeInlineQuote(string(prose), after)
+	}
+	return openCodeInlineQuote(before[start:], after)
 }
 
 // openCodeHasActiveThinkingTag allows literal examples in Markdown code. A
@@ -33,7 +53,8 @@ func openCodeHasActiveThinkingTag(answer string) bool {
 		return false
 	}
 	masked := []byte(answer)
-	walkOpenCodeLiterals(answer, func(segment text.Segment, code bool) bool {
+	document := openCodeMarkdown.Parse(text.NewReader([]byte(answer)))
+	walkOpenCodeLiterals(answer, document, func(segment text.Segment, code bool) bool {
 		if code {
 			for _, marker := range []string{deepSeekThinkingStart, deepSeekThinkingEnd} {
 				region := masked[segment.Start:segment.Stop]
@@ -50,7 +71,7 @@ func openCodeHasActiveThinkingTag(answer string) bool {
 
 // walkOpenCodeLiterals stops when the visitor accepts a segment. The code
 // argument distinguishes Markdown code from HTML and blockquote text.
-func walkOpenCodeLiterals(source string, visit func(segment text.Segment, code bool) bool) bool {
+func walkOpenCodeLiterals(source string, document ast.Node, visit func(segment text.Segment, code bool) bool) bool {
 	visitLines := func(segments *text.Segments, code bool) bool {
 		for i := range segments.Len() {
 			if visit(segments.At(i), code) {
@@ -59,7 +80,6 @@ func walkOpenCodeLiterals(source string, visit func(segment text.Segment, code b
 		}
 		return false
 	}
-	document := openCodeMarkdown.Parse(text.NewReader([]byte(source)))
 	found := false
 	_ = ast.Walk(document, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
@@ -100,44 +120,41 @@ func walkOpenCodeLiterals(source string, visit func(segment text.Segment, code b
 	return found
 }
 
-func openCodeParagraphPrefix(before string) string {
-	end := strings.LastIndexByte(before, '\n')
-	for end >= 0 {
-		start := strings.LastIndexByte(before[:end], '\n') + 1
-		if strings.TrimSpace(before[start:end]) == "" {
-			return before[end+1:]
+func openCodeParagraphStart(document ast.Node, before string) int {
+	marker := len(before)
+	start := strings.LastIndexByte(before, '\n') + 1
+	_ = ast.Walk(document, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
 		}
-		end = start - 1
-	}
-	return before
+		switch node.Kind() {
+		case ast.KindParagraph, ast.KindTextBlock, ast.KindHeading:
+			lines := node.Lines()
+			for i := range lines.Len() {
+				segment := lines.At(i)
+				if segment.Start <= marker && marker < segment.Stop {
+					start = lines.At(0).Start
+					return ast.WalkStop, nil
+				}
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+	return start
 }
 
-// Prose quotes can span lines within a paragraph. Markdown handles multiline
-// code spans separately, so a stray backtick cannot affect quote parsing on
-// the following line.
+// Prose quotes can span lines within a paragraph. The caller has already
+// masked any parsed Markdown code in that paragraph.
 func openCodeInlineQuote(line, suffix string) bool {
 	lineSuffix, _, _ := strings.Cut(suffix, "\n")
 	hasClosingSingleQuote := strings.ContainsAny(lineSuffix, "'’")
 	var quote, closeQuote rune
 	var quoteDepth int
-	var codeWidth int
 	for next := 0; next < len(line); {
 		i := next
 		c, width := utf8.DecodeRuneInString(line[i:])
 		next = i + width
 		switch {
-		case c == '\n':
-			codeWidth = 0
-		case c == '`' && quote == 0:
-			width := openCodeRunWidth(line[i:], '`')
-			if codeWidth == 0 {
-				codeWidth = width
-			} else if width == codeWidth {
-				codeWidth = 0
-			}
-			next = i + width
-		case codeWidth != 0:
-			// Quotes in code spans are literal.
 		case c == '\\':
 			_, escaped := utf8.DecodeRuneInString(line[next:])
 			next += escaped
@@ -162,7 +179,7 @@ func openCodeInlineQuote(line, suffix string) bool {
 			}
 		}
 	}
-	return quote != 0 || codeWidth != 0 || strings.HasSuffix(line, "\\")
+	return quote != 0 || strings.HasSuffix(line, "\\")
 }
 
 func openCodeQuoteEnd(open rune) rune {
@@ -201,14 +218,6 @@ func openCodeBeforeQuote(line string, index int) bool {
 func openCodeDecade(s string) bool {
 	return len(s) >= 3 && s[0] >= '0' && s[0] <= '9' && s[1] >= '0' && s[1] <= '9' &&
 		s[2] == 's' && (len(s) == 3 || !openCodeWordByte(s[3]))
-}
-
-func openCodeRunWidth(value string, c byte) int {
-	i := 0
-	for i < len(value) && value[i] == c {
-		i++
-	}
-	return i
 }
 
 func openCodeWordByte(c byte) bool {
