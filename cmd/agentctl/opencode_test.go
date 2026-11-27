@@ -229,6 +229,90 @@ func TestDelegateOpenCodePlanAndCollect(t *testing.T) {
 	assertResultMatchesSchemaShape(t, stdout.String(), "recent-result.schema.json", "summary")
 }
 
+func TestDelegateOpenCodeCollectsDeepSeekReasoningAnswer(t *testing.T) {
+	f := newOpenCodeDelegateFixture(t)
+	config, err := os.ReadFile(f.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config = bytes.ReplaceAll(config, []byte("zai/glm-5.3"), []byte("morph/morph-dsv41flash-1017"))
+	if err := os.WriteFile(f.config, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const script = `#!/bin/sh
+if [ "$1" = "--version" ]; then echo 'opencode 2.3.2'; exit 0; fi
+thinking=false
+for arg do
+  [ "$arg" != "--thinking" ] || thinking=true
+done
+printf '%s\n' '{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","messageID":"msg_final"}}'
+if "$thinking"; then
+  printf '%s\n' '{"type":"reasoning","sessionID":"ses_fixture","part":{"id":"prt_final","type":"reasoning","sessionID":"ses_fixture","messageID":"msg_final","time":{"start":1,"end":2},"text":"private planning.</think>\nRecovered answer."}}'
+fi
+printf '%s\n' '{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop","tokens":{"output":0,"reasoning":60}}}'
+`
+	if err := os.WriteFile(filepath.Join(f.root, "opencode"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	code, out := f.invoke("fixture prompt", "--wait", "--require-result-source", "assistant_reasoning_fallback")
+	if code != 0 || !strings.Contains(out, `"text":"Recovered answer."`) || !strings.Contains(out, `"source":"assistant_reasoning_fallback"`) {
+		t.Fatalf("delegate exit=%d %s", code, out)
+	}
+	assertResultMatchesSchemaShape(t, out, "delegate-result.schema.json")
+	if raw, err := os.ReadFile(f.journal); err != nil || bytes.Contains(raw, []byte("private planning")) || bytes.Contains(raw, []byte("</think>")) {
+		t.Fatalf("ineligible reasoning data in journal or read failed: %v", err)
+	}
+}
+
+func TestDelegateOpenCodePreservesTextOnOlderCLI(t *testing.T) {
+	f := newOpenCodeDelegateFixture(t)
+	config, err := os.ReadFile(f.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config = bytes.ReplaceAll(config, []byte("zai/glm-5.3"), []byte("morph/morph-dsv41flash-1017"))
+	if err := os.WriteFile(f.config, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const script = `#!/bin/sh
+if [ "$1" = "--version" ]; then echo 'opencode v1.0.0'; exit 0; fi
+for arg do
+  if [ "$arg" = "--thinking" ]; then exit 64; fi
+done
+printf '%s\n' '{"type":"text","sessionID":"ses_fixture","part":{"type":"text","time":{"end":2},"text":"Legacy answer."}}'
+printf '%s\n' '{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","reason":"stop"}}'
+`
+	if err := os.WriteFile(filepath.Join(f.root, "opencode"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const planPrompt = "private compatibility plan prompt"
+	for _, flags := range [][]string{{"--plan"}, {"--plan", "--detach"}} {
+		code, out := f.invoke(planPrompt, flags...)
+		var plan struct {
+			Result struct {
+				Native struct {
+					Argv []string `json:"argv"`
+				} `json:"native"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal([]byte(out), &plan); code != 0 || err != nil || len(plan.Result.Native.Argv) == 0 {
+			t.Fatalf("legacy plan %v exit=%d err=%v %s", flags, code, err, out)
+		}
+		for _, arg := range plan.Result.Native.Argv {
+			if arg == "--thinking" {
+				t.Fatalf("legacy plan %v shows the unsupported display flag: %v", flags, plan.Result.Native.Argv)
+			}
+		}
+		if strings.Contains(out, planPrompt) {
+			t.Fatalf("legacy plan %v exposed the attached prompt", flags)
+		}
+	}
+	code, out := f.invoke("fixture prompt", "--wait", "--require-result-source", "assistant_terminal_result")
+	if code != 0 || !strings.Contains(out, `"text":"Legacy answer."`) || !strings.Contains(out, `"source":"assistant_terminal_result"`) {
+		t.Fatalf("legacy delegate exit=%d %s", code, out)
+	}
+}
+
 func TestDelegateOpenCodeUnattendedCodingAddsAuto(t *testing.T) {
 	f := newOpenCodeDelegateFixture(t)
 	var config map[string]any
@@ -322,19 +406,33 @@ printf '%s\n' '{"type":"retry","timestamp":1794251075486,"sessionID":"ses_incomp
 }
 
 func TestOpenCodeRateLimitSurfacesMetadataAndCapacity(t *testing.T) {
+	t.Run("ordinary", func(t *testing.T) { testOpenCodeRateLimitLateStop(t, false) })
+	t.Run("reasoning recovery", func(t *testing.T) { testOpenCodeRateLimitLateStop(t, true) })
+}
+
+func testOpenCodeRateLimitLateStop(t *testing.T, reasoning bool) {
+	t.Helper()
 	root := testutil.TempDir(t)
 	path := filepath.Join(root, "opencode")
 	script := `#!/bin/sh
 if [ "$1" = "--version" ]; then echo 'opencode 2.2.6'; exit 0; fi
 printf '%s\n' '{"type":"retry","timestamp":1794251075486,"sessionID":"ses_rate_limit","attempt":2,"nextRetryAt":1794251101486,"error":{"type":"provider.rate-limit","message":"Rate limit exceeded; private-request-details","status":429,"retryAfterMs":26000}}' '{"type":"error","sessionID":"ses_rate_limit","error":{"type":"provider.rate-limit","message":"Rate limit exceeded; private-request-details","status":429}}'
 `
+	if reasoning {
+		script += `printf '%s\n' '{"type":"reasoning","sessionID":"ses_rate_limit","part":{"type":"reasoning","id":"prt_reasoning","sessionID":"ses_rate_limit","messageID":"msg_final","time":{"end":2},"text":"private provider planning.</think>late marked answer"}}'` + "\n"
+	}
+	script += `printf '%s\n' '{"type":"step_finish","sessionID":"ses_rate_limit","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}'` + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	journal := filepath.Join(root, "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
-	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--", path, "run", "--format", "json"}); code != 0 {
+	args := []string{"--output", "json", "--journal", journal, "run", "--", path, "run", "--format", "json"}
+	if reasoning {
+		args = append(args, "--model", "morph/morph-dsv41flash-1017", "--thinking")
+	}
+	if code := a.run(context.Background(), append(args, "--", "prompt")); code != 0 {
 		t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	var document struct {
@@ -358,6 +456,19 @@ printf '%s\n' '{"type":"retry","timestamp":1794251075486,"sessionID":"ses_rate_l
 	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "status", execution.ID.String()}); code != 0 {
 		t.Fatalf("status exit=%d %s", code, stdout.String())
 	}
+	var status struct {
+		Result struct {
+			model.Execution
+			Failure *model.OutcomeFailure `json:"failure"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	failure := status.Result.Failure
+	if status.Result.State != model.StateFailed || failure == nil || failure.Code != "provider_capacity" || !failure.Retryable {
+		t.Fatalf("terminal capacity failure = %#v", status.Result)
+	}
 	for _, want := range []string{`"rate_limit"`, `"attempt":2`, `"retry_after_ms":26000`, `"http_status":429`, `"provider_error_type":"provider.rate-limit"`, `"code":"provider_capacity"`, `"category":"capacity"`, `"retryable":true`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("status missing %s: %s", want, stdout.String())
@@ -372,7 +483,30 @@ printf '%s\n' '{"type":"retry","timestamp":1794251075486,"sessionID":"ses_rate_l
 			t.Fatalf("events missing %s: %s", want, stdout.String())
 		}
 	}
-	if strings.Contains(stdout.String(), "private-request-details") || strings.Contains(stdout.String(), "Rate limit exceeded") {
+	var events struct {
+		Result struct {
+			Events []model.Event `json:"events"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &events); err != nil {
+		t.Fatal(err)
+	}
+	var sawStop bool
+	for _, event := range events.Result.Events {
+		if event.SourceState != nil && *event.SourceState == "opencode.step_finish" {
+			sawStop = true
+			if _, ok := event.Payload["http_status"]; ok {
+				t.Fatalf("stop claims an HTTP status: %#v", event.Payload)
+			}
+			if _, ok := event.Payload["provider_capacity_pending"]; ok {
+				t.Fatalf("internal reconciliation flag escaped into the journal: %#v", event.Payload)
+			}
+		}
+	}
+	if !sawStop {
+		t.Fatal("missing late stop event")
+	}
+	if strings.Contains(stdout.String(), "private-request-details") || strings.Contains(stdout.String(), "Rate limit exceeded") || strings.Contains(stdout.String(), "late marked answer") {
 		t.Fatalf("provider message leaked into events: %s", stdout.String())
 	}
 	stdout.Reset()

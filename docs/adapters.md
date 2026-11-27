@@ -232,24 +232,74 @@ meaning.
 
 - Launch `opencode run --format json`; `--model` takes an exact `provider/model`
   ID. Prompt delivery is one positional argument (use `--` before the prompt).
-- Capture only completed `text` parts (`part.type: "text"` with `part.time.end`)
-  from the final step. Require exit 0, nonempty text, and that step's
+- Prefer completed `text` parts (`part.type: "text"` with `part.time.end`)
+  from the final step. Require exit 0, an answer, and that step's
   `step_finish` event (`part.type: "step-finish"`, `part.reason: "stop"`).
   Missing or non-stop finishes fail with `incomplete_terminal_result`; a
-  stopped step without text fails with `empty_terminal_result`. Neither stores
+  stopped step without an answer fails with `empty_terminal_result`. Neither stores
   partial answer content. Error events and nonzero exits remain failures. An
   exit before any OpenCode event, including a zero exit, fails with
   `opencode_exited_before_any_event` unless stderr carried a recognized cause
   (authentication, network, capacity), which keeps its own classification. The
   outcome retains the native exit code and any content-free stderr fingerprint.
+- Morph DeepSeek V4.1 Flash delegations (`morph/morph-dsv41flash` and
+  `morph/morph-dsv41flash-1017`) add `--thinking` to expose completed
+  `reasoning` parts in the JSON stream. Recovery and ordinary text precedence
+  were exercised with OpenCode 1.17.13, 2.2.6, and 2.3.2. The managed recipe
+  omits the display flag when the existing probe reports a version older than
+  1.17.13, preserving the ordinary text path. Expert `run` supports
+  recovery with one of those exact model IDs, selected with `--model` or `-m`.
+  Put one of `--thinking`, `--thinking=true`, or `--thinking true` before the
+  native `--` prompt separator. Conflicting or repeated flags disable fallback
+  negotiation. When there is no
+  completed text, the adapter can recover the answer after the model's literal
+  `</think>` marker in a completed reasoning part from the same session and
+  assistant message as the stopped step. The marker must immediately follow
+  sentence-ending punctuation. The answer can start immediately or on the
+  next line. Split usage with positive visible output and reasoning counts
+  disqualifies recovery. An unsplit completion total may count reasoning as
+  output. If the start omitted a message ID, a candidate remains provisional
+  until a typed stop confirms its session and message. Repeated candidates
+  with the same answer are idempotent. Each candidate must contain the marker and answer suffix
+  in one frame. The CommonMark parser excludes markers inside code spans,
+  blockquotes, fenced or indented code, and verbatim HTML. Prose quotes within
+  the current paragraph also exclude a marker. A code span crossing the marker
+  makes the boundary ambiguous even when the suffix parses on its own. Conflicting marked
+  candidates or later unmarked parts with content leave the answer ambiguous.
+  An unclosed fence makes a marker inside its Markdown container ineligible.
+  Blank and punctuation-only suffixes are ineligible. Another thinking tag
+  in the answer is accepted only as a literal inside CommonMark code.
+  With reasoning recovery enabled, a first completed text part reconciled after
+  the stop takes precedence when it has the stopped part's session and
+  `messageID`, as emitted by the verified OpenCode versions. When a message ID has
+  been reused across steps, a reasoning part cannot establish which step owns
+  the answer. A first text part reconciled after the stop is also ambiguous.
+  A same-session stop without a message ID can confirm already bound ordinary
+  text. It cannot confirm a reasoning-derived answer. Text with ambiguous
+  identity cannot supply an answer. An ambiguous late suffix in a bound text
+  part leaves the turn incomplete.
+  Text from a known foreign session is ignored in that mode. Ordinary invocations
+  retain the legacy completed-text and stopped-step contract.
+  Stored JSON results identify recovered content with
+  `outcome.content.source: "assistant_reasoning_fallback"`. Callers may assert
+  that source with `--require-result-source` or omit the flag to accept either
+  answer form. `assistant_terminal_result` still selects normal text. Capability
+  negotiation reports whether the exact invocation enables the optional fallback.
+  Static declarations without an invocation omit that evaluation.
 - Bound cumulative answer buffering to a 1 MiB UTF-8 prefix (including part
   separators) and mark truncated results. Discard excess text while retaining
   final step controls; observations retain metadata rather than another text copy.
-  Repeatable reasoning and tool-progress metadata coalesce to one event, and
-  only `retry`, `step_start`, and `step_finish` bypass the stdout budget.
-- Reset answer and completion evidence at each `step_start`; non-stop finishes
-  discard earlier narration. Tool payloads and reasoning never enter results
-  or metadata-only events.
+  Repeatable reasoning and tool-progress metadata coalesce to one event.
+  Completed parts needed for answer extraction and the `retry`, `step_start`,
+  and `step_finish` controls can still be processed beyond the stdout budget.
+  Reasoning recognition accepts at most 16 MiB of extra candidate frames per
+  execution. If that allowance is exhausted, the fallback cannot use an
+  incomplete set of reasoning parts.
+- Reset answer and completion evidence on a new `step_start`. With recovery
+  enabled, a retry also resets the answer and a repeated start for the same
+  message and native part preserves the current answer.
+  Non-stop finishes discard earlier narration. Tool payloads and the reasoning
+  before the answer boundary are discarded. Events carry metadata only.
 - Structured `retry` events emit metadata-only progress and update the latest
   `rate_limit` record with attempt, retry delay/time, provider error type and
   explicit numeric HTTP status. Provider messages never enter these events.
@@ -264,7 +314,11 @@ meaning.
   completion/extraction diagnostic (for example `incomplete_terminal_result`
   after a retry), that diagnostic is kept and the retry stays separate
   `rate_limit` metadata. OpenCode's `provider_capacity` message identifies HTTP
-  429 and advises waiting before retrying with the same model.
+  429 and advises waiting before retrying with the same model. A reconciled
+  stop can retain the pending failure in the execution state. The retry and
+  error events carry its HTTP evidence, and the internal reconciliation flag
+  is consumed before the stop event is journaled. This failure classification
+  applies with or without reasoning recovery.
 - Sum `step_finish.part.tokens` counters across the execution into numeric
   `token_usage` metadata: input, output, cache read/write, and reasoning when
   present. Cost, text, reasoning content, and raw token objects are not retained.
@@ -287,7 +341,7 @@ meaning.
   Same-key replay never relaunches. Use a new-key `continue` instruction to
   inspect native history, reconcile prior tool effects, and return the previous
   final answer if the background turn already finished. Eligible native
-  delegates recover structured 429s and stopped turns without text through
+  delegates recover structured 429s and stopped turns without an answer through
   [bounded automatic continuation](follow-up-turns.md#automatic-opencode-recovery).
   A late answer after transport loss remains in native history until a
   continuation can retrieve it.

@@ -401,6 +401,21 @@ func TestOpenCodeRecipeArgv(t *testing.T) {
 	}
 }
 
+func TestOpenCodeMorphDeepSeekRecipeShowsThinking(t *testing.T) {
+	for _, model := range []string{"morph/morph-dsv41flash", "morph/morph-dsv41flash-1017"} {
+		t.Run(model, func(t *testing.T) {
+			got, err := Build(Input{Harness: "opencode", Model: model})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"opencode", "run", "--format", "json", "--model", model, "--thinking", "--"}
+			if !slices.Equal(got.Argv, want) {
+				t.Fatalf("argv=%v want=%v", got.Argv, want)
+			}
+		})
+	}
+}
+
 func TestOpenCodeRecipeRejectsSpeedEffortAndBadModels(t *testing.T) {
 	var buildErr *Error
 	if _, err := Build(Input{Harness: "opencode", Model: "zai/glm-5.3", Speed: "regular"}); !errors.As(err, &buildErr) || buildErr.Code != "speed_unavailable" {

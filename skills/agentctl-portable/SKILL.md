@@ -350,8 +350,15 @@ agentctl run --prompt-file "$PWD/task.md" --prompt-delivery argv -- opencode run
 ```
 
 OpenCode answer extraction requires the noninteractive `run --format json`
-form, completed final-step text, and a final `step_finish` with
-`part.reason: "stop"` plus exit 0. Answer buffering is capped at a 1 MiB UTF-8
+form, a final `step_finish` with `part.reason: "stop"`, and exit 0. Completed
+final-step text takes precedence. Morph DeepSeek V4.1 Flash recipes add
+`--thinking` so a textless stopped step can return the answer after `</think>`
+from a completed reasoning part on the same assistant message. For expert
+`run`, select the exact DeepSeek `--model` and add `--thinking` before the native
+`--` prompt separator. The stored source is `assistant_reasoning_fallback`.
+The reasoning before the marker is discarded. Unmarked reasoning and empty
+or punctuation-only suffixes leave the missing-answer failure in place.
+Answer buffering is capped at a 1 MiB UTF-8
 prefix; excess text is discarded and the result is marked truncated.
 Missing/non-stop finishes fail without
 returning partial text; other invocations are not result-capable. Cancellation goes through the
@@ -450,7 +457,7 @@ reconnect to the background service. Process-interruption steering is unavailabl
 
 Eligible OpenCode delegates automatically resume a structured HTTP 429 up to
 three admitted times per lineage with growing jittered backoff of at most one hour, or send one follow-up
-when a stopped turn has no final text. The owner waits for the child to exit
+when a stopped turn has no final answer. The owner waits for the child to exit
 and keeps the same native session and model. Use the original ID with
 `delegate --wait`, `await`, `await-any`, `status` or `result`; JSON reports the ordered
 `recovery_chain`, and `--content` returns the final answer. Pending recovery

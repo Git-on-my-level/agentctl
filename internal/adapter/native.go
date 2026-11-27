@@ -27,6 +27,7 @@ import (
 const (
 	defaultOutputLimit         = 2 << 20
 	maxStructuredRecordBytes   = 8 << 20
+	opencodeReasoningOverLimit = 2 * maxStructuredRecordBytes
 	nativeObservationFreshness = 30 * time.Second
 )
 
@@ -65,6 +66,11 @@ type parsedObservation struct {
 	OccurredAt       *time.Time
 	Data             map[string]any
 	Page             *parsedPage
+
+	// Private OpenCode part data, cleared before retaining the observation.
+	openCodeMessageID string
+	openCodePartID    string
+	openCodeReasoning string
 }
 
 type parsedPage struct {
@@ -128,7 +134,17 @@ type processRecord struct {
 	sawOpenCode               bool
 	opencodeText              strings.Builder
 	opencodeTruncated         bool
+	opencodeUnboundText       bool
 	opencodeFinishReason      string
+	opencodeStopReportedText  bool
+	opencodeStep              openCodeStepID
+	opencodeLastKnownStep     openCodeStepID
+	opencodeStartPartID       string
+	opencodeUnboundLateParts  bool
+	opencodeEarlierSteps      map[openCodeStepID]struct{}
+	opencodeReasoning         openCodeReasoning
+	opencodeReasoningStep     openCodeStepID
+	opencodeReasoningOverflow int
 	opencodeTokenUsage        *TokenUsage
 	opencodeHTTPStatus        int64
 	opencodeRetryAfterMS      int64
@@ -234,6 +250,25 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 		}
 		return
 	}
+	if overLimit && obs.openCodeReasoning != "" {
+		p.mu.Lock()
+		eligible := p.collectableOpenCodeReasoning(obs)
+		if eligible {
+			// Allow a full live and reconciled frame beyond the ordinary stream
+			// budget. Discard the fallback if remaining evidence cannot be read.
+			if len(line) > opencodeReasoningOverLimit-p.opencodeReasoningOverflow {
+				p.opencodeReasoningOverflow = opencodeReasoningOverLimit
+				p.opencodeReasoning.ambiguous = true
+				eligible = false
+			} else {
+				p.opencodeReasoningOverflow += len(line)
+			}
+		}
+		p.mu.Unlock()
+		if !eligible {
+			obs.openCodeReasoning = ""
+		}
+	}
 	if overLimit && !retainObservationAfterLimit(obs, openCodeRetryPending) {
 		if strings.HasPrefix(obs.SourceState, "opencode.") {
 			// Dropped for the output limit, but OpenCode did emit it: an early
@@ -302,11 +337,10 @@ func openCodeStatefulControl(sourceState string) bool {
 
 // retainObservationAfterLimit keeps only evidence that the bounded stream
 // budget cannot reconstruct. Content, errors, attention, terminal results and
-// OpenCode step controls survive; ordinary metadata and OpenCode reasoning or
-// tool-progress frames do not. A text frame after a structured 429 is retained
-// so the projection can clear stale retry evidence.
+// OpenCode step controls and completed answer candidates survive. A text frame
+// after a structured 429 is retained to clear stale retry evidence.
 func retainObservationAfterLimit(obs parsedObservation, openCodeRetryPending bool) bool {
-	if obs.Terminal || obs.Content != "" || obs.Error != "" || obs.State == StateAttention || obs.State == StateWaiting || obs.Kind == "attention" || obs.SourceState == "input_acknowledged" {
+	if obs.Terminal || obs.Content != "" || obs.openCodeReasoning != "" || obs.Error != "" || obs.State == StateAttention || obs.State == StateWaiting || obs.Kind == "attention" || obs.SourceState == "input_acknowledged" {
 		return true
 	}
 	if openCodeStatefulControl(obs.SourceState) {
@@ -374,7 +408,57 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 		}
 	}
 
-	if obs.SessionID != "" {
+	openCode, isOpenCode := p.parser.(opencodeJSONParser)
+	if isOpenCode && openCode.reasoningFallback && p.sessionKnown && obs.SessionID != "" && obs.SessionID != p.ref.OpaqueID {
+		// The renderer follows one native session. An anonymous message ID
+		// cannot authorize rebinding that session from another frame.
+		return
+	}
+	step := openCodeStepID{session: obs.SessionID, message: obs.openCodeMessageID}
+	_, earlierStep := p.opencodeEarlierSteps[step]
+	if obs.SourceState == "opencode.step_start" && step.known() && step == p.opencodeStep && obs.openCodePartID != "" && obs.openCodePartID == p.opencodeStartPartID {
+		return
+	}
+	if earlierStep && (obs.SourceState == "opencode.step_start" || obs.SourceState == "opencode.text") {
+		// Reconciliation can print a missed part from a superseded step.
+		return
+	}
+	if obs.SourceState == "opencode.text" && !p.opencodeStep.known() && step.known() && step == p.opencodeLastKnownStep &&
+		p.opencodeReasoningStep.known() && step != p.opencodeReasoningStep {
+		// An anonymous start and a candidate for a different message leave
+		// the previous message's text unconfirmed. Wait for the typed stop.
+		return
+	}
+	if p.opencodeStep.known() && step != p.opencodeStep {
+		switch obs.SourceState {
+		case "opencode.text":
+			// An unbound frame cannot contribute bytes or replace the session
+			// binding. A known foreign session cannot invalidate this answer.
+			if step.session == "" || step.session == p.opencodeStep.session {
+				p.opencodeUnboundText = p.opencodeUnboundText || obs.Content != ""
+			}
+			return
+		case "opencode.step_finish":
+			legacyTextStop := step.message == "" && step.session == p.opencodeStep.session && p.opencodeText.Len() != 0
+			if !earlierStep && !legacyTextStop {
+				p.opencodeFinishReason = ""
+				return
+			}
+		}
+	}
+	if obs.SourceState == "opencode.reasoning" {
+		if p.collectableOpenCodeReasoning(obs) {
+			if step != p.opencodeReasoningStep {
+				p.opencodeReasoning = openCodeReasoning{}
+				p.opencodeReasoningStep = step
+			}
+			p.opencodeReasoning.observe(obs.openCodePartID, obs.openCodeReasoning)
+		}
+		// Reasoning cannot rebind a session or enter stored observations.
+		obs.SessionID = ""
+		obs.openCodeReasoning = ""
+	}
+	if obs.SessionID != "" && !earlierStep {
 		// The session id replaces the launch binding's opaque id. The PID
 		// recorded on launchIdentity stays the process the launcher started,
 		// even when this value is numeric.
@@ -394,20 +478,38 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 			p.opencodeRetryAfterMS, _ = obs.Data["retry_after_ms"].(int64)
 			p.opencodeProviderErrorType, _ = obs.Data["provider_error_type"].(string)
 			p.opencodeProviderError = obs.SourceState == "opencode.error"
+		case "opencode.reasoning":
+			// A reconciled reasoning frame can arrive after the provider error.
 		default:
-			p.opencodeHTTPStatus = 0
-			p.opencodeRetryAfterMS = 0
-			p.opencodeProviderErrorType = ""
-			p.opencodeProviderError = false
+			if !earlierStep && !(obs.SourceState == "opencode.step_finish" && p.opencodeProviderError) {
+				p.opencodeHTTPStatus = 0
+				p.opencodeRetryAfterMS = 0
+				p.opencodeProviderErrorType = ""
+				p.opencodeProviderError = false
+			}
 		}
 		switch obs.SourceState {
 		case "opencode.step_start":
-			p.opencodeText.Reset()
-			p.opencodeTruncated = false
-			p.opencodeFinishReason = ""
+			p.beginOpenCodeStep(step)
+			p.opencodeStartPartID = obs.openCodePartID
+		case "opencode.retry":
+			// The renderer may reuse an ID and omit the next step_start.
+			if openCode.reasoningFallback {
+				p.beginOpenCodeStep(p.opencodeStep)
+			}
 		case "opencode.text":
-			// Text alone (even a completed part) is not a completed turn.
-			p.opencodeFinishReason = ""
+			if step.known() && !p.opencodeStep.known() {
+				p.beginOpenCodeStep(step)
+			}
+			// Accept a first completed text part reconciled after its stop. With
+			// earlier text, the renderer may be sending an ambiguous suffix under
+			// a different part ID. Keep the existing incomplete-result behavior.
+			if !step.known() || step != p.opencodeStep || p.opencodeText.Len() != 0 || p.opencodeUnboundLateParts {
+				p.opencodeFinishReason = ""
+			}
+			if obs.Content != "" {
+				p.opencodeReasoning = openCodeReasoning{}
+			}
 			if obs.Content != "" && !p.opencodeTruncated {
 				part := obs.Content
 				if p.opencodeText.Len() != 0 {
@@ -422,7 +524,6 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 			// prevent metadata coalescing after the stream budget is exhausted.
 			obs.Content = ""
 		case "opencode.step_finish":
-			p.opencodeFinishReason, _ = obs.Data["reason"].(string)
 			if obs.TokenUsage != nil {
 				if p.opencodeTokenUsage == nil {
 					usage := *obs.TokenUsage
@@ -431,11 +532,41 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 					p.opencodeTokenUsage.Add(*obs.TokenUsage)
 				}
 			}
+			if earlierStep {
+				// Keep its usage without replacing the active step's finish.
+				return
+			}
+			if p.opencodeProviderError && p.opencodeHTTPStatus == 429 {
+				// Keep the pending failure separate from the native stop's data.
+				obs.Data["provider_capacity_pending"] = true
+			}
+			if step.known() && !p.opencodeStep.known() {
+				if p.opencodeText.Len() != 0 {
+					p.opencodeUnboundText = true
+					p.opencodeText.Reset()
+					p.opencodeTruncated = false
+				}
+				// Preserve this identity for a part reconciled after the stop.
+				p.bindOpenCodeStep(step)
+			}
+			p.opencodeFinishReason, _ = obs.Data["reason"].(string)
+			// A combined completion count can be reported as output even when
+			// every token was reasoning. Only split usage is text evidence.
+			p.opencodeStopReportedText = obs.TokenUsage != nil && obs.TokenUsage.Output > 0 && obs.TokenUsage.Reasoning > 0
+			if !step.known() && p.opencodeReasoning.finalAnswer() != "" && p.opencodeText.Len() == 0 {
+				// An anonymous stop cannot validate a provisional answer.
+				p.opencodeFinishReason = ""
+			}
 			if p.opencodeFinishReason != "stop" {
 				p.opencodeText.Reset()
 				p.opencodeTruncated = false
 			}
+			if p.opencodeFinishReason != "stop" || p.opencodeStopReportedText || !step.known() || p.opencodeReasoningStep != step {
+				p.opencodeReasoning = openCodeReasoning{}
+			}
 		}
+		obs.openCodeMessageID = ""
+		obs.openCodePartID = ""
 	}
 	if obs.Content != "" {
 		p.finalContent = obs.Content
@@ -523,6 +654,59 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 		p.result = p.resultFromObservation(obs)
 	}
 	p.updatedAt = time.Now().UTC()
+}
+
+// collectableOpenCodeReasoning is called with p.mu held. After a marked answer,
+// even an unmarked part can disprove completeness for this same step.
+func (p *processRecord) collectableOpenCodeReasoning(obs parsedObservation) bool {
+	step := openCodeStepID{session: obs.SessionID, message: obs.openCodeMessageID}
+	bound := step == p.opencodeStep
+	if !p.opencodeStep.known() {
+		_, earlier := p.opencodeEarlierSteps[step]
+		bound = !earlier && p.opencodeFinishReason == "" && (!p.sessionKnown || step.session == p.ref.OpaqueID)
+	}
+	if p.opencodeFinishReason == "stop" && (p.opencodeStopReportedText || p.opencodeUnboundLateParts && p.opencodeReasoning.answer == "") {
+		return false
+	}
+	if p.opencodeUnboundLateParts && step == p.opencodeLastKnownStep {
+		return false
+	}
+	pendingSameMessage := step == p.opencodeReasoningStep
+	return step.known() && bound && p.opencodeText.Len() == 0 && !p.opencodeUnboundText &&
+		obs.openCodePartID != "" && obs.openCodeReasoning != "" && (!pendingSameMessage || !p.opencodeReasoning.ambiguous) &&
+		(pendingSameMessage && p.opencodeReasoning.answer != "" || strings.Contains(obs.openCodeReasoning, deepSeekThinkingEnd))
+}
+
+func (p *processRecord) bindOpenCodeStep(step openCodeStepID) {
+	if step.known() {
+		if p.opencodeLastKnownStep != step {
+			p.opencodeUnboundLateParts = false
+		}
+		if p.opencodeLastKnownStep.known() && p.opencodeLastKnownStep != step {
+			if p.opencodeEarlierSteps == nil {
+				p.opencodeEarlierSteps = make(map[openCodeStepID]struct{})
+			}
+			p.opencodeEarlierSteps[p.opencodeLastKnownStep] = struct{}{}
+		}
+		p.opencodeLastKnownStep = step
+	}
+	p.opencodeStep = step
+}
+
+func (p *processRecord) beginOpenCodeStep(step openCodeStepID) {
+	// An anonymous start resets the attempt, but the native renderer may
+	// reuse the message ID. Retire it only after a different ID is bound.
+	// A part reconciled after a stop cannot identify a step within a reused ID.
+	p.opencodeUnboundLateParts = p.opencodeLastKnownStep.known() && (!step.known() || step == p.opencodeLastKnownStep)
+	p.bindOpenCodeStep(step)
+	p.opencodeStartPartID = ""
+	p.opencodeText.Reset()
+	p.opencodeStopReportedText = false
+	p.opencodeTruncated = false
+	p.opencodeUnboundText = false
+	p.opencodeFinishReason = ""
+	p.opencodeReasoning = openCodeReasoning{}
+	p.opencodeReasoningStep = openCodeStepID{}
 }
 
 // resultFromObservation builds the session result from a native terminal
@@ -621,10 +805,20 @@ func (p *processRecord) finish(err error) {
 	}
 	if p.result == nil && p.sawOpenCode && !p.cancelled && p.exitCode != nil && *p.exitCode == 0 {
 		content := p.opencodeText.String()
+		source := "assistant_terminal_result"
+		truncated := p.opencodeTruncated
+		if content == "" {
+			content = p.opencodeReasoning.finalAnswer()
+			source = openCodeReasoningFallbackSource
+			truncated = p.opencodeReasoning.truncated
+		}
 		data := map[string]any{"terminal_source_state": "opencode.run"}
 		switch {
 		case p.lastError != "":
 			p.result = &Result{Success: false, State: StateFailed, Error: p.lastError, ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
+		case p.opencodeUnboundText && p.opencodeText.Len() == 0:
+			data["diagnostic_code"] = "incomplete_terminal_result"
+			p.result = &Result{Success: false, State: StateFailed, Error: "opencode run emitted text without a matching assistant message", ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
 		case p.opencodeFinishReason != "stop":
 			data["diagnostic_code"] = "incomplete_terminal_result"
 			p.result = &Result{Success: false, State: StateFailed, Error: "opencode run exited without a final step_finish with reason stop", ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
@@ -632,8 +826,8 @@ func (p *processRecord) finish(err error) {
 			data["diagnostic_code"] = "empty_terminal_result"
 			p.result = &Result{Success: false, State: StateFailed, Error: "opencode run exited without an assistant answer", ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
 		default:
-			data["result_content_source"] = "assistant_terminal_result"
-			p.result = &Result{Success: true, State: StateCompleted, Summary: boundedString(content, 2048), Content: content, ContentType: "text/plain", ContentTruncated: p.opencodeTruncated, ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
+			data["result_content_source"] = source
+			p.result = &Result{Success: true, State: StateCompleted, Summary: boundedString(content, 2048), Content: content, ContentType: "text/plain", ContentTruncated: truncated, ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
 		}
 	}
 	if p.result == nil && p.resultPath != "" {
@@ -687,6 +881,8 @@ func (p *processRecord) finish(err error) {
 		}
 	}
 	if p.parser != nil && p.parser.Name() == "opencode-json" && p.result != nil {
+		p.opencodeReasoning = openCodeReasoning{}
+		p.opencodeEarlierSteps = nil
 		if p.opencodeTokenUsage != nil {
 			usage := *p.opencodeTokenUsage
 			p.result.TokenUsage = &usage
@@ -908,6 +1104,13 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 		}
 		backendVersion = firstLine(out.String())
 	}
+	var effectiveArgv []string
+	if a.Name() == "opencode" && req.ManagedOpenCodePlan {
+		effectiveArgv = OpenCodeLegacyRecipeArgv(req.Argv, backendVersion)
+		if effectiveArgv != nil {
+			req.Argv = effectiveArgv
+		}
+	}
 	digest, digestErr := executableDigest(resolved)
 	if digestErr != nil {
 		digest = ""
@@ -936,7 +1139,7 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 		invocationFingerprint = Fingerprint(append(append([]string(nil), req.Argv...), req.PromptDelivery, strconv.Itoa(req.PromptBytes))...)
 	}
 	scope := Fingerprint(a.Name(), backendVersion, digest, req.Profile, req.Endpoint, req.Workspace, invocationFingerprint)
-	return ProbeResult{AdapterVersion: a.config.Manifest.AdapterVersion, BackendVersion: backendVersion, Executable: resolved, ExecutableDigest: digest, ScopeFingerprint: scope, ProbedAt: started, FreshFor: time.Minute, ReadOnly: true, Capabilities: capabilities}, nil
+	return ProbeResult{AdapterVersion: a.config.Manifest.AdapterVersion, BackendVersion: backendVersion, Executable: resolved, ExecutableDigest: digest, ScopeFingerprint: scope, ProbedAt: started, FreshFor: time.Minute, ReadOnly: true, Capabilities: capabilities, EffectiveArgv: effectiveArgv}, nil
 }
 
 func invocationSatisfied(argv []string, constraints map[string]any) bool {
@@ -1220,7 +1423,11 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	}
 	started = true
 	ref := SourceRef{Adapter: a.Name(), Kind: a.config.LaunchKind, OpaqueID: strconv.Itoa(cmd.Process.Pid), PID: cmd.Process.Pid}
-	record := &processRecord{cmd: cmd, parser: a.config.Parser, ref: ref, binding: ref.Binding(), startedAt: startedAt, updatedAt: startedAt, done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, outputDir: req.OutputDir, wholeStdout: a.config.WholeStdout, live: live, launchIdentity: captureProcessLaunch(cmd.Process.Pid, startedAt)}
+	parser := a.config.Parser
+	if _, ok := parser.(opencodeJSONParser); ok {
+		parser = opencodeJSONParser{reasoningFallback: openCodeReasoningFallbackEnabled(argv)}
+	}
+	record := &processRecord{cmd: cmd, parser: parser, ref: ref, binding: ref.Binding(), startedAt: startedAt, updatedAt: startedAt, done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, outputDir: req.OutputDir, wholeStdout: a.config.WholeStdout, live: live, launchIdentity: captureProcessLaunch(cmd.Process.Pid, startedAt)}
 	if req.ExecutionContext != nil {
 		record.executionID = req.ExecutionContext.ExecutionID
 	}

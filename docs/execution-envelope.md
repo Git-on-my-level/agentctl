@@ -198,10 +198,12 @@ but has no result-content route. Use `result <id> --allow-empty` when the
 metadata-only terminal result is sufficient.
 
 Stored text content may include a bounded `source` label such as
-`assistant_terminal_result`, `assistant_message_fallback`, or the generic
+`assistant_terminal_result`, `assistant_message_fallback`,
+`assistant_reasoning_fallback` for an OpenCode answer after `</think>`, or the generic
 `terminal_result`. `agentctl result` can assert that provenance and a
-caller-selected minimum byte count; the semantic `assistant` requirement
-accepts both Cursor assistant sources. A failed native turn records one
+caller-selected minimum byte count. The semantic `assistant` requirement
+accepts standard assistant sources and the documented assistant fallbacks.
+A failed native turn records one
 allow-listed diagnostic: `category`, a fixed message of at most 200 characters,
 and `native_code` when the stream provides a structured code. Capacity and
 overload (`server_overloaded`, or a message that says the provider is at

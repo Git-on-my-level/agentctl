@@ -132,7 +132,7 @@ instruction.
   The parked receipt retains the terminal provider hint and any later absolute
   retry time. Native `continue` before `rate_limit.next_retry_at` exits 10
   with `continue_opencode_retry_not_due`. `continue --plan` remains available.
-- A stopped turn without assistant text (`empty_terminal_result`) gets one
+- A stopped turn without an assistant answer (`empty_terminal_result`) gets one
   follow-up per lineage, asking for the final answer in the required format.
 - Both paths claim the schedule before launch, use distinct deterministic
   continuation keys, and link each admitted successor with `retry_of`,

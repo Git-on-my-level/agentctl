@@ -175,6 +175,9 @@ type VersionRange struct {
 type ProbeRequest struct {
 	Executable string
 	Argv       []string
+	// ManagedOpenCodePlan lets the probe omit an optional display flag from a
+	// generated recipe when the installed native CLI is older than the floor.
+	ManagedOpenCodePlan bool
 	// PromptDelivery and PromptArgs describe how agentctl attached the prompt
 	// to Argv. Steering is negotiated from them: an adapter can only re-deliver
 	// a message through a channel agentctl itself controls.
@@ -200,6 +203,9 @@ type ProbeResult struct {
 	ReadOnly         bool          `json:"read_only"`
 	Capabilities     []Capability  `json:"capabilities"`
 	Warnings         []string      `json:"warnings,omitempty"`
+	// EffectiveArgv is returned only when the probe adjusted a managed plan.
+	// It can contain the prompt and stays private to the local launch path.
+	EffectiveArgv []string `json:"-"`
 }
 
 type PollOptions struct {

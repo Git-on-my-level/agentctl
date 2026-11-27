@@ -897,11 +897,11 @@ func opencodeAnswerPrefix(value string, remaining int) string {
 	return value
 }
 
-type opencodeJSONParser struct{}
+type opencodeJSONParser struct{ reasoningFallback bool }
 
 func (opencodeJSONParser) Name() string { return "opencode-json" }
 
-func (opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
+func (p opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 	if stderr {
 		return parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "stderr", Data: map[string]any{"stream": "stderr", "structured": false}}
 	}
@@ -918,19 +918,34 @@ func (opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 	if typ != "" {
 		obs.Data["type"] = boundedString(typ, 128)
 	}
-	if obs.SessionID != "" {
-		obs.Data["session_id"] = boundedString(obs.SessionID, 256)
-	}
 	part, _ := value["part"].(map[string]any)
 	if partType := firstString(part, "type"); partType != "" {
 		obs.Data["part_type"] = boundedString(strings.ToLower(partType), 128)
 	}
+	partSession := firstString(part, "sessionID")
+	if partSession != "" && obs.SessionID != "" && partSession != obs.SessionID {
+		// The envelope and part must agree before this frame can supply a
+		// session binding, an assistant message ID, or any result evidence.
+		return parsedObservation{Kind: "health", State: StateRunning, Liveness: LivenessAlive, SourceState: "malformed_output", Data: map[string]any{"parse_error": "OpenCode part session contradicts its event"}}
+	}
+	obs.SessionID = firstNonEmpty(obs.SessionID, partSession)
+	if obs.SessionID != "" {
+		obs.Data["session_id"] = boundedString(obs.SessionID, 256)
+	}
 	switch typ {
+	case "step_start":
+		if p.reasoningFallback && firstString(part, "type") == "step-start" {
+			obs.openCodeMessageID = firstString(part, "messageID")
+			obs.openCodePartID = firstString(part, "id")
+		}
 	case "text":
 		if !opencodeTextPartComplete(part) {
 			break
 		}
 		obs.Data["completed"] = true
+		if p.reasoningFallback {
+			obs.openCodeMessageID = firstString(part, "messageID")
+		}
 		text, _ := part["text"].(string)
 		trimmed := strings.TrimSpace(text)
 		if trimmed == "" {
@@ -940,12 +955,26 @@ func (opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 		obs.ContentType = "text/plain"
 		obs.ContentSource = "assistant"
 		obs.ContentTruncated = len(trimmed) > len(obs.Content)
+	case "reasoning":
+		if !p.reasoningFallback {
+			break
+		}
+		timing, _ := part["time"].(map[string]any)
+		end, _ := opencodeNonnegativeInt(timing["end"])
+		if firstString(part, "type") == "reasoning" && end > 0 {
+			obs.openCodeMessageID = firstString(part, "messageID")
+			obs.openCodePartID = firstString(part, "id")
+			obs.openCodeReasoning, _ = part["text"].(string)
+		}
 	case "step_finish":
 		if firstString(part, "type") != "step-finish" {
 			break
 		}
 		if reason := firstString(part, "reason"); reason != "" {
 			obs.Data["reason"] = boundedString(strings.ToLower(reason), 64)
+		}
+		if p.reasoningFallback {
+			obs.openCodeMessageID = firstString(part, "messageID")
 		}
 		obs.TokenUsage = opencodeTokenUsage(part)
 	case "retry":
