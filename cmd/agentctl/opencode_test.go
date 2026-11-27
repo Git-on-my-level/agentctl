@@ -247,7 +247,7 @@ for arg do
 done
 printf '%s\n' '{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","messageID":"msg_final"}}'
 if "$thinking"; then
-  printf '%s\n' '{"type":"reasoning","sessionID":"ses_fixture","part":{"id":"prt_final","type":"reasoning","sessionID":"ses_fixture","messageID":"msg_final","time":{"start":1,"end":2},"text":"private planning</think>\nRecovered answer."}}'
+  printf '%s\n' '{"type":"reasoning","sessionID":"ses_fixture","part":{"id":"prt_final","type":"reasoning","sessionID":"ses_fixture","messageID":"msg_final","time":{"start":1,"end":2},"text":"private planning.</think>\nRecovered answer."}}'
 fi
 printf '%s\n' '{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop","tokens":{"output":0,"reasoning":60}}}'
 `
@@ -370,7 +370,7 @@ if [ "$1" = "--version" ]; then echo 'opencode 2.2.6'; exit 0; fi
 printf '%s\n' '{"type":"retry","timestamp":1794251075486,"sessionID":"ses_rate_limit","attempt":2,"nextRetryAt":1794251101486,"error":{"type":"provider.rate-limit","message":"Rate limit exceeded; private-request-details","status":429,"retryAfterMs":26000}}' '{"type":"error","sessionID":"ses_rate_limit","error":{"type":"provider.rate-limit","message":"Rate limit exceeded; private-request-details","status":429}}'
 `
 	if reasoning {
-		script += `printf '%s\n' '{"type":"reasoning","sessionID":"ses_rate_limit","part":{"type":"reasoning","id":"prt_reasoning","sessionID":"ses_rate_limit","messageID":"msg_final","time":{"end":2},"text":"private provider planning</think>late marked answer"}}'` + "\n"
+		script += `printf '%s\n' '{"type":"reasoning","sessionID":"ses_rate_limit","part":{"type":"reasoning","id":"prt_reasoning","sessionID":"ses_rate_limit","messageID":"msg_final","time":{"end":2},"text":"private provider planning.</think>late marked answer"}}'` + "\n"
 	}
 	script += `printf '%s\n' '{"type":"step_finish","sessionID":"ses_rate_limit","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}'` + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
@@ -406,6 +406,19 @@ printf '%s\n' '{"type":"retry","timestamp":1794251075486,"sessionID":"ses_rate_l
 	stdout.Reset()
 	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "status", execution.ID.String()}); code != 0 {
 		t.Fatalf("status exit=%d %s", code, stdout.String())
+	}
+	var status struct {
+		Result struct {
+			model.Execution
+			Failure *model.OutcomeFailure `json:"failure"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	failure := status.Result.Failure
+	if status.Result.State != model.StateFailed || failure == nil || failure.Code != "provider_capacity" || !failure.Retryable {
+		t.Fatalf("terminal capacity failure = %#v", status.Result)
 	}
 	for _, want := range []string{`"rate_limit"`, `"attempt":2`, `"retry_after_ms":26000`, `"http_status":429`, `"provider_error_type":"provider.rate-limit"`, `"code":"provider_capacity"`, `"category":"capacity"`, `"retryable":true`} {
 		if !strings.Contains(stdout.String(), want) {

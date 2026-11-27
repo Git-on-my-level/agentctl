@@ -136,12 +136,14 @@ type processRecord struct {
 	opencodeTruncated         bool
 	opencodeUnboundText       bool
 	opencodeFinishReason      string
+	opencodeStopReportedText  bool
 	opencodeStep              openCodeStepID
 	opencodeLastKnownStep     openCodeStepID
 	opencodeStartPartID       string
 	opencodeUnboundLateParts  bool
 	opencodeEarlierSteps      map[openCodeStepID]struct{}
 	opencodeReasoning         openCodeReasoning
+	opencodeReasoningStep     openCodeStepID
 	opencodeReasoningOverflow int
 	opencodeTokenUsage        *TokenUsage
 	opencodeHTTPStatus        int64
@@ -421,6 +423,12 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 		// Reconciliation can print a missed part from a superseded step.
 		return
 	}
+	if obs.SourceState == "opencode.text" && !p.opencodeStep.known() && step.known() && step == p.opencodeLastKnownStep &&
+		p.opencodeReasoningStep.known() && step != p.opencodeReasoningStep {
+		// An anonymous start and a candidate for a different message leave
+		// the previous message's text unconfirmed. Wait for the typed stop.
+		return
+	}
 	if p.opencodeStep.known() && step != p.opencodeStep {
 		switch obs.SourceState {
 		case "opencode.text":
@@ -440,12 +448,11 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 	}
 	if obs.SourceState == "opencode.reasoning" {
 		if p.collectableOpenCodeReasoning(obs) {
-			p.opencodeReasoning.observe(obs.openCodePartID, obs.openCodeReasoning)
-			if p.opencodeReasoning.answer != "" && !p.opencodeStep.known() {
-				// A complete marked part can establish the message identity
-				// when the start did not supply one. A matching stop is needed.
-				p.bindOpenCodeStep(step)
+			if step != p.opencodeReasoningStep {
+				p.opencodeReasoning = openCodeReasoning{}
+				p.opencodeReasoningStep = step
 			}
+			p.opencodeReasoning.observe(obs.openCodePartID, obs.openCodeReasoning)
 		}
 		// Reasoning cannot rebind a session or enter stored observations.
 		obs.SessionID = ""
@@ -539,11 +546,16 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 				p.bindOpenCodeStep(step)
 			}
 			p.opencodeFinishReason, _ = obs.Data["reason"].(string)
+			p.opencodeStopReportedText = obs.TokenUsage != nil && obs.TokenUsage.Output > 0
+			if !step.known() && p.opencodeReasoning.finalAnswer() != "" && p.opencodeText.Len() == 0 {
+				// An anonymous stop cannot validate a provisional answer.
+				p.opencodeFinishReason = ""
+			}
 			if p.opencodeFinishReason != "stop" {
 				p.opencodeText.Reset()
 				p.opencodeTruncated = false
 			}
-			if p.opencodeFinishReason != "stop" || !step.known() || step != p.opencodeStep {
+			if p.opencodeFinishReason != "stop" || p.opencodeStopReportedText || !step.known() || p.opencodeReasoningStep != step {
 				p.opencodeReasoning = openCodeReasoning{}
 			}
 		}
@@ -647,12 +659,13 @@ func (p *processRecord) collectableOpenCodeReasoning(obs parsedObservation) bool
 		_, earlier := p.opencodeEarlierSteps[step]
 		bound = !earlier && p.opencodeFinishReason == "" && (!p.sessionKnown || step.session == p.ref.OpaqueID)
 	}
-	if p.opencodeUnboundLateParts && p.opencodeFinishReason == "stop" && p.opencodeReasoning.answer == "" {
+	if p.opencodeFinishReason == "stop" && (p.opencodeStopReportedText || p.opencodeUnboundLateParts && p.opencodeReasoning.answer == "") {
 		return false
 	}
+	pendingSameMessage := step == p.opencodeReasoningStep
 	return step.known() && bound && p.opencodeText.Len() == 0 && !p.opencodeUnboundText &&
-		obs.openCodePartID != "" && obs.openCodeReasoning != "" && !p.opencodeReasoning.ambiguous &&
-		(p.opencodeReasoning.answer != "" || strings.Contains(obs.openCodeReasoning, deepSeekThinkingEnd))
+		obs.openCodePartID != "" && obs.openCodeReasoning != "" && (!pendingSameMessage || !p.opencodeReasoning.ambiguous) &&
+		(pendingSameMessage && p.opencodeReasoning.answer != "" || strings.Contains(obs.openCodeReasoning, deepSeekThinkingEnd))
 }
 
 func (p *processRecord) bindOpenCodeStep(step openCodeStepID) {
@@ -679,10 +692,12 @@ func (p *processRecord) beginOpenCodeStep(step openCodeStepID) {
 	p.bindOpenCodeStep(step)
 	p.opencodeStartPartID = ""
 	p.opencodeText.Reset()
+	p.opencodeStopReportedText = false
 	p.opencodeTruncated = false
 	p.opencodeUnboundText = false
 	p.opencodeFinishReason = ""
 	p.opencodeReasoning = openCodeReasoning{}
+	p.opencodeReasoningStep = openCodeStepID{}
 }
 
 // resultFromObservation builds the session result from a native terminal

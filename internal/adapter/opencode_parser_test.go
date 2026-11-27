@@ -43,7 +43,7 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		}
 		return reasonFrame + string(encoded) + `}}`
 	}
-	reason := reasoning("private planning</think>\n" + answer)
+	reason := reasoning("private planning.</think>\n" + answer)
 	otherPart := func(frame string) string { return strings.Replace(frame, "prt_final", "prt_other", 1) }
 	earlier := func(frame string) string { return strings.ReplaceAll(frame, "msg_final", "msg_prior") }
 	conflictingSession := func(frame string) string {
@@ -70,10 +70,12 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "late text cannot identify which reused step emitted it", frames: []string{start, text, toolFinish, strings.Replace(start, "prt_start", "prt_next", 1), stop, text}, diagnostic: "incomplete_terminal_result"},
 		{name: "live final reasoning after a real new start on a reused ID", frames: []string{start, reason, toolFinish, strings.Replace(start, "prt_start", "prt_next", 1), reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "preceding unmarked part stays private", frames: []string{start, otherPart(reasoning("private consideration")), reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
-		{name: "unmarked continuation after a candidate is ambiguous", frames: []string{start, reasoning("private</think>Answ"), otherPart(reasoning("er.")), stop}, diagnostic: "empty_terminal_result"},
-		{name: "two marked parts are ambiguous", frames: []string{start, reason, otherPart(reasoning("private</think>Another answer.")), stop}, diagnostic: "empty_terminal_result"},
+		{name: "unmarked continuation after a candidate is ambiguous", frames: []string{start, reasoning("private.</think>Answ"), otherPart(reasoning("er.")), stop}, diagnostic: "empty_terminal_result"},
+		{name: "two marked parts are ambiguous", frames: []string{start, reason, otherPart(reasoning("private.</think>Another answer.")), stop}, diagnostic: "empty_terminal_result"},
 		{name: "reconciled after stop", frames: []string{start, stop, reason}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "start without message ID", frames: []string{legacyStart, reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "stale reasoning cannot bind an anonymous start", frames: []string{legacyStart, earlier(reason), stop, reason}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "typed stop discards a mismatched provisional candidate", frames: []string{legacyStart, earlier(reason), stop}, diagnostic: "empty_terminal_result"},
 		{name: "anonymous start still binds the session", frames: []string{legacyStart, foreign(text), foreign(stop)}, diagnostic: "incomplete_terminal_result"},
 		{name: "foreign events cannot poison an anonymous start", frames: []string{legacyStart, foreign(text), foreign(stop), reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "anonymous start permits a reused message ID", frames: []string{legacyStart, toolFinish, legacyStart, text, stop}, want: "ordinary answer", source: "assistant_terminal_result"},
@@ -92,46 +94,56 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "stop part contradicts its envelope", frames: []string{start, text, conflictingSession(stop)}, diagnostic: "incomplete_terminal_result"},
 		{name: "text without message ID in a bound step", frames: []string{start, strings.Replace(text, `"messageID":"msg_final",`, "", 1), stop}, diagnostic: "incomplete_terminal_result"},
 		{name: "ambiguous late text suffix fails", frames: []string{start, text, stop, strings.Replace(text, "ordinary answer", "late suffix", 1)}, diagnostic: "incomplete_terminal_result"},
-		{name: "repeated answer bytes", frames: []string{start, reasoning("private planning</think>HaHa"), stop}, want: "HaHa", source: openCodeReasoningFallbackSource},
+		{name: "repeated answer bytes", frames: []string{start, reasoning("private planning.</think>HaHa"), stop}, want: "HaHa", source: openCodeReasoningFallbackSource},
 		{name: "unproved split boundary fails", frames: []string{start, reasoning("private planning</th"), reasoning("ink>\nPlain"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "distinct IDs cannot form a boundary", frames: []string{start, reasoning("private planning</th"), otherPart(reasoning("ink>\nPlain prose.")), stop}, diagnostic: "empty_terminal_result"},
-		{name: "quoted marker in answer", frames: []string{start, reasoning("private planning</think>The tag is `</think>`."), stop}, want: "The tag is `</think>`.", source: openCodeReasoningFallbackSource},
-		{name: "marker quoted in planning supplies no boundary", frames: []string{start, reasoning("private planning about `</think>` and more deliberation"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "marker in quoted planning prose", frames: []string{start, reasoning("private planning about \"</think>\" and more deliberation"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "marker inside a longer quote", frames: []string{start, reasoning("private planning says \"emit the </think> marker during output\" and deliberates"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "marker inside smart quotes", frames: []string{start, reasoning("private planning says “emit </think> during output” and deliberates"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "marker inside Swedish quotes", frames: []string{start, reasoning("Jag skrev ”Använd </think> som exempel” och fortsatte resonera."), stop}, diagnostic: "empty_terminal_result"},
-		{name: "marker inside nested directional quotes", frames: []string{start, reasoning("Use “draft “ready” and write </think> later”."), stop}, diagnostic: "empty_terminal_result"},
-		{name: "nested smart quotes preserve straight outer quote", frames: []string{start, reasoning("The note says \"Use “draft” and write </think> later\"."), stop}, diagnostic: "empty_terminal_result"},
-		{name: "nested straight quotes preserve smart outer quote", frames: []string{start, reasoning("The note says “Use \"draft\" and write </think> later”."), stop}, diagnostic: "empty_terminal_result"},
-		{name: "marker inside a blockquote", frames: []string{start, reasoning("private planning:\n> </think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "marker inside a quoted bullet item", frames: []string{start, reasoning("private planning:\n- > </think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "marker inside a quoted ordered item", frames: []string{start, reasoning("private planning:\n1. > </think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "a finished quoted list cannot absorb top-level code", frames: []string{start, reasoning("> - Example\n\n    </think>\n    more deliberation"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "marker in a multiline code span", frames: []string{start, reasoning("Planning about the literal ``\n</think>\nas an example`` then more deliberation."), stop}, diagnostic: "empty_terminal_result"},
-		{name: "marker in an HTML comment", frames: []string{start, reasoning("Planning.\n<!-- </think> -->\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "marker inside indented code", frames: []string{start, reasoning("private planning:\n\n    </think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "marker inside tab-indented code", frames: []string{start, reasoning("private planning:\n\n\t</think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "quoted marker in answer", frames: []string{start, reasoning("private planning.</think>The tag is `</think>`."), stop}, want: "The tag is `</think>`.", source: openCodeReasoningFallbackSource},
+		{name: "marker quoted in planning supplies no boundary", frames: []string{start, reasoning("private planning about `Example.</think>` and more deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker in quoted planning prose", frames: []string{start, reasoning("private planning about \"Example.</think>\" and more deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside a longer quote", frames: []string{start, reasoning("private planning says \"emit this example.</think>Marker during output\" and deliberates"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside smart quotes", frames: []string{start, reasoning("private planning says “emit this example.</think>During output” and deliberates"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside Swedish quotes", frames: []string{start, reasoning("Jag skrev ”Använd detta.</think>Som exempel” och fortsatte resonera."), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker follows a Japanese quote with the alternate closer", frames: []string{start, reasoning("候補は〝テスト〟です。</think>完了しました。"), stop}, want: "完了しました。", source: openCodeReasoningFallbackSource},
+		{name: "marker inside a Japanese quote with the alternate closer", frames: []string{start, reasoning("候補は〝テスト。</think>の例〟です。"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker follows a Japanese quote with the ordinary closer", frames: []string{start, reasoning("候補は〝テスト〞です。</think>完了しました。"), stop}, want: "完了しました。", source: openCodeReasoningFallbackSource},
+		{name: "marker inside nested directional quotes", frames: []string{start, reasoning("Use “draft “ready” and write this.</think>Later”."), stop}, diagnostic: "empty_terminal_result"},
+		{name: "nested smart quotes preserve straight outer quote", frames: []string{start, reasoning("The note says \"Use “draft” and write this.</think>Later\"."), stop}, diagnostic: "empty_terminal_result"},
+		{name: "nested straight quotes preserve smart outer quote", frames: []string{start, reasoning("The note says “Use \"draft\" and write this.</think>Later”."), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside a blockquote", frames: []string{start, reasoning("private planning:\n> Example.</think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside a quoted bullet item", frames: []string{start, reasoning("private planning:\n- > Example.</think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside a quoted ordered item", frames: []string{start, reasoning("private planning:\n1. > Example.</think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "a finished quoted list cannot absorb top-level code", frames: []string{start, reasoning("> - Example\n\n    Example.</think>\n    more deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker in a multiline code span", frames: []string{start, reasoning("Planning about the literal ``\nExample.</think>\nas an example`` then more deliberation."), stop}, diagnostic: "empty_terminal_result"},
+		{name: "a balanced suffix cannot disprove multiline code", frames: []string{start, reasoning("This example is `printed across\nlines using this.</think>Before closing` and another backtick ` later."), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker in an HTML comment", frames: []string{start, reasoning("Planning.\n<!-- Example.</think>Still a comment -->\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside a regular HTML block", frames: []string{start, reasoning("<div>\nExample.</think>Still an example.\n</div>"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside a custom HTML block", frames: []string{start, reasoning("<draft-example>\nExample.</think>Still an example.\n</draft-example>"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside indented code", frames: []string{start, reasoning("private planning:\n\n    Example.</think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside tab-indented code", frames: []string{start, reasoning("private planning:\n\n\tExample.</think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "indentation of a continued list paragraph", frames: []string{start, reasoning("1. Check the input.\n    The input is valid.</think>\nAnswer."), stop}, want: "Answer.", source: openCodeReasoningFallbackSource},
-		{name: "indentation of list-nested code", frames: []string{start, reasoning("1. Include an example.\n\n       </think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "marker inside longer inline code", frames: []string{start, reasoning("private planning in ``code ` </think> more code`` and deliberation"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "marker in a planning code fence", frames: []string{start, reasoning("private planning\n```xml\n</think>\n```\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "closing fence indented four columns is literal code", frames: []string{start, reasoning("```xml\n    ```\nprivate planning continues</think>more deliberation"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "marker in a nested list fence", frames: []string{start, reasoning("private planning:\n1. - ```xml\n     </think>\n     ```\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "marker in a bullet list fence", frames: []string{start, reasoning("private planning:\n- ```xml\n  </think>\n  ```\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "indentation of list-nested code", frames: []string{start, reasoning("1. Include an example.\n\n       Example.</think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside longer inline code", frames: []string{start, reasoning("private planning in ``code ` here.</think>More code`` and deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker in a planning code fence", frames: []string{start, reasoning("private planning\n```xml\nExample.</think>\n```\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "closing fence indented four columns is literal code", frames: []string{start, reasoning("```xml\n    ```\nprivate planning continues.</think>more deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker in a nested list fence", frames: []string{start, reasoning("private planning:\n1. - ```xml\n     Example.</think>\n     ```\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker in a bullet list fence", frames: []string{start, reasoning("private planning:\n- ```xml\n  Example.</think>\n  ```\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker after a closed list fence", frames: []string{start, reasoning("private planning:\n- ```xml\n  <example/>\n  ```\nEnd of planning.</think>Answer."), stop}, want: "Answer.", source: openCodeReasoningFallbackSource},
 		{name: "leading three-backtick code span cannot open a fence", frames: []string{start, reasoning("``` `` ``` is an inline example.\nEnd of planning.</think>Answer."), stop}, want: "Answer.", source: openCodeReasoningFallbackSource},
-		{name: "shorter tilde fence cannot close the example", frames: []string{start, reasoning("private planning\n~~~~xml\n~~~\n</think>\n~~~~\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "shorter tilde fence cannot close the example", frames: []string{start, reasoning("private planning\n~~~~xml\n~~~\nExample.</think>\n~~~~\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker after a closed tilde fence", frames: []string{start, reasoning("private planning\n~~~xml\n<example/>\n~~~\nEnd of planning.</think>Answer."), stop}, want: "Answer.", source: openCodeReasoningFallbackSource},
 		{name: "unpaired inline punctuation on another line", frames: []string{start, reasoning("I have a stray ` while planning.\nThe `item`'s result is clear.</think>Answer."), stop}, want: "Answer.", source: openCodeReasoningFallbackSource},
 		{name: "apostrophe in a decade is not a quote", frames: []string{start, reasoning("Recall the '90s spec.</think>Answer."), stop}, want: "Answer.", source: openCodeReasoningFallbackSource},
-		{name: "open decade phrase with a closing quote", frames: []string{start, reasoning("Quote '90s text </think> and deliberation' in a plan."), stop}, diagnostic: "empty_terminal_result"},
-		{name: "multiple bare markers are ambiguous", frames: []string{start, reasoning("private planning</think>More private deliberation.</think>Answer."), stop}, diagnostic: "empty_terminal_result"},
+		{name: "open decade phrase with a closing quote", frames: []string{start, reasoning("Quote '90s text.</think>And deliberation' in a plan."), stop}, diagnostic: "empty_terminal_result"},
+		{name: "multiple bare markers are ambiguous", frames: []string{start, reasoning("private planning.</think>More private deliberation.</think>Answer."), stop}, diagnostic: "empty_terminal_result"},
+		{name: "ordinary prose mentions the delimiter", frames: []string{start, reasoning("Planning mentions </think> and I will continue thinking privately."), stop}, diagnostic: "empty_terminal_result"},
+		{name: "a horizontally spaced phrase after the marker is ambiguous", frames: []string{start, reasoning("The note has punctuation.</think> further planning."), stop}, diagnostic: "empty_terminal_result"},
+		{name: "stop reports generated text", frames: []string{start, reason, strings.Replace(stop, "\"output\":0", "\"output\":3", 1)}, diagnostic: "empty_terminal_result"},
+		{name: "late reasoning cannot override reported text", frames: []string{start, strings.Replace(stop, "\"output\":0", "\"output\":3", 1), reason}, diagnostic: "empty_terminal_result"},
 		{name: "unmarked planning", frames: []string{start, reasoning("private planning"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "punctuation only", frames: []string{start, reasoning("private planning</think> ... "), stop}, diagnostic: "empty_terminal_result"},
-		{name: "whitespace suffix", frames: []string{start, reasoning("private planning</think> \n"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "unclosed second thinking block", frames: []string{start, reasoning("private planning</think><think>still thinking"), stop}, diagnostic: "empty_terminal_result"},
-		{name: "thinking reopens after an answer fragment", frames: []string{start, reasoning("private planning</think>Draft answer.<think>Private again."), stop}, diagnostic: "empty_terminal_result"},
+		{name: "punctuation only", frames: []string{start, reasoning("private planning.</think>..."), stop}, diagnostic: "empty_terminal_result"},
+		{name: "whitespace suffix", frames: []string{start, reasoning("private planning.</think>\n "), stop}, diagnostic: "empty_terminal_result"},
+		{name: "unclosed second thinking block", frames: []string{start, reasoning("private planning.</think><think>still thinking"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "thinking reopens after an answer fragment", frames: []string{start, reasoning("private planning.</think>Draft answer.<think>Private again."), stop}, diagnostic: "empty_terminal_result"},
 		{name: "another message", frames: []string{start, strings.ReplaceAll(reason, "msg_final", "msg_earlier"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "another session", frames: []string{start, strings.ReplaceAll(reason, "ses_fixture", "ses_foreign"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "session from envelope", frames: []string{start, strings.Replace(reason, `,"sessionID":"ses_fixture","messageID"`, `,"messageID"`, 1), stop}, want: answer, source: openCodeReasoningFallbackSource},
@@ -149,7 +161,7 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "late nonzero exit", frames: []string{start, reason, stop}, exit: errors.New("subprocess failed")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, maxOutput := range []int{0, 1} {
+			for _, maxOutput := range []int{0, 1, len(start) + len(reason) - 1} {
 				record := &processRecord{parser: opencodeJSONParser{reasoningFallback: true}, maxOutput: maxOutput, done: make(chan struct{})}
 				for _, frame := range tc.frames {
 					record.ingest([]byte(frame), false)
@@ -187,7 +199,7 @@ func TestOpenCodeReasoningAnswerBound(t *testing.T) {
 		t.Fatal("kept reasoning before the answer boundary")
 	}
 	want := strings.Repeat("a", opencodeAnswerLimit-1)
-	r.observe("part", planning+"</think>"+want+"🌍")
+	r.observe("part", planning+".</think>"+want+"🌍")
 	if got := r.finalAnswer(); got != want || !r.truncated {
 		t.Fatalf("bounded answer: bytes=%d truncated=%t", len(got), r.truncated)
 	}
@@ -196,7 +208,7 @@ func TestOpenCodeReasoningAnswerBound(t *testing.T) {
 func TestOpenCodeReasoningStreamLimitDropsIrrelevantParts(t *testing.T) {
 	record := &processRecord{parser: opencodeJSONParser{reasoningFallback: true}, maxOutput: 1, done: make(chan struct{})}
 	const start = `{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","messageID":"msg_final"}}`
-	const marked = `{"type":"reasoning","sessionID":"ses_fixture","part":{"type":"reasoning","id":"prt_final","messageID":"msg_final","time":{"end":2},"text":"private</think>Answer."}}`
+	const marked = `{"type":"reasoning","sessionID":"ses_fixture","part":{"type":"reasoning","id":"prt_final","messageID":"msg_final","time":{"end":2},"text":"private.</think>Answer."}}`
 	record.ingest([]byte(start), false)
 	record.ingest([]byte(strings.Replace(marked, "</think>Answer.", "", 1)), false)
 	record.ingest([]byte(strings.Replace(marked, "msg_final", "msg_earlier", 1)), false)
@@ -213,7 +225,7 @@ func TestOpenCodeReasoningStreamLimitDropsIrrelevantParts(t *testing.T) {
 
 func TestOpenCodeReasoningPostBudgetExhaustion(t *testing.T) {
 	const start = `{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","messageID":"msg_final"}}`
-	const marked = `{"type":"reasoning","sessionID":"ses_fixture","part":{"type":"reasoning","id":"prt_final","messageID":"msg_final","time":{"end":2},"text":"private</think>Answer."}}`
+	const marked = `{"type":"reasoning","sessionID":"ses_fixture","part":{"type":"reasoning","id":"prt_final","messageID":"msg_final","time":{"end":2},"text":"private.</think>Answer."}}`
 	const stop = `{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}`
 	record := &processRecord{
 		parser: opencodeJSONParser{reasoningFallback: true}, maxOutput: 1, done: make(chan struct{}),
@@ -235,7 +247,7 @@ func TestOpenCodeReasoningPostBudgetExhaustion(t *testing.T) {
 func TestOpenCodeReasoningRequiresThinkingFlag(t *testing.T) {
 	path := fixtureExecutable(t, `printf '%s\n' \
 '{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","messageID":"msg_final"}}' \
-'{"type":"reasoning","sessionID":"ses_fixture","part":{"type":"reasoning","id":"prt_final","messageID":"msg_final","time":{"end":2},"text":"private planning</think>Answer."}}' \
+'{"type":"reasoning","sessionID":"ses_fixture","part":{"type":"reasoning","id":"prt_final","messageID":"msg_final","time":{"end":2},"text":"private planning.</think>Answer."}}' \
 '{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}'`)
 	for _, tc := range []struct {
 		name      string
@@ -253,6 +265,9 @@ func TestOpenCodeReasoningRequiresThinkingFlag(t *testing.T) {
 		{name: "disabled", model: "morph/morph-dsv41flash", args: []string{"--thinking=false", "--", "prompt"}},
 		{name: "separate false", model: "morph/morph-dsv41flash", args: []string{"--thinking", "false", "--", "prompt"}},
 		{name: "negated", model: "morph/morph-dsv41flash", args: []string{"--no-thinking", "--", "prompt"}},
+		{name: "conflicting flag after enabling", model: "morph/morph-dsv41flash", args: []string{"--thinking", "--no-thinking", "--", "prompt"}},
+		{name: "conflicting flag before enabling", model: "morph/morph-dsv41flash", args: []string{"--thinking=false", "--thinking", "--", "prompt"}},
+		{name: "duplicate enabling flag", model: "morph/morph-dsv41flash", args: []string{"--thinking", "--thinking=true", "--", "prompt"}},
 		{name: "prompt", model: "morph/morph-dsv41flash", args: []string{"--", "--thinking"}},
 		{name: "no prompt separator", model: "morph/morph-dsv41flash", args: []string{"prompt", "--thinking"}},
 		{name: "another model", model: "local/different", args: []string{"--thinking", "--", "prompt"}},

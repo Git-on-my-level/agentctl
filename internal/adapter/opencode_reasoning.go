@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/Git-on-my-level/agentctl/internal/launchrecipe"
 	"github.com/Git-on-my-level/agentctl/internal/route"
@@ -37,7 +38,7 @@ func (r *openCodeReasoning) observe(partID, text string) {
 		return
 	}
 	before, answer, marked := strings.Cut(text, deepSeekThinkingEnd)
-	if !marked || protectedOpenCodeMarker(text, len(before)) {
+	if !marked || !openCodeAnswerBoundary(before, answer) || protectedOpenCodeMarker(text, len(before)) {
 		r.ambiguous = r.answer != "" && strings.TrimSpace(text) != ""
 		return
 	}
@@ -64,6 +65,15 @@ func (r *openCodeReasoning) observe(partID, text string) {
 	r.truncated = len(prefix) < len(answer)
 }
 
+func openCodeAnswerBoundary(before, after string) bool {
+	// The model's closing marker is attached to the last reasoning sentence.
+	// A tag mentioned as ordinary prose, separated by spaces, is ambiguous.
+	last, _ := utf8.DecodeLastRuneInString(before)
+	first, _ := utf8.DecodeRuneInString(after)
+	return unicode.Is(unicode.Sentence_Terminal, last) &&
+		(!unicode.IsSpace(first) || first == '\n' || first == '\r' || first == '\u2028' || first == '\u2029')
+}
+
 func (r *openCodeReasoning) finalAnswer() string {
 	if r.ambiguous {
 		return ""
@@ -86,15 +96,22 @@ func openCodeThinkingEnabled(args []string) bool {
 		return false
 	}
 	args = args[:separator]
+	seen, enabled := false, false
 	for i, arg := range args {
+		var value bool
 		switch arg {
 		case "--no-thinking", "--thinking=false":
-			return false
 		case "--thinking=true":
-			return true
+			value = true
 		case "--thinking":
-			return i+1 == len(args) || args[i+1] != "false"
+			value = i+1 == len(args) || args[i+1] != "false"
+		default:
+			continue
 		}
+		if seen {
+			return false
+		}
+		seen, enabled = true, value
 	}
-	return false
+	return enabled
 }

@@ -47,12 +47,7 @@ func protectedOpenCodeMarker(reasoning string, marker int) bool {
 		case *ast.Text:
 			protected = n.Parent().Kind() == ast.KindCodeSpan && containsMarker(n.Segment)
 		case *ast.HTMLBlock:
-			// CommonMark's verbatim HTML block types cover comments,
-			// processing instructions, declarations, CDATA and preformatted
-			// elements. A standalone ordinary closing tag can be the marker.
-			if n.HTMLBlockType <= ast.HTMLBlockType5 {
-				protected = containsMarkerInLines(n.Lines()) || containsMarker(n.ClosureLine)
-			}
+			protected = containsMarkerInLines(n.Lines()) || containsMarker(n.ClosureLine)
 		case *ast.RawHTML:
 			// A marker in an attribute or comment is part of a larger
 			// token. An ordinary closing tag is a token of its own.
@@ -117,7 +112,7 @@ func openCodeInlineQuote(line, suffix string) bool {
 				if !strings.ContainsRune("'\"’”", c) || openCodeBeforeQuote(line, i) {
 					quote, closeQuote, quoteDepth = c, openCodeQuoteEnd(c), 1
 				}
-			case c == closeQuote:
+			case c == closeQuote || quote == '〝' && c == '〟':
 				quoteDepth--
 				if quoteDepth == 0 {
 					quote = 0

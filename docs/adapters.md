@@ -246,15 +246,22 @@ meaning.
   `morph/morph-dsv41flash-1017`) add `--thinking` to expose completed
   `reasoning` parts in the JSON stream. This CLI display option is available in
   OpenCode 1.17.13 and was exercised with 2.2.6 and 2.3.2. Expert `run` supports
-  recovery with one of those exact model IDs, selected with `--model` or `-m`, and the flag before the native
-  `--` prompt separator. When there is no
+  recovery with one of those exact model IDs, selected with `--model` or `-m`.
+  Put one of `--thinking`, `--thinking=true`, or `--thinking true` before the
+  native `--` prompt separator. Conflicting or repeated flags disable fallback
+  negotiation. When there is no
   completed text, the adapter can recover the answer after the model's literal
   `</think>` marker in a completed reasoning part from the same session and
-  assistant message as the stopped step. Repeated candidates with the same
+  assistant message as the stopped step. The marker must immediately follow
+  sentence-ending punctuation. The answer can start immediately or on the
+  next line. A stop that reports positive output tokens disqualifies reasoning
+  recovery. If the start omitted a message ID, a candidate remains provisional
+  until a typed stop confirms its session and message. Repeated candidates with the same
   answer are idempotent. Each candidate must contain the marker and answer suffix
   in one frame. The CommonMark parser excludes markers inside code spans,
   blockquotes, fenced or indented code, and verbatim HTML. Same-line prose
-  quotes also exclude a marker. Conflicting marked
+  quotes also exclude a marker. A code span crossing the marker makes the
+  boundary ambiguous even when the suffix parses on its own. Conflicting marked
   candidates or later unmarked parts with content leave the answer ambiguous.
   An unclosed fence makes a marker inside its Markdown container ineligible.
   Blank or punctuation-only suffixes and suffixes that reopen thinking or
@@ -273,6 +280,7 @@ meaning.
   that source with `--require-result-source` or omit the flag to accept either
   answer form. `assistant_terminal_result` still selects normal text. Capability
   negotiation reports whether the exact invocation enables the optional fallback.
+  Static declarations without an invocation omit that evaluation.
 - Bound cumulative answer buffering to a 1 MiB UTF-8 prefix (including part
   separators) and mark truncated results. Discard excess text while retaining
   final step controls; observations retain metadata rather than another text copy.
