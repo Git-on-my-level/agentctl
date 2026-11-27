@@ -87,6 +87,8 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "distinct IDs cannot form a boundary", frames: []string{start, reasoning("private planning</th"), otherPart(reasoning("ink>\nPlain prose.")), stop}, diagnostic: "empty_terminal_result"},
 		{name: "quoted marker in answer", frames: []string{start, reasoning("private planning</think>The tag is `</think>`."), stop}, want: "The tag is `</think>`.", source: openCodeReasoningFallbackSource},
 		{name: "marker quoted in planning supplies no boundary", frames: []string{start, reasoning("private planning about `</think>` and more deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker in quoted planning prose", frames: []string{start, reasoning("private planning about \"</think>\" and more deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker in a planning code fence", frames: []string{start, reasoning("private planning\n```xml\n</think>\n```\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "multiple bare markers are ambiguous", frames: []string{start, reasoning("private planning</think>More private deliberation.</think>Answer."), stop}, diagnostic: "empty_terminal_result"},
 		{name: "unmarked planning", frames: []string{start, reasoning("private planning"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "punctuation only", frames: []string{start, reasoning("private planning</think> ... "), stop}, diagnostic: "empty_terminal_result"},

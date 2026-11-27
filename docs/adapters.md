@@ -251,7 +251,8 @@ meaning.
   `</think>` marker in a completed reasoning part from the same session and
   assistant message as the stopped step. Repeated candidates with the same
   answer are idempotent. Each candidate must contain the marker and answer suffix
-  in one frame. Conflicting marked candidates or later unmarked parts with
+  in one frame. A quoted marker or a marker inside a code fence cannot establish
+  the boundary. Conflicting marked candidates or later unmarked parts with
   content leave the answer ambiguous. Blank or punctuation-only suffixes and
   suffixes that reopen thinking or contain another unquoted `</think>` are
   ineligible.
