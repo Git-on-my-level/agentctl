@@ -925,6 +925,14 @@ func (p opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 	if partType := firstString(part, "type"); partType != "" {
 		obs.Data["part_type"] = boundedString(strings.ToLower(partType), 128)
 	}
+	if partSession := firstString(part, "sessionID"); partSession != "" && partSession != obs.SessionID {
+		// The envelope and part must agree before this frame can supply a
+		// session binding, an assistant message ID, or any result evidence.
+		obs.SessionID = ""
+		delete(obs.Data, "session_id")
+		obs.Data["parse_error"] = "OpenCode part session contradicts its event"
+		return obs
+	}
 	switch typ {
 	case "step_start":
 		if firstString(part, "type") == "step-start" {
@@ -952,8 +960,7 @@ func (p opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 		}
 		timing, _ := part["time"].(map[string]any)
 		end, _ := opencodeNonnegativeInt(timing["end"])
-		partSession := firstString(part, "sessionID")
-		if firstString(part, "type") == "reasoning" && end > 0 && (partSession == "" || partSession == obs.SessionID) {
+		if firstString(part, "type") == "reasoning" && end > 0 {
 			obs.openCodeMessageID = firstString(part, "messageID")
 			obs.openCodePartID = firstString(part, "id")
 			obs.openCodeReasoning, _ = part["text"].(string)

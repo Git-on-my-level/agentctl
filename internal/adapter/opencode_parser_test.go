@@ -44,6 +44,9 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 	reason := reasoning("private planning</think>\n" + answer)
 	otherPart := func(frame string) string { return strings.Replace(frame, "prt_final", "prt_other", 1) }
 	earlier := func(frame string) string { return strings.ReplaceAll(frame, "msg_final", "msg_prior") }
+	conflictingSession := func(frame string) string {
+		return strings.Replace(frame, `"part":{`, `"part":{"sessionID":"ses_foreign",`, 1)
+	}
 	const retry = `{"type":"retry","sessionID":"ses_fixture","messageID":"msg_retry","error":{"status":429}}`
 	retried := func(frame string) string { return strings.ReplaceAll(frame, "msg_final", "msg_retry") }
 	for _, tc := range []struct {
@@ -68,6 +71,9 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "unbound message text before a matching stop", frames: []string{start, earlier(text), stop}, diagnostic: "incomplete_terminal_result"},
 		{name: "foreign session text cannot replace bound answer", frames: []string{start, reason, strings.ReplaceAll(text, "ses_fixture", "ses_foreign"), stop}, diagnostic: "incomplete_terminal_result"},
 		{name: "foreign stop cannot validate bound text", frames: []string{start, text, strings.ReplaceAll(stop, "ses_fixture", "ses_foreign")}, diagnostic: "incomplete_terminal_result"},
+		{name: "start part contradicts its envelope", frames: []string{conflictingSession(start), reason, stop}, diagnostic: "empty_terminal_result"},
+		{name: "text part contradicts its envelope", frames: []string{start, conflictingSession(text), stop}, diagnostic: "empty_terminal_result"},
+		{name: "stop part contradicts its envelope", frames: []string{start, text, conflictingSession(stop)}, diagnostic: "incomplete_terminal_result"},
 		{name: "text without message ID in a bound step", frames: []string{start, strings.Replace(text, `"messageID":"msg_final",`, "", 1), stop}, diagnostic: "incomplete_terminal_result"},
 		{name: "ambiguous late text suffix fails", frames: []string{start, text, stop, strings.Replace(text, "ordinary answer", "late suffix", 1)}, diagnostic: "incomplete_terminal_result"},
 		{name: "repeated answer bytes", frames: []string{start, reasoning("private planning</think>HaHa"), stop}, want: "HaHa", source: openCodeReasoningFallbackSource},
