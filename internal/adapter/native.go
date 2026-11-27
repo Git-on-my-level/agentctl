@@ -136,6 +136,7 @@ type processRecord struct {
 	opencodeUnboundText       bool
 	opencodeFinishReason      string
 	opencodeStep              openCodeStepID
+	opencodeLastKnownStep     openCodeStepID
 	opencodeStartPartID       string
 	opencodeEarlierSteps      map[openCodeStepID]struct{}
 	opencodeReasoning         openCodeReasoning
@@ -420,7 +421,7 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 			if p.opencodeReasoning.answer != "" && !p.opencodeStep.known() {
 				// A complete marked part can establish the message identity
 				// when the start did not supply one. A matching stop is needed.
-				p.opencodeStep = step
+				p.bindOpenCodeStep(step)
 			}
 		}
 		// Reasoning cannot rebind a session or enter stored observations.
@@ -513,7 +514,7 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 			if step.known() && !p.opencodeStep.known() {
 				p.opencodeUnboundText = p.opencodeUnboundText || p.opencodeText.Len() != 0
 				// Preserve this identity for a part reconciled after the stop.
-				p.opencodeStep = step
+				p.bindOpenCodeStep(step)
 			}
 			p.opencodeFinishReason, _ = obs.Data["reason"].(string)
 			if p.opencodeFinishReason != "stop" {
@@ -629,14 +630,23 @@ func (p *processRecord) collectableOpenCodeReasoning(obs parsedObservation) bool
 		(p.opencodeReasoning.answer != "" || strings.Contains(obs.openCodeReasoning, deepSeekThinkingEnd))
 }
 
-func (p *processRecord) beginOpenCodeStep(step openCodeStepID) {
-	if p.opencodeStep.known() && p.opencodeStep != step {
-		if p.opencodeEarlierSteps == nil {
-			p.opencodeEarlierSteps = make(map[openCodeStepID]struct{})
+func (p *processRecord) bindOpenCodeStep(step openCodeStepID) {
+	if step.known() {
+		if p.opencodeLastKnownStep.known() && p.opencodeLastKnownStep != step {
+			if p.opencodeEarlierSteps == nil {
+				p.opencodeEarlierSteps = make(map[openCodeStepID]struct{})
+			}
+			p.opencodeEarlierSteps[p.opencodeLastKnownStep] = struct{}{}
 		}
-		p.opencodeEarlierSteps[p.opencodeStep] = struct{}{}
+		p.opencodeLastKnownStep = step
 	}
 	p.opencodeStep = step
+}
+
+func (p *processRecord) beginOpenCodeStep(step openCodeStepID) {
+	// An anonymous start resets the attempt, but the native renderer may
+	// reuse the message ID. Retire it only after a different ID is bound.
+	p.bindOpenCodeStep(step)
 	p.opencodeStartPartID = ""
 	p.opencodeText.Reset()
 	p.opencodeTruncated = false

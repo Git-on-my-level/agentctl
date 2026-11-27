@@ -34,11 +34,7 @@ func (r *openCodeReasoning) observe(partID, text string) {
 		return
 	}
 	before, answer, marked := strings.Cut(text, deepSeekThinkingEnd)
-	quotedBoundary := false
-	if before != "" && answer != "" {
-		quotedBoundary = before[len(before)-1] == answer[0] && strings.ContainsRune("`\"'", rune(answer[0]))
-	}
-	if !marked || quotedBoundary || strings.Count(before, "```")%2 != 0 {
+	if !marked || protectedOpenCodeMarker(before) {
 		r.ambiguous = r.answer != "" && strings.TrimSpace(text) != ""
 		return
 	}

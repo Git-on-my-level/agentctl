@@ -31,6 +31,7 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 	// step_start and a stop with output=0. It may reconcile parts after stop.
 	const start = `{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","id":"prt_start","messageID":"msg_final"}}`
 	const stop = `{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop","tokens":{"output":0,"reasoning":60}}}`
+	toolFinish := strings.Replace(stop, `"stop"`, `"tool-calls"`, 1)
 	const reasonFrame = `{"type":"reasoning","sessionID":"ses_fixture","part":{"id":"prt_final","type":"reasoning","sessionID":"ses_fixture","messageID":"msg_final","time":{"start":1,"end":2},"metadata":{"opaque":"private-native-metadata"},"text":`
 	const text = `{"type":"text","sessionID":"ses_fixture","part":{"type":"text","messageID":"msg_final","time":{"end":2},"text":"ordinary answer"}}`
 	const answer = "Summary.\n\n```json\n{\"findings\":[]}\n```"
@@ -69,6 +70,8 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "two marked parts are ambiguous", frames: []string{start, reason, otherPart(reasoning("private</think>Another answer.")), stop}, diagnostic: "empty_terminal_result"},
 		{name: "reconciled after stop", frames: []string{start, stop, reason}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "start without message ID", frames: []string{legacyStart, reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "anonymous start permits a reused message ID", frames: []string{legacyStart, toolFinish, legacyStart, text, stop}, want: "ordinary answer", source: "assistant_terminal_result"},
+		{name: "binding a new message retires its predecessor", frames: []string{earlier(start), earlier(toolFinish), legacyStart, reason, earlier(text), stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "typed stop identifies a late part after untyped start", frames: []string{legacyStart, stop, reason}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "typed stop rejects another late message after untyped start", frames: []string{legacyStart, stop, earlier(reason)}, diagnostic: "empty_terminal_result"},
 		{name: "reasoning inferred message needs a typed stop", frames: []string{legacyStart, reason, strings.Replace(stop, `"messageID":"msg_final",`, "", 1)}, diagnostic: "incomplete_terminal_result"},
@@ -88,7 +91,12 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "quoted marker in answer", frames: []string{start, reasoning("private planning</think>The tag is `</think>`."), stop}, want: "The tag is `</think>`.", source: openCodeReasoningFallbackSource},
 		{name: "marker quoted in planning supplies no boundary", frames: []string{start, reasoning("private planning about `</think>` and more deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker in quoted planning prose", frames: []string{start, reasoning("private planning about \"</think>\" and more deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside a longer quote", frames: []string{start, reasoning("private planning says \"emit the </think> marker during output\" and deliberates"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside longer inline code", frames: []string{start, reasoning("private planning in ``code ` </think> more code`` and deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker in a planning code fence", frames: []string{start, reasoning("private planning\n```xml\n</think>\n```\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "shorter tilde fence cannot close the example", frames: []string{start, reasoning("private planning\n~~~~xml\n~~~\n</think>\n~~~~\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker after a closed tilde fence", frames: []string{start, reasoning("private planning\n~~~xml\n<example/>\n~~~\nEnd of planning.</think>Answer."), stop}, want: "Answer.", source: openCodeReasoningFallbackSource},
+		{name: "unpaired inline punctuation on another line", frames: []string{start, reasoning("I have a stray ` while planning.\nThe `item`'s result is clear.</think>Answer."), stop}, want: "Answer.", source: openCodeReasoningFallbackSource},
 		{name: "multiple bare markers are ambiguous", frames: []string{start, reasoning("private planning</think>More private deliberation.</think>Answer."), stop}, diagnostic: "empty_terminal_result"},
 		{name: "unmarked planning", frames: []string{start, reasoning("private planning"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "punctuation only", frames: []string{start, reasoning("private planning</think> ... "), stop}, diagnostic: "empty_terminal_result"},
