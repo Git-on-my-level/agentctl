@@ -664,6 +664,9 @@ func (p *processRecord) collectableOpenCodeReasoning(obs parsedObservation) bool
 	if p.opencodeFinishReason == "stop" && (p.opencodeStopReportedText || p.opencodeUnboundLateParts && p.opencodeReasoning.answer == "") {
 		return false
 	}
+	if p.opencodeUnboundLateParts && step == p.opencodeLastKnownStep {
+		return false
+	}
 	pendingSameMessage := step == p.opencodeReasoningStep
 	return step.known() && bound && p.opencodeText.Len() == 0 && !p.opencodeUnboundText &&
 		obs.openCodePartID != "" && obs.openCodeReasoning != "" && (!pendingSameMessage || !p.opencodeReasoning.ambiguous) &&
@@ -809,7 +812,7 @@ func (p *processRecord) finish(err error) {
 		switch {
 		case p.lastError != "":
 			p.result = &Result{Success: false, State: StateFailed, Error: p.lastError, ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
-		case p.opencodeUnboundText:
+		case p.opencodeUnboundText && p.opencodeText.Len() == 0:
 			data["diagnostic_code"] = "incomplete_terminal_result"
 			p.result = &Result{Success: false, State: StateFailed, Error: "opencode run emitted text without a matching assistant message", ExitCode: p.exitCode, SessionRef: p.ref, Data: data}
 		case p.opencodeFinishReason != "stop":
@@ -1097,6 +1100,13 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 		}
 		backendVersion = firstLine(out.String())
 	}
+	var effectiveArgv []string
+	if a.Name() == "opencode" && req.ManagedOpenCodePlan {
+		effectiveArgv = OpenCodeLegacyRecipeArgv(req.Argv, backendVersion)
+		if effectiveArgv != nil {
+			req.Argv = effectiveArgv
+		}
+	}
 	digest, digestErr := executableDigest(resolved)
 	if digestErr != nil {
 		digest = ""
@@ -1125,7 +1135,7 @@ func (a *NativeAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResul
 		invocationFingerprint = Fingerprint(append(append([]string(nil), req.Argv...), req.PromptDelivery, strconv.Itoa(req.PromptBytes))...)
 	}
 	scope := Fingerprint(a.Name(), backendVersion, digest, req.Profile, req.Endpoint, req.Workspace, invocationFingerprint)
-	return ProbeResult{AdapterVersion: a.config.Manifest.AdapterVersion, BackendVersion: backendVersion, Executable: resolved, ExecutableDigest: digest, ScopeFingerprint: scope, ProbedAt: started, FreshFor: time.Minute, ReadOnly: true, Capabilities: capabilities}, nil
+	return ProbeResult{AdapterVersion: a.config.Manifest.AdapterVersion, BackendVersion: backendVersion, Executable: resolved, ExecutableDigest: digest, ScopeFingerprint: scope, ProbedAt: started, FreshFor: time.Minute, ReadOnly: true, Capabilities: capabilities, EffectiveArgv: effectiveArgv}, nil
 }
 
 func invocationSatisfied(argv []string, constraints map[string]any) bool {

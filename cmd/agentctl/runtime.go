@@ -184,9 +184,23 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		operationCtx, operationCancel = context.WithTimeout(ctx, opts.timeout)
 		defer operationCancel()
 	}
-	probe, err := probeVersion(operationCtx, runtime, adapter.ProbeRequest{Executable: opts.argv[0], Argv: opts.argv, PromptDelivery: promptDelivery, PromptArgs: promptArgs, PromptBytes: len(promptBytes), Profile: profileName})
+	managedOpenCodePlan := runtime.Name() == "opencode" && opts.delegation != nil && opts.delegation.NativePlan != nil
+	probe, err := probeVersion(operationCtx, runtime, adapter.ProbeRequest{Executable: opts.argv[0], Argv: opts.argv, ManagedOpenCodePlan: managedOpenCodePlan, PromptDelivery: promptDelivery, PromptArgs: promptArgs, PromptBytes: len(promptBytes), Profile: profileName})
 	if err != nil {
 		return mapAdapterError("adapter probe failed", err)
+	}
+	if managedOpenCodePlan && probe.EffectiveArgv != nil {
+		opts.argv = probe.EffectiveArgv
+		binding := *opts.delegation
+		plan := *binding.NativePlan
+		if argv := adapter.OpenCodeLegacyRecipeArgv(plan.Argv, probe.BackendVersion); argv != nil {
+			plan.Argv = argv
+		}
+		if argv := adapter.OpenCodeLegacyRecipeArgv(plan.RecipeArgv, probe.BackendVersion); argv != nil {
+			plan.RecipeArgv = argv
+		}
+		binding.NativePlan = &plan
+		opts.delegation = &binding
 	}
 	if runtime.Name() == "opencode" && opts.resumeSession != "" && opts.delegation != nil && opts.delegation.NativePlan != nil {
 		if !adapter.OpenCodeResumeVersionSupported(probe.BackendVersion) {

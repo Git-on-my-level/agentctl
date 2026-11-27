@@ -264,6 +264,33 @@ printf '%s\n' '{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"s
 	}
 }
 
+func TestDelegateOpenCodePreservesTextOnOlderCLI(t *testing.T) {
+	f := newOpenCodeDelegateFixture(t)
+	config, err := os.ReadFile(f.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config = bytes.ReplaceAll(config, []byte("zai/glm-5.3"), []byte("morph/morph-dsv41flash-1017"))
+	if err := os.WriteFile(f.config, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const script = `#!/bin/sh
+if [ "$1" = "--version" ]; then echo 'opencode v1.0.0'; exit 0; fi
+for arg do
+  if [ "$arg" = "--thinking" ]; then exit 64; fi
+done
+printf '%s\n' '{"type":"text","sessionID":"ses_fixture","part":{"type":"text","time":{"end":2},"text":"Legacy answer."}}'
+printf '%s\n' '{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","reason":"stop"}}'
+`
+	if err := os.WriteFile(filepath.Join(f.root, "opencode"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	code, out := f.invoke("fixture prompt", "--wait", "--require-result-source", "assistant_terminal_result")
+	if code != 0 || !strings.Contains(out, `"text":"Legacy answer."`) || !strings.Contains(out, `"source":"assistant_terminal_result"`) {
+		t.Fatalf("legacy delegate exit=%d %s", code, out)
+	}
+}
+
 func TestDelegateOpenCodeUnattendedCodingAddsAuto(t *testing.T) {
 	f := newOpenCodeDelegateFixture(t)
 	var config map[string]any

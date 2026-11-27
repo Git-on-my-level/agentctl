@@ -245,7 +245,9 @@ meaning.
 - Morph DeepSeek V4.1 Flash delegations (`morph/morph-dsv41flash` and
   `morph/morph-dsv41flash-1017`) add `--thinking` to expose completed
   `reasoning` parts in the JSON stream. Recovery and ordinary text precedence
-  were exercised with OpenCode 1.17.13, 2.2.6, and 2.3.2. Expert `run` supports
+  were exercised with OpenCode 1.17.13, 2.2.6, and 2.3.2. The managed recipe
+  omits the display flag when the existing probe reports a version older than
+  1.17.13, preserving the ordinary text path. Expert `run` supports
   recovery with one of those exact model IDs, selected with `--model` or `-m`.
   Put one of `--thinking`, `--thinking=true`, or `--thinking true` before the
   native `--` prompt separator. Conflicting or repeated flags disable fallback
@@ -260,9 +262,9 @@ meaning.
   until a typed stop confirms its session and message. Repeated candidates
   with the same answer are idempotent. Each candidate must contain the marker and answer suffix
   in one frame. The CommonMark parser excludes markers inside code spans,
-  blockquotes, fenced or indented code, and verbatim HTML. Same-line prose
-  quotes also exclude a marker. A code span crossing the marker makes the
-  boundary ambiguous even when the suffix parses on its own. Conflicting marked
+  blockquotes, fenced or indented code, and verbatim HTML. Prose quotes within
+  the current paragraph also exclude a marker. A code span crossing the marker
+  makes the boundary ambiguous even when the suffix parses on its own. Conflicting marked
   candidates or later unmarked parts with content leave the answer ambiguous.
   An unclosed fence makes a marker inside its Markdown container ineligible.
   Blank and punctuation-only suffixes are ineligible. Another thinking tag
@@ -270,10 +272,12 @@ meaning.
   With reasoning recovery enabled, a first completed text part reconciled after
   the stop takes precedence when it has the stopped part's session and
   `messageID`, as emitted by the verified OpenCode versions. When a message ID has
-  been reused across steps, the first result must arrive before the stop.
+  been reused across steps, a reasoning part cannot establish which step owns
+  the answer. A first text part reconciled after the stop is also ambiguous.
   A same-session stop without a message ID can confirm already bound ordinary
   text. It cannot confirm a reasoning-derived answer. Text with ambiguous
-  identity or an ambiguous late suffix leaves a bound turn incomplete.
+  identity cannot supply an answer. An ambiguous late suffix in a bound text
+  part leaves the turn incomplete.
   Text from a known foreign session is ignored in that mode. Ordinary invocations
   retain the legacy completed-text and stopped-step contract.
   Stored JSON results identify recovered content with
@@ -313,7 +317,8 @@ meaning.
   429 and advises waiting before retrying with the same model. A reconciled
   stop can retain the pending failure in the execution state. The retry and
   error events carry its HTTP evidence, and the internal reconciliation flag
-  is consumed before the stop event is journaled.
+  is consumed before the stop event is journaled. This failure classification
+  applies with or without reasoning recovery.
 - Sum `step_finish.part.tokens` counters across the execution into numeric
   `token_usage` metadata: input, output, cache read/write, and reasoning when
   present. Cost, text, reasoning content, and raw token objects are not retained.

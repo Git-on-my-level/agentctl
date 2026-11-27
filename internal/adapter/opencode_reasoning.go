@@ -3,6 +3,7 @@ package adapter
 import (
 	"crypto/sha256"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -87,6 +88,41 @@ func answerCharacter(c rune) bool {
 func openCodeReasoningFallbackEnabled(argv []string) bool {
 	model := route.NativeArgvModel("opencode", argv)
 	return launchrecipe.OpenCodeReasoningFallbackModel(model) && openCodeThinkingEnabled(argv[1:])
+}
+
+// OpenCodeLegacyRecipeArgv returns an adjusted managed recipe for a version
+// older than the verified display-option floor. A nil result leaves argv
+// alone, including when a wrapper reports an unrecognized version string.
+func OpenCodeLegacyRecipeArgv(argv []string, backendVersion string) []string {
+	if !openCodeReasoningFallbackEnabled(argv) || !openCodeBelowThinkingFloor(backendVersion) {
+		return nil
+	}
+	separator := slices.Index(argv, "--")
+	if flag := slices.Index(argv[:separator], "--thinking"); flag >= 0 {
+		return slices.Delete(slices.Clone(argv), flag, flag+1)
+	}
+	return nil
+}
+
+func openCodeBelowThinkingFloor(backendVersion string) bool {
+	version := strings.TrimSpace(backendVersion)
+	version = strings.TrimPrefix(strings.TrimPrefix(version, "opencode "), "v")
+	core, _, _ := strings.Cut(version, "+")
+	core, _, prerelease := strings.Cut(core, "-")
+	parts := strings.Split(core, ".")
+	var parsed [3]int
+	if len(parts) != len(parsed) {
+		return false
+	}
+	for i, part := range parts {
+		value, err := strconv.Atoi(part)
+		if err != nil || value < 0 {
+			return false
+		}
+		parsed[i] = value
+	}
+	comparison := slices.Compare(parsed[:], []int{1, 17, 13})
+	return comparison < 0 || comparison == 0 && prerelease
 }
 
 func openCodeThinkingEnabled(args []string) bool {

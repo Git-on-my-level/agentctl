@@ -18,8 +18,7 @@ var openCodeMarkdown = goldmark.DefaultParser()
 // on both sides of the marker, including multiline code spans.
 func protectedOpenCodeMarker(reasoning string, marker int) bool {
 	before, after := reasoning[:marker], reasoning[marker+len(deepSeekThinkingEnd):]
-	line := before[strings.LastIndexByte(before, '\n')+1:]
-	if openCodeInlineQuote(line, after) {
+	if openCodeInlineQuote(openCodeParagraphPrefix(before), after) {
 		return true
 	}
 	return walkOpenCodeLiterals(reasoning, func(segment text.Segment, _ bool) bool {
@@ -70,7 +69,7 @@ func walkOpenCodeLiterals(source string, visit func(segment text.Segment, code b
 		case *ast.CodeBlock:
 			found = visitLines(n.Lines(), true)
 		case *ast.FencedCodeBlock:
-			found = visitLines(n.Lines(), true) || n.Info != nil && visit(n.Info.Segment, true)
+			found = visitLines(n.Lines(), true) || n.Info != nil && visit(n.Info.Segment, false)
 		case *ast.Text:
 			found = n.Parent().Kind() == ast.KindCodeSpan && visit(n.Segment, true)
 		case *ast.HTMLBlock:
@@ -101,8 +100,21 @@ func walkOpenCodeLiterals(source string, visit func(segment text.Segment, code b
 	return found
 }
 
-// Inline prose quoting is local to the marker line. An unbalanced apostrophe
-// or backtick in an earlier line cannot invalidate a later completed turn.
+func openCodeParagraphPrefix(before string) string {
+	end := strings.LastIndexByte(before, '\n')
+	for end >= 0 {
+		start := strings.LastIndexByte(before[:end], '\n') + 1
+		if strings.TrimSpace(before[start:end]) == "" {
+			return before[end+1:]
+		}
+		end = start - 1
+	}
+	return before
+}
+
+// Prose quotes can span lines within a paragraph. Markdown handles multiline
+// code spans separately, so a stray backtick cannot affect quote parsing on
+// the following line.
 func openCodeInlineQuote(line, suffix string) bool {
 	lineSuffix, _, _ := strings.Cut(suffix, "\n")
 	hasClosingSingleQuote := strings.ContainsAny(lineSuffix, "'’")
@@ -114,6 +126,8 @@ func openCodeInlineQuote(line, suffix string) bool {
 		c, width := utf8.DecodeRuneInString(line[i:])
 		next = i + width
 		switch {
+		case c == '\n':
+			codeWidth = 0
 		case c == '`' && quote == 0:
 			width := openCodeRunWidth(line[i:], '`')
 			if codeWidth == 0 {
