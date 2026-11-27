@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	"github.com/Git-on-my-level/agentctl/internal/launchrecipe"
+	"github.com/Git-on-my-level/agentctl/internal/route"
 )
 
 const (
@@ -36,7 +37,7 @@ func (r *openCodeReasoning) observe(partID, text string) {
 		return
 	}
 	before, answer, marked := strings.Cut(text, deepSeekThinkingEnd)
-	if !marked || protectedOpenCodeMarker(before, answer) {
+	if !marked || protectedOpenCodeMarker(text, len(before)) {
 		r.ambiguous = r.answer != "" && strings.TrimSpace(text) != ""
 		return
 	}
@@ -75,7 +76,7 @@ func answerCharacter(c rune) bool {
 }
 
 func openCodeReasoningFallbackEnabled(argv []string) bool {
-	model, _ := argvFlagValue(argv, "--model")
+	model := route.NativeArgvModel("opencode", argv)
 	return launchrecipe.OpenCodeReasoningFallbackModel(model) && openCodeThinkingEnabled(argv[1:])
 }
 

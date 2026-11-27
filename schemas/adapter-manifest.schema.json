@@ -127,6 +127,7 @@
             "required_finish_reason": {"type": "string"},
             "fallback_source": {"type": "string", "minLength": 1},
             "fallback_required_argv": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+            "fallback_model_flags": {"type": "array", "items": {"type": "string"}, "minItems": 1},
             "fallback_invocation_satisfied": {"type": "boolean"}
           }
         }

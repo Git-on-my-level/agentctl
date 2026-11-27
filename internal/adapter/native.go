@@ -139,6 +139,7 @@ type processRecord struct {
 	opencodeStep              openCodeStepID
 	opencodeLastKnownStep     openCodeStepID
 	opencodeStartPartID       string
+	opencodeUnboundLateParts  bool
 	opencodeEarlierSteps      map[openCodeStepID]struct{}
 	opencodeReasoning         openCodeReasoning
 	opencodeReasoningOverflow int
@@ -430,7 +431,8 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 			}
 			return
 		case "opencode.step_finish":
-			if !earlierStep {
+			legacyTextStop := step.message == "" && step.session == p.opencodeStep.session && p.opencodeText.Len() != 0
+			if !earlierStep && !legacyTextStop {
 				p.opencodeFinishReason = ""
 				return
 			}
@@ -495,7 +497,7 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 			// Accept a first completed text part reconciled after its stop. With
 			// earlier text, the renderer may be sending an ambiguous suffix under
 			// a different part ID. Keep the existing incomplete-result behavior.
-			if !step.known() || step != p.opencodeStep || p.opencodeText.Len() != 0 {
+			if !step.known() || step != p.opencodeStep || p.opencodeText.Len() != 0 || p.opencodeUnboundLateParts {
 				p.opencodeFinishReason = ""
 			}
 			if obs.Content != "" {
@@ -645,6 +647,9 @@ func (p *processRecord) collectableOpenCodeReasoning(obs parsedObservation) bool
 		_, earlier := p.opencodeEarlierSteps[step]
 		bound = !earlier && p.opencodeFinishReason == "" && (!p.sessionKnown || step.session == p.ref.OpaqueID)
 	}
+	if p.opencodeUnboundLateParts && p.opencodeFinishReason == "stop" && p.opencodeReasoning.answer == "" {
+		return false
+	}
 	return step.known() && bound && p.opencodeText.Len() == 0 && !p.opencodeUnboundText &&
 		obs.openCodePartID != "" && obs.openCodeReasoning != "" && !p.opencodeReasoning.ambiguous &&
 		(p.opencodeReasoning.answer != "" || strings.Contains(obs.openCodeReasoning, deepSeekThinkingEnd))
@@ -652,6 +657,9 @@ func (p *processRecord) collectableOpenCodeReasoning(obs parsedObservation) bool
 
 func (p *processRecord) bindOpenCodeStep(step openCodeStepID) {
 	if step.known() {
+		if p.opencodeLastKnownStep != step {
+			p.opencodeUnboundLateParts = false
+		}
 		if p.opencodeLastKnownStep.known() && p.opencodeLastKnownStep != step {
 			if p.opencodeEarlierSteps == nil {
 				p.opencodeEarlierSteps = make(map[openCodeStepID]struct{})
@@ -666,6 +674,8 @@ func (p *processRecord) bindOpenCodeStep(step openCodeStepID) {
 func (p *processRecord) beginOpenCodeStep(step openCodeStepID) {
 	// An anonymous start resets the attempt, but the native renderer may
 	// reuse the message ID. Retire it only after a different ID is bound.
+	// A part reconciled after a stop cannot identify a step within a reused ID.
+	p.opencodeUnboundLateParts = p.opencodeLastKnownStep.known() && (!step.known() || step == p.opencodeLastKnownStep)
 	p.bindOpenCodeStep(step)
 	p.opencodeStartPartID = ""
 	p.opencodeText.Reset()

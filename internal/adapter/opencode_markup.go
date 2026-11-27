@@ -2,88 +2,82 @@ package adapter
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/text"
 )
 
-// protectedOpenCodeMarker detects a marker that is being quoted in reasoning,
-// including fenced examples. The final line ends immediately before the marker,
-// so it cannot close a fence that requires the rest of the line to be blank.
-func protectedOpenCodeMarker(prefix, suffix string) bool {
-	var fence byte
-	var fenceWidth, listIndent int
-	for {
-		line, rest, complete := strings.Cut(prefix, "\n")
-		trimmed := strings.TrimLeft(line, " \t")
-		indent := len(line) - len(trimmed)
-		kind, width, tail, itemIndent := openCodeFencePrefix(line)
-		if fence == 0 && trimmed != "" {
-			if indent < listIndent {
-				listIndent = 0
-			}
-			if itemIndent > 0 && indent-listIndent < 4 {
-				listIndent = itemIndent
-			}
-		}
-		switch {
-		case fence != 0:
-			if complete && itemIndent == 0 && indent >= listIndent && indent-listIndent < 4 && kind == fence && width >= fenceWidth && strings.TrimSpace(tail) == "" {
-				fence, fenceWidth = 0, 0
-			}
-		case kind != 0 && (kind != '`' || !strings.Contains(tail, "`")):
-			// A backtick fence cannot contain backticks in its info string.
-			fence, fenceWidth = kind, width
-		}
-		if !complete {
-			return fence != 0 || strings.HasPrefix(trimmed, ">") || indent-listIndent >= 4 ||
-				strings.Contains(line[:indent], "\t") || openCodeInlineQuote(line, suffix)
-		}
-		prefix = rest
-	}
-}
+var openCodeMarkdown = goldmark.DefaultParser()
 
-func openCodeFencePrefix(line string) (kind byte, width int, tail string, itemIndent int) {
-	remaining := len(line)
-	line = strings.TrimLeft(line, " \t")
-	for line != "" {
-		if line[0] == '>' {
-			line = strings.TrimLeft(line[1:], " \t")
-			continue
+// protectedOpenCodeMarker checks the position in the original model output.
+// Parsing the whole frame preserves the actual containers and the delimiters
+// on both sides of the marker, including multiline code spans.
+func protectedOpenCodeMarker(reasoning string, marker int) bool {
+	before, after := reasoning[:marker], reasoning[marker+len(deepSeekThinkingEnd):]
+	line := before[strings.LastIndexByte(before, '\n')+1:]
+	if openCodeInlineQuote(line, after) {
+		return true
+	}
+	containsMarker := func(segment text.Segment) bool {
+		return segment.Start <= marker && marker+len(deepSeekThinkingEnd) <= segment.Stop
+	}
+	containsMarkerInLines := func(segments *text.Segments) bool {
+		for i := range segments.Len() {
+			if containsMarker(segments.At(i)) {
+				return true
+			}
 		}
-		marker := openCodeListMarker(line)
-		if marker == 0 {
-			break
-		}
-		line = strings.TrimLeft(line[marker:], " \t")
-		itemIndent = remaining - len(line)
+		return false
 	}
-	if line == "" || (line[0] != '`' && line[0] != '~') {
-		return 0, 0, "", itemIndent
-	}
-	width = openCodeRunWidth(line, line[0])
-	if width < 3 {
-		return 0, 0, "", itemIndent
-	}
-	return line[0], width, line[width:], itemIndent
-}
 
-// Markdown allows a list item's first block to start directly after its marker.
-func openCodeListMarker(line string) int {
-	marker := 0
-	if strings.ContainsRune("-+*", rune(line[0])) {
-		marker = 1
-	} else {
-		digits := 0
-		for digits < len(line) && digits < 9 && line[digits] >= '0' && line[digits] <= '9' {
-			digits++
+	document := openCodeMarkdown.Parse(text.NewReader([]byte(reasoning)))
+	protected := false
+	_ = ast.Walk(document, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
 		}
-		if digits > 0 && digits < len(line) && (line[digits] == '.' || line[digits] == ')') {
-			marker = digits + 1
+		switch n := node.(type) {
+		case *ast.CodeBlock:
+			protected = containsMarkerInLines(n.Lines())
+		case *ast.FencedCodeBlock:
+			protected = containsMarkerInLines(n.Lines()) || n.Info != nil && containsMarker(n.Info.Segment)
+		case *ast.Text:
+			protected = n.Parent().Kind() == ast.KindCodeSpan && containsMarker(n.Segment)
+		case *ast.HTMLBlock:
+			// CommonMark's verbatim HTML block types cover comments,
+			// processing instructions, declarations, CDATA and preformatted
+			// elements. A standalone ordinary closing tag can be the marker.
+			if n.HTMLBlockType <= ast.HTMLBlockType5 {
+				protected = containsMarkerInLines(n.Lines()) || containsMarker(n.ClosureLine)
+			}
+		case *ast.RawHTML:
+			// A marker in an attribute or comment is part of a larger
+			// token. An ordinary closing tag is a token of its own.
+			for i := range n.Segments.Len() {
+				segment := n.Segments.At(i)
+				if containsMarker(segment) && segment.Len() != len(deepSeekThinkingEnd) {
+					protected = true
+					break
+				}
+			}
 		}
-	}
-	if marker < len(line) && (line[marker] == ' ' || line[marker] == '\t') {
-		return marker
-	}
-	return 0
+		if !protected && node.Type() == ast.TypeBlock && containsMarkerInLines(node.Lines()) {
+			for parent := node.Parent(); parent != nil; parent = parent.Parent() {
+				if parent.Kind() == ast.KindBlockquote {
+					protected = true
+					break
+				}
+			}
+		}
+		if protected {
+			return ast.WalkStop, nil
+		}
+		return ast.WalkContinue, nil
+	})
+	return protected
 }
 
 // Inline prose quoting is local to the marker line. An unbalanced apostrophe
@@ -91,7 +85,8 @@ func openCodeListMarker(line string) int {
 func openCodeInlineQuote(line, suffix string) bool {
 	lineSuffix, _, _ := strings.Cut(suffix, "\n")
 	hasClosingSingleQuote := strings.ContainsAny(lineSuffix, "'’")
-	var quote rune
+	var quote, closeQuote rune
+	var quoteDepth int
 	var codeWidth int
 	for next := 0; next < len(line); {
 		i := next
@@ -111,27 +106,57 @@ func openCodeInlineQuote(line, suffix string) bool {
 		case c == '\\':
 			_, escaped := utf8.DecodeRuneInString(line[next:])
 			next += escaped
-		case c == '\'' || c == '‘' || c == '’':
+		case unicode.Is(unicode.Quotation_Mark, c):
 			inWord := i > 0 && next < len(line) && openCodeWordByte(line[i-1]) && openCodeWordByte(line[next])
-			if c != '‘' && (inWord || quote == 0 && !hasClosingSingleQuote && openCodeDecade(line[next:])) {
+			apostrophe := c == '\'' || c == '’'
+			if apostrophe && (inWord || quote == 0 && !hasClosingSingleQuote && openCodeDecade(line[next:])) {
 				continue
 			}
-			if quote == c {
-				quote = 0
-			} else if quote == 0 && c == '‘' {
-				quote = '’'
-			} else if quote == 0 && c == '\'' && openCodeBeforeQuote(line, i) {
-				quote = c
+			switch {
+			case quote == 0:
+				if !strings.ContainsRune("'\"’”", c) || openCodeBeforeQuote(line, i) {
+					quote, closeQuote, quoteDepth = c, openCodeQuoteEnd(c), 1
+				}
+			case c == closeQuote:
+				quoteDepth--
+				if quoteDepth == 0 {
+					quote = 0
+				}
+			case c == quote:
+				quoteDepth++
 			}
-		case c == quote:
-			quote = 0
-		case quote == 0 && c == '“':
-			quote = '”'
-		case quote == 0 && c == '"' && openCodeBeforeQuote(line, i):
-			quote = '"'
 		}
 	}
 	return quote != 0 || codeWidth != 0 || strings.HasSuffix(line, "\\")
+}
+
+func openCodeQuoteEnd(open rune) rune {
+	switch open {
+	case '‘':
+		return '’'
+	case '“':
+		return '”'
+	case '‚':
+		return '‘'
+	case '„':
+		return '“'
+	case '«':
+		return '»'
+	case '»':
+		return '«'
+	case '‹':
+		return '›'
+	case '›':
+		return '‹'
+	case '「', '﹁', '｢':
+		return open + 1
+	case '『', '﹃':
+		return open + 1
+	case '〝':
+		return '〞'
+	default:
+		return open
+	}
 }
 
 func openCodeBeforeQuote(line string, index int) bool {

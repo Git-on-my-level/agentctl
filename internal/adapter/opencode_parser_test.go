@@ -66,6 +66,9 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "same answer replayed under a new part ID", frames: []string{start, reason, otherPart(reason), stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "duplicate start preserves bound answer", frames: []string{start, reason, start, stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "new start on the same message resets the attempt", frames: []string{start, text, strings.Replace(start, "prt_start", "prt_retry", 1), strings.Replace(text, "ordinary answer", "fresh answer", 1), stop}, want: "fresh answer", source: "assistant_terminal_result"},
+		{name: "late reasoning cannot identify which reused step emitted it", frames: []string{start, reason, toolFinish, strings.Replace(start, "prt_start", "prt_next", 1), stop, reason}, diagnostic: "empty_terminal_result"},
+		{name: "late text cannot identify which reused step emitted it", frames: []string{start, text, toolFinish, strings.Replace(start, "prt_start", "prt_next", 1), stop, text}, diagnostic: "incomplete_terminal_result"},
+		{name: "live final reasoning after a real new start on a reused ID", frames: []string{start, reason, toolFinish, strings.Replace(start, "prt_start", "prt_next", 1), reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "preceding unmarked part stays private", frames: []string{start, otherPart(reasoning("private consideration")), reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "unmarked continuation after a candidate is ambiguous", frames: []string{start, reasoning("private</think>Answ"), otherPart(reasoning("er.")), stop}, diagnostic: "empty_terminal_result"},
 		{name: "two marked parts are ambiguous", frames: []string{start, reason, otherPart(reasoning("private</think>Another answer.")), stop}, diagnostic: "empty_terminal_result"},
@@ -79,6 +82,7 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "typed stop rejects another late message after untyped start", frames: []string{legacyStart, stop, earlier(reason)}, diagnostic: "empty_terminal_result"},
 		{name: "reasoning inferred message needs a typed stop", frames: []string{legacyStart, reason, strings.Replace(stop, `"messageID":"msg_final",`, "", 1)}, diagnostic: "incomplete_terminal_result"},
 		{name: "ordinary text takes precedence", frames: []string{start, reason, stop, text}, want: "ordinary answer", source: "assistant_terminal_result"},
+		{name: "same-session anonymous stop can confirm completed text", frames: []string{start, text, strings.Replace(stop, `"messageID":"msg_final",`, "", 1)}, want: "ordinary answer", source: "assistant_terminal_result"},
 		{name: "unbound message text before a matching stop", frames: []string{start, earlier(text), stop}, diagnostic: "incomplete_terminal_result"},
 		{name: "foreign session text cannot replace bound answer", frames: []string{start, reason, strings.ReplaceAll(text, "ses_fixture", "ses_foreign"), stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "foreign stop cannot validate bound text", frames: []string{start, text, strings.ReplaceAll(stop, "ses_fixture", "ses_foreign")}, diagnostic: "incomplete_terminal_result"},
@@ -96,9 +100,16 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "marker in quoted planning prose", frames: []string{start, reasoning("private planning about \"</think>\" and more deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker inside a longer quote", frames: []string{start, reasoning("private planning says \"emit the </think> marker during output\" and deliberates"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker inside smart quotes", frames: []string{start, reasoning("private planning says “emit </think> during output” and deliberates"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside Swedish quotes", frames: []string{start, reasoning("Jag skrev ”Använd </think> som exempel” och fortsatte resonera."), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside nested directional quotes", frames: []string{start, reasoning("Use “draft “ready” and write </think> later”."), stop}, diagnostic: "empty_terminal_result"},
 		{name: "nested smart quotes preserve straight outer quote", frames: []string{start, reasoning("The note says \"Use “draft” and write </think> later\"."), stop}, diagnostic: "empty_terminal_result"},
 		{name: "nested straight quotes preserve smart outer quote", frames: []string{start, reasoning("The note says “Use \"draft\" and write </think> later”."), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker inside a blockquote", frames: []string{start, reasoning("private planning:\n> </think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside a quoted bullet item", frames: []string{start, reasoning("private planning:\n- > </think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside a quoted ordered item", frames: []string{start, reasoning("private planning:\n1. > </think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "a finished quoted list cannot absorb top-level code", frames: []string{start, reasoning("> - Example\n\n    </think>\n    more deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker in a multiline code span", frames: []string{start, reasoning("Planning about the literal ``\n</think>\nas an example`` then more deliberation."), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker in an HTML comment", frames: []string{start, reasoning("Planning.\n<!-- </think> -->\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker inside indented code", frames: []string{start, reasoning("private planning:\n\n    </think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker inside tab-indented code", frames: []string{start, reasoning("private planning:\n\n\t</think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "indentation of a continued list paragraph", frames: []string{start, reasoning("1. Check the input.\n    The input is valid.</think>\nAnswer."), stop}, want: "Answer.", source: openCodeReasoningFallbackSource},
@@ -131,6 +142,7 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "late earlier text and stop", frames: []string{earlier(start), start, stop, earlier(text), earlier(stop), reason}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "retry invalidates earlier candidate", frames: []string{start, reason, `{"type":"retry","sessionID":"ses_fixture","error":{"status":429}}`, stop}, diagnostic: "empty_terminal_result"},
 		{name: "retry followed by a new assistant step", frames: []string{start, reason, retry, retried(start), retried(reason), retried(stop)}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "retry resets earlier ordinary text with recovery enabled", frames: []string{start, text, retry, strings.Replace(text, "ordinary answer", "fresh answer", 1), stop}, want: "fresh answer", source: "assistant_terminal_result"},
 		{name: "missing stop", frames: []string{start, reason}, diagnostic: "incomplete_terminal_result"},
 		{name: "provider error after stop", frames: []string{start, reason, stop, `{"type":"error","sessionID":"ses_fixture","error":{"type":"provider.rate-limit","status":429}}`}},
 		{name: "cancellation after stop", frames: []string{start, reason, stop}, cancelled: true},
@@ -226,14 +238,17 @@ func TestOpenCodeReasoningRequiresThinkingFlag(t *testing.T) {
 '{"type":"reasoning","sessionID":"ses_fixture","part":{"type":"reasoning","id":"prt_final","messageID":"msg_final","time":{"end":2},"text":"private planning</think>Answer."}}' \
 '{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}'`)
 	for _, tc := range []struct {
-		name  string
-		model string
-		args  []string
-		want  bool
+		name      string
+		model     string
+		modelArgs []string
+		args      []string
+		want      bool
 	}{
 		{name: "explicit", model: "morph/morph-dsv41flash-1017", args: []string{"--thinking", "--", "prompt"}, want: true},
 		{name: "inline true", model: "morph/morph-dsv41flash", args: []string{"--thinking=true", "--", "prompt"}, want: true},
 		{name: "separate true", model: "morph/morph-dsv41flash-1017", args: []string{"--thinking", "true", "--", "prompt"}, want: true},
+		{name: "short native model flag", modelArgs: []string{"-m", "morph/morph-dsv41flash"}, args: []string{"--thinking", "--", "prompt"}, want: true},
+		{name: "short native model flag with equals", modelArgs: []string{"-m=morph/morph-dsv41flash-1017"}, args: []string{"--thinking", "--", "prompt"}, want: true},
 		{name: "absent"},
 		{name: "disabled", model: "morph/morph-dsv41flash", args: []string{"--thinking=false", "--", "prompt"}},
 		{name: "separate false", model: "morph/morph-dsv41flash", args: []string{"--thinking", "false", "--", "prompt"}},
@@ -248,6 +263,7 @@ func TestOpenCodeReasoningRequiresThinkingFlag(t *testing.T) {
 			if tc.model != "" {
 				argv = append(argv, "--model", tc.model)
 			}
+			argv = append(argv, tc.modelArgs...)
 			argv = append(argv, tc.args...)
 			got, err := NewOpenCode().Launch(context.Background(), LaunchRequest{Argv: argv})
 			if err != nil || got.Result == nil || got.Result.Success != tc.want {
@@ -862,8 +878,11 @@ func TestOpenCodeManifestDeclaresBoundedSameProcessContract(t *testing.T) {
 	if content.Constraints["fallback_source"] != "assistant_reasoning_fallback" {
 		t.Fatalf("fallback_source = %#v", content.Constraints["fallback_source"])
 	}
-	if fallback, ok := content.Constraints["fallback_required_argv"].([]string); !ok || strings.Join(fallback, " ") != "--model --thinking --" {
+	if fallback, ok := content.Constraints["fallback_required_argv"].([]string); !ok || strings.Join(fallback, " ") != "--thinking --" {
 		t.Fatalf("fallback_required_argv = %#v", content.Constraints["fallback_required_argv"])
+	}
+	if modelFlags, ok := content.Constraints["fallback_model_flags"].([]string); !ok || strings.Join(modelFlags, " ") != "--model -m" {
+		t.Fatalf("fallback_model_flags = %#v", content.Constraints["fallback_model_flags"])
 	}
 	for name, decl := range status {
 		negotiated := NegotiateInvocation(m, nil, name)

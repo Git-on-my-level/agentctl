@@ -357,21 +357,33 @@ printf '%s\n' '{"type":"retry","timestamp":1794251075486,"sessionID":"ses_incomp
 }
 
 func TestOpenCodeRateLimitSurfacesMetadataAndCapacity(t *testing.T) {
+	t.Run("ordinary", func(t *testing.T) { testOpenCodeRateLimitLateStop(t, false) })
+	t.Run("reasoning recovery", func(t *testing.T) { testOpenCodeRateLimitLateStop(t, true) })
+}
+
+func testOpenCodeRateLimitLateStop(t *testing.T, reasoning bool) {
+	t.Helper()
 	root := testutil.TempDir(t)
 	path := filepath.Join(root, "opencode")
 	script := `#!/bin/sh
 if [ "$1" = "--version" ]; then echo 'opencode 2.2.6'; exit 0; fi
 printf '%s\n' '{"type":"retry","timestamp":1794251075486,"sessionID":"ses_rate_limit","attempt":2,"nextRetryAt":1794251101486,"error":{"type":"provider.rate-limit","message":"Rate limit exceeded; private-request-details","status":429,"retryAfterMs":26000}}' '{"type":"error","sessionID":"ses_rate_limit","error":{"type":"provider.rate-limit","message":"Rate limit exceeded; private-request-details","status":429}}'
-printf '%s\n' '{"type":"reasoning","sessionID":"ses_rate_limit","part":{"type":"reasoning","id":"prt_reasoning","sessionID":"ses_rate_limit","messageID":"msg_final","time":{"end":2},"text":"private provider planning</think>late marked answer"}}'
-printf '%s\n' '{"type":"step_finish","sessionID":"ses_rate_limit","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}'
 `
+	if reasoning {
+		script += `printf '%s\n' '{"type":"reasoning","sessionID":"ses_rate_limit","part":{"type":"reasoning","id":"prt_reasoning","sessionID":"ses_rate_limit","messageID":"msg_final","time":{"end":2},"text":"private provider planning</think>late marked answer"}}'` + "\n"
+	}
+	script += `printf '%s\n' '{"type":"step_finish","sessionID":"ses_rate_limit","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}'` + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	journal := filepath.Join(root, "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
-	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--", path, "run", "--format", "json", "--model", "morph/morph-dsv41flash-1017", "--thinking", "--", "prompt"}); code != 0 {
+	args := []string{"--output", "json", "--journal", journal, "run", "--", path, "run", "--format", "json"}
+	if reasoning {
+		args = append(args, "--model", "morph/morph-dsv41flash-1017", "--thinking")
+	}
+	if code := a.run(context.Background(), append(args, "--", "prompt")); code != 0 {
 		t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	var document struct {

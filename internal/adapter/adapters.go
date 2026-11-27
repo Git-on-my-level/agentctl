@@ -736,7 +736,8 @@ func ompManifest() Manifest {
 func opencodeManifest() Manifest {
 	resultContent := resultContentDecl(CapabilitySupported, "assistant_terminal_result")
 	resultContent.Constraints["fallback_source"] = openCodeReasoningFallbackSource
-	resultContent.Constraints["fallback_required_argv"] = []string{"--model", "--thinking", "--"}
+	resultContent.Constraints["fallback_required_argv"] = []string{"--thinking", "--"}
+	resultContent.Constraints["fallback_model_flags"] = []string{"--model", "-m"}
 	resultContent.Constraints["required_output_mode"] = "json"
 	resultContent.Constraints["required_argv"] = map[string]any{"flag": "--format", "kind": "value", "value": "json"}
 	resultContent.Constraints["required_subcommand"] = "run"

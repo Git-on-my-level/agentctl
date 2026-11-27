@@ -246,23 +246,26 @@ meaning.
   `morph/morph-dsv41flash-1017`) add `--thinking` to expose completed
   `reasoning` parts in the JSON stream. This CLI display option is available in
   OpenCode 1.17.13 and was exercised with 2.2.6 and 2.3.2. Expert `run` supports
-  recovery with one of those exact `--model` values and the flag before the native
+  recovery with one of those exact model IDs, selected with `--model` or `-m`, and the flag before the native
   `--` prompt separator. When there is no
   completed text, the adapter can recover the answer after the model's literal
   `</think>` marker in a completed reasoning part from the same session and
   assistant message as the stopped step. Repeated candidates with the same
   answer are idempotent. Each candidate must contain the marker and answer suffix
-  in one frame. The boundary excludes markers in same-line quotes and code
-  spans, Markdown blockquotes, and fenced or indented code. Conflicting marked
+  in one frame. The CommonMark parser excludes markers inside code spans,
+  blockquotes, fenced or indented code, and verbatim HTML. Same-line prose
+  quotes also exclude a marker. Conflicting marked
   candidates or later unmarked parts with content leave the answer ambiguous.
-  An unclosed fence, including an indented fence that could belong to a list,
-  makes a later marker ineligible.
+  An unclosed fence makes a marker inside its Markdown container ineligible.
   Blank or punctuation-only suffixes and suffixes that reopen thinking or
   contain another unquoted `</think>` are ineligible.
   With reasoning recovery enabled, a first completed text part reconciled after
   the stop takes precedence when it has the stopped part's session and
-  `messageID`, as emitted by OpenCode 2.2.6 and 2.3.2. Text with
-  ambiguous identity or an ambiguous late suffix leaves a bound turn incomplete.
+  `messageID`, as emitted by OpenCode 2.2.6 and 2.3.2. When a message ID has
+  been reused across steps, the first result must arrive before the stop.
+  A same-session stop without a message ID can confirm already bound ordinary
+  text. It cannot confirm a reasoning-derived answer. Text with ambiguous
+  identity or an ambiguous late suffix leaves a bound turn incomplete.
   Text from a known foreign session is ignored in that mode. Ordinary invocations
   retain the legacy completed-text and stopped-step contract.
   Stored JSON results identify recovered content with
