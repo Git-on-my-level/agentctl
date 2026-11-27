@@ -39,7 +39,7 @@ func (r *openCodeReasoning) observe(partID, text string) {
 		return
 	}
 	answer = strings.TrimSpace(answer)
-	if strings.HasPrefix(answer, "<think>") || strings.HasPrefix(answer, deepSeekThinkingEnd) || strings.IndexFunc(answer, answerCharacter) < 0 {
+	if strings.Contains(answer, "<think>") || strings.HasPrefix(answer, deepSeekThinkingEnd) || strings.IndexFunc(answer, answerCharacter) < 0 {
 		r.ambiguous = r.answer != ""
 		return
 	}

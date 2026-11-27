@@ -84,6 +84,7 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "punctuation only", frames: []string{start, reasoning("private planning</think> ... "), stop}, diagnostic: "empty_terminal_result"},
 		{name: "whitespace suffix", frames: []string{start, reasoning("private planning</think> \n"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "unclosed second thinking block", frames: []string{start, reasoning("private planning</think><think>still thinking"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "thinking reopens after an answer fragment", frames: []string{start, reasoning("private planning</think>Draft answer.<think>Private again."), stop}, diagnostic: "empty_terminal_result"},
 		{name: "another message", frames: []string{start, strings.ReplaceAll(reason, "msg_final", "msg_earlier"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "another session", frames: []string{start, strings.ReplaceAll(reason, "ses_fixture", "ses_foreign"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "session from envelope", frames: []string{start, strings.Replace(reason, `,"sessionID":"ses_fixture","messageID"`, `,"messageID"`, 1), stop}, want: answer, source: openCodeReasoningFallbackSource},
