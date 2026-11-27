@@ -254,8 +254,8 @@ meaning.
   candidates are ambiguous. Blank or punctuation-only suffixes and suffixes
   that start with another thinking marker are ineligible.
   A first completed text part reconciled after the stop can take precedence
-  when it belongs to the stopped message. An ambiguous late suffix leaves the
-  turn incomplete.
+  when it belongs to the stopped message. Once a step has an assistant message
+  ID, unbound text and an ambiguous late suffix leave the turn incomplete.
   Stored JSON results identify recovered content with
   `outcome.content.source: "assistant_reasoning_fallback"`. Callers may assert
   that source with `--require-result-source` or omit the flag to accept either

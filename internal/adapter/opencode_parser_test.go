@@ -57,10 +57,15 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 	}{
 		{name: "historical shape past stream limit", frames: []string{start, reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "duplicate completed part", frames: []string{start, reason, reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "duplicate start preserves bound answer", frames: []string{start, reason, start, stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "different unmarked part stays private", frames: []string{start, reason, otherPart(reasoning("private reconsideration")), stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "two marked parts are ambiguous", frames: []string{start, reason, otherPart(reasoning("private</think>Another answer.")), stop}, diagnostic: "empty_terminal_result"},
 		{name: "reconciled after stop", frames: []string{start, stop, reason}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "ordinary text takes precedence", frames: []string{start, reason, stop, text}, want: "ordinary answer", source: "assistant_terminal_result"},
+		{name: "unbound message text before a matching stop", frames: []string{start, earlier(text), stop}, diagnostic: "incomplete_terminal_result"},
+		{name: "foreign session text cannot replace bound answer", frames: []string{start, reason, strings.ReplaceAll(text, "ses_fixture", "ses_foreign"), stop}, diagnostic: "incomplete_terminal_result"},
+		{name: "foreign stop cannot validate bound text", frames: []string{start, text, strings.ReplaceAll(stop, "ses_fixture", "ses_foreign")}, diagnostic: "incomplete_terminal_result"},
+		{name: "text without message ID in a bound step", frames: []string{start, strings.Replace(text, `"messageID":"msg_final",`, "", 1), stop}, diagnostic: "incomplete_terminal_result"},
 		{name: "ambiguous late text suffix fails", frames: []string{start, text, stop, strings.Replace(text, "ordinary answer", "late suffix", 1)}, diagnostic: "incomplete_terminal_result"},
 		{name: "repeated answer bytes", frames: []string{start, reasoning("private planning</think>HaHa"), stop}, want: "HaHa", source: openCodeReasoningFallbackSource},
 		{name: "unproved split boundary fails", frames: []string{start, reasoning("private planning</th"), reasoning("ink>\nPlain"), stop}, diagnostic: "empty_terminal_result"},
@@ -100,6 +105,9 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 			}
 			if tc.diagnostic != "" && got.Data["diagnostic_code"] != tc.diagnostic {
 				t.Fatalf("diagnostic = %#v, want %q", got.Data, tc.diagnostic)
+			}
+			if got.SessionRef.OpaqueID == "ses_foreign" {
+				t.Fatal("foreign frame replaced the native session binding")
 			}
 			for _, obs := range record.observations {
 				if obs.openCodeReasoning != "" || obs.Content != "" {
