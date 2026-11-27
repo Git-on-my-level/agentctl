@@ -244,12 +244,13 @@ meaning.
   outcome retains the native exit code and any content-free stderr fingerprint.
 - Morph DeepSeek V4.1 Flash delegations (`morph/morph-dsv41flash` and
   `morph/morph-dsv41flash-1017`) add `--thinking` to expose completed
-  `reasoning` parts in the JSON stream. This is a CLI display option. Expert
-  `run` supports recovery when the caller supplies that flag. When there is no
+  `reasoning` parts in the JSON stream. This CLI display option is available in
+  OpenCode 1.17.13 and was exercised with 2.2.6 and 2.3.2. Expert `run` supports
+  recovery with the flag before the native `--` prompt separator. When there is no
   completed text, the adapter can recover the answer after the model's literal
   `</think>` marker in a completed reasoning part from the same session and
-  assistant message as the stopped step. Duplicate deliveries of that frame
-  are ignored. Each candidate must contain the entire marker and answer suffix
+  assistant message as the stopped step. Repeated candidates with the same
+  answer are idempotent. Each candidate must contain the entire marker and answer suffix
   in one frame. Separate unmarked parts are discarded, and conflicting marked
   candidates are ambiguous. Blank or punctuation-only suffixes and suffixes
   that start with another thinking marker are ineligible.

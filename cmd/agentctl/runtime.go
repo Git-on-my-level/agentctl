@@ -2731,7 +2731,7 @@ func appendNativeEvent(ctx context.Context, journal *store.Journal, execution mo
 		switch native.SourceState {
 		case "opencode.retry":
 			next.RateLimit = openCodeRateLimit(native.Payload)
-		case "opencode.error":
+		case "opencode.error", "opencode.step_finish":
 			if status, ok := nativeMetadataInt(native.Payload["http_status"]); !ok || status != 429 {
 				next.RateLimit = nil
 			}

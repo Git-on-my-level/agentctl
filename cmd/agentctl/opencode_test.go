@@ -362,6 +362,7 @@ func TestOpenCodeRateLimitSurfacesMetadataAndCapacity(t *testing.T) {
 if [ "$1" = "--version" ]; then echo 'opencode 2.2.6'; exit 0; fi
 printf '%s\n' '{"type":"retry","timestamp":1794251075486,"sessionID":"ses_rate_limit","attempt":2,"nextRetryAt":1794251101486,"error":{"type":"provider.rate-limit","message":"Rate limit exceeded; private-request-details","status":429,"retryAfterMs":26000}}' '{"type":"error","sessionID":"ses_rate_limit","error":{"type":"provider.rate-limit","message":"Rate limit exceeded; private-request-details","status":429}}'
 printf '%s\n' '{"type":"reasoning","sessionID":"ses_rate_limit","part":{"type":"reasoning","sessionID":"ses_rate_limit","messageID":"msg_final","time":{"end":2},"text":"private provider planning"}}'
+printf '%s\n' '{"type":"step_finish","sessionID":"ses_rate_limit","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}'
 `
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)

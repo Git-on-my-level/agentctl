@@ -353,8 +353,8 @@ OpenCode answer extraction requires the noninteractive `run --format json`
 form, a final `step_finish` with `part.reason: "stop"`, and exit 0. Completed
 final-step text takes precedence. Morph DeepSeek V4.1 Flash recipes add
 `--thinking` so a textless stopped step can return the answer after `</think>`
-from a completed reasoning part on the same assistant message. Add `--thinking`
-explicitly for expert `run`. The stored source is `assistant_reasoning_fallback`.
+from a completed reasoning part on the same assistant message. For expert `run`, add
+`--thinking` before the native `--` prompt separator. The stored source is `assistant_reasoning_fallback`.
 The reasoning before the marker is discarded. Unmarked reasoning and empty
 or punctuation-only suffixes leave the missing-answer failure in place.
 Answer buffering is capped at a 1 MiB UTF-8

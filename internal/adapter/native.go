@@ -433,7 +433,7 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 		case "opencode.reasoning":
 			// A reconciled reasoning frame can arrive after the provider error.
 		default:
-			if !earlierStep {
+			if !earlierStep && !(obs.SourceState == "opencode.step_finish" && p.opencodeProviderError) {
 				p.opencodeHTTPStatus = 0
 				p.opencodeRetryAfterMS = 0
 				p.opencodeProviderErrorType = ""
@@ -489,6 +489,10 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 			if earlierStep {
 				// Keep its usage without replacing the active step's finish.
 				return
+			}
+			if p.opencodeProviderError && p.opencodeHTTPStatus == 429 {
+				// A late stop is still part of the step that reported the error.
+				obs.Data["http_status"] = p.opencodeHTTPStatus
 			}
 			p.opencodeFinishReason, _ = obs.Data["reason"].(string)
 			if p.opencodeFinishReason != "stop" {

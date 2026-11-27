@@ -57,6 +57,7 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 	}{
 		{name: "historical shape past stream limit", frames: []string{start, reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "duplicate completed part", frames: []string{start, reason, reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "same answer replayed under a new part ID", frames: []string{start, reason, otherPart(reason), stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "duplicate start preserves bound answer", frames: []string{start, reason, start, stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "different unmarked part stays private", frames: []string{start, reason, otherPart(reasoning("private reconsideration")), stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "two marked parts are ambiguous", frames: []string{start, reason, otherPart(reasoning("private</think>Another answer.")), stop}, diagnostic: "empty_terminal_result"},
@@ -142,14 +143,15 @@ func TestOpenCodeReasoningRequiresThinkingFlag(t *testing.T) {
 		args []string
 		want bool
 	}{
-		{name: "explicit", args: []string{"--thinking"}, want: true},
-		{name: "inline true", args: []string{"--thinking=true"}, want: true},
-		{name: "separate true", args: []string{"--thinking", "true"}, want: true},
+		{name: "explicit", args: []string{"--thinking", "--", "prompt"}, want: true},
+		{name: "inline true", args: []string{"--thinking=true", "--", "prompt"}, want: true},
+		{name: "separate true", args: []string{"--thinking", "true", "--", "prompt"}, want: true},
 		{name: "absent"},
-		{name: "disabled", args: []string{"--thinking=false"}},
-		{name: "separate false", args: []string{"--thinking", "false"}},
-		{name: "negated", args: []string{"--no-thinking"}},
+		{name: "disabled", args: []string{"--thinking=false", "--", "prompt"}},
+		{name: "separate false", args: []string{"--thinking", "false", "--", "prompt"}},
+		{name: "negated", args: []string{"--no-thinking", "--", "prompt"}},
 		{name: "prompt", args: []string{"--", "--thinking"}},
+		{name: "no prompt separator", args: []string{"prompt", "--thinking"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			argv := append([]string{path, "run", "--format", "json"}, tc.args...)
