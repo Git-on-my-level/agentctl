@@ -77,7 +77,7 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "reasoning inferred message needs a typed stop", frames: []string{legacyStart, reason, strings.Replace(stop, `"messageID":"msg_final",`, "", 1)}, diagnostic: "incomplete_terminal_result"},
 		{name: "ordinary text takes precedence", frames: []string{start, reason, stop, text}, want: "ordinary answer", source: "assistant_terminal_result"},
 		{name: "unbound message text before a matching stop", frames: []string{start, earlier(text), stop}, diagnostic: "incomplete_terminal_result"},
-		{name: "foreign session text cannot replace bound answer", frames: []string{start, reason, strings.ReplaceAll(text, "ses_fixture", "ses_foreign"), stop}, diagnostic: "incomplete_terminal_result"},
+		{name: "foreign session text cannot replace bound answer", frames: []string{start, reason, strings.ReplaceAll(text, "ses_fixture", "ses_foreign"), stop}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "foreign stop cannot validate bound text", frames: []string{start, text, strings.ReplaceAll(stop, "ses_fixture", "ses_foreign")}, diagnostic: "incomplete_terminal_result"},
 		{name: "a contradictory start supplies no identity", frames: []string{conflictingSession(start), reason, strings.Replace(stop, `"messageID":"msg_final",`, "", 1)}, diagnostic: "incomplete_terminal_result"},
 		{name: "contradictory start preserves the valid step", frames: []string{start, reason, conflictingSession(start), stop}, want: answer, source: openCodeReasoningFallbackSource},
@@ -206,6 +206,17 @@ func TestOpenCodeReasoningRequiresThinkingFlag(t *testing.T) {
 			got, err := NewOpenCode().Launch(context.Background(), LaunchRequest{Argv: argv})
 			if err != nil || got.Result == nil || got.Result.Success != tc.want {
 				t.Fatalf("launch = %#v, err = %v", got.Result, err)
+			}
+			if tc.want {
+				if got.Result.Data["result_content_source"] != openCodeReasoningFallbackSource {
+					t.Fatalf("unexpected result source: %#v", got.Result.Data)
+				}
+			} else if got.Result.Data["diagnostic_code"] != "empty_terminal_result" || got.Result.Content != "" || got.Result.Data["result_content_source"] != nil {
+				t.Fatalf("disabled fallback result: %#v", got.Result)
+			}
+			capability := NegotiateInvocation(opencodeManifest(), argv, CapabilityResultContent)
+			if capability.Status != CapabilitySupported || capability.Constraints["fallback_invocation_satisfied"] != tc.want {
+				t.Fatalf("fallback negotiation: %#v", capability)
 			}
 		})
 	}
@@ -773,6 +784,9 @@ func TestOpenCodeManifestDeclaresBoundedSameProcessContract(t *testing.T) {
 	}
 	if content.Constraints["fallback_source"] != "assistant_reasoning_fallback" {
 		t.Fatalf("fallback_source = %#v", content.Constraints["fallback_source"])
+	}
+	if fallback, ok := content.Constraints["fallback_required_argv"].([]string); !ok || strings.Join(fallback, " ") != "--thinking --" {
+		t.Fatalf("fallback_required_argv = %#v", content.Constraints["fallback_required_argv"])
 	}
 	for name, decl := range status {
 		negotiated := NegotiateInvocation(m, nil, name)

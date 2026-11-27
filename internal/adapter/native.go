@@ -405,8 +405,10 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 		switch obs.SourceState {
 		case "opencode.text":
 			// An unbound frame cannot contribute bytes or replace the session
-			// binding. A later matching stop cannot validate those bytes.
-			p.opencodeUnboundText = p.opencodeUnboundText || obs.Content != ""
+			// binding. A known foreign session cannot invalidate this answer.
+			if step.session == "" || step.session == p.opencodeStep.session {
+				p.opencodeUnboundText = p.opencodeUnboundText || obs.Content != ""
+			}
 			return
 		case "opencode.step_finish":
 			if !earlierStep {
@@ -508,8 +510,8 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 				return
 			}
 			if p.opencodeProviderError && p.opencodeHTTPStatus == 429 {
-				// A late stop is still part of the step that reported the error.
-				obs.Data["http_status"] = p.opencodeHTTPStatus
+				// Keep the pending failure separate from the native stop's data.
+				obs.Data["provider_capacity_pending"] = true
 			}
 			if step.known() && !p.opencodeStep.known() {
 				p.opencodeUnboundText = p.opencodeUnboundText || p.opencodeText.Len() != 0

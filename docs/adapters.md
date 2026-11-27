@@ -253,16 +253,18 @@ meaning.
   answer are idempotent. Each candidate must contain the marker and answer suffix
   in one frame. A marker in a same-line quote or code span, or inside a
   backtick or tilde fence, cannot establish the boundary. Conflicting marked
-  candidates or later unmarked parts with content leave the answer ambiguous. Blank or punctuation-only suffixes and
-  suffixes that reopen thinking or contain another unquoted `</think>` are
-  ineligible.
+  candidates or later unmarked parts with content leave the answer ambiguous.
+  Blank or punctuation-only suffixes and suffixes that reopen thinking or
+  contain another unquoted `</think>` are ineligible.
   A first completed text part reconciled after the stop can take precedence
   when it belongs to the stopped message. Once a step has an assistant message
-  ID, unbound text and an ambiguous late suffix leave the turn incomplete.
+  ID, text with ambiguous identity in the same stream and an ambiguous late
+  suffix leave the turn incomplete. Text from a known foreign session is ignored.
   Stored JSON results identify recovered content with
   `outcome.content.source: "assistant_reasoning_fallback"`. Callers may assert
   that source with `--require-result-source` or omit the flag to accept either
-  answer form. `assistant_terminal_result` still selects normal text.
+  answer form. `assistant_terminal_result` still selects normal text. Capability
+  negotiation reports whether the exact invocation enables the optional fallback.
 - Bound cumulative answer buffering to a 1 MiB UTF-8 prefix (including part
   separators) and mark truncated results. Discard excess text while retaining
   final step controls; observations retain metadata rather than another text copy.

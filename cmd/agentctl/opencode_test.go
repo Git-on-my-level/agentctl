@@ -362,7 +362,7 @@ func TestOpenCodeRateLimitSurfacesMetadataAndCapacity(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = "--version" ]; then echo 'opencode 2.2.6'; exit 0; fi
 printf '%s\n' '{"type":"retry","timestamp":1794251075486,"sessionID":"ses_rate_limit","attempt":2,"nextRetryAt":1794251101486,"error":{"type":"provider.rate-limit","message":"Rate limit exceeded; private-request-details","status":429,"retryAfterMs":26000}}' '{"type":"error","sessionID":"ses_rate_limit","error":{"type":"provider.rate-limit","message":"Rate limit exceeded; private-request-details","status":429}}'
-printf '%s\n' '{"type":"reasoning","sessionID":"ses_rate_limit","part":{"type":"reasoning","sessionID":"ses_rate_limit","messageID":"msg_final","time":{"end":2},"text":"private provider planning"}}'
+printf '%s\n' '{"type":"reasoning","sessionID":"ses_rate_limit","part":{"type":"reasoning","id":"prt_reasoning","sessionID":"ses_rate_limit","messageID":"msg_final","time":{"end":2},"text":"private provider planning</think>late marked answer"}}'
 printf '%s\n' '{"type":"step_finish","sessionID":"ses_rate_limit","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}'
 `
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
@@ -371,7 +371,7 @@ printf '%s\n' '{"type":"step_finish","sessionID":"ses_rate_limit","part":{"type"
 	journal := filepath.Join(root, "state", "journal.db")
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr)
-	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--", path, "run", "--format", "json"}); code != 0 {
+	if code := a.run(context.Background(), []string{"--output", "json", "--journal", journal, "run", "--", path, "run", "--format", "json", "--thinking", "--", "prompt"}); code != 0 {
 		t.Fatalf("run exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	var document struct {
@@ -409,7 +409,27 @@ printf '%s\n' '{"type":"step_finish","sessionID":"ses_rate_limit","part":{"type"
 			t.Fatalf("events missing %s: %s", want, stdout.String())
 		}
 	}
-	if strings.Contains(stdout.String(), "private-request-details") || strings.Contains(stdout.String(), "Rate limit exceeded") {
+	var events struct {
+		Result struct {
+			Events []model.Event `json:"events"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &events); err != nil {
+		t.Fatal(err)
+	}
+	var sawStop bool
+	for _, event := range events.Result.Events {
+		if event.SourceState != nil && *event.SourceState == "opencode.step_finish" {
+			sawStop = true
+			if _, ok := event.Payload["http_status"]; ok {
+				t.Fatalf("stop claims an HTTP status: %#v", event.Payload)
+			}
+		}
+	}
+	if !sawStop {
+		t.Fatal("missing late stop event")
+	}
+	if strings.Contains(stdout.String(), "private-request-details") || strings.Contains(stdout.String(), "Rate limit exceeded") || strings.Contains(stdout.String(), "late marked answer") {
 		t.Fatalf("provider message leaked into events: %s", stdout.String())
 	}
 	stdout.Reset()
