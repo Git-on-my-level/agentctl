@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -390,7 +389,7 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 	}
 	if obs.SourceState == "opencode.reasoning" {
 		if p.opencodeText.Len() == 0 && step.known() && step == p.opencodeStep {
-			p.opencodeReasoning.append(obs.openCodePartID, obs.openCodeReasoning)
+			p.opencodeReasoning.observe(obs.openCodePartID, obs.openCodeReasoning)
 		}
 		// Reasoning cannot rebind a session or enter stored observations.
 		obs.SessionID = ""
@@ -439,8 +438,7 @@ func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
 			// Accept a first completed text part reconciled after its stop. With
 			// earlier text, the renderer may be sending an ambiguous suffix under
 			// a different part ID. Keep the existing incomplete-result behavior.
-			parser, _ := p.parser.(opencodeJSONParser)
-			if !parser.reasoningFallback || !step.known() || step != p.opencodeStep || p.opencodeText.Len() != 0 {
+			if !step.known() || step != p.opencodeStep || p.opencodeText.Len() != 0 {
 				p.opencodeFinishReason = ""
 			}
 			if obs.Content != "" || (step.known() && step != p.opencodeStep) {
@@ -1292,11 +1290,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	ref := SourceRef{Adapter: a.Name(), Kind: a.config.LaunchKind, OpaqueID: strconv.Itoa(cmd.Process.Pid), PID: cmd.Process.Pid}
 	parser := a.config.Parser
 	if _, ok := parser.(opencodeJSONParser); ok {
-		flags := argv[1:]
-		if separator := slices.Index(flags, "--"); separator >= 0 {
-			flags = flags[:separator]
-		}
-		parser = opencodeJSONParser{reasoningFallback: slices.Contains(flags, "--thinking")}
+		parser = opencodeJSONParser{reasoningFallback: openCodeThinkingEnabled(argv[1:])}
 	}
 	record := &processRecord{cmd: cmd, parser: parser, ref: ref, binding: ref.Binding(), startedAt: startedAt, updatedAt: startedAt, done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, outputDir: req.OutputDir, wholeStdout: a.config.WholeStdout, live: live, launchIdentity: captureProcessLaunch(cmd.Process.Pid, startedAt)}
 	if req.ExecutionContext != nil {

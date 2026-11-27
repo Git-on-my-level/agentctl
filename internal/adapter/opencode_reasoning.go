@@ -9,7 +9,6 @@ import (
 const (
 	openCodeReasoningFallbackSource = "assistant_reasoning_fallback"
 	deepSeekThinkingEnd             = "</think>"
-	openCodeReasoningFrameLimit     = 64
 )
 
 type openCodeStepID struct{ session, message string }
@@ -18,73 +17,65 @@ func (id openCodeStepID) known() bool {
 	return id.session != "" && id.message != ""
 }
 
-// DeepSeek can put the final answer in the same part as its reasoning, after
-// the model's closing thinking marker. Keep a possible split marker and the
-// bounded answer suffix only. Reconciliation uses a different ID from the live
-// renderer and does not expose their shared ordinal on both frames. Only join
-// fragments within the same observed part ID.
+// DeepSeek can put the answer after its closing thinking marker in a completed
+// reasoning part. OpenCode v2 emits one completed frame per part per renderer.
+// Live and reconciled frames use different IDs and omit their shared ordinal,
+// so a suffix in a later frame cannot be reliably assigned to a live part.
 type openCodeReasoning struct {
 	partID    string
-	seen      map[[sha256.Size]byte]struct{}
-	pending   string
-	found     bool
-	answer    strings.Builder
+	digest    [sha256.Size]byte
+	answer    string
 	truncated bool
 	ambiguous bool
 }
 
-func (r *openCodeReasoning) append(partID, text string) {
-	if partID == "" || text == "" || r.ambiguous {
+func (r *openCodeReasoning) observe(partID, text string) {
+	if partID == "" || r.ambiguous {
 		return
 	}
-	if partID != r.partID {
-		if r.found {
-			// A distinct unmarked part is thinking. Two marked parts leave
-			// the source of the final answer ambiguous.
-			r.ambiguous = strings.Contains(text, deepSeekThinkingEnd)
-			return
-		}
-		*r = openCodeReasoning{partID: partID, seen: make(map[[sha256.Size]byte]struct{})}
+	_, answer, marked := strings.Cut(text, deepSeekThinkingEnd)
+	if !marked {
+		return
 	}
-	if r.truncated {
+	answer = strings.TrimSpace(answer)
+	if strings.HasPrefix(answer, "<think>") || strings.HasPrefix(answer, deepSeekThinkingEnd) || strings.IndexFunc(answer, answerCharacter) < 0 {
 		return
 	}
 	digest := sha256.Sum256([]byte(text))
-	if _, duplicate := r.seen[digest]; duplicate {
+	if r.partID != "" {
+		// A replay of the selected frame is harmless. A distinct marked
+		// candidate leaves the answer ambiguous.
+		r.ambiguous = r.partID != partID || r.digest != digest
 		return
 	}
-	if len(r.seen) == openCodeReasoningFrameLimit {
-		r.ambiguous = true
-		return
-	}
-	r.seen[digest] = struct{}{}
-	if !r.found {
-		text = r.pending + text
-		_, suffix, found := strings.Cut(text, deepSeekThinkingEnd)
-		if !found {
-			// Clone the short tail so it cannot retain the native reasoning frame.
-			r.pending = strings.Clone(text[max(0, len(text)-len(deepSeekThinkingEnd)+1):])
-			return
-		}
-		r.found, r.pending, text = true, "", suffix
-	}
-	if r.answer.Len() == 0 {
-		text = strings.TrimLeftFunc(text, unicode.IsSpace)
-	}
-	prefix := opencodeAnswerPrefix(text, opencodeAnswerLimit-r.answer.Len())
-	r.answer.WriteString(prefix)
-	r.truncated = len(prefix) != len(text)
+	r.partID, r.digest = partID, digest
+	prefix := opencodeAnswerPrefix(answer, opencodeAnswerLimit)
+	// Copy the bounded result so it cannot retain the full reasoning frame.
+	r.answer = strings.Clone(prefix)
+	r.truncated = len(prefix) < len(answer)
 }
 
 func (r *openCodeReasoning) finalAnswer() string {
-	answer := strings.TrimSpace(r.answer.String())
-	if r.ambiguous || strings.HasPrefix(answer, "<think>") || strings.HasPrefix(answer, deepSeekThinkingEnd) {
+	if r.ambiguous {
 		return ""
 	}
-	if strings.IndexFunc(answer, func(c rune) bool {
-		return unicode.IsLetter(c) || unicode.IsNumber(c) || unicode.IsSymbol(c)
-	}) < 0 {
-		return ""
+	return r.answer
+}
+
+func answerCharacter(c rune) bool {
+	return unicode.IsLetter(c) || unicode.IsNumber(c) || unicode.IsSymbol(c)
+}
+
+func openCodeThinkingEnabled(args []string) bool {
+	for i, arg := range args {
+		switch arg {
+		case "--", "--no-thinking", "--thinking=false":
+			return false
+		case "--thinking=true":
+			return true
+		case "--thinking":
+			return i+1 == len(args) || args[i+1] != "false"
+		}
 	}
-	return answer
+	return false
 }

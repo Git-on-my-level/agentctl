@@ -248,13 +248,14 @@ meaning.
   `run` supports recovery when the caller supplies that flag. When there is no
   completed text, the adapter can recover the answer after the model's literal
   `</think>` marker in a completed reasoning part from the same session and
-  assistant message as the stopped step. Duplicate frames are ignored and
-  fragments must share a part ID. Separate unmarked parts are discarded, and
-  multiple marked parts are ambiguous. Blank or punctuation-only suffixes and
-  suffixes that start with another thinking marker are ineligible.
-  With `--thinking`, a first completed text part reconciled after the stop
-  can take precedence when it belongs to the stopped message. An ambiguous
-  late suffix leaves the turn incomplete.
+  assistant message as the stopped step. Duplicate deliveries of that frame
+  are ignored. Each candidate must contain the entire marker and answer suffix
+  in one frame. Separate unmarked parts are discarded, and conflicting marked
+  candidates are ambiguous. Blank or punctuation-only suffixes and suffixes
+  that start with another thinking marker are ineligible.
+  A first completed text part reconciled after the stop can take precedence
+  when it belongs to the stopped message. An ambiguous late suffix leaves the
+  turn incomplete.
   Stored JSON results identify recovered content with
   `outcome.content.source: "assistant_reasoning_fallback"`. Callers may assert
   that source with `--require-result-source` or omit the flag to accept either

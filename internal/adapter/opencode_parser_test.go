@@ -62,7 +62,8 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "reconciled after stop", frames: []string{start, stop, reason}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "ordinary text takes precedence", frames: []string{start, reason, stop, text}, want: "ordinary answer", source: "assistant_terminal_result"},
 		{name: "ambiguous late text suffix fails", frames: []string{start, text, stop, strings.Replace(text, "ordinary answer", "late suffix", 1)}, diagnostic: "incomplete_terminal_result"},
-		{name: "split boundary and answer", frames: []string{start, reasoning("private planning</th"), reasoning("ink>\nPlain"), reasoning(" prose."), stop}, want: "Plain prose.", source: openCodeReasoningFallbackSource},
+		{name: "repeated answer bytes", frames: []string{start, reasoning("private planning</think>HaHa"), stop}, want: "HaHa", source: openCodeReasoningFallbackSource},
+		{name: "unproved split boundary fails", frames: []string{start, reasoning("private planning</th"), reasoning("ink>\nPlain"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "distinct IDs cannot form a boundary", frames: []string{start, reasoning("private planning</th"), otherPart(reasoning("ink>\nPlain prose.")), stop}, diagnostic: "empty_terminal_result"},
 		{name: "quoted marker in answer", frames: []string{start, reasoning("private planning</think>The tag is `</think>`."), stop}, want: "The tag is `</think>`.", source: openCodeReasoningFallbackSource},
 		{name: "unmarked planning", frames: []string{start, reasoning("private planning"), stop}, diagnostic: "empty_terminal_result"},
@@ -111,13 +112,13 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 
 func TestOpenCodeReasoningAnswerBound(t *testing.T) {
 	var r openCodeReasoning
-	r.append("part", strings.Repeat("p", 2*opencodeAnswerLimit)+"</th")
-	if r.answer.Len() != 0 || len(r.pending) >= len(deepSeekThinkingEnd) {
+	planning := strings.Repeat("p", 2*opencodeAnswerLimit)
+	r.observe("part", planning+"</th")
+	if r.answer != "" {
 		t.Fatal("kept reasoning before the answer boundary")
 	}
 	want := strings.Repeat("a", opencodeAnswerLimit-1)
-	r.append("part", "ink>"+want+"🌍")
-	r.append("part", "ignored")
+	r.observe("part", planning+"</think>"+want+"🌍")
 	if got := r.finalAnswer(); got != want || !r.truncated {
 		t.Fatalf("bounded answer: bytes=%d truncated=%t", len(got), r.truncated)
 	}
@@ -134,8 +135,12 @@ func TestOpenCodeReasoningRequiresThinkingFlag(t *testing.T) {
 		want bool
 	}{
 		{name: "explicit", args: []string{"--thinking"}, want: true},
+		{name: "inline true", args: []string{"--thinking=true"}, want: true},
+		{name: "separate true", args: []string{"--thinking", "true"}, want: true},
 		{name: "absent"},
 		{name: "disabled", args: []string{"--thinking=false"}},
+		{name: "separate false", args: []string{"--thinking", "false"}},
+		{name: "negated", args: []string{"--no-thinking"}},
 		{name: "prompt", args: []string{"--", "--thinking"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -145,6 +150,23 @@ func TestOpenCodeReasoningRequiresThinkingFlag(t *testing.T) {
 				t.Fatalf("launch = %#v, err = %v", got.Result, err)
 			}
 		})
+	}
+}
+
+func TestOpenCodeFirstReconciledText(t *testing.T) {
+	for _, thinking := range []bool{false, true} {
+		record := &processRecord{parser: opencodeJSONParser{reasoningFallback: thinking}, done: make(chan struct{})}
+		for _, frame := range []string{
+			`{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","messageID":"msg_final"}}`,
+			`{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}`,
+			`{"type":"text","sessionID":"ses_fixture","part":{"type":"text","messageID":"msg_final","time":{"end":2},"text":"ordinary answer"}}`,
+		} {
+			record.ingest([]byte(frame), false)
+		}
+		record.finish(nil)
+		if !record.result.Success || record.result.Content != "ordinary answer" {
+			t.Fatalf("thinking=%v result=%#v", thinking, record.result)
+		}
 	}
 }
 
