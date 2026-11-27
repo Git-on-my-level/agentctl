@@ -27,6 +27,7 @@ import (
 const (
 	defaultOutputLimit         = 2 << 20
 	maxStructuredRecordBytes   = 8 << 20
+	opencodeReasoningOverLimit = 2 * maxStructuredRecordBytes
 	nativeObservationFreshness = 30 * time.Second
 )
 
@@ -140,6 +141,7 @@ type processRecord struct {
 	opencodeStartPartID       string
 	opencodeEarlierSteps      map[openCodeStepID]struct{}
 	opencodeReasoning         openCodeReasoning
+	opencodeReasoningOverflow int
 	opencodeTokenUsage        *TokenUsage
 	opencodeHTTPStatus        int64
 	opencodeRetryAfterMS      int64
@@ -248,6 +250,17 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 	if overLimit && obs.openCodeReasoning != "" {
 		p.mu.Lock()
 		eligible := p.collectableOpenCodeReasoning(obs)
+		if eligible {
+			// Allow a full live and reconciled frame beyond the ordinary stream
+			// budget. Discard the fallback if remaining evidence cannot be read.
+			if len(line) > opencodeReasoningOverLimit-p.opencodeReasoningOverflow {
+				p.opencodeReasoningOverflow = opencodeReasoningOverLimit
+				p.opencodeReasoning.ambiguous = true
+				eligible = false
+			} else {
+				p.opencodeReasoningOverflow += len(line)
+			}
+		}
 		p.mu.Unlock()
 		if !eligible {
 			obs.openCodeReasoning = ""

@@ -34,7 +34,7 @@ func (r *openCodeReasoning) observe(partID, text string) {
 		return
 	}
 	before, answer, marked := strings.Cut(text, deepSeekThinkingEnd)
-	if !marked || protectedOpenCodeMarker(before) {
+	if !marked || protectedOpenCodeMarker(before, answer) {
 		r.ambiguous = r.answer != "" && strings.TrimSpace(text) != ""
 		return
 	}

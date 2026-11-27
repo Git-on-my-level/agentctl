@@ -92,11 +92,21 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		{name: "marker quoted in planning supplies no boundary", frames: []string{start, reasoning("private planning about `</think>` and more deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker in quoted planning prose", frames: []string{start, reasoning("private planning about \"</think>\" and more deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker inside a longer quote", frames: []string{start, reasoning("private planning says \"emit the </think> marker during output\" and deliberates"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside smart quotes", frames: []string{start, reasoning("private planning says “emit </think> during output” and deliberates"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside a blockquote", frames: []string{start, reasoning("private planning:\n> </think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside indented code", frames: []string{start, reasoning("private planning:\n\n    </think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker inside tab-indented code", frames: []string{start, reasoning("private planning:\n\n\t</think>\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker inside longer inline code", frames: []string{start, reasoning("private planning in ``code ` </think> more code`` and deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker in a planning code fence", frames: []string{start, reasoning("private planning\n```xml\n</think>\n```\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker in a nested list fence", frames: []string{start, reasoning("private planning:\n1. - ```xml\n     </think>\n     ```\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker in a bullet list fence", frames: []string{start, reasoning("private planning:\n- ```xml\n  </think>\n  ```\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "marker after a closed list fence", frames: []string{start, reasoning("private planning:\n- ```xml\n  <example/>\n  ```\nEnd of planning.</think>Answer."), stop}, want: "Answer.", source: openCodeReasoningFallbackSource},
+		{name: "leading three-backtick code span cannot open a fence", frames: []string{start, reasoning("``` `` ``` is an inline example.\nEnd of planning.</think>Answer."), stop}, want: "Answer.", source: openCodeReasoningFallbackSource},
 		{name: "shorter tilde fence cannot close the example", frames: []string{start, reasoning("private planning\n~~~~xml\n~~~\n</think>\n~~~~\nmore deliberation"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "marker after a closed tilde fence", frames: []string{start, reasoning("private planning\n~~~xml\n<example/>\n~~~\nEnd of planning.</think>Answer."), stop}, want: "Answer.", source: openCodeReasoningFallbackSource},
 		{name: "unpaired inline punctuation on another line", frames: []string{start, reasoning("I have a stray ` while planning.\nThe `item`'s result is clear.</think>Answer."), stop}, want: "Answer.", source: openCodeReasoningFallbackSource},
+		{name: "apostrophe in a decade is not a quote", frames: []string{start, reasoning("Recall the '90s spec.</think>Answer."), stop}, want: "Answer.", source: openCodeReasoningFallbackSource},
+		{name: "open decade phrase with a closing quote", frames: []string{start, reasoning("Quote '90s text </think> and deliberation' in a plan."), stop}, diagnostic: "empty_terminal_result"},
 		{name: "multiple bare markers are ambiguous", frames: []string{start, reasoning("private planning</think>More private deliberation.</think>Answer."), stop}, diagnostic: "empty_terminal_result"},
 		{name: "unmarked planning", frames: []string{start, reasoning("private planning"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "punctuation only", frames: []string{start, reasoning("private planning</think> ... "), stop}, diagnostic: "empty_terminal_result"},
@@ -181,6 +191,27 @@ func TestOpenCodeReasoningStreamLimitDropsIrrelevantParts(t *testing.T) {
 	}
 }
 
+func TestOpenCodeReasoningPostBudgetExhaustion(t *testing.T) {
+	const start = `{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","messageID":"msg_final"}}`
+	const marked = `{"type":"reasoning","sessionID":"ses_fixture","part":{"type":"reasoning","id":"prt_final","messageID":"msg_final","time":{"end":2},"text":"private</think>Answer."}}`
+	const stop = `{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}`
+	record := &processRecord{
+		parser: opencodeJSONParser{reasoningFallback: true}, maxOutput: 1, done: make(chan struct{}),
+		opencodeReasoningOverflow: opencodeReasoningOverLimit - len(marked),
+	}
+	record.ingest([]byte(start), false)
+	record.ingest([]byte(marked), false)
+	if record.opencodeReasoning.finalAnswer() != "Answer." {
+		t.Fatal("last frame in the budget should be available")
+	}
+	record.ingest([]byte(marked), false)
+	record.ingest([]byte(stop), false)
+	record.finish(nil)
+	if record.result.Success || record.result.Data["diagnostic_code"] != "empty_terminal_result" {
+		t.Fatalf("the result survived discarded reasoning evidence: %#v", record.result)
+	}
+}
+
 func TestOpenCodeReasoningRequiresThinkingFlag(t *testing.T) {
 	path := fixtureExecutable(t, `printf '%s\n' \
 '{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","messageID":"msg_final"}}' \
@@ -223,18 +254,32 @@ func TestOpenCodeReasoningRequiresThinkingFlag(t *testing.T) {
 }
 
 func TestOpenCodeFirstReconciledText(t *testing.T) {
-	for _, thinking := range []bool{false, true} {
-		record := &processRecord{parser: opencodeJSONParser{reasoningFallback: thinking}, done: make(chan struct{})}
-		for _, frame := range []string{
-			`{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","messageID":"msg_final"}}`,
-			`{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}`,
-			`{"type":"text","sessionID":"ses_fixture","part":{"type":"text","messageID":"msg_final","time":{"end":2},"text":"ordinary answer"}}`,
-		} {
+	record := &processRecord{parser: opencodeJSONParser{reasoningFallback: true}, done: make(chan struct{})}
+	for _, frame := range []string{
+		`{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","messageID":"msg_final"}}`,
+		`{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}`,
+		`{"type":"text","sessionID":"ses_fixture","part":{"type":"text","messageID":"msg_final","time":{"end":2},"text":"ordinary answer"}}`,
+	} {
+		record.ingest([]byte(frame), false)
+	}
+	record.finish(nil)
+	if !record.result.Success || record.result.Content != "ordinary answer" {
+		t.Fatalf("result=%#v", record.result)
+	}
+}
+
+func TestOpenCodeTextWithoutThinkingRetainsLegacyPartialIdentity(t *testing.T) {
+	const start = `{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","messageID":"msg_final"}}`
+	const text = `{"type":"text","sessionID":"ses_fixture","part":{"type":"text","time":{"end":2},"text":"ordinary answer"}}`
+	const stop = `{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}`
+	for _, stopFrame := range []string{stop, strings.Replace(stop, `"messageID":"msg_final",`, "", 1)} {
+		record := &processRecord{parser: opencodeJSONParser{}, done: make(chan struct{})}
+		for _, frame := range []string{start, text, stopFrame} {
 			record.ingest([]byte(frame), false)
 		}
 		record.finish(nil)
-		if !record.result.Success || record.result.Content != "ordinary answer" {
-			t.Fatalf("thinking=%v result=%#v", thinking, record.result)
+		if !record.result.Success || record.result.Content != "ordinary answer" || record.result.Data["result_content_source"] != "assistant_terminal_result" {
+			t.Fatalf("legacy text rejected: %#v", record.result)
 		}
 	}
 }

@@ -424,6 +424,9 @@ printf '%s\n' '{"type":"step_finish","sessionID":"ses_rate_limit","part":{"type"
 			if _, ok := event.Payload["http_status"]; ok {
 				t.Fatalf("stop claims an HTTP status: %#v", event.Payload)
 			}
+			if _, ok := event.Payload["provider_capacity_pending"]; ok {
+				t.Fatalf("internal reconciliation flag escaped into the journal: %#v", event.Payload)
+			}
 		}
 	}
 	if !sawStop {

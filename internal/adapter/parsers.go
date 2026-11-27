@@ -934,7 +934,7 @@ func (p opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 	}
 	switch typ {
 	case "step_start":
-		if firstString(part, "type") == "step-start" {
+		if p.reasoningFallback && firstString(part, "type") == "step-start" {
 			obs.openCodeMessageID = firstString(part, "messageID")
 			obs.openCodePartID = firstString(part, "id")
 		}
@@ -943,7 +943,9 @@ func (p opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 			break
 		}
 		obs.Data["completed"] = true
-		obs.openCodeMessageID = firstString(part, "messageID")
+		if p.reasoningFallback {
+			obs.openCodeMessageID = firstString(part, "messageID")
+		}
 		text, _ := part["text"].(string)
 		trimmed := strings.TrimSpace(text)
 		if trimmed == "" {
@@ -971,10 +973,14 @@ func (p opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 		if reason := firstString(part, "reason"); reason != "" {
 			obs.Data["reason"] = boundedString(strings.ToLower(reason), 64)
 		}
-		obs.openCodeMessageID = firstString(part, "messageID")
+		if p.reasoningFallback {
+			obs.openCodeMessageID = firstString(part, "messageID")
+		}
 		obs.TokenUsage = opencodeTokenUsage(part)
 	case "retry":
-		obs.openCodeMessageID = firstString(value, "messageID")
+		if p.reasoningFallback {
+			obs.openCodeMessageID = firstString(value, "messageID")
+		}
 		opencodeProviderEventMetadata(value, obs.Data)
 		if next, ok := opencodeNonnegativeInt(value["nextRetryAt"]); ok && next > 0 {
 			obs.Data["next_retry_at"] = time.UnixMilli(next).UTC().Format(time.RFC3339Nano)

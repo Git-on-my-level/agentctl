@@ -251,15 +251,18 @@ meaning.
   `</think>` marker in a completed reasoning part from the same session and
   assistant message as the stopped step. Repeated candidates with the same
   answer are idempotent. Each candidate must contain the marker and answer suffix
-  in one frame. A marker in a same-line quote or code span, or inside a
-  backtick or tilde fence, cannot establish the boundary. Conflicting marked
+  in one frame. The boundary excludes markers in same-line quotes and code
+  spans, Markdown blockquotes, and fenced or indented code. Conflicting marked
   candidates or later unmarked parts with content leave the answer ambiguous.
+  An unclosed fence, including an indented fence that could belong to a list,
+  makes a later marker ineligible.
   Blank or punctuation-only suffixes and suffixes that reopen thinking or
   contain another unquoted `</think>` are ineligible.
-  A first completed text part reconciled after the stop can take precedence
-  when it belongs to the stopped message. Once a step has an assistant message
-  ID, text with ambiguous identity in the same stream and an ambiguous late
-  suffix leave the turn incomplete. Text from a known foreign session is ignored.
+  With reasoning recovery enabled, a first completed text part reconciled after
+  the stop takes precedence when it belongs to the stopped message. Text with
+  ambiguous identity or an ambiguous late suffix leaves a bound turn incomplete.
+  Text from a known foreign session is ignored in that mode. Ordinary invocations
+  retain the legacy completed-text and stopped-step contract.
   Stored JSON results identify recovered content with
   `outcome.content.source: "assistant_reasoning_fallback"`. Callers may assert
   that source with `--require-result-source` or omit the flag to accept either
@@ -271,6 +274,9 @@ meaning.
   Repeatable reasoning and tool-progress metadata coalesce to one event.
   Completed parts needed for answer extraction and the `retry`, `step_start`,
   and `step_finish` controls can still be processed beyond the stdout budget.
+  Reasoning recognition accepts at most 16 MiB of extra candidate frames per
+  execution. If that allowance is exhausted, the fallback cannot use an
+  incomplete set of reasoning parts.
 - Reset answer and completion evidence on a new `step_start` or retry. A repeated
   start for the same message and native part preserves the current answer.
   Non-stop finishes discard earlier narration. Tool payloads and the reasoning
@@ -289,7 +295,10 @@ meaning.
   completion/extraction diagnostic (for example `incomplete_terminal_result`
   after a retry), that diagnostic is kept and the retry stays separate
   `rate_limit` metadata. OpenCode's `provider_capacity` message identifies HTTP
-  429 and advises waiting before retrying with the same model.
+  429 and advises waiting before retrying with the same model. A reconciled
+  stop can retain the pending failure in the execution state. The retry and
+  error events carry its HTTP evidence, and the internal reconciliation flag
+  is consumed before the stop event is journaled.
 - Sum `step_finish.part.tokens` counters across the execution into numeric
   `token_usage` metadata: input, output, cache read/write, and reasoning when
   present. Cost, text, reasoning content, and raw token objects are not retained.
