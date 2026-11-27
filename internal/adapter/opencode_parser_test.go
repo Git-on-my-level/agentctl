@@ -42,6 +42,10 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		return reasonFrame + string(encoded) + `}}`
 	}
 	reason := reasoning("private planning</think>\n" + answer)
+	otherPart := func(frame string) string { return strings.Replace(frame, "prt_final", "prt_other", 1) }
+	earlier := func(frame string) string { return strings.ReplaceAll(frame, "msg_final", "msg_prior") }
+	const retry = `{"type":"retry","sessionID":"ses_fixture","messageID":"msg_retry","error":{"status":429}}`
+	retried := func(frame string) string { return strings.ReplaceAll(frame, "msg_final", "msg_retry") }
 	for _, tc := range []struct {
 		name       string
 		frames     []string
@@ -52,18 +56,28 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 		diagnostic string
 	}{
 		{name: "historical shape past stream limit", frames: []string{start, reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "duplicate completed part", frames: []string{start, reason, reason, stop}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "different unmarked part stays private", frames: []string{start, reason, otherPart(reasoning("private reconsideration")), stop}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "two marked parts are ambiguous", frames: []string{start, reason, otherPart(reasoning("private</think>Another answer.")), stop}, diagnostic: "empty_terminal_result"},
 		{name: "reconciled after stop", frames: []string{start, stop, reason}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "ordinary text takes precedence", frames: []string{start, reason, stop, text}, want: "ordinary answer", source: "assistant_terminal_result"},
+		{name: "ambiguous late text suffix fails", frames: []string{start, text, stop, strings.Replace(text, "ordinary answer", "late suffix", 1)}, diagnostic: "incomplete_terminal_result"},
 		{name: "split boundary and answer", frames: []string{start, reasoning("private planning</th"), reasoning("ink>\nPlain"), reasoning(" prose."), stop}, want: "Plain prose.", source: openCodeReasoningFallbackSource},
+		{name: "distinct IDs cannot form a boundary", frames: []string{start, reasoning("private planning</th"), otherPart(reasoning("ink>\nPlain prose.")), stop}, diagnostic: "empty_terminal_result"},
+		{name: "quoted marker in answer", frames: []string{start, reasoning("private planning</think>The tag is `</think>`."), stop}, want: "The tag is `</think>`.", source: openCodeReasoningFallbackSource},
 		{name: "unmarked planning", frames: []string{start, reasoning("private planning"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "punctuation only", frames: []string{start, reasoning("private planning</think> ... "), stop}, diagnostic: "empty_terminal_result"},
 		{name: "whitespace suffix", frames: []string{start, reasoning("private planning</think> \n"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "unclosed second thinking block", frames: []string{start, reasoning("private planning</think><think>still thinking"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "another message", frames: []string{start, strings.ReplaceAll(reason, "msg_final", "msg_earlier"), stop}, diagnostic: "empty_terminal_result"},
 		{name: "another session", frames: []string{start, strings.ReplaceAll(reason, "ses_fixture", "ses_foreign"), stop}, diagnostic: "empty_terminal_result"},
+		{name: "session from envelope", frames: []string{start, strings.Replace(reason, `,"sessionID":"ses_fixture","messageID"`, `,"messageID"`, 1), stop}, want: answer, source: openCodeReasoningFallbackSource},
+		{name: "missing part ID", frames: []string{start, strings.Replace(reason, `"id":"prt_final",`, "", 1), stop}, diagnostic: "empty_terminal_result"},
 		{name: "incomplete part", frames: []string{start, strings.Replace(reason, `,"end":2`, "", 1), stop}, diagnostic: "empty_terminal_result"},
 		{name: "earlier step", frames: []string{start, reason, strings.Replace(stop, `"stop"`, `"tool-calls"`, 1), strings.ReplaceAll(start, "msg_final", "msg_next"), strings.ReplaceAll(stop, "msg_final", "msg_next")}, diagnostic: "empty_terminal_result"},
+		{name: "late earlier text and stop", frames: []string{earlier(start), start, stop, earlier(text), earlier(stop), reason}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "retry invalidates earlier candidate", frames: []string{start, reason, `{"type":"retry","sessionID":"ses_fixture","error":{"status":429}}`, stop}, diagnostic: "empty_terminal_result"},
+		{name: "retry updates message", frames: []string{start, reason, retry, retried(reason), retried(stop)}, want: answer, source: openCodeReasoningFallbackSource},
 		{name: "missing stop", frames: []string{start, reason}, diagnostic: "incomplete_terminal_result"},
 		{name: "provider error after stop", frames: []string{start, reason, stop, `{"type":"error","sessionID":"ses_fixture","error":{"type":"provider.rate-limit","status":429}}`}},
 		{name: "cancellation after stop", frames: []string{start, reason, stop}, cancelled: true},
@@ -97,15 +111,40 @@ func TestOpenCodeReasoningFallback(t *testing.T) {
 
 func TestOpenCodeReasoningAnswerBound(t *testing.T) {
 	var r openCodeReasoning
-	r.append(strings.Repeat("p", 2*opencodeAnswerLimit) + "</th")
+	r.append("part", strings.Repeat("p", 2*opencodeAnswerLimit)+"</th")
 	if r.answer.Len() != 0 || len(r.pending) >= len(deepSeekThinkingEnd) {
 		t.Fatal("kept reasoning before the answer boundary")
 	}
 	want := strings.Repeat("a", opencodeAnswerLimit-1)
-	r.append("ink>" + want + "🌍")
-	r.append("ignored")
+	r.append("part", "ink>"+want+"🌍")
+	r.append("part", "ignored")
 	if got := r.finalAnswer(); got != want || !r.truncated {
 		t.Fatalf("bounded answer: bytes=%d truncated=%t", len(got), r.truncated)
+	}
+}
+
+func TestOpenCodeReasoningRequiresThinkingFlag(t *testing.T) {
+	path := fixtureExecutable(t, `printf '%s\n' \
+'{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","messageID":"msg_final"}}' \
+'{"type":"reasoning","sessionID":"ses_fixture","part":{"type":"reasoning","id":"prt_final","messageID":"msg_final","time":{"end":2},"text":"private planning</think>Answer."}}' \
+'{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop"}}'`)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "explicit", args: []string{"--thinking"}, want: true},
+		{name: "absent"},
+		{name: "disabled", args: []string{"--thinking=false"}},
+		{name: "prompt", args: []string{"--", "--thinking"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			argv := append([]string{path, "run", "--format", "json"}, tc.args...)
+			got, err := NewOpenCode().Launch(context.Background(), LaunchRequest{Argv: argv})
+			if err != nil || got.Result == nil || got.Result.Success != tc.want {
+				t.Fatalf("launch = %#v, err = %v", got.Result, err)
+			}
+		})
 	}
 }
 

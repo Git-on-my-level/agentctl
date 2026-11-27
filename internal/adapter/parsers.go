@@ -951,8 +951,10 @@ func (p opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 		}
 		timing, _ := part["time"].(map[string]any)
 		end, _ := opencodeNonnegativeInt(timing["end"])
-		if firstString(part, "type") == "reasoning" && end > 0 && firstString(part, "sessionID") == obs.SessionID {
+		partSession := firstString(part, "sessionID")
+		if firstString(part, "type") == "reasoning" && end > 0 && (partSession == "" || partSession == obs.SessionID) {
 			obs.openCodeMessageID = firstString(part, "messageID")
+			obs.openCodePartID = firstString(part, "id")
 			obs.openCodeReasoning, _ = part["text"].(string)
 		}
 	case "step_finish":
@@ -965,6 +967,7 @@ func (p opencodeJSONParser) Parse(line []byte, stderr bool) parsedObservation {
 		obs.openCodeMessageID = firstString(part, "messageID")
 		obs.TokenUsage = opencodeTokenUsage(part)
 	case "retry":
+		obs.openCodeMessageID = firstString(value, "messageID")
 		opencodeProviderEventMetadata(value, obs.Data)
 		if next, ok := opencodeNonnegativeInt(value["nextRetryAt"]); ok && next > 0 {
 			obs.Data["next_retry_at"] = time.UnixMilli(next).UTC().Format(time.RFC3339Nano)

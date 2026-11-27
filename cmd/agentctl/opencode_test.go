@@ -247,7 +247,7 @@ for arg do
 done
 printf '%s\n' '{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start","messageID":"msg_final"}}'
 if "$thinking"; then
-  printf '%s\n' '{"type":"reasoning","sessionID":"ses_fixture","part":{"type":"reasoning","sessionID":"ses_fixture","messageID":"msg_final","time":{"start":1,"end":2},"text":"private planning</think>\nRecovered answer."}}'
+  printf '%s\n' '{"type":"reasoning","sessionID":"ses_fixture","part":{"id":"prt_final","type":"reasoning","sessionID":"ses_fixture","messageID":"msg_final","time":{"start":1,"end":2},"text":"private planning</think>\nRecovered answer."}}'
 fi
 printf '%s\n' '{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","messageID":"msg_final","reason":"stop","tokens":{"output":0,"reasoning":60}}}'
 `
