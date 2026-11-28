@@ -6,7 +6,7 @@ import (
 
 // Codex service-tier overrides are verified against ~/.codex/config.toml
 // (service_tier = "default") and models_cache.json (tier id "priority", name "Fast").
-func buildCodex(executable, model, speed, effort, access string, grant bool) (Recipe, error) {
+func buildCodex(executable, model, speed, effort, access string, _ bool) (Recipe, error) {
 	exe, err := resolveExecutable("codex", executable)
 	if err != nil {
 		return Recipe{}, err
@@ -26,11 +26,10 @@ func buildCodex(executable, model, speed, effort, access string, grant bool) (Re
 	}
 	if access == AccessReadOnly {
 		argv = append(argv, "--sandbox", "read-only", "-c", codexConfigOverride("approval_policy", "never"))
-	} else if applyCodingPermissions(access, grant) {
-		argv = append(argv, "--dangerously-bypass-approvals-and-sandbox")
 	} else {
-		// Without the explicit coding grant, keep the workspace sandbox and pin
-		// headless denials so commands needing approval fail inside the turn.
+		// Native delegation cannot answer interactive approvals. Pin headless
+		// denials so a command needing approval fails inside the turn, regardless
+		// of the optional coding grant.
 		argv = append(argv, "--sandbox", "workspace-write", "-c", codexConfigOverride("approval_policy", "never"))
 	}
 	argv = append(argv, "--skip-git-repo-check", "-")

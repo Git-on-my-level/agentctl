@@ -193,8 +193,12 @@ func permissionLabel(harness, access string, grant bool) string {
 		return PermissionsConstrained
 	}
 	switch harness {
-	case "cursor", "codex", "devin":
+	case "cursor", "devin":
 		return PermissionsFull
+	case "codex":
+		// Codex runs inside its workspace sandbox and denies commands that need
+		// an interactive approval.
+		return PermissionsConstrained
 	case "claude-code":
 		// bypassPermissions skips prompts, unlike auto mode's classifier.
 		return PermissionsFull
