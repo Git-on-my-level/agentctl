@@ -38,15 +38,21 @@ while IFS= read -r extra; do :; done
 // steerResumableAgent is one-shot: only its `resume` form ever finishes.
 const steerResumableAgent = `#!/bin/sh
 case "$1" in --version) echo "fake 1.0"; exit 0;; esac
+thread_id='550e8400-e29b-41d4-a716-446655440008'
+rollout="$CODEX_HOME/sessions/2026/11/25/rollout-2026-11-25T00-00-00-00000000-$thread_id.jsonl"
 case " $* " in
 *" resume "*)
   IFS= read -r message
-  printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+  printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"$thread_id\"}"
   printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"resumed"}}'
-  printf '%s\n' '{"type":"turn.completed"}'
+  sleep 0.05
+  printf '%s\n' '{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}' >> "$rollout"
+  printf '%s\n' "{\"type\":\"turn.completed\",\"thread_id\":\"$thread_id\"}"
   ;;
 *)
-  printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+  mkdir -p "$(dirname "$rollout")"
+  printf '%s\n' "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$thread_id\"}}" > "$rollout"
+  printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"$thread_id\"}"
   sleep 60
   ;;
 esac
@@ -73,6 +79,13 @@ func startSteerFixtureTimeout(t *testing.T, timeout, script, adapterName, delive
 		t.Fatal(err)
 	}
 	fixture := &steerFixture{t: t, journal: filepath.Join(root, "state", "journal.db"), done: make(chan struct{})}
+	if adapterName == "codex" {
+		home := filepath.Join(root, "codex-home")
+		if err := os.Mkdir(home, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("CODEX_HOME", home)
+	}
 	var stdout, stderr bytes.Buffer
 	owner := testApp(&stdout, &stderr)
 	owner.stdin = strings.NewReader("launch task\n")

@@ -296,7 +296,14 @@ func TestDetachedLifecycleThroughBuiltBinary(t *testing.T) {
 			}
 			if harness == "codex" {
 				nativeModel = "gpt-test"
-				result = `printf '%s\n' '{"type":"thread.started","thread_id":"thread-fixture"}' '{"type":"item.completed","item":{"id":"item-1","type":"agent_message","text":"verified answer"}}' '{"type":"turn.completed"}'`
+				result = `thread_id='550e8400-e29b-41d4-a716-446655440012'
+rollout="$CODEX_HOME/sessions/2026/11/25/rollout-2026-11-25T00-00-00-00000000-$thread_id.jsonl"
+mkdir -p "$(dirname "$rollout")"
+printf '%s\n' "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$thread_id\"}}" > "$rollout"
+printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"$thread_id\"}"
+sleep 0.05
+printf '%s\n' '{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}' >> "$rollout"
+printf '%s\n' "{\"type\":\"item.completed\",\"thread_id\":\"$thread_id\",\"item\":{\"id\":\"item-1\",\"type\":\"agent_message\",\"text\":\"verified answer\"}}" "{\"type\":\"turn.completed\",\"thread_id\":\"$thread_id\"}"`
 			}
 			if harness == "omp" {
 				nativeModel = "fixture/model"
@@ -328,6 +335,13 @@ func TestDetachedLifecycleThroughBuiltBinary(t *testing.T) {
 			args := []string{"-c", `"$@" > "$TEST_LIFECYCLE_RECEIPT" && sleep 30`, "parent", binary, "--config", f.config, "--journal", f.journal, "delegate", "--cwd", f.root, "--request-file", f.request, "--prompt-file", promptFile, "--detach", "--timeout", "10s"}
 			parent := exec.Command("/bin/sh", args...)
 			parent.Env = append(os.Environ(), "TEST_LIFECYCLE_RECEIPT="+receipt, "TEST_LIFECYCLE_ACCOUNT=second", "AGENTCTL_UPDATE_MODE=off", "AGENTCTL_CALLER_PROVIDER=claude", "AGENTCTL_CALLER_NATIVE_SESSION_ID=detached-parent-session")
+			if harness == "codex" {
+				codexHome := filepath.Join(f.root, "codex-home")
+				if err := os.Mkdir(codexHome, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				parent.Env = append(parent.Env, "CODEX_HOME="+codexHome)
+			}
 			parent.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 			if err := parent.Start(); err != nil {
 				t.Fatal(err)

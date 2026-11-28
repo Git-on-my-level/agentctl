@@ -20,7 +20,18 @@ func TestRunNativeParserFixturesWithExactArgvAndStdin(t *testing.T) {
 	}
 	root := t.TempDir()
 	header := "#!/bin/sh\n[ \"$1\" = '--native-flag' ] || exit 9\n"
-	codex := header + "printf '%s\\n' '{\"type\":\"thread.started\",\"thread_id\":\"fixture-thread\"}'\nprintf '{\"type\":\"item.completed\",\"item\":{\"id\":\"one\",\"type\":\"agent_message\",\"text\":\"%s\"}}\\n' \"$2\"\nprintf '%s\\n' '{\"type\":\"turn.completed\"}'\n"
+	threadID := "550e8400-e29b-41d4-a716-446655440015"
+	t.Setenv("CODEX_HOME", filepath.Join(root, "codex-home"))
+	codex := header + `thread_id='` + threadID + `'
+mkdir -p "$CODEX_HOME/sessions/2026/11/25"
+rollout="$CODEX_HOME/sessions/2026/11/25/rollout-2026-11-25T00-00-00-00000000-$thread_id.jsonl"
+printf '%s\n' "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$thread_id\"}}" > "$rollout"
+printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"$thread_id\"}"
+sleep 0.05
+printf '%s\n' '{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}' >> "$rollout"
+printf '{"type":"item.completed","thread_id":"%s","item":{"id":"one","type":"agent_message","text":"%s"}}\n' "$thread_id" "$2"
+printf '%s\n' "{\"type\":\"turn.completed\",\"thread_id\":\"$thread_id\"}"
+`
 	claude := header + "prompt=$(cat)\nprintf '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"%s\"}\\n' \"$prompt\"\n"
 	paths := []string{filepath.Join(root, "codex-fixture"), filepath.Join(root, "claude-fixture")}
 	for i, script := range []string{codex, claude} {

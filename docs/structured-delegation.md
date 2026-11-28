@@ -95,12 +95,29 @@ on the profile adds Cursor `--trust` for both coding and read-only recipes.
 Read-only Cursor delegation refuses before launch with `workspace_trust_required`
 without this grant, even if the directory was previously trusted. A model alias or
 allowlist entry never grants it. Unattended coding permissions are a second
-grant: `delegation.unattended_coding_permissions: true` adds Cursor `--force`,
-Codex `--dangerously-bypass-approvals-and-sandbox`, Claude Code
-`--permission-mode bypassPermissions`, OpenCode `--auto`, and grants Devin ACP
-one-operation permission approvals on coding launches (the default
-`settings.access`). `settings.access: "read_only"` uses Cursor `--mode ask`
-and Codex `--sandbox read-only -c approval_policy="never"` and never adds those coding permission flags.
+grant, disabled by default: `delegation.unattended_coding_permissions: true`
+adds Cursor `--force`, Claude Code `--permission-mode bypassPermissions`,
+OpenCode `--auto`, and Devin ACP one-operation permission approvals on coding
+launches (the default `settings.access`).
+Codex coding delegates stay in the `workspace-write` sandbox and explicitly
+set headless `approval_policy=never`, regardless of this grant. A command that
+needs interactive approval is declined and reported as a failed run.
+Codex CLI 0.170.0 headless `exec` with its default human reviewer disables
+interactive approvals; explicit declined items and the pre-execution
+`approval policy is Never; reject command` response are surfaced as failures
+and cancelled, even when the model later completes the turn.
+`settings.access: "read_only"` uses Cursor `--mode ask` and Codex
+`--sandbox read-only -c approval_policy="never"`.
+Approval/permission attention from a native execution starts a fixed 10-minute
+watch. If it remains unresolved at the boundary, agentctl cancels and records a
+failed result with `native_approval_wait_timeout`. The same result is returned
+by `delegate --wait` and later `await`/`result` collection. The watch uses the
+native attention signal time and does not replace an explicit execution timeout.
+It applies to local native adapters that emit a typed approval/permission
+signal; it cannot detect a silent stall, authentication wait, provider outage,
+or arbitrary input request. Read the failure/status event, repair the harness
+permission policy or grant, then retry with a new request key. See
+[unattended native approvals](unattended-approvals.md) for coverage and limits.
 ZCode read-only (reviewed for ZCode CLI 0.17.0 only; any other version
 refuses with `zcode_read_only_unavailable`) layers every control the CLI
 offers, because none is sufficient alone. `delegate --plan` and fanout

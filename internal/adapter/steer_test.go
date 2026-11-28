@@ -3,6 +3,8 @@ package adapter
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -234,25 +236,32 @@ func TestStreamDeliveryRequiresLiveArgv(t *testing.T) {
 // invocation never finishes on its own; the resumed one answers with the
 // message it was given.
 const fakeResumableAgent = `
+thread_id='550e8400-e29b-41d4-a716-446655440007'
+rollout="$CODEX_HOME/sessions/2026/11/25/rollout-2026-11-25T00-00-00-00000000-$thread_id.jsonl"
 case " $* " in
 *" resume "*)
   IFS= read -r message
   args=$(printf '%s' "$*" | tr '"' "'")
-  printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+  printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"$thread_id\"}"
   printf '%s\n' '{"type":"steer.fixture.resumed"}'
   if [ "$message" = redirect ]; then sleep 60; fi
+  sleep 0.05
+  printf '%s\n' '{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}' >> "$rollout"
   printf '%s\n' "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"resumed with $message via $args\"}}"
-  printf '%s\n' '{"type":"turn.completed"}'
+  printf '%s\n' "{\"type\":\"turn.completed\",\"thread_id\":\"$thread_id\"}"
   ;;
 *)
   sleep "${STEER_FIXTURE_DELAY:-0}"
-  printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+  mkdir -p "$(dirname "$rollout")"
+  printf '%s\n' "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$thread_id\"}}" > "$rollout"
+  printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"$thread_id\"}"
   sleep 60
   ;;
 esac
 `
 
 func TestInterruptResumeSteerContinuesTheSameSession(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
 	path := fixtureExecutable(t, fakeResumableAgent)
 	a := NewCodex()
 	launched, err := a.Launch(context.Background(), LaunchRequest{Argv: []string{path, "exec", "--json", "--sandbox", "read-only", "-"}, Stdin: []byte("task\n"), PromptDelivery: PromptDeliveryStdin, StartOnly: true})
@@ -292,7 +301,8 @@ func TestInterruptResumeSteerContinuesTheSameSession(t *testing.T) {
 	if !result.Success {
 		t.Fatalf("final result = %#v", result)
 	}
-	if !strings.Contains(result.Content, "exec resume --json -c sandbox_mode='read-only' thread-1 -") {
+	threadID := "550e8400-e29b-41d4-a716-446655440007"
+	if !strings.Contains(result.Content, "exec resume --json -c sandbox_mode='read-only' "+threadID+" -") {
 		t.Fatalf("resume argv not as negotiated: %s", result.Content)
 	}
 	if !strings.Contains(result.Content, "resumed with again") {
@@ -308,12 +318,16 @@ func TestInterruptResumeSteerContinuesTheSameSession(t *testing.T) {
 }
 
 func TestInterruptResumeWaitsForTheNativeSessionID(t *testing.T) {
-	t.Setenv("STEER_FIXTURE_DELAY", "30")
+	codexHome := t.TempDir()
 	path := fixtureExecutable(t, fakeResumableAgent)
 	a := NewCodex()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	launched, err := a.Launch(ctx, LaunchRequest{Argv: []string{path, "exec", "--json", "-"}, Stdin: []byte("task\n"), PromptDelivery: PromptDeliveryStdin, StartOnly: true})
+	launched, err := a.Launch(ctx, LaunchRequest{
+		Argv: []string{path, "exec", "--json", "-"}, Stdin: []byte("task\n"),
+		Env:            []string{"CODEX_HOME=" + codexHome, "STEER_FIXTURE_DELAY=30"},
+		PromptDelivery: PromptDeliveryStdin, StartOnly: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,15 +559,25 @@ func TestLiveInputWriteFailureReleasesQueuedMessages(t *testing.T) {
 }
 
 func TestResumeOperationUsesTheNegotiatedRoute(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	threadID := "550e8400-e29b-41d4-a716-446655440007"
+	rollout := filepath.Join(home, "sessions", "2026", "11", "25", "rollout-2026-11-25T00-00-00-00000000-"+threadID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(rollout), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rollout, []byte(`{"type":"session_meta","payload":{"id":"`+threadID+`"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	path := fixtureExecutable(t, fakeResumableAgent)
 	a := NewCodex()
-	ref := SourceRef{Adapter: "codex", Kind: "native_session", OpaqueID: "thread-1"}
+	ref := SourceRef{Adapter: "codex", Kind: "native_session", OpaqueID: threadID}
 	launched, err := a.Resume(boundedContext(t), ResumeRequest{Ref: ref, Argv: []string{path, "exec", "--json", "--sandbox", "read-only", "-"}, Prompt: []byte("next\n"), PromptDelivery: PromptDeliveryStdin})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if launched.Result == nil || !launched.Result.Success || !strings.Contains(launched.Result.Content, "resumed with next via") ||
-		!strings.Contains(launched.Result.Content, "exec resume --json -c sandbox_mode='read-only' thread-1 -") {
+		!strings.Contains(launched.Result.Content, "exec resume --json -c sandbox_mode='read-only' "+threadID+" -") {
 		t.Fatalf("resume result = %#v", launched.Result)
 	}
 	// An argv prompt is replaced by the next one rather than repeated.

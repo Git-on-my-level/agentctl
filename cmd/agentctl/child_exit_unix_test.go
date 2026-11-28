@@ -40,7 +40,17 @@ func TestChildExitThroughBuiltBinary(t *testing.T) {
 			}
 			script := "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 2026.09.10; exit 0; fi\necho launch >> " + shellQuote(f.count) + "\nprintf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"chat-1\"}'\n"
 			if variant == "codex_failed" {
-				script += `printf '%s\n' '{"type":"thread.started","thread_id":"thread-fixture"}'` + "\n"
+				threadID := "550e8400-e29b-41d4-a716-446655440009"
+				codexHome := filepath.Join(f.root, "codex-home")
+				if err := os.Mkdir(codexHome, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("CODEX_HOME", codexHome)
+				script += `thread_id='` + threadID + `'
+rollout="$CODEX_HOME/sessions/2026/11/25/rollout-2026-11-25T00-00-00-00000000-$thread_id.jsonl"
+mkdir -p "$(dirname "$rollout")"
+if [ ! -f "$rollout" ]; then printf '%s\n' "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$thread_id\"}}" > "$rollout"; fi
+printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"$thread_id\"}"` + "\n"
 			}
 			if variant != "without_children" {
 				script += remoteCommand(binary, "--journal", f.journal, "run", "--adapter", "generic-process", "--", "/bin/sh", "-c", `printf '%s\n' '{"type":"result","status":"completed","result":"child answer"}'`) + " > " + shellQuote(filepath.Join(f.root, "child-receipt")) + "\n"
@@ -59,7 +69,7 @@ func TestChildExitThroughBuiltBinary(t *testing.T) {
 			}
 			if variant == "codex_failed" {
 				script += `case " $* " in
-*" exec resume "*) printf '%s\n' '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"resumed answer"}}' '{"type":"turn.completed"}' ;;
+*" exec resume "*) sleep 0.05; printf '%s\n' '{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}' >> "$rollout"; printf '%s\n' "{\"type\":\"item.completed\",\"thread_id\":\"$thread_id\",\"item\":{\"id\":\"answer\",\"type\":\"agent_message\",\"text\":\"resumed answer\"}}" "{\"type\":\"turn.completed\",\"thread_id\":\"$thread_id\"}" ;;
 *) printf '%s\n' '{"type":"turn.failed","error":{"message":"invalid task"}}'; exit 1 ;;
 esac` + "\n"
 			} else if variant == "failed_turn" {

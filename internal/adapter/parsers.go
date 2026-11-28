@@ -17,6 +17,9 @@ type codexParser struct{}
 
 func (codexParser) Name() string { return "codex-json" }
 func (codexParser) Parse(line []byte, stderr bool) parsedObservation {
+	if declined, ok := codexDeclinedCommand(line); ok {
+		return declined
+	}
 	if failure, ok := codexStructuredFailure(line); ok {
 		return failure
 	}
@@ -30,6 +33,39 @@ func (codexParser) Parse(line []byte, stderr bool) parsedObservation {
 		}
 	}
 	return obs
+}
+
+// codexDeclinedCommand recognizes headless exec's explicit policy-denial
+// result. Codex may continue the turn after returning this result to the
+// model, so the native adapter latches the diagnostic until process exit.
+func codexDeclinedCommand(line []byte) (parsedObservation, bool) {
+	value, ok := decodeLine(line)
+	if !ok || !strings.EqualFold(firstString(value, "type"), "item.completed") {
+		return parsedObservation{}, false
+	}
+	item, ok := value["item"].(map[string]any)
+	if !ok || !strings.EqualFold(firstString(item, "type"), "command_execution") || !strings.EqualFold(firstString(item, "status"), "declined") {
+		return parsedObservation{}, false
+	}
+	return codexCommandDeclinedObservation(firstString(value, "thread_id")), true
+}
+
+func codexCommandDeclinedObservation(sessionID string) parsedObservation {
+	return parsedObservation{
+		SessionID:   sessionID,
+		Kind:        "terminal",
+		SourceState: "native_command_declined",
+		State:       StateFailed,
+		Liveness:    LivenessExited,
+		Terminal:    true,
+		Error:       "Codex declined a command because headless approval is disabled.",
+		Data: map[string]any{
+			"family":             "codex",
+			"diagnostic_code":    "native_command_declined",
+			"failure_category":   "permission",
+			"failure_structured": true,
+		},
+	}
 }
 
 // nativeDiagnosticCodePattern keeps provider codes in native_code. Free text

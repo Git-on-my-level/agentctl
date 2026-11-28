@@ -239,7 +239,16 @@ func TestNativeProcessDoesNotCoalesceSemanticEvents(t *testing.T) {
 }
 
 func TestCodexReducerCarriesLastAgentMessageIntoTerminalResult(t *testing.T) {
-	path := fixtureExecutable(t, `printf '%s\n' '{"type":"thread.started","thread_id":"thread-fixture"}' '{"type":"item.completed","item":{"id":"item-1","type":"agent_message","text":"first"}}' '{"type":"item.completed","item":{"id":"item-2","type":"agent_message","text":"final answer"}}' '{"type":"turn.completed"}'`)
+	threadID := "550e8400-e29b-41d4-a716-446655440006"
+	t.Setenv("CODEX_HOME", t.TempDir())
+	path := fixtureExecutable(t, `thread_id='`+threadID+`'
+mkdir -p "$CODEX_HOME/sessions/2026/11/25"
+rollout="$CODEX_HOME/sessions/2026/11/25/rollout-2026-11-25T00-00-00-00000000-$thread_id.jsonl"
+printf '%s\n' "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$thread_id\"}}" > "$rollout"
+printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"$thread_id\"}"
+sleep 0.05
+printf '%s\n' '{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}' >> "$rollout"
+printf '%s\n' '{"type":"item.completed","item":{"id":"item-1","type":"agent_message","text":"first"}}' '{"type":"item.completed","item":{"id":"item-2","type":"agent_message","text":"final answer"}}' '{"type":"turn.completed"}'`)
 	got, err := NewCodex().Launch(context.Background(), LaunchRequest{Argv: []string{path}, DiscoveryWindow: time.Second})
 	if err != nil {
 		t.Fatal(err)

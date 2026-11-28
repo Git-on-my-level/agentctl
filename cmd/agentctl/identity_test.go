@@ -213,14 +213,24 @@ func TestIdentitySessionIsObservableBeforeNativeCompletion(t *testing.T) {
 	root := testutil.TempDir(t)
 	path := filepath.Join(root, "state", "journal.db")
 	script := filepath.Join(root, "codex")
+	codexHome := filepath.Join(root, "codex-home")
+	if err := os.Mkdir(codexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", codexHome)
 	release := filepath.Join(root, "release")
 	emitSession := filepath.Join(root, "emit-session")
 	source := `#!/bin/sh
 if [ "$1" = "--version" ]; then echo 'codex-cli 0.1.0'; exit 0; fi
 while [ ! -e '` + emitSession + `' ]; do sleep 0.02; done
-printf '%s\n' '{"type":"thread.started","thread_id":"early-native-fixture"}'
+thread_id='550e8400-e29b-41d4-a716-446655440010'
+rollout="$CODEX_HOME/sessions/2026/11/25/rollout-2026-11-25T00-00-00-00000000-$thread_id.jsonl"
+mkdir -p "$(dirname "$rollout")"
+printf '%s\n' "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$thread_id\"}}" > "$rollout"
+printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"$thread_id\"}"
 while [ ! -e '` + release + `' ]; do sleep 0.02; done
-printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}' '{"type":"turn.completed"}'
+printf '%s\n' '{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}' >> "$rollout"
+printf '%s\n' "{\"type\":\"item.completed\",\"thread_id\":\"$thread_id\",\"item\":{\"type\":\"agent_message\",\"text\":\"done\"}}" "{\"type\":\"turn.completed\",\"thread_id\":\"$thread_id\"}"
 `
 	if err := os.WriteFile(script, []byte(source), 0700); err != nil {
 		t.Fatal(err)
