@@ -9,7 +9,8 @@ to the turn rather than awaiting an operator.
 
 | Delegate recipe | Classification | Evidence and limits |
 | --- | --- | --- |
-| Codex coding, with or without the coding grant | fails-in-turn for declined commands | Agentctl pins `--sandbox workspace-write` and `approval_policy=never`. A command needing interactive approval is declined, latched as `native_command_declined`, and fails back to the parent. No generated command rules expand execution permissions. Provider execution is not verified in this audit. |
+| Codex coding, explicit grant | Existing approval and sandbox bypass retained | The grant keeps `--dangerously-bypass-approvals-and-sandbox`; no generated command rules are added. Provider execution is not verified in this audit. |
+| Codex coding, no grant | fails-in-turn for declined commands | Agentctl pins `--sandbox workspace-write` and `approval_policy=never`. A command needing interactive approval is declined, latched as `native_command_declined`, and fails back to the parent. Provider execution is not verified in this audit. |
 | Codex read_only | fails-in-turn | Adds `approval_policy=never` to `--sandbox read-only`. Provider execution is not verified in this audit. |
 | Cursor coding, trust and coding grants | fails-in-turn | Reviewed `--trust --force` recipe bypasses workspace/tool approval; live denial behavior not verified in this audit. Without the grants, unknown. |
 | Cursor read_only | unknown | `--trust --mode ask` requires a separate trust grant; tool approval behavior on a real turn not verified. |
