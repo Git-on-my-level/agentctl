@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -70,13 +71,25 @@ func TestSyntheticDelegateApprovalWatchdog(t *testing.T) {
 	if out, err := initRepo.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
 	}
+	baseCodexHome := filepath.Join(root, "codex-home")
+	if err := os.Mkdir(baseCodexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCodexCheckoutTrust(t, baseCodexHome, repo)
 	launcher := filepath.Join(root, "codex")
+	allowedMarker := filepath.Join(root, "allowed-work")
 	approvalMarker := filepath.Join(root, "approval-wait")
 	script := `#!/bin/sh
 if [ "$1" = "--version" ]; then
   printf 'codex-cli 0.170.0\n'
   exit 0
 fi
+rules=$(find "$CODEX_HOME/rules" -name 'agentctl-delegate-generated-*.rules' -print -quit)
+[ -n "$rules" ] || exit 71
+grep -Fq 'pattern=["git", "status"]' "$rules" || exit 71
+if grep -Fq 'pattern=["git", "push"]' "$rules"; then exit 72; fi
+git -C "$SYNTHETIC_REPO" status --short >/dev/null || exit 73
+printf 'allowed command completed\n' > "$SYNTHETIC_ALLOWED_MARKER"
 printf '%s\n' '{"type":"permission.required","thread_id":"synthetic","message":"approval required"}'
 printf 'unrelated background warning\n' >&2
 printf '%s\n' "$AGENTCTL_EXECUTION_ID" > "$SYNTHETIC_APPROVAL_MARKER"
@@ -85,11 +98,15 @@ while :; do sleep 1; done
 	if err := os.WriteFile(launcher, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("CODEX_HOME", baseCodexHome)
+	t.Setenv("SYNTHETIC_REPO", repo)
+	t.Setenv("SYNTHETIC_ALLOWED_MARKER", allowedMarker)
 	t.Setenv("SYNTHETIC_APPROVAL_MARKER", approvalMarker)
 	configPath := filepath.Join(root, "config.json")
 	value := config.Config{
 		SchemaVersion: 1, DefaultProfile: "test", Profiles: map[string]config.Profile{"test": {
 			Adapters:         map[string]config.Adapter{"codex": {Executable: launcher}},
+			Delegation:       &config.DelegationPolicy{UnattendedCodingPermissions: true},
 			AgentPreferences: &config.AgentPreferences{Mode: "advisory", Preferred: []config.AgentPreference{{Agent: "codex", Family: "synthetic", Model: "synthetic-model", Default: true}}},
 		}},
 	}
@@ -121,6 +138,10 @@ while :; do sleep 1; done
 	go func() {
 		done <- a.run(ctx, []string{"--output", "json", "--config", configPath, "--journal", journalPath, "delegate", "--cwd", repo, "--request-file", requestPath, "--prompt-stdin", "--wait"})
 	}()
+	waitForPathOrExit(t, allowedMarker, done)
+	if got, err := os.ReadFile(allowedMarker); err != nil || string(got) != "allowed command completed\n" {
+		t.Fatalf("allowlisted work result=%q err=%v", got, err)
+	}
 	waitForPathOrExit(t, approvalMarker, done)
 	identifier, err := os.ReadFile(approvalMarker)
 	if err != nil {
@@ -230,6 +251,7 @@ func TestSyntheticDelegatePreExecutionDenialFailsAndCancels(t *testing.T) {
 	if err := os.Mkdir(codexHome, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	writeCodexCheckoutTrust(t, codexHome, repo)
 	launcher := filepath.Join(root, "codex")
 	startedMarker := filepath.Join(root, "started")
 	stoppedMarker := filepath.Join(root, "stopped")
@@ -323,6 +345,18 @@ while :; do sleep 1; done
 	stored, err := journal.GetOutcome(ctx, id)
 	if err != nil || stored.State != model.StateFailed || stored.Failure == nil || stored.Failure.Code != nativeCommandDeclinedDiagnostic || stored.Failure.Category != "permission" {
 		t.Fatalf("stored pre-execution denial=%+v err=%v", stored, err)
+	}
+}
+
+func writeCodexCheckoutTrust(t *testing.T, codexHome, repo string) {
+	t.Helper()
+	root, err := exec.Command("git", "-C", repo, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		t.Fatalf("resolve synthetic Git root: %v", err)
+	}
+	config := "[projects." + strconv.Quote(strings.TrimSpace(string(root))) + "]\ntrust_level = \"trusted\"\n"
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

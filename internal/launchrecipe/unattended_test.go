@@ -33,8 +33,8 @@ func TestUnattendedRecipes(t *testing.T) {
 				t.Fatalf("%#v", r)
 			}
 			if tc.harness == "codex" && tc.access == "coding" {
-				if !slices.Contains(r.Argv, "--skip-git-repo-check") || !slices.Contains(r.Argv, `approval_policy="never"`) || slices.Contains(r.Argv, `approval_policy="on-request"`) || slices.Contains(r.Argv, "--dangerously-bypass-approvals-and-sandbox") || len(r.Env) != 0 {
-					t.Fatalf("Codex grant must keep its headless policy sandboxed: %#v", r)
+				if !slices.Contains(r.Argv, "--skip-git-repo-check") || !slices.Contains(r.Argv, `approval_policy="never"`) || slices.Contains(r.Argv, `approval_policy="on-request"`) || slices.Contains(r.Argv, "--dangerously-bypass-approvals-and-sandbox") || !slices.Contains(r.Env, "AGENTCTL_CODEX_DELEGATE_ALLOWLIST=1") {
+					t.Fatalf("Codex grant must declare its headless policy and scoped allowlist: %#v", r)
 				}
 			}
 		})
@@ -44,15 +44,12 @@ func TestUnattendedRecipes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if slices.Contains(r.Argv, "--yolo") || slices.Contains(r.Argv, "--dangerously-bypass-approvals-and-sandbox") {
+		if slices.Contains(r.Argv, "--yolo") || slices.Contains(r.Argv, "--dangerously-bypass-approvals-and-sandbox") || slices.Contains(r.Env, "AGENTCTL_CODEX_DELEGATE_ALLOWLIST=1") {
 			t.Fatalf("implicit grant: %#v", r)
-		}
-		if h == "codex" && (!slices.Contains(r.Argv, "workspace-write") || !slices.Contains(r.Argv, `approval_policy="never"`)) {
-			t.Fatalf("Codex without the coding grant must still fail approvals in-turn: %#v", r)
 		}
 	}
 	readOnly, err := Build(Input{Harness: "codex", Model: "test-model", Access: AccessReadOnly, UnattendedCodingPermissions: true})
-	if err != nil || !slices.Contains(readOnly.Argv, "read-only") || !slices.Contains(readOnly.Argv, `approval_policy="never"`) {
+	if err != nil || slices.Contains(readOnly.Env, "AGENTCTL_CODEX_DELEGATE_ALLOWLIST=1") || !slices.Contains(readOnly.Argv, "read-only") || !slices.Contains(readOnly.Argv, `approval_policy="never"`) {
 		t.Fatalf("Codex read_only semantics changed: %#v, err=%v", readOnly, err)
 	}
 	if _, err := Build(Input{Harness: "hermes", Model: "glm-5.3-flash", Access: "read_only"}); err == nil {

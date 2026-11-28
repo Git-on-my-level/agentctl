@@ -281,7 +281,7 @@ printf '%s\n' '{"type":"turn.completed","thread_id":"`+threadID+`"}'`)
 	launched, err := NewCodex().Launch(context.Background(), LaunchRequest{
 		Argv: []string{path, "exec", "--json", "--ephemeral", "-"}, Stdin: []byte("task\n"),
 		PromptDelivery: PromptDeliveryStdin, DiscoveryWindow: time.Second,
-		Env: []string{"CODEX_HOME=" + filepath.Join(t.TempDir(), "missing-home")},
+		Env: []string{"CODEX_HOME=" + filepath.Join(t.TempDir(), "missing-home"), codexDelegateAllowlistEnv + "="},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -297,7 +297,7 @@ func TestCodexEphemeralDelegatedLaunchIsRejectedBeforeStart(t *testing.T) {
 	_, err := NewCodex().Launch(context.Background(), LaunchRequest{
 		Argv: []string{path, "exec", "--json", "--ephemeral", "-"}, Stdin: []byte("task\n"),
 		PromptDelivery:   PromptDeliveryStdin,
-		Env:              []string{"MARKER=" + marker},
+		Env:              []string{"MARKER=" + marker, codexDelegateAllowlistEnv + "="},
 		ExecutionContext: &ExecutionContext{ExecutionID: "delegated-test", Adapter: "codex", Authority: "native", Delegated: true},
 	})
 	var adapterErr *AdapterError
@@ -326,7 +326,7 @@ printf '%s\n' "{\"type\":\"turn.completed\",\"thread_id\":\"$thread_id\"}"`)
 	launched, err := NewCodex().Launch(context.Background(), LaunchRequest{
 		Argv: []string{path, "exec", "--json", "-"}, Cwd: childDir,
 		Stdin: []byte("task\n"), PromptDelivery: PromptDeliveryStdin, DiscoveryWindow: time.Second,
-		Env: []string{"CODEX_HOME=relative-codex-home"},
+		Env: []string{"CODEX_HOME=relative-codex-home", codexDelegateAllowlistEnv + "="},
 	})
 	if err != nil {
 		t.Fatal(err)

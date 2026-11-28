@@ -35,7 +35,7 @@ func NewGenericProcess(options ...GenericProcessOptions) Adapter {
 }
 
 func NewCodex() Adapter {
-	return newNativeAdapter(nativeConfig{Manifest: codexManifest(), Binary: "codex", Parser: codexParser{}, LaunchKind: "codex_thread"})
+	return newNativeAdapter(nativeConfig{Manifest: codexManifest(), Binary: "codex", Parser: codexParser{}, LaunchKind: "codex_thread", PrepareLaunch: prepareCodexDelegateLaunch})
 }
 func NewCursor() Adapter {
 	return newNativeAdapter(nativeConfig{Manifest: cursorManifest(), Binary: "cursor-agent", Parser: cursorParser{}, LaunchKind: "cursor_session"})
