@@ -7,7 +7,7 @@ import (
 
 func TestUnattendedRecipes(t *testing.T) {
 	for _, tc := range []struct{ harness, access, flag, permission string }{
-		{"codex", "coding", "workspace-write", PermissionsConstrained},
+		{"codex", "coding", "--dangerously-bypass-approvals-and-sandbox", PermissionsFull},
 		{"codex", "read_only", `approval_policy="never"`, PermissionsReadOnly},
 		{"cursor", "coding", "--force", PermissionsFull},
 		{"cursor", "read_only", "ask", PermissionsReadOnly},
@@ -33,8 +33,8 @@ func TestUnattendedRecipes(t *testing.T) {
 				t.Fatalf("%#v", r)
 			}
 			if tc.harness == "codex" && tc.access == "coding" {
-				if !slices.Contains(r.Argv, "--skip-git-repo-check") || !slices.Contains(r.Argv, `approval_policy="never"`) || slices.Contains(r.Argv, `approval_policy="on-request"`) || slices.Contains(r.Argv, "--dangerously-bypass-approvals-and-sandbox") || len(r.Env) != 0 {
-					t.Fatalf("Codex grant must keep its headless policy sandboxed: %#v", r)
+				if !slices.Contains(r.Argv, "--skip-git-repo-check") || slices.Contains(r.Argv, "workspace-write") || slices.Contains(r.Argv, `approval_policy="never"`) || len(r.Env) != 0 {
+					t.Fatalf("Codex grant must preserve its reviewed coding permissions: %#v", r)
 				}
 			}
 		})

@@ -510,12 +510,12 @@ func TestCursorGrantAbsentStaysConstrained(t *testing.T) {
 	}
 }
 
-func TestCodexGrantKeepsHeadlessPolicyConstrained(t *testing.T) {
+func TestCodexGrantKeepsReviewedCodingPermissions(t *testing.T) {
 	got, err := Build(Input{Harness: "codex", Model: "gpt-6-astra", UnattendedCodingPermissions: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Permissions != PermissionsConstrained || !contains(got.Argv, "workspace-write") || !contains(got.Argv, `approval_policy="never"`) || contains(got.Argv, `approval_policy="on-request"`) || contains(got.Argv, "--dangerously-bypass-approvals-and-sandbox") || len(got.Env) != 0 {
+	if got.Permissions != PermissionsFull || !contains(got.Argv, "--dangerously-bypass-approvals-and-sandbox") || contains(got.Argv, "workspace-write") || contains(got.Argv, `approval_policy="never"`) || len(got.Env) != 0 {
 		t.Fatalf("argv=%v permissions=%s", got.Argv, got.Permissions)
 	}
 	if got.Argv[len(got.Argv)-1] != "-" {

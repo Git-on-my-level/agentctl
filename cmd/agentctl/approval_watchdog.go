@@ -34,19 +34,15 @@ func updateNativeApprovalWait(since *time.Time, events []adapter.Event, fallback
 }
 
 func nativeApprovalResumed(event adapter.Event) bool {
-	if event.State != adapter.StateRunning {
+	if event.State != adapter.StateRunning || (event.Kind != "started" && event.Kind != "progress") {
 		return false
 	}
-	if adapter.IsActivityObservation(event.SourceState) {
-		return true
-	}
-	switch strings.ToLower(event.SourceState) {
-	case "turn.started", "item.started", "item.updated", "item.completed", "turn.phase.started", "turn.phase.completed",
-		"approval.resolved", "approval.approved", "permission.resolved", "permission.granted":
-		return event.Kind == "started" || event.Kind == "progress"
-	default:
+	sourceState := strings.ToLower(event.SourceState)
+	switch sourceState {
+	case "stderr", "health", "malformed_output":
 		return false
 	}
+	return true
 }
 
 func approvalAttentionEvent(event adapter.Event) bool {

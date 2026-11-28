@@ -54,6 +54,16 @@ func TestNativeApprovalWaitBoundaryAndReset(t *testing.T) {
 	if got := updateNativeApprovalWait(since, []adapter.Event{{Kind: "started", State: adapter.StateRunning, SourceState: "item.started"}}, start.Add(time.Minute)); got != nil {
 		t.Fatalf("resolved approval retained timer: %v", got)
 	}
+	for _, sourceState := range []string{"acp.agent_message", "acp.tool_call"} {
+		waiting := updateNativeApprovalWait(nil, []adapter.Event{{
+			Kind: "attention", State: adapter.StateAttention, SourceState: "acp.permission_denied",
+			ObservedAt: start, Payload: map[string]any{"attention_kind": "permission"},
+		}}, start)
+		got := updateNativeApprovalWait(waiting, []adapter.Event{{Kind: "progress", State: adapter.StateRunning, SourceState: sourceState}}, start.Add(2*time.Minute))
+		if got != nil {
+			t.Fatalf("native progress %q did not clear approval timer: %v", sourceState, got)
+		}
+	}
 }
 
 func TestSyntheticDelegateApprovalWatchdog(t *testing.T) {

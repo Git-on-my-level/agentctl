@@ -14,11 +14,11 @@ import (
 )
 
 const (
-	codexRolloutMaxBytes   = 8 << 20
-	codexRolloutMaxLine    = 1 << 20
-	codexRolloutMaxEntries = 50000
-	codexNeverPolicyError  = "approval policy is Never; reject command — you cannot ask for escalated permissions if the approval policy is Never"
-	codexRolloutFailure    = "codex_rollout_evidence_unavailable"
+	codexRolloutMaxLineBytes = 32 << 20
+	codexRolloutMaxRecords   = 100000
+	codexRolloutMaxEntries   = 50000
+	codexNeverPolicyError    = "approval policy is Never; reject command — you cannot ask for escalated permissions if the approval policy is Never"
+	codexRolloutFailure      = "codex_rollout_evidence_unavailable"
 )
 
 type codexRolloutCheckpoint struct {
@@ -127,9 +127,6 @@ func (p *processRecord) verifyCodexRollout(obs parsedObservation) parsedObservat
 	if checkpoint.Captured && checkpoint.Path != "" && checkpoint.Path == file.Path {
 		offset = checkpoint.Size
 		needSessionMeta = false
-	}
-	if file.Size < offset || file.Size-offset > codexRolloutMaxBytes {
-		return codexRolloutUnavailableObservation(threadID)
 	}
 	items, denied, err := readCodexRolloutDelta(file, offset, threadID, needSessionMeta)
 	if err != nil || items == 0 {
@@ -289,24 +286,34 @@ func readCodexRolloutDelta(file codexRolloutFile, offset int64, threadID string,
 	}
 	defer opened.Close()
 	info, err := opened.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() < offset || info.Size()-offset > codexRolloutMaxBytes {
+	if err != nil || !info.Mode().IsRegular() || info.Size() < offset {
 		return 0, false, errors.New("rollout changed or exceeded its bound")
+	}
+	deltaSize := info.Size() - offset
+	if deltaSize == 0 {
+		return 0, false, errors.New("rollout delta is empty")
+	}
+	var finalByte [1]byte
+	if n, err := opened.ReadAt(finalByte[:], info.Size()-1); err != nil || n != 1 || finalByte[0] != '\n' {
+		return 0, false, errors.New("rollout delta is incomplete")
 	}
 	if _, err := opened.Seek(offset, io.SeekStart); err != nil {
 		return 0, false, err
 	}
-	delta, err := io.ReadAll(io.LimitReader(opened, info.Size()-offset+1))
-	if err != nil || int64(len(delta)) != info.Size()-offset || len(delta) == 0 || delta[len(delta)-1] != '\n' {
-		return 0, false, errors.New("rollout delta is incomplete")
-	}
-	scanner := bufio.NewScanner(bytes.NewReader(delta))
-	scanner.Buffer(make([]byte, 64<<10), codexRolloutMaxLine)
+	limited := &io.LimitedReader{R: opened, N: deltaSize}
+	scanner := bufio.NewScanner(limited)
+	scanner.Buffer(make([]byte, 64<<10), codexRolloutMaxLineBytes)
 	calls := map[string]codexRolloutCall{}
 	outputs := map[string]bool{}
 	responseItems := 0
+	records := 0
 	matchedDenial := false
 	sawSessionMeta := !needSessionMeta
 	for scanner.Scan() {
+		records++
+		if records > codexRolloutMaxRecords {
+			return 0, false, errors.New("rollout record bound exceeded")
+		}
 		line := scanner.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
@@ -380,6 +387,9 @@ func readCodexRolloutDelta(file codexRolloutFile, offset int64, threadID string,
 	}
 	if err := scanner.Err(); err != nil {
 		return 0, false, err
+	}
+	if limited.N != 0 {
+		return 0, false, errors.New("rollout changed while being read")
 	}
 	if !sawSessionMeta {
 		return 0, false, errors.New("rollout is missing session metadata")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,6 +155,44 @@ func TestCodexArrayToolOutputDoesNotFailSuccessfulTurn(t *testing.T) {
 	record.ingest([]byte(`{"type":"turn.completed","thread_id":"`+threadID+`"}`), false)
 	if record.result == nil || !record.result.Success || record.result.Content != "image reviewed" {
 		t.Fatalf("array-shaped image output corrupted the turn: %#v", record.result)
+	}
+}
+
+func TestCodexLargeRolloutRecordDoesNotFailSuccessfulTurn(t *testing.T) {
+	threadID := "550e8400-e29b-41d4-a716-446655440022"
+	record, rollout := newCodexRolloutRecord(t, threadID)
+	appendCodexRollout(t, rollout, map[string]any{"type": "response_item", "payload": map[string]any{
+		"type": "function_call_output", "call_id": "large-image", "output": []any{
+			map[string]any{"type": "image", "data": strings.Repeat("x", 2<<20)},
+		},
+	}})
+	record.ingest([]byte(`{"type":"item.completed","thread_id":"`+threadID+`","item":{"type":"agent_message","text":"large image reviewed"}}`), false)
+	record.ingest([]byte(`{"type":"turn.completed","thread_id":"`+threadID+`"}`), false)
+	if record.result == nil || !record.result.Success || record.result.Content != "large image reviewed" {
+		t.Fatalf("large rollout record was rejected: %#v", record.result)
+	}
+}
+
+func TestCodexRolloutDeltaLargerThanEightMiBDoesNotFailSuccessfulTurn(t *testing.T) {
+	threadID := "550e8400-e29b-41d4-a716-446655440023"
+	record, rollout := newCodexRolloutRecord(t, threadID)
+	imageData := strings.Repeat("x", 900<<10)
+	items := make([]map[string]any, 10)
+	for i := range items {
+		items[i] = map[string]any{"type": "response_item", "payload": map[string]any{
+			"type": "function_call_output", "call_id": fmt.Sprintf("large-image-%d", i), "output": []any{
+				map[string]any{"type": "image", "data": imageData},
+			},
+		}}
+	}
+	appendCodexRollout(t, rollout, items...)
+	if info, err := os.Stat(rollout); err != nil || info.Size() <= 8<<20 {
+		t.Fatalf("test rollout size=%v, err=%v; want >8 MiB", info, err)
+	}
+	record.ingest([]byte(`{"type":"item.completed","thread_id":"`+threadID+`","item":{"type":"agent_message","text":"large turn reviewed"}}`), false)
+	record.ingest([]byte(`{"type":"turn.completed","thread_id":"`+threadID+`"}`), false)
+	if record.result == nil || !record.result.Success || record.result.Content != "large turn reviewed" {
+		t.Fatalf("large rollout delta was rejected: %#v", record.result)
 	}
 }
 
@@ -326,7 +365,8 @@ printf '%s\n' "{\"type\":\"turn.completed\",\"thread_id\":\"$thread_id\"}"`)
 	launched, err := NewCodex().Launch(context.Background(), LaunchRequest{
 		Argv: []string{path, "exec", "--json", "-"}, Cwd: childDir,
 		Stdin: []byte("task\n"), PromptDelivery: PromptDeliveryStdin, DiscoveryWindow: time.Second,
-		Env: []string{"CODEX_HOME=relative-codex-home"},
+		Env:              []string{"CODEX_HOME=relative-codex-home"},
+		ExecutionContext: &ExecutionContext{ExecutionID: "delegated-test", Adapter: "codex", Authority: "native", Delegated: true},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -337,6 +377,24 @@ printf '%s\n' "{\"type\":\"turn.completed\",\"thread_id\":\"$thread_id\"}"`)
 	wantRollout := filepath.Join(childDir, "relative-codex-home", "sessions", "2026", "11", "25", "rollout-2026-11-25T00-00-00-00000000-"+threadID+".jsonl")
 	if _, err := os.Stat(wantRollout); err != nil {
 		t.Fatalf("fake Codex wrote no rollout at child-resolved CODEX_HOME %s: %v", wantRollout, err)
+	}
+}
+
+func TestCodexNonDelegatedCompletionDoesNotRequireRollout(t *testing.T) {
+	threadID := "550e8400-e29b-41d4-a716-446655440024"
+	path := fixtureExecutable(t, `printf '%s\n' '{"type":"thread.started","thread_id":"`+threadID+`"}'
+printf '%s\n' '{"type":"item.completed","thread_id":"`+threadID+`","item":{"type":"agent_message","text":"expert run answer"}}'
+printf '%s\n' '{"type":"turn.completed","thread_id":"`+threadID+`"}'`)
+	launched, err := NewCodex().Launch(context.Background(), LaunchRequest{
+		Argv: []string{path, "exec", "--json", "-"}, Stdin: []byte("task\n"),
+		PromptDelivery: PromptDeliveryStdin, DiscoveryWindow: time.Second,
+		Env: []string{"CODEX_HOME=" + filepath.Join(t.TempDir(), "unreadable-session-home")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launched.Result == nil || !launched.Result.Success || launched.Result.Content != "expert run answer" {
+		t.Fatalf("non-delegated completion required rollout evidence: %#v", launched.Result)
 	}
 }
 

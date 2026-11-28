@@ -1422,7 +1422,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	var codexHome string
 	var codexRolloutRequired bool
 	var rolloutCheckpoint codexRolloutCheckpoint
-	if a.config.Parser != nil && a.config.Parser.Name() == "codex-json" && !codexEphemeral {
+	if a.config.Parser != nil && a.config.Parser.Name() == "codex-json" && !codexEphemeral && req.ExecutionContext != nil && req.ExecutionContext.Delegated {
 		codexRolloutRequired = true
 		codexHome, err = effectiveCodexHome(cmd.Env, cmd.Dir)
 		if err != nil {

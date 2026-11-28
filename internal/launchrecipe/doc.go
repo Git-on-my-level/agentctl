@@ -8,12 +8,14 @@
 //   - Explicit speed and effort constraints are reflected in argv or rejected.
 //   - Permission-broadening flags are injected only when
 //     UnattendedCodingPermissions is true, access is coding (the default),
-//     and the harness has a reviewed flag: Cursor --force, Claude Code
-//     --permission-mode bypassPermissions, OpenCode --auto, and Devin ACP
-//     one-operation approval. Read-only access never receives them. Other
-//     harnesses are labeled unsupported and are not given an inferred bypass.
-//   - Codex delegates keep the workspace sandbox and explicitly use
-//     approval_policy=never; commands requiring approval fail in-turn.
+//     and the harness has a reviewed flag: Cursor --force, Codex
+//     --dangerously-bypass-approvals-and-sandbox, Claude Code --permission-mode
+//     bypassPermissions, OpenCode --auto, and Devin ACP one-operation approval.
+//     Read-only access never receives them. Other harnesses are labeled
+//     unsupported and are not given an inferred bypass.
+//   - Codex coding delegates without the grant keep the workspace sandbox and
+//     explicitly use approval_policy=never; commands requiring approval fail
+//     in-turn.
 //   - Cursor --trust is included only when CursorWorkspaceTrust is true.
 //     Trust does not imply --force, and --force does not imply trust.
 //
