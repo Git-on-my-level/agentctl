@@ -171,7 +171,7 @@
         "opencode_rate_limit_retry": {"type": "boolean", "default": true, "description": "Allow bounded same-session continuation after a native OpenCode structured HTTP 429."},
         "opencode_final_answer_followup": {"type": "boolean", "default": true, "description": "Allow one same-session final-answer follow-up for a stopped OpenCode turn with no text."},
         "cursor_workspace_trust": {"description": "Required grant for Cursor read_only delegation; when granted all Cursor recipes add --trust.", "type": "boolean" },
-        "unattended_coding_permissions": { "type": "boolean", "description": "Explicit grant for coding delegates: Cursor --force, Claude Code --permission-mode bypassPermissions, OpenCode --auto, and Devin ACP one-operation permission approvals. Codex remains in its workspace sandbox with approval_policy=never. Never applied to read_only or expert run argv." }
+        "unattended_coding_permissions": { "type": "boolean", "description": "Explicit grant for coding delegates: Cursor --force, a launch-scoped Codex build/test/local-Git command allowlist under workspace-write (matching allow rules execute outside Codex's sandbox and require a trusted checkout), Claude Code --permission-mode bypassPermissions, OpenCode --auto, and Devin ACP one-operation permission approvals. Never applied to read_only or expert run argv." }
       }
     },
     "route": {

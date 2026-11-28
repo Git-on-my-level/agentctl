@@ -196,8 +196,9 @@ func permissionLabel(harness, access string, grant bool) string {
 	case "cursor", "devin":
 		return PermissionsFull
 	case "codex":
-		// Codex runs inside its workspace sandbox and denies commands that need
-		// an interactive approval.
+		// Codex permits only the delegate's reviewed command prefixes. Codex
+		// exec's allow decision skips its sandbox for those commands; the grant
+		// therefore applies only to trusted checkouts.
 		return PermissionsConstrained
 	case "claude-code":
 		// bypassPermissions skips prompts, unlike auto mode's classifier.

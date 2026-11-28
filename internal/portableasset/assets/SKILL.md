@@ -38,16 +38,17 @@ agentctl delegate --request-file request.json --prompt-file task.md --wait
 
 Inspect `native.argv`, `native.env`, and `native.permissions` on the plan before launching.
 Coding is the default access. Only an explicit `delegation.unattended_coding_permissions`
-grant adds Cursor `--force`, Claude Code
+grant adds Cursor `--force`, a launch-scoped Codex build/test/local-Git
+allowlist under `--sandbox workspace-write` (matching Codex rules run outside
+its sandbox; generated only when the active Git root is marked
+`trust_level = "trusted"` in the user's `CODEX_HOME/config.toml`), Claude Code
 `--permission-mode bypassPermissions`, OpenCode `--auto`, and Devin ACP permission approval only when `delegation.unattended_coding_permissions` is true.
 `selector.settings.access: "read_only"` never adds those flags; Claude Code, OpenCode, and Devin refuse it. Expert `run` does not apply this grant.
-Codex coding delegates stay in the `workspace-write` sandbox and explicitly set
-`approval_policy="never"`, whether or not this grant is enabled. A command
-requiring approval fails in-turn and is reported to the parent. A declined
-command fails and cancels the run with `native_command_declined`; typed approval
-attention from other native flows is cancelled after 10 minutes with
-`native_approval_wait_timeout`. `delegate --wait` and later `await`/`result`
-collection return the failure.
+Codex CLI 0.170.0 headless `exec` with its default human reviewer disables
+interactive approvals. A declined command fails and cancels the run with
+`native_command_declined`; typed approval attention from other native flows is
+cancelled after 10 minutes with `native_approval_wait_timeout`. `delegate --wait`
+and later `await`/`result` collection return the failure.
 Do not hand-write cursor or codex argv for a new agent, and do not edit a
 global CLI allowlist to widen permissions.
 
@@ -185,7 +186,10 @@ refuses before launch without it (`workspace_trust_required`). Trust is never
 implied by a model preference. Unattended coding permissions are a separate
 `delegation.unattended_coding_permissions` grant. When it is true, coding
 launches (omitted `selector.settings.access`, or `"coding"`) include Cursor `--force`,
-Claude Code `--permission-mode bypassPermissions`, OpenCode `--auto`, and Devin ACP permission approval. Codex coding delegates stay under `--sandbox workspace-write` with headless `approval_policy=never`. Set `selector.settings.access` to `read_only` for
+a launch-scoped Codex command allowlist only when the active Git root is
+explicitly trusted in the user's `CODEX_HOME/config.toml`, under
+`--sandbox workspace-write` with headless `approval_policy=never`, Claude Code
+`--permission-mode bypassPermissions`, OpenCode `--auto`, and Devin ACP permission approval. Set `selector.settings.access` to `read_only` for
 Cursor `--mode ask` and Codex `--sandbox read-only`; that access never
 receives the coding permission flags. ZCode `read_only` occupies the project
 config slot. `delegate --plan` returns `launch_constraints` from the same
@@ -745,7 +749,8 @@ await, await-any, result, reconcile and steer). A managed supervisor is required
 delivery and must not be silently installed as a new service.
 
 Permission-granting native flags remain explicit on expert `run` argv. `delegate`
-applies Cursor `--force`, Claude Code
+applies Cursor `--force`, the Codex command allowlist only for an explicitly
+trusted Codex checkout, Claude Code
 `--permission-mode bypassPermissions`, OpenCode `--auto`, and Devin ACP permission approval only from
 `delegation.unattended_coding_permissions`, and never on read-only access.
 Consult `agentctl config doctor` for advisory operator preferences: pass Cursor

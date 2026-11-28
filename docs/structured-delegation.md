@@ -96,18 +96,25 @@ Read-only Cursor delegation refuses before launch with `workspace_trust_required
 without this grant, even if the directory was previously trusted. A model alias or
 allowlist entry never grants it. Unattended coding permissions are a second
 grant, disabled by default: `delegation.unattended_coding_permissions: true`
-adds Cursor `--force`, Claude Code `--permission-mode bypassPermissions`,
-OpenCode `--auto`, and Devin ACP one-operation permission approvals on coding
-launches (the default `settings.access`).
-Codex coding delegates stay in the `workspace-write` sandbox and explicitly
-set headless `approval_policy=never`, regardless of this grant. A command that
-needs interactive approval is declined and reported as a failed run.
+adds Cursor `--force`, a scoped Codex command allowlist under
+`--sandbox workspace-write` with headless `approval_policy=never`, Claude
+Code `--permission-mode bypassPermissions`, OpenCode `--auto`, and Devin ACP
+one-operation permission approvals on coding launches (the default
+`settings.access`). Codex's launch-scoped rules cover ordinary build/test and
+local Git commands only when the active Git root is explicitly marked
+`trust_level = "trusted"` in the user's `CODEX_HOME/config.toml`; the profile
+grant alone never generates those sandbox-bypassing rules. They do not allow
+`git push`, `git clean`, or `git reset`.
 Codex CLI 0.170.0 headless `exec` with its default human reviewer disables
 interactive approvals; explicit declined items and the pre-execution
 `approval policy is Never; reject command` response are surfaced as failures
 and cancelled, even when the model later completes the turn.
-`settings.access: "read_only"` uses Cursor `--mode ask` and Codex
-`--sandbox read-only -c approval_policy="never"`.
+Matching Codex `allow` rules skip its sandbox, so use the grant only with trusted
+checkouts. Without the grant, agentctl adds no Codex allow rules. Rules are loaded
+from a private per-launch `CODEX_HOME` overlay that preserves operator rules and
+stores fresh-home session rollouts persistently for later resume. `settings.access:
+"read_only"` uses Cursor `--mode ask` and Codex `--sandbox read-only -c
+approval_policy="never"`; it never receives the coding allowlist.
 Approval/permission attention from a native execution starts a fixed 10-minute
 watch. If it remains unresolved at the boundary, agentctl cancels and records a
 failed result with `native_approval_wait_timeout`. The same result is returned
