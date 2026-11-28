@@ -140,14 +140,23 @@ native OpenCode delegates. Set either to `false` to disable the corresponding
 [automatic recovery path](follow-up-turns.md#automatic-opencode-recovery).
 
 `delegation.unattended_coding_permissions` is a separate boolean grant that
-lets `delegate` add Cursor `--force`, Codex
-`--dangerously-bypass-approvals-and-sandbox`, Claude Code
+lets `delegate` add Cursor `--force`, Claude Code
 `--permission-mode bypassPermissions`, OpenCode `--auto`, and Devin ACP
 one-operation permission approvals on coding launches. Claude Code and OpenCode
 refuse `read_only` because their edit enforcement is unverified. Neither grant
 is implied by a model alias, and neither rewrites expert `run` argv. See [structured delegation](structured-delegation.md)
 for the request schema, deterministic defaults, and replay contract. Upgrade the
 binary before applying config fields an older version does not recognize.
+
+Codex coding delegates stay in the `workspace-write` sandbox and explicitly set
+`approval_policy="never"` whether or not this grant is enabled. Commands that
+need an interactive approval fail in-turn and are reported to the parent.
+
+Native executions that emit a typed approval/permission attention signal are
+cancelled and failed after 10 minutes with `native_approval_wait_timeout`.
+`delegate --wait`, `await`, and `result` expose the failure. This fixed watchdog
+is separate from an execution's explicit `--timeout`; it cannot detect stalls
+that emit no approval signal.
 
 ## Agent Nexus run links
 

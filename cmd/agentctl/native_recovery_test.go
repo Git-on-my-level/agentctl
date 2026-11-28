@@ -13,11 +13,21 @@ import (
 
 func recoveryFixture(t *testing.T, failure string) delegateFixture {
 	t.Helper()
+	threadID := "550e8400-e29b-41d4-a716-446655440011"
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
 	body := `case " $* " in
-*" resume "*" thread-1 "*)
- printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}' '{"type":"item.completed","item":{"type":"agent_message","text":"resumed answer"}}' '{"type":"turn.completed"}' ;;
+*" resume "*" ` + threadID + ` "*)
+ rollout="$CODEX_HOME/sessions/2026/11/25/rollout-2026-11-25T00-00-00-00000000-` + threadID + `.jsonl"
+ printf '%s\n' '{"type":"thread.started","thread_id":"` + threadID + `"}'
+ sleep 0.05
+ printf '%s\n' '{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}' >> "$rollout"
+ printf '%s\n' '{"type":"item.completed","thread_id":"` + threadID + `","item":{"type":"agent_message","text":"resumed answer"}}' '{"type":"turn.completed","thread_id":"` + threadID + `"}' ;;
 *)
- printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}' '` + failure + `' ;;
+ rollout="$CODEX_HOME/sessions/2026/11/25/rollout-2026-11-25T00-00-00-00000000-` + threadID + `.jsonl"
+ mkdir -p "$(dirname "$rollout")"
+ if [ ! -f "$rollout" ]; then printf '%s\n' '{"type":"session_meta","payload":{"id":"` + threadID + `"}}' > "$rollout"; fi
+ printf '%s\n' '{"type":"thread.started","thread_id":"` + threadID + `"}' '` + failure + `' ;;
 esac`
 	f := newDelegateFixture(t, body)
 	cfg := config.Config{SchemaVersion: 1, DefaultProfile: "test", Profiles: map[string]config.Profile{"test": {

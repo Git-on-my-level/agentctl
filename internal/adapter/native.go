@@ -92,44 +92,48 @@ type outputParser interface {
 }
 
 type processRecord struct {
-	mu               sync.Mutex
-	cmd              *exec.Cmd
-	parser           outputParser
-	ref              SourceRef
-	binding          SourceBinding
-	startedAt        time.Time
-	updatedAt        time.Time
-	done             chan struct{}
-	waitErr          error
-	exitCode         *int
-	observations     []parsedObservation
-	events           []Event
-	result           *Result
-	finalContent     string
-	acp              *acpSession
-	sawDevinPrint    bool
-	devinPrintAnswer string
-	contentType      string
-	contentSource    string
-	contentTruncated bool
-	lastError        string
-	stderrDiagnostic *diagnostic.Stderr
-	zcodeFailure     *zcodeFailureDiagnostic
-	parseWarnings    []string
-	metadataSeen     map[string]bool
-	metadataState    State
-	stdoutBytes      int
-	stderrBytes      int
-	maxOutput        int
-	cancelled        bool
-	pipes            sync.WaitGroup
-	resultPath       string
-	outputDir        string
-	executionID      string
-	outputPrefix     []byte
-	outputTruncated  bool
-	page             *parsedPage
-	wholeStdout      bool
+	mu                     sync.Mutex
+	cmd                    *exec.Cmd
+	parser                 outputParser
+	ref                    SourceRef
+	binding                SourceBinding
+	startedAt              time.Time
+	updatedAt              time.Time
+	done                   chan struct{}
+	waitErr                error
+	exitCode               *int
+	observations           []parsedObservation
+	events                 []Event
+	result                 *Result
+	finalContent           string
+	acp                    *acpSession
+	sawDevinPrint          bool
+	devinPrintAnswer       string
+	codexCommandDeclined   bool
+	contentType            string
+	contentSource          string
+	contentTruncated       bool
+	lastError              string
+	stderrDiagnostic       *diagnostic.Stderr
+	zcodeFailure           *zcodeFailureDiagnostic
+	parseWarnings          []string
+	metadataSeen           map[string]bool
+	metadataState          State
+	stdoutBytes            int
+	stderrBytes            int
+	maxOutput              int
+	cancelled              bool
+	codexHome              string
+	codexRolloutRequired   bool
+	codexRolloutCheckpoint codexRolloutCheckpoint
+	pipes                  sync.WaitGroup
+	resultPath             string
+	outputDir              string
+	executionID            string
+	outputPrefix           []byte
+	outputTruncated        bool
+	page                   *parsedPage
+	wholeStdout            bool
 
 	sawOpenCode               bool
 	opencodeText              strings.Builder
@@ -207,6 +211,14 @@ func (p *processRecord) ingest(line []byte, stderr bool) {
 		}
 	} else {
 		obs = p.parser.Parse(line, false)
+		if p.parser != nil && p.parser.Name() == "codex-json" {
+			if obs.SourceState == "thread.started" {
+				p.observeCodexThreadID(obs.SessionID)
+			}
+			if p.codexRolloutRequired && obs.Terminal && obs.SourceState == "turn.completed" {
+				obs = p.verifyCodexRollout(obs)
+			}
+		}
 	}
 	if live != nil && !stderr && live.acknowledge(line) {
 		// The native CLI took a user message into the session: sequence 1 is
@@ -395,6 +407,9 @@ func nativePolicyFamily(name string) bool {
 
 // ingestObservationLocked is ingestObservation for a caller holding p.mu.
 func (p *processRecord) ingestObservationLocked(obs parsedObservation) {
+	if p.parser != nil && p.parser.Name() == "codex-json" && obs.Data["diagnostic_code"] == "native_command_declined" {
+		p.codexCommandDeclined = true
+	}
 	if nativePolicyFamily(p.ref.Adapter) && obs.State == StateAttention {
 		kind, _ := obs.Data["attention_kind"].(string)
 		if kind == "approval" || kind == "permission" {
@@ -712,6 +727,17 @@ func (p *processRecord) beginOpenCodeStep(step openCodeStepID) {
 // resultFromObservation builds the session result from a native terminal
 // record. The caller holds p.mu.
 func (p *processRecord) resultFromObservation(obs parsedObservation) *Result {
+	if p.codexCommandDeclined {
+		return &Result{
+			Success: false, State: StateFailed, Error: "Codex declined a command because headless approval is disabled.", SessionRef: p.ref,
+			Data: map[string]any{
+				"diagnostic_code":       "native_command_declined",
+				"failure_category":      "permission",
+				"failure_structured":    true,
+				"terminal_source_state": "native_command_declined",
+			},
+		}
+	}
 	data := cloneMap(obs.Data)
 	if data == nil {
 		data = map[string]any{}
@@ -1273,6 +1299,10 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	if len(argv) == 0 || argv[0] == "" {
 		return LaunchResult{}, invalidRequest("launch argv transform returned an empty argv")
 	}
+	codexEphemeral := a.config.Parser != nil && a.config.Parser.Name() == "codex-json" && argvHasFlag(argv, "--ephemeral")
+	if codexEphemeral && req.ExecutionContext != nil && req.ExecutionContext.Delegated {
+		return LaunchResult{}, codexEphemeralDelegationError()
+	}
 	if err := runCtx.Err(); err != nil {
 		return LaunchResult{}, nativeContextError(runCtx, "native process launch")
 	}
@@ -1389,6 +1419,33 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 			return LaunchResult{}, nativeContextError(runCtx, "native process launch")
 		}
 	}
+	var codexHome string
+	var codexRolloutRequired bool
+	var rolloutCheckpoint codexRolloutCheckpoint
+	if a.config.Parser != nil && a.config.Parser.Name() == "codex-json" && !codexEphemeral {
+		codexRolloutRequired = true
+		codexHome, err = effectiveCodexHome(cmd.Env, cmd.Dir)
+		if err != nil {
+			release()
+			return LaunchResult{}, dependencyError("cannot resolve effective Codex home", err)
+		}
+		threadID := codexResumeThreadID(argv)
+		if req.replaces != nil {
+			req.replaces.mu.Lock()
+			previousThreadID := req.replaces.ref.OpaqueID
+			req.replaces.mu.Unlock()
+			if validCodexThreadID(previousThreadID) {
+				if threadID != "" && threadID != previousThreadID {
+					rolloutCheckpoint = codexRolloutCheckpoint{ThreadID: threadID, Captured: true, Unavailable: true}
+				} else {
+					threadID = previousThreadID
+				}
+			}
+		}
+		if !rolloutCheckpoint.Unavailable {
+			rolloutCheckpoint = codexRolloutCheckpointForLaunch(codexHome, threadID)
+		}
+	}
 	if req.BeforeStart != nil {
 		if err := req.BeforeStart(runCtx); err != nil {
 			release()
@@ -1427,7 +1484,7 @@ func (a *NativeAdapter) Launch(ctx context.Context, req LaunchRequest) (LaunchRe
 	if _, ok := parser.(opencodeJSONParser); ok {
 		parser = opencodeJSONParser{reasoningFallback: openCodeReasoningFallbackEnabled(argv)}
 	}
-	record := &processRecord{cmd: cmd, parser: parser, ref: ref, binding: ref.Binding(), startedAt: startedAt, updatedAt: startedAt, done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, outputDir: req.OutputDir, wholeStdout: a.config.WholeStdout, live: live, launchIdentity: captureProcessLaunch(cmd.Process.Pid, startedAt)}
+	record := &processRecord{cmd: cmd, parser: parser, ref: ref, binding: ref.Binding(), startedAt: startedAt, updatedAt: startedAt, done: make(chan struct{}), maxOutput: a.config.OutputLimit, resultPath: req.ResultPath, outputDir: req.OutputDir, wholeStdout: a.config.WholeStdout, live: live, codexHome: codexHome, codexRolloutRequired: codexRolloutRequired, codexRolloutCheckpoint: rolloutCheckpoint, launchIdentity: captureProcessLaunch(cmd.Process.Pid, startedAt)}
 	if req.ExecutionContext != nil {
 		record.executionID = req.ExecutionContext.ExecutionID
 	}

@@ -329,6 +329,7 @@ type ExecutionContext struct {
 	HostID      string
 	Labels      []string
 	Authority   string
+	Delegated   bool
 }
 
 type AttachRequest struct {

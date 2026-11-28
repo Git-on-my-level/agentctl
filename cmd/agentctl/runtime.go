@@ -498,7 +498,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 	launchCtx, interruptLaunch := context.WithCancel(operationCtx)
 	defer interruptLaunch()
 	launchRequest := adapter.LaunchRequest{Env: opts.env, Argv: opts.argv, Cwd: opts.cwd, Context: contextInput(c), DiscoveryWindow: 250 * time.Millisecond, StartOnly: true,
-		ExecutionContext: &adapter.ExecutionContext{ExecutionID: execution.ID.String(), Adapter: execution.Adapter, HostID: execution.OriginHostID.String(), Labels: append([]string(nil), execution.Labels...), Authority: string(execution.Authority)}}
+		ExecutionContext: &adapter.ExecutionContext{ExecutionID: execution.ID.String(), Adapter: execution.Adapter, HostID: execution.OriginHostID.String(), Labels: append([]string(nil), execution.Labels...), Authority: string(execution.Authority), Delegated: execution.Delegation != nil}}
 	if execution.Adapter == "generic-process" && !opts.noStoreResult {
 		launchRequest.OutputDir, _ = filepath.Abs(filepath.Dir(c.journalPath))
 	}
@@ -622,6 +622,14 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		opts.started(execution, false)
 	}
 	cursor := ""
+	var approvalWaitSince *time.Time
+	if nativeApprovalAttention(execution) {
+		observed := execution.Observation.ObservedAt
+		if observed.IsZero() {
+			observed = a.now().UTC()
+		}
+		approvalWaitSince = &observed
+	}
 	nextRunnerHeartbeat := a.now().Add(nativeRunnerHeartbeatEvery)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
@@ -640,6 +648,7 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 		}
 		nativeEvents, eventErr := runtime.Events(launchCtx, adapter.EventsRequest{Ref: launch.Session.Ref, Cursor: cursor})
 		if eventErr == nil && len(nativeEvents) != 0 {
+			approvalWaitSince = updateNativeApprovalWait(approvalWaitSince, nativeEvents, a.now().UTC())
 			var terminal bool
 			execution, terminal, openProblem = a.recordNativeEvents(c, execution, nativeEvents, &cursor, inbox, slots, bucket)
 			if openProblem != nil {
@@ -660,6 +669,14 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 			}
 		}
 		if resultErr == nil && terminalAdapterState(result.State) {
+			// Codex exec runs headlessly with approvals disabled. A declined
+			// command is terminal for agentctl even if the model could continue
+			// with an explanation; stop and reap that process before returning.
+			if nativeCommandDeclined(result) {
+				if cancelErr := runtime.Cancel(context.Background(), adapter.CancelRequest{Ref: launch.Session.Ref, Signal: "term", Grace: nativeOwnerCancelGrace}); cancelErr != nil {
+					_ = runtime.Cancel(context.Background(), adapter.CancelRequest{Ref: launch.Session.Ref, Signal: "kill"})
+				}
+			}
 			// The structured stream may announce terminal state just before the
 			// process exits. Reap the child before returning so a foreground run
 			// never leaves an orphan behind. Keep renewing the runner lease while
@@ -728,6 +745,32 @@ func (a *app) runNativeOptions(ctx context.Context, renderer output.Renderer, c 
 				slot.Close()
 			}
 			return a.finishNativeTurn(launchCtx, renderer, c, execution)
+		}
+		if launchCtx.Err() == nil && nativeApprovalWaitExpired(approvalWaitSince, a.now()) {
+			cancelErr := runtime.Cancel(context.Background(), adapter.CancelRequest{Ref: launch.Session.Ref, Signal: "term", Grace: nativeOwnerCancelGrace})
+			if cancelErr != nil {
+				cancelErr = runtime.Cancel(context.Background(), adapter.CancelRequest{Ref: launch.Session.Ref, Signal: "kill"})
+			}
+			if slot != nil && cancelErr == nil {
+				slot.ChildReaped()
+			}
+			a.settleSteerInbox(c, execution.ID, inbox)
+			writeJournal, current, openProblem := a.openExecutionWriteOwned(c, execution.ID)
+			if openProblem != nil {
+				return openProblem
+			}
+			if current.State.Terminal() {
+				writeJournal.Close()
+				return writeExecution(renderer, current, "run")
+			}
+			result := nativeApprovalWaitFailure(launch.Session.Ref, cancelErr == nil)
+			execution, err = a.finalizeResultConverging(context.Background(), c, writeJournal, current, result, a.now().UTC(), opts.noStoreResult)
+			writeJournal.Close()
+			if err != nil {
+				return mapStoreError("record native approval timeout", err)
+			}
+			a.anxRegisterTerminal(c, execution.ID)
+			return writeExecution(renderer, execution, "run")
 		}
 		// Apply steering only after this tick's observation. A late message
 		// must not run on the loop before a completed result is recorded, and
@@ -2491,6 +2534,10 @@ func allowlistedFailureMessage(failure model.OutcomeFailure) string {
 		return zcodeCapacityFailureMessage(failure.Message)
 	}
 	switch failure.Code {
+	case nativeApprovalWaitDiagnostic:
+		return "Native command approval remained unresolved for 10 minutes; the execution was cancelled."
+	case nativeCommandDeclinedDiagnostic:
+		return "Codex declined a command because headless approval is disabled; the execution was cancelled."
 	case "native_event_write_failed":
 		return "native event recording failed; child reaped"
 	case "native_owner_failed":
@@ -2613,6 +2660,10 @@ func localCompletionDiagnostic(code string) bool {
 
 func classifyOutcomeFailure(message, diagnosticCode, nativeCode, harness, providerCategory string) (string, string, string, bool) {
 	switch diagnosticCode {
+	case nativeApprovalWaitDiagnostic:
+		return nativeApprovalWaitDiagnostic, "timeout", "permission", false
+	case nativeCommandDeclinedDiagnostic:
+		return nativeCommandDeclinedDiagnostic, "permission", "permission", false
 	case "opencode_provider_invalid_request":
 		return diagnosticCode, "provider", "provider", false
 	case "native_event_write_failed", "native_owner_failed", "detached_worker_start_failed":

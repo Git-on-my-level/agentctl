@@ -1398,7 +1398,7 @@ func (a *app) await(ctx context.Context, renderer output.Renderer, c common, arg
 			return 0
 		case model.StateFailed:
 			problem := outcomeError(output.CodeExecutionFailed, "execution failed", execution)
-			if execution.Adapter == "opencode" {
+			if execution.Adapter == "opencode" || execution.SourceState != nil && (*execution.SourceState == nativeApprovalWaitDiagnostic || *execution.SourceState == nativeCommandDeclinedDiagnostic) {
 				a.attachNativeFailure(ctx, c, physical, problem)
 			}
 			return a.deliverAwaitError(ctx, renderer, c, execution, physical, problem)

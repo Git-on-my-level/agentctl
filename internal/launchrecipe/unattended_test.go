@@ -7,7 +7,7 @@ import (
 
 func TestUnattendedRecipes(t *testing.T) {
 	for _, tc := range []struct{ harness, access, flag, permission string }{
-		{"codex", "coding", "--dangerously-bypass-approvals-and-sandbox", PermissionsFull},
+		{"codex", "coding", "workspace-write", PermissionsConstrained},
 		{"codex", "read_only", `approval_policy="never"`, PermissionsReadOnly},
 		{"cursor", "coding", "--force", PermissionsFull},
 		{"cursor", "read_only", "ask", PermissionsReadOnly},
@@ -32,8 +32,10 @@ func TestUnattendedRecipes(t *testing.T) {
 			if !slices.Contains(r.Argv, tc.flag) || r.Permissions != tc.permission {
 				t.Fatalf("%#v", r)
 			}
-			if tc.harness == "codex" && !slices.Contains(r.Argv, "--skip-git-repo-check") {
-				t.Fatal("missing git check bypass")
+			if tc.harness == "codex" && tc.access == "coding" {
+				if !slices.Contains(r.Argv, "--skip-git-repo-check") || !slices.Contains(r.Argv, `approval_policy="never"`) || slices.Contains(r.Argv, `approval_policy="on-request"`) || slices.Contains(r.Argv, "--dangerously-bypass-approvals-and-sandbox") || len(r.Env) != 0 {
+					t.Fatalf("Codex grant must keep its headless policy sandboxed: %#v", r)
+				}
 			}
 		})
 	}
@@ -45,6 +47,13 @@ func TestUnattendedRecipes(t *testing.T) {
 		if slices.Contains(r.Argv, "--yolo") || slices.Contains(r.Argv, "--dangerously-bypass-approvals-and-sandbox") {
 			t.Fatalf("implicit grant: %#v", r)
 		}
+		if h == "codex" && (!slices.Contains(r.Argv, "workspace-write") || !slices.Contains(r.Argv, `approval_policy="never"`)) {
+			t.Fatalf("Codex without the coding grant must still fail approvals in-turn: %#v", r)
+		}
+	}
+	readOnly, err := Build(Input{Harness: "codex", Model: "test-model", Access: AccessReadOnly, UnattendedCodingPermissions: true})
+	if err != nil || !slices.Contains(readOnly.Argv, "read-only") || !slices.Contains(readOnly.Argv, `approval_policy="never"`) {
+		t.Fatalf("Codex read_only semantics changed: %#v, err=%v", readOnly, err)
 	}
 	if _, err := Build(Input{Harness: "hermes", Model: "glm-5.3-flash", Access: "read_only"}); err == nil {
 		t.Fatal("Hermes read_only must fail closed")
